@@ -344,63 +344,26 @@ impl ToolRouter {
             None => return (None, vec![]),
         };
 
-        // 3. No focus runtime — warn caller.
-        let fr = match &self.active.query_runtime.focus_runtime {
-            Some(fr) => fr,
-            None => {
-                return (
-                    None,
-                    vec![
-                        "No full index and FocusRuntime not initialized. Run 'atlas index --full' or call 'init_focus()' on ToolRouter."
-                            .into(),
-                    ],
-                );
+        // 3. Delegate FocusRuntime interaction to QueryRuntime.
+        let (focus_result, warnings) =
+            self.active.query_runtime.prepare(&intent, &self.active.store);
+
+        // 4. Post-processing: record lazy writes and refresh graph.
+        if let Some(ref result) = focus_result {
+            if !result.built_files.is_empty() {
+                self.active
+                    .query_runtime
+                    .lazy_refresh_queue
+                    .record_lazy_writes(&result.built_files);
             }
-        };
-
-        // 4. Lock and detect index mode; prepare if in Focus mode.
-        let prep_result = {
-            let mut runtime = fr.lock().unwrap_or_else(|e| e.into_inner());
-            match runtime.detect_index_mode() {
-                atlas_engine::focus::runtime::IndexMode::FullIndex => None,
-                atlas_engine::focus::runtime::IndexMode::Focus => {
-                    Some(runtime.prepare(&intent))
-                }
+            if let Err(e) = self.maybe_refresh_graph() {
+                let mut combined = warnings.clone();
+                combined.push(format!("Focus succeeded but graph refresh failed: {e}"));
+                return (Some(result.clone()), combined);
             }
-        }; // MutexGuard dropped here
-
-        // 5. Process preparation result.
-        match prep_result {
-            Some(Ok(result)) => {
-                let mut warnings: Vec<String> = result
-                    .gaps
-                    .iter()
-                    .map(|g| format!("{:?}", g))
-                    .collect();
-
-                if !result.built_files.is_empty() {
-                    // Predictive pre-warming: notify focus scheduler of file reads.
-                    if let Some(ref fr) = self.active.query_runtime.focus_runtime {
-                        if let Ok(rt) = fr.lock() {
-                            for file_id in &result.built_files {
-                                rt.on_file_read(*file_id);
-                            }
-                        }
-                    }
-
-                    self.active.query_runtime.lazy_refresh_queue
-                        .record_lazy_writes(&result.built_files);
-                    if let Err(e) = self.maybe_refresh_graph() {
-                        warnings
-                            .push(format!("Graph refresh failed after focus: {e:#}"));
-                    }
-                }
-
-                (Some(result), warnings)
-            }
-            Some(Err(e)) => (None, vec![format!("Focus preparation failed: {e:#}")]),
-            None => (None, vec![]), // FullIndex detected inside the lock
         }
+
+        (focus_result, warnings)
     }
 
     /// Query the DB for real capability file counts.

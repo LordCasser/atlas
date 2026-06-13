@@ -124,6 +124,7 @@ impl LazyRefreshQueue {
     /// Drop all queued refresh state.
     ///
     /// Used when the active project changes.
+    #[allow(dead_code)]
     pub(crate) fn clear(&self) {
         if let Ok(mut pending) = self.pending_file_ids.lock() {
             pending.clear();

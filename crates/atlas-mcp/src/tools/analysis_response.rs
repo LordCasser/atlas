@@ -67,8 +67,12 @@ pub struct AnalysisView {
 // ---------------------------------------------------------------------------
 
 /// Analysis readiness state.
+///
+/// Variants are part of the MCP response contract; some are not yet constructed
+/// by the Rust server but may be consumed by MCP clients.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum AnalysisState {
     /// Full results are available; no further work needed for this query.
     Ready,
@@ -85,8 +89,12 @@ pub enum AnalysisState {
 }
 
 /// Scope of the analysis performed.
+///
+/// Variants are part of the MCP response contract; some are not yet constructed
+/// by the Rust server but may be consumed by MCP clients.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum AnalysisScope {
     Repo,
     Local,
@@ -97,8 +105,12 @@ pub enum AnalysisScope {
 }
 
 /// Recommended next action.
+///
+/// Variants are part of the MCP response contract; some are not yet constructed
+/// by the Rust server but may be consumed by MCP clients.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum AnalysisNextAction {
     UseResult,
     UseResultOrWaitForRefinement,
@@ -188,6 +200,7 @@ pub struct WorkView {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum WorkStatus {
     Idle,
     Running,
@@ -219,6 +232,9 @@ pub struct WorkProgress {
 // ---------------------------------------------------------------------------
 
 /// Builder for [`AnalysisResponse`].
+///
+/// Reserved for future use when tool handlers adopt the structured response envelope.
+#[allow(dead_code)]
 pub struct AnalysisResponseBuilder {
     result: serde_json::Value,
     query_id: String,
@@ -229,6 +245,7 @@ pub struct AnalysisResponseBuilder {
     work: WorkView,
 }
 
+#[allow(dead_code)]
 impl AnalysisResponseBuilder {
     /// Create a new builder with the tool-specific result body and query_id.
     ///
@@ -316,6 +333,9 @@ pub fn precision_to_view(p: &Precision) -> PrecisionView {
 }
 
 /// Convert a [`KnownGap`] to [`KnownGapView`].
+///
+/// Reserved for future use when tool handlers adopt the structured response envelope.
+#[allow(dead_code)]
 pub fn known_gap_to_view(g: &KnownGap) -> KnownGapView {
     match g {
         KnownGap::UnresolvedImport { from, import_path } => KnownGapView {
@@ -439,6 +459,9 @@ pub fn confidence_to_string(c: SemanticConfidence) -> &'static str {
 }
 
 /// Map internal coverage source strings to public labels.
+///
+/// Reserved for future use when tool handlers adopt the structured response envelope.
+#[allow(dead_code)]
 pub fn coverage_source_to_label(source: &str) -> String {
     match source {
         "extracted_structural" => "local_complete".into(),

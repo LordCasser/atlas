@@ -7,16 +7,22 @@
 
 use std::collections::HashMap;
 
-use atlas_engine::structs::CapabilityMask;
-use atlas_engine::structs::CoverageTier;
 use atlas_engine::structs::KnownGap;
 use atlas_engine::structs::Precision;
+#[cfg(test)]
+use atlas_engine::structs::CapabilityMask;
+#[cfg(test)]
+use atlas_engine::structs::CoverageTier;
+#[cfg(test)]
 use atlas_engine::structs::SemanticConfidence;
+#[cfg(test)]
 use serde::Serialize;
 use serde_json::json;
 
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::analysis_response::{WorkItem, WorkProgress, precision_to_view};
+use super::analysis_response::{WorkItem, precision_to_view};
+#[cfg(test)]
+use super::analysis_response::WorkProgress;
 
 // ── Analysis Contract ───────────────────────────────────────────────────
 
@@ -50,6 +56,8 @@ pub(crate) struct CapabilityStats {
     pub files_with_dataflow: usize,
     pub files_structural_only: usize,
     pub files_manifest_only: usize,
+    /// Number of files with CFG analysis (reserved for future analysis contract).
+    #[allow(dead_code)]
     pub files_with_cfg: usize,
 }
 
@@ -367,12 +375,14 @@ impl LazyResponse {
     }
 
     /// Set capability statistics (for non-focus full-index analysis block).
+    #[allow(dead_code)]
     pub fn with_capability_stats(mut self, stats: CapabilityStats) -> Self {
         self.capability_stats = Some(stats);
         self
     }
 
     /// Set project-level index snapshot (file/symbol/edge counts, index mode).
+    #[allow(dead_code)]
     pub fn with_project_stats(mut self, stats: ProjectStats) -> Self {
         self.project_stats = Some(stats);
         self

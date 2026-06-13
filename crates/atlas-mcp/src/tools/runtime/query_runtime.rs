@@ -40,23 +40,37 @@ impl QueryRuntime {
         }
     }
 
-    /// Prepare for a query. Delegates to FocusRuntime.
-    /// Returns None if FullIndex mode, no intent, or focus_runtime not initialized.
-    /// MIRRORS: ToolRouter::prepare_focus_query() in mod.rs
-    #[allow(dead_code)]
-    pub fn prepare(&self, intent: &QueryIntent) -> (Option<FocusResult>, Vec<String>) {
+    /// Prepare focus-driven lazy extraction for a query intent.
+    ///
+    /// Returns `(None, vec![])` when the project has a full index or
+    /// FocusRuntime is not initialized.  Returns `(Some(FocusResult), warnings)`
+    /// when focus analysis completes.
+    pub fn prepare(&self, intent: &QueryIntent, store: &Store) -> (Option<FocusResult>, Vec<String>) {
+        // 1. Cache check: skip if manual full index exists
+        if self.cache.has_manual_full_index(store) {
+            return (None, vec![]);
+        }
+
+        // 2. Check focus_runtime initialized
         let fr = match &self.focus_runtime {
             Some(fr) => fr,
-            None => return (None, vec![]),
+            None => {
+                return (
+                    None,
+                    vec!["No full index and FocusRuntime not initialized.".to_string()],
+                );
+            }
         };
+
+        // 3. Lock FocusRuntime, detect mode, prepare
         let mut runtime = fr.lock().unwrap();
         let mode = runtime.detect_index_mode();
-        match mode {
-            IndexMode::FullIndex => (None, vec![]),
-            IndexMode::Focus => match runtime.prepare(intent) {
-                Ok(result) => (Some(result), vec![]),
-                Err(e) => (None, vec![format!("focus prepare error: {e}")]),
-            },
+        if mode == IndexMode::FullIndex {
+            return (None, vec![]);
+        }
+        match runtime.prepare(intent) {
+            Ok(result) => (Some(result), vec![]),
+            Err(e) => (None, vec![format!("Focus preparation failed: {e}")]),
         }
     }
 
@@ -97,12 +111,32 @@ mod tests {
     #[test]
     fn prepare_returns_none_when_focus_not_initialized() {
         let qr = create_test_query_runtime();
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
         let intent = QueryIntent::Calls {
             symbol_name: "test".into(),
             file_id: None,
             symbol_id: None,
         };
-        let (result, warnings) = qr.prepare(&intent);
+        let (result, _warnings) = qr.prepare(&intent, &store);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn prepare_skips_when_full_index_exists() {
+        let qr = create_test_query_runtime();
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        // Simulate a full index by pre-populating the cache
+        let signature = store.index_signature().unwrap_or_default();
+        *qr.cache.cached_manual_full_index.write().unwrap() =
+            Some((signature.clone(), true));
+        let intent = QueryIntent::Calls {
+            symbol_name: "test".into(),
+            file_id: None,
+            symbol_id: None,
+        };
+        let (result, warnings) = qr.prepare(&intent, &store);
         assert!(result.is_none());
         assert!(warnings.is_empty());
     }

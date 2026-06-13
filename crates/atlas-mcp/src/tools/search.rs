@@ -209,7 +209,7 @@ impl ToolRouter {
             .map(Self::search_result_to_hit)
             .collect();
 
-        let mut response = json!({
+        let response = json!({
             "query": query,
             "scope": scope,
             "results": hits,
@@ -292,7 +292,7 @@ impl ToolRouter {
                 .map(ToolRouter::search_result_to_hit)
                 .collect();
 
-            let mut response = json!({
+        let mut response = json!({
                 "query": q,
                 "scope": sc,
                 "results": hits,
