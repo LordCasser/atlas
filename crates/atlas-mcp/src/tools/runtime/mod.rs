@@ -98,6 +98,7 @@
 //! These patterns ensure all future changes respect the v6.0 boundary model.
 
 pub(crate) mod cache_state;
+pub(crate) mod closure_graph_provider;
 pub(crate) mod graph_provider;
 pub(crate) mod graph_state;
 pub(crate) mod invalidation;

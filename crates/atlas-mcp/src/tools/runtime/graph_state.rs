@@ -217,6 +217,24 @@ impl GraphState {
     }
 }
 
+// ── Clone ──────────────────────────────────────────────────────────────
+
+/// Manual `Clone` impl: `SearchEngine` and `ContextBuilder` contain
+/// `RwLock` and are not `Clone`.  We only clone `GraphState` before
+/// initialization (when both are `None`), so the clone always resets
+/// the engines to `None` and shares the background-rebuild `Arc`.
+impl Clone for GraphState {
+    fn clone(&self) -> Self {
+        Self {
+            search: None,
+            context: None,
+            graph_initialized: self.graph_initialized,
+            last_graph_signature: self.last_graph_signature.clone(),
+            pending_graph_rebuild: Arc::clone(&self.pending_graph_rebuild),
+        }
+    }
+}
+
 impl GraphProvider for GraphState {
     fn is_initialized(&self) -> bool {
         self.graph_initialized

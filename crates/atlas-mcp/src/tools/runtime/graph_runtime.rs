@@ -30,6 +30,7 @@ use std::sync::atomic::Ordering;
 
 use atlas_engine::{SearchEngine, SourceExtractor, Store};
 
+use super::closure_graph_provider::ClosureGraphProvider;
 use super::graph_state::GraphState;
 use super::invalidation::RuntimeInvalidation;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
@@ -70,7 +71,11 @@ pub struct GraphPrecision {
 /// Provides lazy initialization and incremental refresh of the
 /// SearchEngine and ContextBuilder backed by GraphState.
 pub struct GraphRuntime {
-    pub state: GraphState,
+    /// Heap-allocated so `ClosureGraphProvider` can hold a stable raw pointer
+    /// into it.  Both providers always see identical in-memory graph state.
+    pub state: Box<GraphState>,
+    /// Closure-scoped provider that shares the same heap allocation as `state`.
+    closure_provider: ClosureGraphProvider,
     pub store: Arc<Store>,
     pub source_extractor: SourceExtractor,
     pub project_root: PathBuf,
@@ -94,14 +99,17 @@ impl GraphRuntime {
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
         let last_graph_generation = invalidation.graph_generation.load(Ordering::Relaxed);
+        let state = Box::new(GraphState {
+            search: None,
+            context: None,
+            graph_initialized: false,
+            last_graph_signature,
+            pending_graph_rebuild: Arc::new(std::sync::Mutex::new(None)),
+        });
+        let closure_provider = ClosureGraphProvider::from_box(&state);
         Self {
-            state: GraphState {
-                search: None,
-                context: None,
-                graph_initialized: false,
-                last_graph_signature,
-                pending_graph_rebuild: Arc::new(std::sync::Mutex::new(None)),
-            },
+            state,
+            closure_provider,
             store,
             source_extractor,
             project_root,
@@ -119,6 +127,7 @@ impl GraphRuntime {
         let was_initialized = self.state.graph_initialized;
         self.state
             .ensure_initialized(&self.store, &self.source_extractor, &self.project_root)?;
+        // Both providers share the same Box<GraphState> — no separate init needed.
         if !was_initialized {
             let store = self.store.clone();
             self.detect_and_set_mode(&store);
@@ -179,10 +188,15 @@ impl GraphRuntime {
     }
 
     /// Returns the graph provider for the current scope.
-    /// Currently always returns the full graph state.
-    /// Future: may return a ClosureGraphProvider for focus-mode queries.
+    ///
+    /// Dispatches based on [`GraphMode`]:
+    /// - `FullCanonical` → `&self.state` (full graph)
+    /// - `FocusPartial` → `&self.closure_provider` (closure-scoped)
     pub(crate) fn provider(&self) -> &dyn GraphProvider {
-        &self.state
+        match self.mode {
+            GraphMode::FullCanonical => &*self.state,
+            GraphMode::FocusPartial => &self.closure_provider,
+        }
     }
 }
 
