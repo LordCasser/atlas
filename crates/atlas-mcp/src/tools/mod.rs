@@ -595,6 +595,7 @@ impl ToolRouter {
             ToolContract::StatusRead => self.dispatch_status_read(ctx, name, arguments),
             ToolContract::ExplicitIndexBuild => self.handle_index(ctx, arguments),
             ToolContract::SemanticGraphQuery(_) => self.dispatch_graph_query(ctx, name, arguments),
+            ToolContract::TraceQuery(_) => self.dispatch_trace_query(ctx, name, arguments),
             ToolContract::StoreFactQuery(_) => self.dispatch_store_query(ctx, name, arguments),
             ToolContract::SemanticAnalysis(_) => self.dispatch_analysis(ctx, name, arguments),
             ToolContract::OverlayMutation(_) | ToolContract::OverlayRead => {
@@ -644,9 +645,26 @@ impl ToolRouter {
             "explore" => self.handle_explore(args),
             "path" => self.handle_path(args),
             "impact" => self.handle_impact(args),
-            "trace" => self.handle_trace(ctx, args),
             "symbol" => self.handle_symbol(ctx, args),
             _ => (format!("Unknown graph tool: {name}"), true),
+        }
+    }
+
+    /// Sub-dispatcher: `TraceQuery` contract tools.
+    fn dispatch_trace_query(
+        &mut self,
+        ctx: &ToolCallContext,
+        name: &str,
+        arguments: &Value,
+    ) -> (String, bool) {
+        let kind = arguments.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        match (name, kind) {
+            ("trace", "point") => self.handle_trace_point(ctx, arguments),
+            ("trace", "variable") => self.handle_trace_variable(arguments),
+            ("trace", "forward") => self.handle_trace_forward(arguments),
+            ("trace", "callers") => self.handle_trace_caller_path(arguments),
+            ("trace", "") => self.handle_trace_point(ctx, arguments), // default: point
+            _ => (format!("Unknown trace kind: {kind}"), true),
         }
     }
 
@@ -2047,30 +2065,6 @@ impl ToolRouter {
             }
         }
         json!(results)
-    }
-
-    // ── trace ────────────────────────────────────────────────────────
-
-    /// Handle `trace` tool — dispatch by `kind`.
-    pub(crate) fn handle_trace(&mut self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
-        let kind = get_str(args, "kind");
-        match kind {
-            "point" => self.handle_trace_point(ctx, args),
-            "variable" => self.handle_trace_variable(args),
-            "forward" => self.handle_trace_forward(args),
-            "callers" => self.handle_trace_caller_path(args),
-            "" => (
-                "Missing required 'kind' parameter. Must be one of: point, variable, forward, callers"
-                    .to_string(),
-                true,
-            ),
-            other => (
-                format!(
-                    "Unknown kind: '{other}'. Must be one of: point, variable, forward, callers"
-                ),
-                true,
-            ),
-        }
     }
 
     // ── fp_dispatches ────────────────────────────────────────────────
@@ -4297,7 +4291,7 @@ mod tests {
         );
         assert_eq!(
             contract_for("trace", &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1})),
-            ToolContract::SemanticGraphQuery(QueryNeeds::Full)
+            ToolContract::TraceQuery(QueryNeeds::Full)
         );
         // Store fact queries
         assert_eq!(
@@ -4402,7 +4396,11 @@ mod tests {
             ToolContract::ExplicitIndexBuild => name == "index",
             // SemanticGraphQuery → dispatch_graph_query
             ToolContract::SemanticGraphQuery(_) => {
-                matches!(name, "calls" | "explore" | "path" | "impact" | "trace" | "symbol")
+                matches!(name, "calls" | "explore" | "path" | "impact" | "symbol")
+            }
+            // TraceQuery → dispatch_trace_query
+            ToolContract::TraceQuery(_) => {
+                matches!(name, "trace")
             }
             // StoreFactQuery → dispatch_store_query
             ToolContract::StoreFactQuery(_) => {
@@ -4421,6 +4419,315 @@ mod tests {
                 matches!(name, "tasks" | "task_status" | "wait_for_task" | "resume_task")
             }
         }
+    }
+
+    // ── E2E contract dispatch tests ────────────────────────────────────────
+    //
+    // These tests validate the full call_tool() → contract_for() → handler
+    // dispatch chain for every ToolContract variant.  They verify:
+    //   - The tool name routes to the correct contract
+    //   - The contract routes to the correct handler (no "Unknown tool" error)
+    //   - is_error field reflects expected behavior
+    //
+    // Handler logic is NOT tested here — each handler has its own unit tests.
+
+    /// Extract text from the first content block of a CallToolResult.
+    fn extract_text(result: &CallToolResult) -> String {
+        match &result.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+        }
+    }
+
+    // ── Test 1: ProjectLifecycle contract — "project" with action="open" ─
+
+    #[test]
+    fn e2e_project_lifecycle_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+        // action=open is ProjectLifecycle; missing project_path will error
+        // but the contract routing itself should work.
+        let args = serde_json::json!({"action": "open"});
+        let result = router.call_tool(&ctx, "project", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "project open should route to ProjectLifecycle, got: {text}"
+        );
+    }
+
+    // ── Test 2: StatusRead contract — "project" with action="status"/"files" ─
+
+    #[test]
+    fn e2e_status_read_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+
+        // action=status → StatusRead
+        let args = serde_json::json!({"action": "status"});
+        let result = router.call_tool(&ctx, "project", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "project status should route to StatusRead, got: {text}"
+        );
+        assert_eq!(result.is_error, Some(false), "status should succeed");
+
+        // action=files → StatusRead
+        let args2 = serde_json::json!({"action": "files"});
+        let result2 = router.call_tool(&ctx, "project", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "project files should route to StatusRead, got: {text2}"
+        );
+        assert_eq!(result2.is_error, Some(false), "files should succeed");
+    }
+
+    // ── Test 3: ExplicitIndexBuild contract — "index" tool ───────────────
+
+    #[test]
+    fn e2e_index_build_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({"analysis": "manifest"});
+        let result = router.call_tool(&ctx, "index", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "index should route to ExplicitIndexBuild, got: {text}"
+        );
+    }
+
+    // ── Test 4: SemanticGraphQuery contract — "calls" / "explore" ────────
+
+    #[test]
+    fn e2e_graph_query_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        // Graph must be initialized before SemanticGraphQuery tools can query.
+        let _ = router.ensure_graph_initialized();
+        let ctx = ToolCallContext::empty();
+
+        // calls → SemanticGraphQuery(CallGraph)
+        let args = serde_json::json!({"symbol": "test_func"});
+        let result = router.call_tool(&ctx, "calls", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "calls should route to SemanticGraphQuery, got: {text}"
+        );
+
+        // explore → SemanticGraphQuery(CallGraph)
+        let args2 = serde_json::json!({"symbol": "test_func"});
+        let result2 = router.call_tool(&ctx, "explore", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "explore should route to SemanticGraphQuery, got: {text2}"
+        );
+    }
+
+    // ── Test 5: StoreFactQuery contract — "search" / "symbol" ────────────
+
+    #[test]
+    fn e2e_store_query_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let _ = router.ensure_graph_initialized(); // "symbol" requires graph
+        let ctx = ToolCallContext::empty();
+
+        // search → StoreFactQuery(Manifest)
+        let args = serde_json::json!({"query": "test"});
+        let result = router.call_tool(&ctx, "search", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "search should route to StoreFactQuery, got: {text}"
+        );
+
+        // symbol with default view → StoreFactQuery(Manifest)
+        let args2 = serde_json::json!({"symbol": "test"});
+        let result2 = router.call_tool(&ctx, "symbol", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "symbol should route to StoreFactQuery, got: {text2}"
+        );
+    }
+
+    // ── Test 6: SemanticAnalysis contract — "lifecycle" / "branch_diff" ──
+
+    #[test]
+    fn e2e_analysis_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+
+        // lifecycle → SemanticAnalysis(CfgDataflowDomainRules)
+        let args = serde_json::json!({"symbol": "test_func", "field": "data"});
+        let result = router.call_tool(&ctx, "lifecycle", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "lifecycle should route to SemanticAnalysis, got: {text}"
+        );
+
+        // branch_diff → SemanticAnalysis(CfgDataflowEffects)
+        let args2 = serde_json::json!({"symbol": "test_func"});
+        let result2 = router.call_tool(&ctx, "branch_diff", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "branch_diff should route to SemanticAnalysis, got: {text2}"
+        );
+    }
+
+    // ── Test 7: OverlayMutation / OverlayRead contract ────────────────────
+
+    #[test]
+    fn e2e_overlay_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+
+        // domain_rules list → OverlayRead
+        let args = serde_json::json!({"action": "list"});
+        let result = router.call_tool(&ctx, "domain_rules", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "domain_rules list should route to OverlayRead, got: {text}"
+        );
+
+        // fp_dispatches list → OverlayRead
+        let args2 = serde_json::json!({"action": "list"});
+        let result2 = router.call_tool(&ctx, "fp_dispatches", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "fp_dispatches list should route to OverlayRead, got: {text2}"
+        );
+
+        // domain_rules add → OverlayMutation(DomainRules) — needs args, will
+        // fail validation but routing should be correct.
+        let args3 = serde_json::json!({"action": "add", "rule_kind": "free_fn", "pattern": "xfree"});
+        let result3 = router.call_tool(&ctx, "domain_rules", &args3);
+        let text3 = extract_text(&result3);
+        assert!(
+            !text3.contains("Unknown tool"),
+            "domain_rules add should route to OverlayMutation, got: {text3}"
+        );
+    }
+
+    // ── Test 8: TaskControl contract — "tasks" / "task_status" ───────────
+
+    #[test]
+    fn e2e_task_control_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+
+        // tasks → TaskControl
+        let args = serde_json::json!({});
+        let result = router.call_tool(&ctx, "tasks", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "tasks should route to TaskControl, got: {text}"
+        );
+
+        // task_status → TaskControl
+        let args2 = serde_json::json!({"task_id": "nonexistent"});
+        let result2 = router.call_tool(&ctx, "task_status", &args2);
+        let text2 = extract_text(&result2);
+        assert!(
+            !text2.contains("Unknown tool"),
+            "task_status should route to TaskControl, got: {text2}"
+        );
+
+        // wait_for_task → TaskControl
+        let args3 = serde_json::json!({"task_id": "nonexistent"});
+        let result3 = router.call_tool(&ctx, "wait_for_task", &args3);
+        let text3 = extract_text(&result3);
+        assert!(
+            !text3.contains("Unknown tool"),
+            "wait_for_task should route to TaskControl, got: {text3}"
+        );
+
+        // resume_task → TaskControl
+        let args4 = serde_json::json!({"query_id": "nonexistent"});
+        let result4 = router.call_tool(&ctx, "resume_task", &args4);
+        let text4 = extract_text(&result4);
+        assert!(
+            !text4.contains("Unknown tool"),
+            "resume_task should route to TaskControl, got: {text4}"
+        );
+    }
+
+    // ── Test 9: TraceQuery contract — "trace" tool (SemanticGraphQuery) ──
+
+    #[test]
+    fn e2e_trace_query_contract_routes_correctly() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let _ = router.ensure_graph_initialized();
+        let ctx = ToolCallContext::empty();
+
+        // trace kind=callers → SemanticGraphQuery(Full) → dispatch_graph_query
+        let args = serde_json::json!({"kind": "callers", "symbol": "test_func"});
+        let result = router.call_tool(&ctx, "trace", &args);
+        let text = extract_text(&result);
+        assert!(
+            !text.contains("Unknown tool"),
+            "trace should route via SemanticGraphQuery to graph handler, got: {text}"
+        );
+    }
+
+    // ── Test 10: ctx forwarding — tools accept ToolCallContext::empty() ──
+
+    #[test]
+    fn e2e_ctx_forwarding_does_not_panic() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let _ = router.ensure_graph_initialized();
+        let ctx = ToolCallContext::empty();
+
+        // Tools that receive ctx: search, symbol, index, trace
+        let cases: &[(&str, serde_json::Value)] = &[
+            ("search", serde_json::json!({"query": "test"})),
+            ("symbol", serde_json::json!({"symbol": "test"})),
+            ("index", serde_json::json!({})),
+            ("trace", serde_json::json!({"kind": "callers", "symbol": "test"})),
+        ];
+
+        for (tool_name, args) in cases {
+            let result = router.call_tool(&ctx, tool_name, args);
+            let text = extract_text(&result);
+            assert!(
+                !text.contains("Unknown tool"),
+                "tool '{tool_name}' should accept empty ctx without panic, got: {text}"
+            );
+        }
+    }
+
+    // ── Bonus: non-existent tool returns StatusRead fallback ──────────────
+
+    #[test]
+    fn e2e_unknown_tool_falls_back_to_status_read() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+        let args = serde_json::json!({});
+        let result = router.call_tool(&ctx, "nonexistent_tool", &args);
+        let text = extract_text(&result);
+        assert!(
+            text.contains("Unknown tool"),
+            "Unknown tool should return error via StatusRead fallback, got: {text}"
+        );
+        assert_eq!(result.is_error, Some(true), "unknown tool should be an error");
     }
 
 

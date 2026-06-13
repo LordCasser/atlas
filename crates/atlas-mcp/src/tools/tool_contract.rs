@@ -26,6 +26,10 @@ pub enum ToolContract {
     /// calls, explore, path, impact, symbol(view=context)
     SemanticGraphQuery(QueryNeeds),
 
+    /// Source-level trace operations (point, variable, forward, callers).
+    /// Uses atlas_engine::Engine directly — does NOT require GraphSnapshot.
+    TraceQuery(QueryNeeds),
+
     /// Store-fact queries that read symbol/file data directly.
     /// symbol(detail/usages), file_dependencies, search
     StoreFactQuery(QueryNeeds),
@@ -112,8 +116,8 @@ pub fn contract_for(tool_name: &str, args: &Value) -> ToolContract {
         "search" => ToolContract::StoreFactQuery(QueryNeeds::Manifest),
         "file_dependencies" => ToolContract::StoreFactQuery(QueryNeeds::Structural),
 
-        // ── Trace (needs full dataflow) ──
-        "trace" => ToolContract::SemanticGraphQuery(QueryNeeds::Full),
+        // ── Trace (Engine-driven, no GraphSnapshot needed) ──
+        "trace" => ToolContract::TraceQuery(QueryNeeds::Full),
 
         // ── Semantic analysis ──
         "branch_diff" => ToolContract::SemanticAnalysis(AnalysisNeeds::CfgDataflowEffects),
@@ -234,9 +238,9 @@ mod tests {
     }
 
     #[test]
-    fn test_trace_is_full_semantic_graph() {
+    fn test_trace_is_trace_query() {
         let c = contract_for("trace", &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::Full));
+        assert_eq!(c, ToolContract::TraceQuery(QueryNeeds::Full));
     }
 
     #[test]
