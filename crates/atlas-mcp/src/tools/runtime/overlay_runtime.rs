@@ -2,13 +2,13 @@
 //!
 //! # Responsibilities
 //! - Centralized mutation for fp_dispatches and domain_rules
-//! - Atomic generation counter for cache invalidation
+//! - Centralized generation counters via RuntimeInvalidation
 //! - All mutation methods bump generation on success
 //!
 //! # Public API
 //! - `upsert_fp_annotation()` / `delete_fp_annotation()`: FP dispatch CRUD
 //! - `upsert_domain_rule()` / `delete_domain_rule()`: domain rule CRUD
-//! - `current_generation()`: read generation counter (for cache comparison)
+//! - `current_generation()`: read overlay generation counter (for cache comparison)
 //!
 //! # Usage pattern
 //! ```ignore
@@ -17,12 +17,14 @@
 //!
 //! # Dependencies
 //! - `atlas_engine::Store` (mutation path)
-//! - `std::sync::atomic::AtomicU64`
+//! - `super::invalidation::RuntimeInvalidation`
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use atlas_engine::{FpAnnotation, Store};
+
+use super::invalidation::RuntimeInvalidation;
 
 /// Manages user-defined annotations that modify graph topology
 /// (function pointer dispatches) and analysis semantics (domain rules).
@@ -31,52 +33,58 @@ use atlas_engine::{FpAnnotation, Store};
 /// cache invalidation for overlay changes.
 pub struct OverlayRuntime {
     pub store: Arc<Store>,
-    /// Monotonically increasing generation counter for overlay changes.
-    /// Incremented on every add/delete. Graph/analysis caches compare
-    /// against this to decide whether to invalidate.
-    pub generation: AtomicU64,
+    /// Shared invalidation counters — centralized generation tracking.
+    pub invalidation: Arc<RuntimeInvalidation>,
 }
 
 impl OverlayRuntime {
-    pub fn new(store: Arc<Store>) -> Self {
+    pub fn new(store: Arc<Store>, invalidation: Arc<RuntimeInvalidation>) -> Self {
         Self {
             store,
-            generation: AtomicU64::new(0),
+            invalidation,
         }
     }
 
-    /// Increment the generation counter after an overlay mutation.
+    /// Increment the overlay generation counter.
     /// Returns the new generation value.
+    /// Used primarily by tests; mutation methods bump counters directly via
+    /// `RuntimeInvalidation` for fine-grained ordering control.
+    #[allow(dead_code)]
     pub fn increment_generation(&self) -> u64 {
-        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// Get the current generation (for cache comparison).
+    /// Get the current overlay generation (for cache comparison).
     /// Currently exercised only in tests; reserved for future cache invalidation logic.
     #[allow(dead_code)]
     pub fn current_generation(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+        self.invalidation.overlay_generation.load(Ordering::Relaxed)
     }
 
     /// Upsert a function-pointer annotation, materializing edges via the store.
-    /// Bumps the generation counter on success.
+    /// Bumps both overlay_generation and graph_generation (fp_dispatches affect
+    /// graph topology).
     pub fn upsert_fp_annotation(&self, annotation: &FpAnnotation) -> anyhow::Result<()> {
         self.store.upsert_fp_annotation(annotation)?;
-        self.increment_generation();
+        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
+        self.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Delete a function-pointer annotation by ID.
-    /// Bumps the generation counter only if an annotation was actually deleted.
+    /// Bumps both overlay_generation and graph_generation only if an annotation
+    /// was actually deleted.
     pub fn delete_fp_annotation(&self, annotation_id: &str) -> anyhow::Result<bool> {
         let deleted = self.store.delete_fp_annotation(annotation_id)?;
         if deleted {
-            self.increment_generation();
+            self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
+            self.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
         }
         Ok(deleted)
     }
 
-    /// Upsert a domain rule. Bumps the generation counter on success.
+    /// Upsert a domain rule.
+    /// Bumps overlay_generation and analysis_config_generation on success.
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_domain_rule(
         &self,
@@ -92,16 +100,19 @@ impl OverlayRuntime {
         let rule_id = self.store.upsert_domain_rule(
             language, rule_kind, pattern, pattern_kind, source, status, confidence, meta,
         )?;
-        self.increment_generation();
+        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
+        self.invalidation.analysis_config_generation.fetch_add(1, Ordering::Relaxed);
         Ok(rule_id)
     }
 
-    /// Delete a domain rule. Bumps the generation counter only if a rule was
-    /// actually deleted.
+    /// Delete a domain rule.
+    /// Bumps overlay_generation and analysis_config_generation only if a rule
+    /// was actually deleted.
     pub fn delete_domain_rule(&self, rule_id: &str) -> anyhow::Result<bool> {
         let deleted = self.store.delete_domain_rule(rule_id)?;
         if deleted {
-            self.increment_generation();
+            self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
+            self.invalidation.analysis_config_generation.fetch_add(1, Ordering::Relaxed);
         }
         Ok(deleted)
     }
@@ -120,7 +131,8 @@ mod tests {
     fn create_test_overlay_runtime() -> OverlayRuntime {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
-        OverlayRuntime::new(store)
+        let invalidation = Arc::new(RuntimeInvalidation::new());
+        OverlayRuntime::new(store, invalidation)
     }
 
     fn insert_symbol(
@@ -183,17 +195,17 @@ mod tests {
     // ── Basic generation tests ──────────────────────────────────────────────
 
     #[test]
-    fn generation_starts_at_zero() {
+    fn generation_starts_at_one() {
         let or = create_test_overlay_runtime();
-        assert_eq!(or.current_generation(), 0);
+        assert_eq!(or.current_generation(), 1);
     }
 
     #[test]
     fn increment_generation_returns_new_value() {
         let or = create_test_overlay_runtime();
-        assert_eq!(or.increment_generation(), 1);
         assert_eq!(or.increment_generation(), 2);
-        assert_eq!(or.current_generation(), 2);
+        assert_eq!(or.increment_generation(), 3);
+        assert_eq!(or.current_generation(), 3);
     }
 
     // ── FP annotation mutation tests ─────────────────────────────────────────
@@ -227,9 +239,9 @@ mod tests {
             confidence: Confidence::new(1.0),
         };
 
-        assert_eq!(or.current_generation(), 0);
+        assert_eq!(or.current_generation(), 1);
         or.upsert_fp_annotation(&ann).unwrap();
-        assert!(or.current_generation() > 0);
+        assert!(or.current_generation() > 1);
     }
 
     #[test]
@@ -249,7 +261,7 @@ mod tests {
             "c", "free_fn", "test_free", "exact", "user", "enabled", 1.0, None,
         );
         assert!(result.is_ok());
-        assert!(or.current_generation() > 0);
+        assert!(or.current_generation() > 1);
     }
 
     #[test]

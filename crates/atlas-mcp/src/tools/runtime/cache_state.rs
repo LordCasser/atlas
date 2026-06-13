@@ -12,11 +12,6 @@ use std::time::Instant;
 use atlas_engine::Store;
 use atlas_engine::is_rich_index_mode;
 
-/// Cooldown period for store-signature checks during maybe_refresh_graph.
-/// Within this window, if no lazy writes have been flushed, the signature
-/// check is skipped to avoid unnecessary DB queries.
-pub(crate) const SIGNATURE_CHECK_COOLDOWN_MS: u64 = 500;
-
 /// Index-signature and manual-full-index detection cache.
 pub(crate) struct CacheState {
     /// Cached index signature to avoid per-request COUNT queries.

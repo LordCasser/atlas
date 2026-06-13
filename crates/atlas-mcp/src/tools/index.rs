@@ -191,6 +191,8 @@ impl ToolRouter {
                 result.references_resolved = stats.resolved;
                 // Re-check layer distribution after any explicit MCP index.
                 self.active.query_runtime.cache.invalidate_manual_full_index_cache();
+                // Bump graph_generation so maybe_refresh_graph detects the new data.
+                self.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {
                 result.errors.push(format!("Index failed: {e:#}"));

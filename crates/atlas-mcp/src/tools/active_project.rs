@@ -11,6 +11,7 @@ use crate::task_manager::TaskManager;
 use super::runtime::{
     analysis_runtime::AnalysisRuntime,
     graph_runtime::GraphRuntime,
+    invalidation::RuntimeInvalidation,
     job_runtime::JobRuntime,
     overlay_runtime::OverlayRuntime,
     query_runtime::QueryRuntime,
@@ -43,6 +44,7 @@ impl ActiveProject {
     /// and ToolRouter::new_empty().
     pub fn new(store: Arc<Store>, root: PathBuf) -> Result<Self> {
         let lazy_refresh_queue = LazyRefreshQueue::new();
+        let invalidation = Arc::new(RuntimeInvalidation::new());
 
         let query_runtime = QueryRuntime::new(
             store.clone(),
@@ -57,6 +59,7 @@ impl ActiveProject {
             store.clone(),
             source_extractor.clone(),
             root.clone(),
+            invalidation.clone(),
         );
 
         let store_query_runtime = StoreQueryRuntime::new(
@@ -73,7 +76,7 @@ impl ActiveProject {
                 store.clone(),
                 Some(root.clone()),
             ),
-            overlay_runtime: OverlayRuntime::new(store.clone()),
+            overlay_runtime: OverlayRuntime::new(store.clone(), invalidation),
             store_query_runtime,
             job_runtime: JobRuntime::new(Arc::new(TaskManager::new())),
             engine: Mutex::new(engine),

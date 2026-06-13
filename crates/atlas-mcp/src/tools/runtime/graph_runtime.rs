@@ -5,12 +5,14 @@
 //! - Precision mode detection (FullCanonical vs FocusPartial)
 //! - Incremental graph refresh after lazy extraction writes
 //! - Exposes SearchEngine (BFS/DFS/path) and ContextBuilder (callers/callees/source)
+//! - Generation-based staleness detection via RuntimeInvalidation
 //!
 //! # Public API
 //! - `ensure_initialized()`: build graph snapshot from DB (idempotent)
 //! - `search_engine()` / `context_builder()`: access graph engines
 //! - `precision_info()`: return GraphPrecision { mode, symbol_count, edge_count }
 //! - `provider()`: return &dyn GraphProvider for the underlying backend
+//! - `is_graph_stale()` / `mark_graph_fresh()`: generation-based staleness tracking
 //!
 //! # Usage pattern
 //! ```ignore
@@ -21,13 +23,16 @@
 //! # Dependencies
 //! - `atlas_engine::{GraphEngine, SearchEngine, ContextBuilder, GraphSnapshot}`
 //! - `super::graph_provider::GraphProvider`
+//! - `super::invalidation::RuntimeInvalidation`
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use atlas_engine::{ContextBuilder, SearchEngine, SourceExtractor, Store};
 
 use super::graph_state::GraphState;
+use super::invalidation::RuntimeInvalidation;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
 use super::graph_provider::GraphProvider;
@@ -74,6 +79,11 @@ pub struct GraphRuntime {
     pub mode: GraphMode,
     /// Cached store index mode at graph init time.
     cached_index_mode: Option<String>,
+    /// Shared invalidation counters for generation-based staleness detection.
+    pub invalidation: Arc<RuntimeInvalidation>,
+    /// Cached graph_generation at last refresh — compared against current
+    /// to decide if a full rebuild is needed.
+    pub last_graph_generation: u64,
 }
 
 impl GraphRuntime {
@@ -81,8 +91,10 @@ impl GraphRuntime {
         store: Arc<Store>,
         source_extractor: SourceExtractor,
         project_root: PathBuf,
+        invalidation: Arc<RuntimeInvalidation>,
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
+        let last_graph_generation = invalidation.graph_generation.load(Ordering::Relaxed);
         Self {
             state: GraphState {
                 search: None,
@@ -96,6 +108,8 @@ impl GraphRuntime {
             project_root,
             mode: GraphMode::FocusPartial,
             cached_index_mode: None,
+            invalidation,
+            last_graph_generation,
         }
     }
 
@@ -144,6 +158,17 @@ impl GraphRuntime {
         self.state.refresh_graph_for_files(&self.store, file_ids)
     }
 
+    /// Returns true if the graph needs a full rebuild (generation changed).
+    pub(crate) fn is_graph_stale(&self) -> bool {
+        let current = self.invalidation.graph_generation.load(Ordering::Relaxed);
+        current > self.last_graph_generation
+    }
+
+    /// Mark the graph as fresh (update cached generation to match current).
+    pub(crate) fn mark_graph_fresh(&mut self) {
+        self.last_graph_generation = self.invalidation.graph_generation.load(Ordering::Relaxed);
+    }
+
     /// Detect the index precision mode from the store and cache it.
     /// Uses the same rich-index detection as FocusRuntime.
     pub fn detect_and_set_mode(&mut self, store: &Store) {
@@ -183,7 +208,8 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         let source_extractor = SourceExtractor::new(store.clone(), PathBuf::from("."));
-        GraphRuntime::new(store, source_extractor, PathBuf::from("."))
+        let invalidation = Arc::new(RuntimeInvalidation::new());
+        GraphRuntime::new(store, source_extractor, PathBuf::from("."), invalidation)
     }
 
     #[test]
@@ -267,5 +293,22 @@ mod tests {
         let p = gr.provider();
         assert!(p.is_initialized());
         // Using an empty store yields zero nodes/edges — this is expected.
+    }
+
+    #[test]
+    fn graph_not_stale_after_construction() {
+        let gr = create_test_graph_runtime();
+        assert!(!gr.is_graph_stale());
+    }
+
+    #[test]
+    fn graph_stale_after_bump() {
+        let mut gr = create_test_graph_runtime();
+        let initial_gen = gr.last_graph_generation;
+        gr.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
+        assert!(gr.is_graph_stale());
+        gr.mark_graph_fresh();
+        assert!(!gr.is_graph_stale());
+        assert!(gr.last_graph_generation > initial_gen);
     }
 }

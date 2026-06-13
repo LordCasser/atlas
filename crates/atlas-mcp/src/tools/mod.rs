@@ -23,7 +23,6 @@ use serde_json::{Value, json};
 
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::lazy_response::{CapabilityStats, LazyResponse, SnapshotStore};
-use crate::tools::runtime::cache_state::SIGNATURE_CHECK_COOLDOWN_MS;
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::QuerySnapshot;
@@ -454,9 +453,10 @@ impl ToolRouter {
         let batch = self.active.query_runtime.lazy_refresh_queue.take_incremental_batch(500);
         self.active.graph_runtime.state.refresh_graph_for_files(&self.active.store, &batch)?;
         // Cache invalidation: new store data may have changed layer distribution.
-        let had_writes = !batch.is_empty();
-        if had_writes {
+        // Lazy writes affect the graph — bump generation so the next check triggers rebuild.
+        if !batch.is_empty() {
             *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            self.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
@@ -466,17 +466,30 @@ impl ToolRouter {
             Arc::clone(&self.active.query_runtime.lazy_refresh_queue),
         );
 
-        // Step 3: Signature check with cooldown.
-        // Skip if no writes were flushed AND last check was within the cooldown window.
-        if !had_writes {
-            let elapsed = self.active.query_runtime.cache.last_signature_check.elapsed();
-            let cooldown = std::time::Duration::from_millis(SIGNATURE_CHECK_COOLDOWN_MS);
-            if elapsed < cooldown {
-                return Ok(());
+        // Step 3: Generation-based staleness check.
+        // Replaces the old signature+TTL check. If graph_generation has been bumped
+        // since the last refresh (e.g. by overlay mutations or lazy writes), trigger
+        // a full rebuild unconditionally without checking the store signature.
+        if self.active.graph_runtime.is_graph_stale() {
+            tracing::info!("Graph generation changed, triggering full rebuild");
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.active.store, 0.3)?);
+            if let Some(ref mut s) = self.active.graph_runtime.state.search {
+                s.refresh_graph(Arc::clone(&graph));
             }
+            if let Some(ref mut c) = self.active.graph_runtime.state.context {
+                c.refresh_graph(graph);
+            }
+            let current = self
+                .active.store
+                .index_signature()
+                .unwrap_or_else(|_| self.active.query_runtime.cache.cached_signature.clone());
+            self.active.graph_runtime.state.last_graph_signature = current.clone();
+            self.active.query_runtime.cache.cached_signature = current;
+            *self.active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            self.active.graph_runtime.mark_graph_fresh();
         }
-        self.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
-        self.rebuild_if_signature_changed("Index signature changed, refreshing graph")
+
+        Ok(())
     }
 
     /// Force-refresh the graph snapshot regardless of cache cooldown.
@@ -4847,38 +4860,23 @@ mod tests {
     // ── Phase 21a: maybe_refresh_graph cooldown ────────────────────────
 
     #[test]
-    fn maybe_refresh_respects_cooldown() {
+    fn maybe_refresh_skips_when_generation_unchanged() {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
-        // Force last_signature_check far in the past so first call triggers check.
-        router.active.query_runtime.cache.last_signature_check =
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap();
-        let ts_before_first = router.active.query_runtime.cache.last_signature_check;
+        // Record initial generation — graph is fresh after construction.
+        let gen_before = router.active.graph_runtime.last_graph_generation;
+        assert!(!router.active.graph_runtime.is_graph_stale());
 
-        // First call → elapsed > cooldown → must update last_signature_check.
+        // Call maybe_refresh_graph — no lazy writes, no generation bump → no rebuild.
         router.maybe_refresh_graph().unwrap();
-        let ts_after_first = router.active.query_runtime.cache.last_signature_check;
-        assert!(
-            ts_after_first > ts_before_first,
-            "first call should update last_signature_check"
-        );
-
-        // Second call immediately → within cooldown → should NOT update.
-        let ts_before_second = router.active.query_runtime.cache.last_signature_check;
-        router.maybe_refresh_graph().unwrap();
-        let ts_after_second = router.active.query_runtime.cache.last_signature_check;
-        assert_eq!(
-            ts_after_second, ts_before_second,
-            "second call within cooldown should NOT update last_signature_check"
-        );
+        assert!(!router.active.graph_runtime.is_graph_stale());
+        assert_eq!(router.active.graph_runtime.last_graph_generation, gen_before);
     }
 
     #[test]
-    fn maybe_refresh_bypasses_cooldown_after_writes() {
+    fn maybe_refresh_bumps_generation_after_lazy_writes() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -4891,19 +4889,17 @@ mod tests {
             .lazy_refresh_queue
             .record_lazy_writes(&[file_id]);
 
-        // Set last_signature_check to now (within cooldown).
-        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
-        let ts_before = router.active.query_runtime.cache.last_signature_check;
+        let gen_before = router.active.graph_runtime.last_graph_generation;
 
-        // Call maybe_refresh_graph → batch is non-empty → MUST do signature check
-        // despite cooldown.
+        // Call maybe_refresh_graph → batch is non-empty → must bump graph_generation
+        // and trigger rebuild.
         router.maybe_refresh_graph().unwrap();
-        let ts_after = router.active.query_runtime.cache.last_signature_check;
 
-        // last_signature_check should be updated (bypass cooldown due to writes).
+        // After lazy writes flushed, graph should be marked fresh (rebuilt).
+        assert!(!router.active.graph_runtime.is_graph_stale());
         assert!(
-            ts_after > ts_before,
-            "writes should bypass cooldown and update last_signature_check"
+            router.active.graph_runtime.last_graph_generation > gen_before,
+            "lazy writes should bump graph_generation"
         );
     }
 
@@ -4959,16 +4955,14 @@ mod tests {
             "empty graph should have 0 nodes, got {node_before}"
         );
 
-        // Bypass cooldown to force signature check
-        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(10))
-            .unwrap();
-
-        // Run manifest index
+        // Run manifest index — handle_index bumps graph_generation on success.
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"analysis": "manifest"});
         let result = router.call_tool(&ctx, "index", &args);
         assert_eq!(result.is_error, Some(false), "index should succeed");
+
+        // Index handler bumped graph_generation → generation-based refresh detects stale graph.
+        assert!(router.active.graph_runtime.is_graph_stale());
 
         // Refresh graph to pick up new symbols
         router.maybe_refresh_graph().unwrap();
@@ -4997,9 +4991,6 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         // Index + first refresh
-        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_secs(10))
-            .unwrap();
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"analysis": "manifest"});
         router.call_tool(&ctx, "index", &args);
@@ -5013,10 +5004,7 @@ mod tests {
             "should have nodes after initial index + refresh, got {node_before}"
         );
 
-        // Set last_signature_check to now (within cooldown) to skip signature check
-        router.active.query_runtime.cache.last_signature_check = std::time::Instant::now();
-
-        // Second refresh (should be noop due to cooldown and no writes)
+        // Second refresh (generation unchanged → should be noop)
         router.maybe_refresh_graph().unwrap();
 
         // Counts should be unchanged

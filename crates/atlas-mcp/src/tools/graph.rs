@@ -1855,14 +1855,10 @@ mod tests {
             .len();
         assert_eq!(before, 0, "precondition: old graph should not contain b");
 
-        // Bypass the maybe_refresh_graph cooldown: this test intentionally
-        // verifies that external store changes are detected via signature
-        // comparison.  Setting last_signature_check into the past ensures
-        // the cooldown window has expired.
-        router.active.query_runtime.cache.last_signature_check =
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap();
+        // Bump graph_generation to signal that the store has changed (external
+        // store mutation that bypasses the overlay runtime). This replaces the
+        // old TTL + signature-check cooldown bypass.
+        router.active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         router.maybe_refresh_graph().unwrap();
         let after = router

@@ -8,7 +8,7 @@
 //! | `query_runtime` | Focus-driven lazy extraction | FocusRuntime, CacheState, LazyRefreshQueue |
 //! | `graph_runtime` | In-memory call-graph snapshot | GraphState, SearchEngine, ContextBuilder, GraphProvider |
 //! | `analysis_runtime` | On-demand CFG/dataflow extraction | LazyDataflowService |
-//! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), generation counter |
+//! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), RuntimeInvalidation counters |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
 //! | `job_runtime` | Background task orchestration | TaskManager, InvestigationState, QuerySnapshot map |
 //! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
@@ -78,7 +78,7 @@
 //!   accessed from `query_runtime.prepare()` and the background scheduler
 //!   (independent thread, separate lock).
 //! - **graph_runtime.state** holds a `RwLock<Arc<GraphEngine>>` — readers share the snapshot.
-//! - **overlay_runtime.generation** (`AtomicU64`) is lock-free for fast-path invalidation.
+//! - **RuntimeInvalidation** counters (`AtomicU64`) are lock-free for fast-path invalidation.
 //! - **Background tasks** (index, graph rebuild, focus scheduler) use `std::thread::spawn`
 //!   with cloned `Arc<Store>` — they never access ToolRouter directly.
 //!
@@ -100,6 +100,7 @@
 pub(crate) mod cache_state;
 pub(crate) mod graph_provider;
 pub(crate) mod graph_state;
+pub(crate) mod invalidation;
 pub(crate) mod query_runtime;
 pub(crate) mod graph_runtime;
 pub(crate) mod analysis_runtime;
