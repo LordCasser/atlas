@@ -98,6 +98,7 @@
 
 pub(crate) mod cache_state;
 pub(crate) mod graph_provider;
+pub(crate) mod graph_state;
 pub(crate) mod query_runtime;
 pub(crate) mod graph_runtime;
 pub(crate) mod analysis_runtime;

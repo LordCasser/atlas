@@ -136,7 +136,6 @@ pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod domain_rules;
 pub(crate) mod graph;
-pub(crate) mod graph_state;
 pub(crate) mod index;
 pub(crate) mod lazy_refresh;
 pub(crate) mod lazy_response;
@@ -149,7 +148,7 @@ pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod symbol_selector;
 pub(crate) mod trace;
-pub mod tool_contract;
+pub(crate) mod tool_contract;
 pub(crate) mod usages;
 pub(crate) mod wait_for;
 

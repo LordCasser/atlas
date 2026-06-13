@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use atlas_engine::{ContextBuilder, SearchEngine, SourceExtractor, Store};
 
-use crate::tools::graph_state::GraphState;
+use super::graph_state::GraphState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
 use super::graph_provider::GraphProvider;
