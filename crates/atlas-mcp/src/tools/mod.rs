@@ -22,7 +22,7 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 use serde_json::{Value, json};
 
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
-use crate::tools::lazy_response::{CapabilityStats, LazyResponse, SnapshotStore};
+use crate::tools::analysis_envelope::{CapabilityStats, AnalysisEnvelope, SnapshotStore};
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::QuerySnapshot;
@@ -139,7 +139,7 @@ pub(crate) mod domain_rules;
 pub(crate) mod graph;
 pub(crate) mod index;
 pub(crate) mod lazy_refresh;
-pub(crate) mod lazy_response;
+pub(crate) mod analysis_envelope;
 pub(crate) mod lifecycle;
 pub(crate) mod open_project;
 pub(crate) mod query_snapshot;
@@ -153,14 +153,14 @@ pub(crate) mod tool_contract;
 pub(crate) mod usages;
 pub(crate) mod wait_for;
 
-/// Apply focus-aware envelope fields from a [`FocusResult`] to the LazyResponse.
+/// Apply focus-aware envelope fields from a [`FocusResult`] to the AnalysisEnvelope.
 ///
 /// Takes `&FocusResult` directly and merges precision, coverage, gaps,
 /// and pending work items into the builder.
 pub(crate) fn apply_focus_result_to_lr(
-    lr: lazy_response::LazyResponse,
+    lr: analysis_envelope::AnalysisEnvelope,
     result: &atlas_engine::focus::runtime::FocusResult,
-) -> lazy_response::LazyResponse {
+) -> analysis_envelope::AnalysisEnvelope {
     let mut lr = lr;
 
     if result.mode == atlas_engine::focus::runtime::IndexMode::Focus {
@@ -368,7 +368,7 @@ impl ToolRouter {
     /// was built from a partial/closure-based index (FocusPartial mode).
     ///
     /// Focus precision from lazy extraction takes priority when present
-    /// (LazyResponse may overwrite this with per-query coverage data).
+    /// (AnalysisEnvelope may overwrite this with per-query coverage data).
     pub(crate) fn inject_graph_precision(&self, resp: &mut serde_json::Value) {
         let precision = self.active().graph_runtime.precision_info();
         if precision.mode == GraphMode::FocusPartial {
@@ -884,7 +884,7 @@ impl ToolRouter {
     }
 }
 
-// Implement SnapshotStore for ToolRouter so LazyResponse::build() can store
+// Implement SnapshotStore for ToolRouter so AnalysisEnvelope::build() can store
 // snapshots without knowing the concrete handler type.
 impl SnapshotStore for ToolRouter {
     fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
@@ -1717,7 +1717,7 @@ impl ToolRouter {
                 } else {
                     "Full index available".into()
                 };
-                LazyResponse::new("file_dependencies", args)
+                AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
                     .with_is_error(err)
                     .with_analysis_state("ready".into())
@@ -1734,7 +1734,7 @@ impl ToolRouter {
                 } else {
                     "Full index available".into()
                 };
-                LazyResponse::new("file_dependencies", args)
+                AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
                     .with_is_error(err)
                     .with_analysis_state("ready".into())
@@ -1756,7 +1756,7 @@ impl ToolRouter {
                     "Full index available".into()
                 };
                 let err = out_err || in_err;
-                LazyResponse::new("file_dependencies", args)
+                AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
                     .with_is_error(err)
                     .with_analysis_state("ready".into())
@@ -4200,8 +4200,8 @@ mod tests {
             coverage_counts: None,
         };
 
-        // 2. Create a LazyResponse and apply the focus result.
-        let lr = LazyResponse::new("test_tool", &serde_json::json!({}));
+        // 2. Create a AnalysisEnvelope and apply the focus result.
+        let lr = AnalysisEnvelope::new("test_tool", &serde_json::json!({}));
         let lr = apply_focus_result_to_lr(lr, &result);
 
         // 3. Build to JSON via a mock store so we can inspect work items.

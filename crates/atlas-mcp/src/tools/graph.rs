@@ -7,7 +7,7 @@ use atlas_engine::analysis;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 use atlas_engine::dossier::SourceRepository;
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -302,7 +302,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = LazyResponse::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
@@ -393,7 +393,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = LazyResponse::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args);
 
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
@@ -498,7 +498,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = LazyResponse::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args);
 
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
@@ -742,7 +742,7 @@ impl ToolRouter {
         if let Some(&first_from) = from_ids.first() {
             self.update_investigation(InvestigationFocus::Symbol(first_from));
         }
-        let lr = LazyResponse::new("path", args);
+        let lr = AnalysisEnvelope::new("path", args);
 
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding.  A manifest-only index (MCP
@@ -1276,7 +1276,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let lr = LazyResponse::new("explore", args);
+        let lr = AnalysisEnvelope::new("explore", args);
 
         let (sym_id, resolved_opt) = match resolution {
             SymbolResolution::Single { symbol_id, resolved } => {
@@ -1498,7 +1498,7 @@ impl ToolRouter {
         let sid = symbol_ids[0];
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = LazyResponse::new("impact", args);
+        let lr = AnalysisEnvelope::new("impact", args);
 
         // Lazy structural: prepare focus query for impact analysis
         let intent = Some(atlas_engine::QueryIntent::Impact {
@@ -2907,7 +2907,7 @@ mod tests {
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
         use atlas_engine::focus::runtime::{FocusResult, IndexMode};
-        use crate::tools::lazy_response::LazyResponse;
+        use crate::tools::analysis_envelope::AnalysisEnvelope;
 
         let result = FocusResult {
             mode: IndexMode::FullIndex,
@@ -2922,7 +2922,7 @@ mod tests {
         };
 
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("test", &args)
+        let lr = AnalysisEnvelope::new("test", &args)
             .with_is_error(false);
         let lr = crate::tools::apply_focus_result_to_lr(lr, &result);
 
@@ -2946,7 +2946,7 @@ mod tests {
         );
     }
 
-    // Mock SnapshotStore for isolated LazyResponse tests
+    // Mock SnapshotStore for isolated AnalysisEnvelope tests
     struct MockStore {
         snapshots: Vec<crate::tools::query_snapshot::QuerySnapshot>,
     }
@@ -2957,7 +2957,7 @@ mod tests {
             }
         }
     }
-    impl crate::tools::lazy_response::SnapshotStore for MockStore {
+    impl crate::tools::analysis_envelope::SnapshotStore for MockStore {
         fn store_query_snapshot(
             &mut self,
             snapshot: crate::tools::query_snapshot::QuerySnapshot,

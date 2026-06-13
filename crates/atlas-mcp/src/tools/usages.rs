@@ -2,7 +2,7 @@
 
 use atlas_engine::InvestigationFocus;
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{ToolRouter, get_u64};
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input};
 use serde_json::json;
@@ -35,7 +35,7 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let _investigation = self.active_mut().job_runtime.investigation_state.active_investigation.clone();
 
-        let lr = LazyResponse::new("symbol", args);
+        let lr = AnalysisEnvelope::new("symbol", args);
 
         let refs = match self.active_mut().store.find_references_by_symbol(&sid) {
             Ok(r) => r,

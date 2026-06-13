@@ -1,6 +1,6 @@
 //! Response envelope and analysis contract for MCP tool responses.
 //!
-//! Provides [`LazyResponse`] — a builder that centralizes the common
+//! Provides [`AnalysisEnvelope`] — a builder that centralizes the common
 //! response envelope pattern shared by "full envelope" tool handlers:
 //! generating a `query_id`, merging warnings, and storing a
 //! [`super::query_snapshot::QuerySnapshot`].
@@ -223,20 +223,20 @@ impl AnalysisContract {
 
 /// Trait for storing query snapshots, implemented by [`super::ToolRouter`].
 ///
-/// This decouples [`LazyResponse`] from the concrete router type so the
+/// This decouples [`AnalysisEnvelope`] from the concrete router type so the
 /// builder can store snapshots without knowing the handler's full context.
 pub(crate) trait SnapshotStore {
     fn store_query_snapshot(&mut self, snapshot: QuerySnapshot);
 }
 
-// ── LazyResponse builder ──────────────────────────────────────────────
+// ── AnalysisEnvelope builder ──────────────────────────────────────────────
 
 /// Envelope wrapper that adds common lazy-analysis fields to MCP tool
 /// responses.
 ///
 /// Eliminates the repeated pattern of generating `query_id`,
 /// merging warnings, and storing a [`QuerySnapshot`].
-pub(crate) struct LazyResponse {
+pub(crate) struct AnalysisEnvelope {
     query_id: String,
     tool_name: String,
     tool_args: serde_json::Value,
@@ -267,8 +267,8 @@ pub(crate) struct LazyResponse {
     project_stats: Option<ProjectStats>,
 }
 
-impl LazyResponse {
-    /// Create a new `LazyResponse`, generating a fresh `query_id`.
+impl AnalysisEnvelope {
+    /// Create a new `AnalysisEnvelope`, generating a fresh `query_id`.
     ///
     /// `tool_name` is stored in the [`QuerySnapshot`] for `atlas_resume`.
     /// `tool_args` is the original MCP arguments (cloned for storage).
@@ -773,12 +773,12 @@ mod tests {
         }
     }
 
-    // ── LazyResponse builder tests ────────────────────────────────────
+    // ── AnalysisEnvelope builder tests ────────────────────────────────────
 
     #[test]
     fn lazy_response_injects_query_id_and_diagnostics() {
         let args = json!({"symbol": "test_fn"});
-        let lr = LazyResponse::new("test_tool", &args);
+        let lr = AnalysisEnvelope::new("test_tool", &args);
         let qid = lr.query_id().to_string();
         assert!(!qid.is_empty(), "query_id should be generated");
 
@@ -797,7 +797,7 @@ mod tests {
     #[test]
     fn test_lazy_response_with_precision() {
         let args = json!({"symbol": "test_fn"});
-        let lr = LazyResponse::new("test_tool", &args)
+        let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_precision(Precision {
                 coverage: CoverageTier::ClosureComplete {
                     closure_id: "c1".into(),
@@ -838,7 +838,7 @@ mod tests {
         counts.insert("repo_complete".to_string(), 12usize);
         counts.insert("partial".to_string(), 3usize);
 
-        let lr = LazyResponse::new("test_tool", &args)
+        let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_coverage_counts(counts)
             .with_is_error(false);
 
@@ -864,7 +864,7 @@ mod tests {
             import_path: "bar.h".into(),
         }];
 
-        let lr = LazyResponse::new("test_tool", &args)
+        let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_gaps(gaps)
             .with_is_error(false);
 
@@ -883,7 +883,7 @@ mod tests {
     fn test_lazy_response_no_analysis_block_without_explicit_data() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("explore", &args)
+        let lr = AnalysisEnvelope::new("explore", &args)
             .with_is_error(false);
 
         let body = json!({"ok": true, "data": "test_result"});
@@ -897,7 +897,7 @@ mod tests {
     fn test_lazy_response_explicit_analysis_data_emits_block() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("explore", &args)
+        let lr = AnalysisEnvelope::new("explore", &args)
             .with_is_error(false)
             .with_analysis_state("building".into());
 
@@ -913,7 +913,7 @@ mod tests {
     fn test_lazy_response_no_work_block_without_explicit_work_items() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("explore", &args);
+        let lr = AnalysisEnvelope::new("explore", &args);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &mut store);
         // Work block should NOT be emitted when no work_items are explicitly set
@@ -924,7 +924,7 @@ mod tests {
     fn test_lazy_response_explicit_analysis_fields() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("explore", &args)
+        let lr = AnalysisEnvelope::new("explore", &args)
             .with_analysis_state("ready".into())
             .with_analysis_scope("local".into())
             .with_analysis_summary("custom summary".into())
@@ -941,7 +941,7 @@ mod tests {
     fn test_lazy_response_explicit_work_items() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = LazyResponse::new("explore", &args)
+        let lr = AnalysisEnvelope::new("explore", &args)
             .with_work_items(vec![WorkItem {
                 id: "job-focus".into(),
                 kind: "extraction".into(),
@@ -966,7 +966,7 @@ mod tests {
         let mut counts = HashMap::new();
         counts.insert("repo_complete".to_string(), 5usize);
 
-        let lr = LazyResponse::new("test_tool", &args)
+        let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_precision(Precision {
                 coverage: CoverageTier::RepoComplete,
                 confidence: SemanticConfidence::Certain,
@@ -993,7 +993,7 @@ mod tests {
         let args = json!({"symbol": "test_fn"});
         let counts: HashMap<String, usize> = HashMap::new();
 
-        let lr = LazyResponse::new("test_tool", &args)
+        let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_coverage_counts(counts)
             .with_is_error(false);
 

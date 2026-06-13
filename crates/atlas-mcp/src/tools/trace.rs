@@ -4,7 +4,7 @@
 
 use atlas_engine::{InvestigationFocus, TraceQueryResponse};
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
@@ -93,7 +93,7 @@ impl ToolRouter {
             line,
             col: column,
         });
-        let mut lr = LazyResponse::new("trace", args);
+        let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
         let (focus_result, focus_warnings) = self.prepare_focus_query(
@@ -207,7 +207,7 @@ impl ToolRouter {
             line,
             col: column,
         });
-        let mut lr = LazyResponse::new("trace", args);
+        let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
         let (focus_result, focus_warnings) = self.prepare_focus_query(
@@ -294,7 +294,7 @@ impl ToolRouter {
         }
         let mut lazy_warnings = Vec::new();
 
-        let mut lr = LazyResponse::new("trace", args);
+        let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Unified symbol resolution — BestEffortSingle always picks one symbol.
         let resolution = match self
@@ -475,7 +475,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
         
-        let mut lr = LazyResponse::new("trace", args);
+        let mut lr = AnalysisEnvelope::new("trace", args);
 
         // -- Resolve 'from' symbol --
         let from_resolution = match self

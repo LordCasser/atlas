@@ -14,7 +14,7 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate, parse_symbol_input};
 use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
@@ -219,7 +219,7 @@ impl ToolRouter {
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
-        let lr = LazyResponse::new("search", args);
+        let lr = AnalysisEnvelope::new("search", args);
         lr.with_root_warnings(root_warnings)
             .with_lazy_warnings(engine_resp.warnings)
             .with_is_error(false)
@@ -386,7 +386,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let mut lr = LazyResponse::new("symbol", args);
+        let mut lr = AnalysisEnvelope::new("symbol", args);
         let resolution = self.resolve_symbol_input(
             &symbol_input,
             SymbolResolutionPolicy::UniqueOrCandidates,
@@ -558,7 +558,7 @@ impl ToolRouter {
     }
 
     /// Build the body for an ambiguous-symbol error response (without envelope).
-    /// Callers should wrap this via LazyResponse.
+    /// Callers should wrap this via AnalysisEnvelope.
     fn build_ambiguous_symbol_body(
         qname: &str,
         candidates: &[ScoredCandidate],

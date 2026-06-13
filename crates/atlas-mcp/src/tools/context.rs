@@ -6,7 +6,7 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use super::symbol_selector::{
     parse_symbol_input, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
@@ -69,7 +69,7 @@ impl ToolRouter {
             tracing::warn!("include_roots: {}", w);
         }
 
-        let lr = LazyResponse::new("symbol", args);
+        let lr = AnalysisEnvelope::new("symbol", args);
         let query_id = lr.query_id().to_string();
 
         // Try to find symbol by qname before resolution for initial investigation
@@ -154,7 +154,7 @@ impl ToolRouter {
         root_warnings: Vec<String>,
         lazy_warnings: Vec<String>,
         resolved: Option<ResolvedSymbol>,
-        lr: LazyResponse,
+        lr: AnalysisEnvelope,
         args: &serde_json::Value,
     ) -> (String, bool) {
         // ── resolved ───────────────────────────────────────────────────

@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use atlas_engine::{FileId, SourceExtractor, Store, SymbolId};
 
-use crate::tools::lazy_response::CapabilityStats;
+use crate::tools::analysis_envelope::CapabilityStats;
 
 /// Direct store-fact queries (symbols, files, usages) that don't
 /// require the full in-memory graph or focus-driven extraction.

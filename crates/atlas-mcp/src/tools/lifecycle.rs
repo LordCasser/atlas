@@ -4,7 +4,7 @@
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -37,7 +37,7 @@ impl ToolRouter {
             );
         }
 
-        let lr = LazyResponse::new("lifecycle", args);
+        let lr = AnalysisEnvelope::new("lifecycle", args);
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId

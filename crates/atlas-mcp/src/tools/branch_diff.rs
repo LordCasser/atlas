@@ -4,7 +4,7 @@
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
 
-use super::lazy_response::LazyResponse;
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use crate::tools::symbol_selector::{
     parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
@@ -32,7 +32,7 @@ impl ToolRouter {
             return ("Missing required parameter: symbol".to_string(), true);
         }
 
-        let lr = LazyResponse::new("branch_diff", args);
+        let lr = AnalysisEnvelope::new("branch_diff", args);
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
