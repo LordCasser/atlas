@@ -311,9 +311,9 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
@@ -407,9 +407,9 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
@@ -511,9 +511,9 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
 
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
@@ -762,9 +762,9 @@ impl ToolRouter {
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
@@ -1342,9 +1342,9 @@ impl ToolRouter {
             store_clone.clone(),
             root_clone,
         );
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let relation_repo = atlas_engine::dossier::RelationRepo::new(
             store_clone.clone(),
@@ -1505,9 +1505,9 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.active_mut().graph_runtime.context_builder() {
-            Ok(cb) => cb,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+            Some(cb) => cb,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = cb.graph_snapshot();
         let sub = if include_children {

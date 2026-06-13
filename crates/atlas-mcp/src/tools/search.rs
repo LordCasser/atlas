@@ -490,9 +490,9 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         // Re-acquire graph after lazy structural may have refreshed it
-        let se = match self.active_mut().graph_runtime.search_engine() {
-            Ok(se) => se,
-            Err(e) => return (format!("Internal error: {e}"), true),
+        let se = match self.active_mut().graph_runtime.provider().search_engine() {
+            Some(se) => se,
+            None => return ("Graph not initialized".to_string(), true),
         };
         let graph = se.graph_snapshot();
         let snap = graph.snapshot();

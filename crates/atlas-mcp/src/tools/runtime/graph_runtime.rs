@@ -17,7 +17,7 @@
 //! # Usage pattern
 //! ```ignore
 //! self.active.graph_runtime.ensure_initialized()?;
-//! let cb = self.active.graph_runtime.context_builder()?;
+//! let cb = self.active.graph_runtime.provider().context_builder();
 //! ```
 //!
 //! # Dependencies

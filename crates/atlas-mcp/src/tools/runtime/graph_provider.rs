@@ -13,6 +13,7 @@
 use atlas_engine::{ContextBuilder, SearchEngine};
 
 /// Minimal abstraction over graph backends.
+#[allow(dead_code)]
 pub(crate) trait GraphProvider {
     /// Whether the graph has been built.
     fn is_initialized(&self) -> bool;

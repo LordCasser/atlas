@@ -112,9 +112,9 @@ impl ToolRouter {
                 }
 
                 ctx.send_progress(0.7, "Building context view...");
-                let cb = match self.active_mut().graph_runtime.context_builder() {
-                    Ok(cb) => cb,
-                    Err(e) => return (format!("Internal error: {e}"), true),
+                let cb = match self.active_mut().graph_runtime.provider().context_builder() {
+                    Some(cb) => cb,
+                    None => return ("Graph not initialized".to_string(), true),
                 };
                 match cb.build_context_for_symbol(&sid, include_file_peers) {
                     Ok(view) => {

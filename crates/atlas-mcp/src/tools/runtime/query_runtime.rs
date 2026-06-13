@@ -36,6 +36,7 @@ pub struct QueryRuntime {
     pub focus_runtime: Mutex<FocusRuntime>,
     pub cache: CacheState,
     pub lazy_refresh_queue: Arc<LazyRefreshQueue>,
+    store: Arc<Store>,
 }
 
 impl QueryRuntime {
@@ -50,11 +51,12 @@ impl QueryRuntime {
             last_signature_check: std::time::Instant::now(),
             cached_manual_full_index: RwLock::new(None),
         };
-        let focus_runtime = Mutex::new(FocusRuntime::new(store, project_root));
+        let focus_runtime = Mutex::new(FocusRuntime::new(store.clone(), project_root));
         Self {
             focus_runtime,
             cache,
             lazy_refresh_queue,
+            store,
         }
     }
 
@@ -108,6 +110,22 @@ impl QueryRuntime {
             .map(|(_, v)| *v)
             .unwrap_or(false)
     }
+
+    /// Prepare for a graph-backed query: resolve symbols, run focus if needed,
+    /// return readiness info. The graph provider is accessed separately via
+    /// GraphRuntime::provider().
+    pub fn prepare_graph_query(&self, intent: &QueryIntent) -> PreparedGraphQuery {
+        let (focus_result, _warnings) = self.prepare(intent, &self.store);
+        PreparedGraphQuery {
+            focus_triggered: focus_result.is_some(),
+        }
+    }
+}
+
+/// Lightweight result from prepare_graph_query — the caller accesses
+/// the graph provider separately.
+pub struct PreparedGraphQuery {
+    pub focus_triggered: bool,
 }
 
 #[cfg(test)]
