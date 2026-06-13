@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use atlas_engine::{ContextBuilder, FileId, GraphEngine, SearchEngine, SourceExtractor, Store};
 
 use crate::tools::lazy_refresh;
+use crate::tools::runtime::graph_provider::GraphProvider;
 
 /// Error returned when a graph-backed component is accessed before
 /// [`GraphState::ensure_initialized`] has been called.
@@ -235,5 +236,33 @@ impl GraphState {
         self.last_graph_signature = store.index_signature().unwrap_or_default();
 
         Ok(())
+    }
+}
+
+impl GraphProvider for GraphState {
+    fn is_initialized(&self) -> bool {
+        self.graph_initialized
+    }
+
+    fn search_engine(&self) -> Option<&atlas_engine::SearchEngine> {
+        self.search.as_ref()
+    }
+
+    fn context_builder(&self) -> Option<&atlas_engine::ContextBuilder> {
+        self.context.as_ref()
+    }
+
+    fn node_count(&self) -> usize {
+        self.search
+            .as_ref()
+            .map(|s| s.graph_snapshot().node_count())
+            .unwrap_or(0)
+    }
+
+    fn edge_count(&self) -> usize {
+        self.search
+            .as_ref()
+            .map(|s| s.graph_snapshot().edge_count())
+            .unwrap_or(0)
     }
 }

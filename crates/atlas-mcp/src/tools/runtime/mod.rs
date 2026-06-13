@@ -15,6 +15,7 @@
 //! | JobRuntime        | Background tasks + investigation  |
 
 pub(crate) mod cache_state;
+pub(crate) mod graph_provider;
 pub mod query_runtime;
 pub mod graph_runtime;
 pub mod analysis_runtime;

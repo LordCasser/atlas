@@ -6,6 +6,8 @@ use atlas_engine::{ContextBuilder, SearchEngine, SourceExtractor, Store};
 use crate::tools::graph_state::GraphState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
+use super::graph_provider::GraphProvider;
+
 // ── Precision types ─────────────────────────────────────────────────────
 
 /// The mode of graph edge provenance.
@@ -139,6 +141,11 @@ impl GraphRuntime {
             symbol_count: self.state.symbol_count(),
         }
     }
+
+    /// Returns the underlying graph backend implementing [`GraphProvider`].
+    pub(crate) fn provider(&self) -> &dyn GraphProvider {
+        &self.state
+    }
 }
 
 #[cfg(test)]
@@ -217,5 +224,23 @@ mod tests {
         let mut gr = create_test_graph_runtime();
         let result = gr.refresh_for_files(&[]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn provider_trait_contract_holds() {
+        let mut gr = create_test_graph_runtime();
+        {
+            let p = gr.provider();
+            assert!(!p.is_initialized());
+            assert!(p.search_engine().is_none());
+            assert!(p.context_builder().is_none());
+            assert_eq!(p.node_count(), 0);
+            assert_eq!(p.edge_count(), 0);
+        }
+
+        gr.ensure_initialized().unwrap();
+        let p = gr.provider();
+        assert!(p.is_initialized());
+        // Using an empty store yields zero nodes/edges — this is expected.
     }
 }
