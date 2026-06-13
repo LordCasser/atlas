@@ -29,7 +29,6 @@ fn test_insert_and_make_visible() {
             "extracted_structural",
             1,
             Some("abc123"),
-            "structural",
         )
         .unwrap();
 
@@ -61,7 +60,6 @@ fn test_is_file_covered() {
             "extracted_manifest",
             1,
             None,
-            "manifest",
         )
         .unwrap();
 
@@ -95,7 +93,6 @@ fn test_get_coverage_counts() {
             "extracted_structural",
             1,
             Some("hash1"),
-            "structural",
         )
         .unwrap();
     store
@@ -105,7 +102,6 @@ fn test_get_coverage_counts() {
             "extracted_manifest",
             1,
             Some("hash2"),
-            "manifest",
         )
         .unwrap();
     // Same file, different generation for manifest source
@@ -116,7 +112,6 @@ fn test_get_coverage_counts() {
             "extracted_manifest",
             2,
             Some("hash3"),
-            "manifest",
         )
         .unwrap();
 
@@ -143,13 +138,13 @@ fn test_staged_to_visible_transition() {
     store
         .insert_closure_coverage(
             "cl_transition", &f1, "extracted_structural", 1,
-            Some("h1"), "structural",
+            Some("h1"),
         )
         .unwrap();
     store
         .insert_closure_coverage(
             "cl_transition", &f2, "extracted_manifest", 1,
-            Some("h2"), "manifest",
+            Some("h2"),
         )
         .unwrap();
 
@@ -190,7 +185,7 @@ fn test_multiple_closures_same_file() {
     store
         .insert_closure_coverage(
             "cl_multi_a", &shared_file, "extracted_structural", 1,
-            Some("hash_a"), "structural",
+            Some("hash_a"),
         )
         .unwrap();
     store.make_coverage_visible("cl_multi_a", 1).unwrap();
@@ -200,7 +195,7 @@ fn test_multiple_closures_same_file() {
     store
         .insert_closure_coverage(
             "cl_multi_b", &shared_file, "extracted_manifest", 1,
-            Some("hash_b"), "manifest",
+            Some("hash_b"),
         )
         .unwrap();
     store.make_coverage_visible("cl_multi_b", 1).unwrap();
@@ -233,19 +228,20 @@ fn test_coverage_counts_by_source() {
     store
         .insert_closure_coverage(
             "cl_source_counts", &f1, "extracted_structural", 1,
-            Some("h1"), "structural",
+            Some("h1"),
         )
         .unwrap();
     store
         .insert_closure_coverage(
             "cl_source_counts", &f2, "extracted_structural", 1,
-            Some("h2"), "structural",
+            Some("h2"),
         )
         .unwrap();
+
     store
         .insert_closure_coverage(
             "cl_source_counts", &f3, "extracted_manifest", 1,
-            Some("h3"), "manifest",
+            Some("h3"),
         )
         .unwrap();
 
@@ -283,7 +279,7 @@ fn test_make_visible_generation_isolation() {
     store
         .insert_closure_coverage(
             "cl_iso", &f1, "extracted_structural", 1,
-            Some("g1"), "structural",
+            Some("g1"),
         )
         .unwrap();
 
@@ -291,7 +287,7 @@ fn test_make_visible_generation_isolation() {
     store
         .insert_closure_coverage(
             "cl_iso", &f2, "extracted_manifest", 2,
-            Some("g2"), "manifest",
+            Some("g2"),
         )
         .unwrap();
 
@@ -311,7 +307,7 @@ fn test_make_visible_generation_isolation() {
         let mut stmt = conn
             .prepare(
                 "SELECT closure_id, file_id, source, visibility_state, generation,
-                        content_hash, precision_tier, extracted_at
+                        content_hash, extracted_at
                  FROM closure_coverage
                  WHERE closure_id = ?1 AND generation = 2",
             )
@@ -324,8 +320,7 @@ fn test_make_visible_generation_isolation() {
                 visibility_state: row.get(3)?,
                 generation: row.get(4)?,
                 content_hash: row.get(5)?,
-                precision_tier: row.get(6)?,
-                extracted_at: row.get(7)?,
+                extracted_at: row.get(6)?,
             })
         })
         .unwrap()

@@ -466,7 +466,9 @@ CREATE TABLE IF NOT EXISTS closure_coverage (
     visibility_state TEXT NOT NULL DEFAULT 'staged',
     generation       INTEGER NOT NULL,
     content_hash     TEXT,
-    precision_tier   TEXT NOT NULL,
+    -- DEPRECATED: precision_tier is vestigial; coverage tracked by `source` column.
+    -- Scheduled for removal in a future schema version (replace with coverage_tier + semantic_confidence).
+    precision_tier   TEXT NOT NULL DEFAULT '',
     extracted_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (closure_id, file_id, generation)
 );

@@ -121,7 +121,6 @@ impl ClosureEngine {
                 "seed_file",
                 generation,
                 None,
-                &format!("{:?}", result.precision_tier),
             )?;
         }
 
@@ -245,7 +244,6 @@ impl ClosureEngine {
                     "extracted_structural",
                     generation,
                     None,
-                    &format!("{:?}", result.precision_tier),
                 )?;
             }
 

@@ -16,7 +16,6 @@ pub struct ClosureCoverage {
     pub visibility_state: String,
     pub generation: i64,
     pub content_hash: Option<String>,
-    pub precision_tier: String,
     pub extracted_at: String,
 }
 
@@ -29,15 +28,16 @@ impl Store {
         source: &str,
         generation: i64,
         content_hash: Option<&str>,
-        precision_tier: &str,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
+        // precision_tier is deprecated (vestigial column), write empty string
+        // for backwards compat with old DBs that still have the NOT NULL column.
         conn.execute(
             "INSERT INTO closure_coverage
                 (closure_id, file_id, source, visibility_state, generation,
                  content_hash, precision_tier)
-             VALUES (?1, ?2, ?3, 'staged', ?4, ?5, ?6)",
-            params![closure_id, file_id, source, generation, content_hash, precision_tier],
+             VALUES (?1, ?2, ?3, 'staged', ?4, ?5, '')",
+            params![closure_id, file_id, source, generation, content_hash],
         )?;
         Ok(())
     }
@@ -85,7 +85,7 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT closure_id, file_id, source, visibility_state, generation,
-                    content_hash, precision_tier, extracted_at
+                    content_hash, extracted_at
              FROM closure_coverage
              WHERE closure_id = ?1 AND visibility_state = 'visible'",
         )?;
@@ -133,7 +133,6 @@ fn row_to_closure_coverage(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClosureC
         visibility_state: row.get(3)?,
         generation: row.get(4)?,
         content_hash: row.get(5)?,
-        precision_tier: row.get(6)?,
-        extracted_at: row.get(7)?,
+        extracted_at: row.get(6)?,
     })
 }
