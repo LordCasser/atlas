@@ -310,16 +310,6 @@ impl ToolRouter {
         Ok(())
     }
 
-    /// Access the search engine.
-    pub(crate) fn search_engine(&self) -> anyhow::Result<&SearchEngine> {
-        self.active().graph_runtime.search_engine()
-    }
-
-    /// Access the context builder.
-    pub(crate) fn context_builder(&self) -> anyhow::Result<&ContextBuilder> {
-        self.active().graph_runtime.context_builder()
-    }
-
     /// Configure the focus runtime to share the AnalysisRuntime's LazyDataflowService.
     ///
     /// FocusRuntime is created inside QueryRuntime::new(). This method configures

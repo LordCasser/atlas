@@ -112,7 +112,7 @@ impl ToolRouter {
                 }
 
                 ctx.send_progress(0.7, "Building context view...");
-                let cb = match self.context_builder() {
+                let cb = match self.active_mut().graph_runtime.context_builder() {
                     Ok(cb) => cb,
                     Err(e) => return (format!("Internal error: {e}"), true),
                 };

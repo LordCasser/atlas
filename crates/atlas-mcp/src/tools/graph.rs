@@ -311,7 +311,7 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -407,7 +407,7 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -511,7 +511,7 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
 
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -762,7 +762,7 @@ impl ToolRouter {
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -1342,7 +1342,7 @@ impl ToolRouter {
             store_clone.clone(),
             root_clone,
         );
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -1505,7 +1505,7 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.context_builder() {
+        let cb = match self.active_mut().graph_runtime.context_builder() {
             Ok(cb) => cb,
             Err(e) => return (format!("Internal error: {e}"), true),
         };
@@ -1861,6 +1861,8 @@ mod tests {
 
         let sid_b = insert_test_symbol(&store, "b.ts", "b");
         let before = router
+            .active_mut()
+            .graph_runtime
             .context_builder()
             .unwrap()
             .graph_snapshot()
@@ -1881,6 +1883,8 @@ mod tests {
 
         router.maybe_refresh_graph().unwrap();
         let after = router
+            .active_mut()
+            .graph_runtime
             .context_builder()
             .unwrap()
             .graph_snapshot()

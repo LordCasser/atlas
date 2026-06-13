@@ -490,7 +490,7 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         // Re-acquire graph after lazy structural may have refreshed it
-        let se = match self.search_engine() {
+        let se = match self.active_mut().graph_runtime.search_engine() {
             Ok(se) => se,
             Err(e) => return (format!("Internal error: {e}"), true),
         };

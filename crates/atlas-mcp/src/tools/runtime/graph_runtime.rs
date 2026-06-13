@@ -191,8 +191,9 @@ impl GraphRuntime {
         }
     }
 
-    /// Returns the underlying graph backend implementing [`GraphProvider`].
-    #[allow(dead_code)] // Integrated when ClosureGraphProvider is added
+    /// Returns the graph provider for the current scope.
+    /// Currently always returns the full graph state.
+    /// Future: may return a ClosureGraphProvider for focus-mode queries.
     pub(crate) fn provider(&self) -> &dyn GraphProvider {
         &self.state
     }
