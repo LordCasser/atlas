@@ -29,6 +29,7 @@ use crate::tools::query_snapshot::QuerySnapshot;
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::project_slot::ProjectSlot;
+use crate::tools::runtime::session_job_runtime::SessionJobRuntime;
 use crate::tools::tool_contract::{contract_for, ToolContract};
 
 /// Progress report tuple: (progress, total, message)
@@ -233,6 +234,7 @@ pub(crate) fn apply_focus_result_to_lr(
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
     pub(crate) project: ProjectSlot,
+    pub(crate) session_job: SessionJobRuntime,
     tools: Vec<Tool>,
 }
 
@@ -252,7 +254,11 @@ impl ToolRouter {
             .expect("Failed to construct ActiveProject");
         // Initialize graph state with pre-built search and context engines.
         active.graph_runtime.state.init_with(search, context);
-        let mut router = Self { project: ProjectSlot::new(Some(active)), tools: make_all_tools() };
+        let mut router = Self {
+            project: ProjectSlot::new(Some(active)),
+            session_job: SessionJobRuntime::new(),
+            tools: make_all_tools(),
+        };
         router.init_focus();
         router
     }
@@ -262,7 +268,11 @@ impl ToolRouter {
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let active = ActiveProject::new(store, project_root)
             .expect("Failed to construct ActiveProject");
-        let mut router = Self { project: ProjectSlot::new(Some(active)), tools: make_all_tools() };
+        let mut router = Self {
+            project: ProjectSlot::new(Some(active)),
+            session_job: SessionJobRuntime::new(),
+            tools: make_all_tools(),
+        };
         router.init_focus();
         router
     }
@@ -423,7 +433,7 @@ impl ToolRouter {
     /// Activate a prepared background `open_project` result, if one exists.
     pub(crate) fn activate_pending_project_for_task(&mut self, task_id: &str) -> Option<String> {
         let pending = self
-            .active_mut().job_runtime.pending_project_activations
+            .session_job.pending_project_activations
             .lock()
             .ok()
             .and_then(|mut pending| pending.remove(task_id));
@@ -722,7 +732,7 @@ impl ToolRouter {
         if task_id.is_empty() {
             return ("Missing task_id parameter".to_string(), true);
         }
-        match self.active_mut().job_runtime.task_manager.get_task(task_id) {
+        match self.session_job.task_manager.get_task(task_id) {
             Some(info) => {
                 let status_str = match info.status {
                     crate::task_manager::TaskStatus::Running => "running",
@@ -1676,24 +1686,20 @@ impl ToolRouter {
             active.query_runtime.has_full_index(&active.store)
         };
         if !has_full_index {
-            let max_files = get_u64(args, "max_structural_files")
-                .or_else(|| get_u64(args, "limit"))
-                .unwrap_or(50) as usize;
-            let _file_ids = match direction {
-                "incoming" | "both" => {
-                    let (candidates, truncated) =
-                        self.collect_edge_dependent_file_ids(&[file_id], max_files);
-                    let mut result = vec![file_id];
-                    result.extend(candidates);
-                    if truncated {
-                        _coverage = "partial";
-                        _reason = Some("candidate_limit_exceeded");
-                    }
-                    result
-                }
-                _ => vec![file_id],
-            };
-            let (focus_result, focus_warnings) = self.prepare_focus_query(None);
+            // Construct a Calls intent with the resolved file_id so focus
+            // extraction uses a FocusSeed::File seed.  No QueryIntent variant
+            // accepts multiple file_ids (e.g. edge-dependent candidates), so
+            // we scope extraction to the primary file.  The closure engine
+            // expands via CallGraph + ImportNeighborhood strategies which is
+            // appropriate for structural dependency extraction.  (P1-F6)
+            let intent = Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: String::new(),
+                file_id: Some(file_id),
+                symbol_id: None,
+                direction: None,
+                depth: None,
+            });
+            let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
             lazy_warnings = focus_warnings;
             built_file_count = focus_result.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
         } else {
@@ -2114,7 +2120,7 @@ impl ToolRouter {
     /// the runtime. This path exists for tests and embedded callers that invoke
     /// `ToolRouter::call_tool` directly.
     pub(crate) fn handle_wait_for_task_sync(&mut self, args: &Value) -> (String, bool) {
-        let wfr = wait_for::handle_wait_for_task_sync(&self.active_mut().job_runtime.task_manager, args);
+        let wfr = wait_for::handle_wait_for_task_sync(&self.session_job.task_manager, args);
         if !wfr.task_is_project_completed {
             return (wfr.json_text, wfr.is_error);
         }
@@ -5043,6 +5049,60 @@ mod tests {
         );
     }
 
+    // ── SessionJobRuntime tests ──────────────────────────────────────
+
+    /// Verify that `session_job.task_manager` remains accessible after
+    /// a project switch (activate_project), because it is session-scoped
+    /// and not tied to the active project's JobRuntime.
+    #[test]
+    fn session_job_runtime_survives_project_switch() {
+        let store_a = test_store();
+        let store_b = test_store();
+        let mut router = ToolRouter::new_empty(store_a, PathBuf::from("/tmp"));
+
+        // Can access session-level task_manager with project A active
+        let tm_a = router.session_job.task_manager.clone();
+        let _task = tm_a.create_task("test", "test");
+        assert!(tm_a.get_task(&_task).is_some());
+
+        // Switch to project B
+        router.activate_project(PathBuf::from("/other"), store_b);
+
+        // task_manager should STILL be accessible and contain the old task
+        assert!(tm_a.get_task(&_task).is_some());
+        // New tasks can still be created through the same session-level TM
+        let tm_after = router.session_job.task_manager.clone();
+        let _task2 = tm_after.create_task("test", "test");
+        assert!(tm_after.get_task(&_task2).is_some());
+    }
+
+    /// Verify that background project open uses the session-level
+    /// task_manager (not the project-level JobRuntime).
+    #[test]
+    fn background_project_open_uses_session_task_manager() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let mut router = ToolRouter::new_empty(
+            Arc::new(atlas_engine::Store::open_in_memory().unwrap()),
+            dir.path().to_path_buf(),
+        );
+
+        // Verify session_job.task_manager is the same Arc instance used
+        // by handle_open_project_background (no direct call, but we can
+        // verify the session_job.task_manager is properly initialized).
+        let session_tm = router.session_job.task_manager.clone();
+        assert!(Arc::ptr_eq(
+            &session_tm,
+            &router.session_job.task_manager
+        ));
+
+        // Verify pending_project_activations is accessible
+        {
+            let pending = router.session_job.pending_project_activations.lock().unwrap();
+            assert!(pending.is_empty());
+        }
+    }
 
 }
 

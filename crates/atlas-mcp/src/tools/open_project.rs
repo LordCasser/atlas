@@ -101,10 +101,10 @@ impl ToolRouter {
             );
         }
 
-        let task_id = self.active_mut().job_runtime.task_manager.create_task("project", "project");
+        let task_id = self.session_job.task_manager.create_task("project", "project");
         let tid = task_id.clone();
-        let task_manager = self.active_mut().job_runtime.task_manager.clone();
-        let pending = self.active_mut().job_runtime.pending_project_activations.clone();
+        let task_manager = self.session_job.task_manager.clone();
+        let pending = self.session_job.pending_project_activations.clone();
         let owned_args = args.clone();
 
         std::thread::spawn(move || {

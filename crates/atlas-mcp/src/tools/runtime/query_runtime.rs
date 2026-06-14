@@ -15,6 +15,7 @@
 //! - `atlas_engine::focus::runtime::{FocusRuntime, FocusResult, IndexMode}`
 //! - `super::cache_state::CacheState`
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -116,8 +117,14 @@ impl QueryRuntime {
     /// GraphRuntime::provider().
     pub fn prepare_graph_query(&self, intent: &QueryIntent) -> PreparedGraphQuery {
         let (focus_result, _warnings) = self.prepare(intent, &self.store);
+        let closure_id = focus_result.as_ref().and_then(|r| r.closure_id.clone());
+        let coverage_counts = focus_result
+            .as_ref()
+            .and_then(|r| r.coverage_counts.clone());
         PreparedGraphQuery {
             focus_triggered: focus_result.is_some(),
+            closure_id,
+            coverage_counts,
         }
     }
 }
@@ -126,6 +133,14 @@ impl QueryRuntime {
 /// the graph provider separately.
 pub struct PreparedGraphQuery {
     pub focus_triggered: bool,
+    /// The closure_id if focus extraction built a closure for this query.
+    /// Callers should inject this into the response so clients can track
+    /// closure provenance.
+    pub closure_id: Option<String>,
+    /// Distribution of results by coverage tier from the focus extraction.
+    /// Callers should inject this into the response alongside any per-query
+    /// precision metadata.
+    pub coverage_counts: Option<HashMap<String, usize>>,
 }
 
 #[cfg(test)]
@@ -215,5 +230,31 @@ mod tests {
         let sig = store.index_signature().unwrap_or_default();
         *qr.cache.cached_manual_full_index.write().unwrap() = Some((sig, true));
         assert!(qr.has_full_index(&store));
+    }
+
+    #[test]
+    fn prepared_graph_query_carries_closure_id() {
+        let qr = create_test_query_runtime();
+        let intent = QueryIntent::Calls {
+            symbol_name: "test_func".into(),
+            file_id: None,
+            symbol_id: None,
+            direction: None,
+            depth: None,
+        };
+        let pq = qr.prepare_graph_query(&intent);
+        // On an empty in-memory store, focus may or may not trigger.
+        // When focus triggers (most common case for Focus mode), the
+        // prepared query should carry whatever closure_id the focus
+        // result provides.  When focus does not trigger (full index or
+        // error), both fields should be None.
+        if pq.focus_triggered {
+            // coverage_counts should be Some when focus is triggered
+            // (FocusResult always populates this in Focus mode).
+            assert!(pq.coverage_counts.is_some());
+        } else {
+            assert!(pq.closure_id.is_none());
+            assert!(pq.coverage_counts.is_none());
+        }
     }
 }

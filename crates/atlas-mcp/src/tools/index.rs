@@ -226,13 +226,13 @@ impl ToolRouter {
         mode: ExtractionMode,
         force_reindex: bool,
     ) -> (String, bool) {
-        let task_id = self.active().job_runtime.task_manager.create_task("index", "index");
+        let task_id = self.session_job.task_manager.create_task("index", "index");
         let auto_background = args
             .get("_auto_background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let tid = task_id.clone();
-        let task_manager = self.active().job_runtime.task_manager.clone();
+        let task_manager = self.session_job.task_manager.clone();
         let store = self.active().store.clone();
         let project_root = self.active().root.clone();
 

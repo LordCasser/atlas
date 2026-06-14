@@ -1,10 +1,12 @@
-//! Job runtime — background task orchestration and investigation state.
+//! Project-level job runtime — investigation state and query snapshots.
+//!
+//! Session-level resources (TaskManager, pending_project_activations, prewarm)
+//! live in [`SessionJobRuntime`](super::session_job_runtime::SessionJobRuntime)
+//! and persist across project switches.
 //!
 //! # Responsibilities
-//! - TaskManager: create, poll, and complete background jobs
-//! - InvestigationState: MCP-session-scoped lazy extraction prioritization
+//! - InvestigationState: per-project lazy extraction prioritization
 //! - Query snapshots: store and retrieve query results for resume_task
-//! - Pending project activations: background project open lifecycle
 //!
 //! # Usage pattern
 //! ```ignore
@@ -13,45 +15,31 @@
 //! ```
 //!
 //! # Dependencies
-//! - `crate::task_manager::TaskManager`
 //! - `atlas_engine::InvestigationFocus`
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use atlas_engine::InvestigationFocus;
 
-use crate::task_manager::TaskManager;
-use crate::tools::PendingProjectActivation;
 use crate::tools::query_snapshot::{QUERY_SNAPSHOT_TTL_SECS, InvestigationState, QuerySnapshot};
 
-/// Background task management and async query state.
+/// Per-project query state and investigation tracking.
 ///
-/// Owns the TaskManager for async operations (index, background project open),
-/// query snapshots for lazy responses, and investigation state for
-/// lazy job prioritization.
+/// Owns query snapshots for lazy responses and investigation state for
+/// lazy job prioritization. Session-level resources (TaskManager, etc.)
+/// are owned by [`SessionJobRuntime`](super::session_job_runtime::SessionJobRuntime).
 pub struct JobRuntime {
-    pub task_manager: Arc<TaskManager>,
     pub investigation_state: InvestigationState,
     pub query_snapshots: Mutex<HashMap<String, QuerySnapshot>>,
-    /// Project activations prepared by background `open_project` tasks.
-    pub pending_project_activations: Arc<Mutex<HashMap<String, PendingProjectActivation>>>,
-    /// Per-store prewarm guard: at most one background dataflow prewarm
-    /// thread per store, shared across all concurrent MCP requests.
-    /// Reserved for future dataflow prewarm orchestration.
-    #[allow(dead_code)]
-    pub prewarm_running: Arc<AtomicBool>,
 }
 
 impl JobRuntime {
-    pub fn new(task_manager: Arc<TaskManager>) -> Self {
+    pub fn new() -> Self {
         Self {
-            task_manager,
             investigation_state: InvestigationState::default(),
             query_snapshots: Mutex::new(HashMap::new()),
-            pending_project_activations: Arc::new(Mutex::new(HashMap::new())),
-            prewarm_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -87,22 +75,15 @@ impl JobRuntime {
 mod tests {
     use super::*;
 
-    fn create_test_job_runtime() -> JobRuntime {
-        let task_manager = Arc::new(TaskManager::new());
-        JobRuntime::new(task_manager)
-    }
-
-    #[test]
-    fn prewarm_running_starts_false() {
-        let jr = create_test_job_runtime();
-        // Prove the prewarm_running flag is wired correctly — reserved for
-        // future dataflow prewarm orchestration.
-        assert!(!jr.prewarm_running.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
     #[test]
     fn investigation_state_starts_default() {
-        let jr = create_test_job_runtime();
+        let jr = JobRuntime::new();
         assert!(jr.investigation_state.active_investigation.is_none());
+    }
+
+    #[test]
+    fn query_snapshots_starts_empty() {
+        let jr = JobRuntime::new();
+        assert!(jr.query_snapshots.lock().unwrap().is_empty());
     }
 }

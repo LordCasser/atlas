@@ -10,7 +10,8 @@
 //! | `analysis_runtime` | On-demand CFG/dataflow extraction | LazyDataflowService |
 //! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), RuntimeInvalidation counters |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
-//! | `job_runtime` | Background task orchestration | TaskManager, InvestigationState, QuerySnapshot map |
+//! | `job_runtime` | Per-project investigation + query snapshots | InvestigationState, QuerySnapshot map |
+//! | `session_job_runtime` | Session-level background task orchestration | TaskManager, pending_project_activations, prewarm_running |
 //! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
 //! | `graph_provider` | Trait contract for graph backends | (trait definition) |
 //!
@@ -58,16 +59,16 @@
 //!
 //! | Contract | Runtimes Involved |
 //! |----------|-------------------|
-//! | `ProjectLifecycle` | job_runtime, graph_runtime (reset) |
+//! | `ProjectLifecycle` | job_runtime, graph_runtime (reset), session_job_runtime (background open) |
 //! | `StatusRead` | store_query_runtime (stats queries) |
-//! | `ExplicitIndexBuild` | job_runtime (background), query_runtime.cache (invalidation) |
+//! | `ExplicitIndexBuild` | session_job_runtime (background), query_runtime.cache (invalidation) |
 //! | `SemanticGraphQuery` | graph_runtime (snapshot), query_runtime (focus), store_query_runtime (source) |
 //! | `TraceQuery` | engine (direct, not graph_runtime), query_runtime (focus), store_query_runtime |
 //! | `StoreFactQuery` | query_runtime (focus, +graph for symbol context), store_query_runtime |
 //! | `SemanticAnalysis` | analysis_runtime (CFG/dataflow), store_query_runtime |
 //! | `OverlayMutation` | overlay_runtime (mutation + generation counter) |
 //! | `OverlayRead` | store_query_runtime (read-only) |
-//! | `TaskControl` | job_runtime (task_manager) |
+//! | `TaskControl` | session_job_runtime (task_manager) |
 //!
 //! # Concurrency Model
 //!
@@ -108,3 +109,4 @@ pub(crate) mod analysis_runtime;
 pub(crate) mod overlay_runtime;
 pub(crate) mod store_query_runtime;
 pub(crate) mod job_runtime;
+pub(crate) mod session_job_runtime;

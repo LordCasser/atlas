@@ -363,6 +363,13 @@ impl ToolRouter {
         } else {
             lr
         };
+        // Inject closure_id from focus preparation so clients can track
+        // closure provenance (P0-F2-A).
+        if let Some(ref result) = focus_result {
+            if let Some(ref cid) = result.closure_id {
+                resp["closure_id"] = json!(cid);
+            }
+        }
         lr.build_with_args(resp, args, self)
     }
 

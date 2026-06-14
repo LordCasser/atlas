@@ -35,7 +35,27 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let _investigation = self.active_mut().job_runtime.investigation_state.active_investigation.clone();
 
-        let lr = AnalysisEnvelope::new("symbol", args);
+        // Resolve symbol display name early so it's available for both the
+        // focus intent and the response "symbol" field.
+        let symbol_display = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
+        };
+
+        // Prepare focus query to inject coverage / closure provenance.
+        // Uses Calls intent with the resolved symbol_id so the focus engine
+        // can locate the seed and build structural coverage data.  (P1-F7)
+        let (focus_opt, _focus_warnings) = self.prepare_focus_query(Some(
+            atlas_engine::QueryIntent::Calls {
+                symbol_name: symbol_display.clone(),
+                direction: None,
+                depth: None,
+                file_id: None,
+                symbol_id: Some(sid),
+            },
+        ));
+
+        let mut lr = AnalysisEnvelope::new("symbol", args);
 
         let refs = match self.active_mut().store.find_references_by_symbol(&sid) {
             Ok(r) => r,
@@ -61,16 +81,19 @@ impl ToolRouter {
             })
             .collect();
 
-        // Use resolved qualified name from the input for the "symbol" field
-        let symbol_display = match &input {
-            SymbolInput::Name(s) => s.clone(),
-            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
-        };
-        let resp = json!({
+        let mut resp = json!({
             "symbol": symbol_display,
             "total_usages": refs.len(),
             "usages": usages,
         });
+
+        // Inject focus coverage & closure provenance into the response (P1-F7).
+        if let Some(ref result) = focus_opt {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+            if let Some(ref cid) = result.closure_id {
+                resp["closure_id"] = json!(cid);
+            }
+        }
 
         let mut stored_args = args.clone();
         if let Some(obj) = stored_args.as_object_mut() {

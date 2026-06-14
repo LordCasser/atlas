@@ -265,11 +265,11 @@ impl ToolRouter {
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool) {
-        let task_id = self.active().job_runtime.task_manager.create_task("search", "search");
+        let task_id = self.session_job.task_manager.create_task("search", "search");
         let tid = task_id.clone();
         let store = self.active().store.clone();
         let project_root = self.active().root.clone();
-        let task_manager = self.active().job_runtime.task_manager.clone();
+        let task_manager = self.session_job.task_manager.clone();
         let q = query.to_string();
         let k = kind.map(|s| s.to_string());
         let sc = scope.to_string();

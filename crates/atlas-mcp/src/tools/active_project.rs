@@ -6,7 +6,6 @@ use atlas_engine::Store;
 use anyhow::Result;
 
 use crate::tools::lazy_refresh::LazyRefreshQueue;
-use crate::task_manager::TaskManager;
 
 use super::runtime::{
     analysis_runtime::AnalysisRuntime,
@@ -78,7 +77,7 @@ impl ActiveProject {
             ),
             overlay_runtime: OverlayRuntime::new(store.clone(), invalidation),
             store_query_runtime,
-            job_runtime: JobRuntime::new(Arc::new(TaskManager::new())),
+            job_runtime: JobRuntime::new(),
             engine: Mutex::new(engine),
             store,
             root,
