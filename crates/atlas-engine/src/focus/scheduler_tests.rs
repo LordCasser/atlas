@@ -63,10 +63,8 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
 }
 
 fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
-    let lazy_structural =
-        crate::lazy_structural::LazyStructuralService::new(store.clone(), None);
-    let lazy_dataflow =
-        crate::LazyDataflowService::new(store.clone(), None);
+    let lazy_structural = crate::lazy_structural::LazyStructuralService::new(store.clone(), None);
+    let lazy_dataflow = crate::LazyDataflowService::new(store.clone(), None);
     super::engine::ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
 }
 
@@ -75,7 +73,10 @@ fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
 #[test]
 fn test_scheduler_new_empty() {
     let scheduler = test_scheduler();
-    assert!(!scheduler.has_pending(), "new scheduler should have no pending jobs");
+    assert!(
+        !scheduler.has_pending(),
+        "new scheduler should have no pending jobs"
+    );
     let depths = scheduler.queue_depths();
     for (_priority, depth) in depths {
         assert_eq!(depth, 0, "all queues should be empty in new scheduler");
@@ -90,7 +91,11 @@ fn test_enqueue_sync() {
 
     assert!(scheduler.has_pending(), "should have pending after enqueue");
     let depths = scheduler.queue_depths();
-    assert_eq!(depths[0], (FocusPriority::Sync, 1), "sync queue should have 1 job");
+    assert_eq!(
+        depths[0],
+        (FocusPriority::Sync, 1),
+        "sync queue should have 1 job"
+    );
     assert_eq!(depths[1], (FocusPriority::UserFocus, 0));
     assert_eq!(depths[2], (FocusPriority::Recent, 0));
     assert_eq!(depths[3], (FocusPriority::Speculative, 0));
@@ -130,11 +135,7 @@ fn test_prewarm_investigation() {
 
     let investigation = Investigation {
         focus: InvestigationFocus::Symbol(types::ids::SymbolId::generate(
-            &fid1,
-            "rust",
-            "main",
-            "function",
-            None,
+            &fid1, "rust", "main", "function", None,
         )),
         related_symbols: vec![],
         related_files: vec![fid1, fid2],
@@ -321,12 +322,19 @@ fn test_scheduler_no_store_panic() {
     assert!(scheduler.has_pending(), "should have a pending job");
 
     // process_sync without engine returns Ok(0) (graceful no-op).
-    let processed = scheduler.process_sync().expect("process_sync should not panic");
+    let processed = scheduler
+        .process_sync()
+        .expect("process_sync should not panic");
     assert_eq!(processed, 0, "process_sync without engine returns 0");
 
     // process_all_queues without engine also returns Ok(0).
-    let processed_all = scheduler.process_all_queues().expect("process_all_queues should not panic");
-    assert_eq!(processed_all, 0, "process_all_queues without engine returns 0");
+    let processed_all = scheduler
+        .process_all_queues()
+        .expect("process_all_queues should not panic");
+    assert_eq!(
+        processed_all, 0,
+        "process_all_queues without engine returns 0"
+    );
 
     let depths = scheduler.queue_depths();
     assert_eq!(
@@ -340,7 +348,10 @@ fn test_scheduler_no_store_panic() {
 fn test_next_job_id_sequential_unique() {
     let id1 = super::scheduler::next_job_id();
     let id2 = super::scheduler::next_job_id();
-    assert_ne!(id1, id2, "sequential next_job_id() calls must produce different IDs");
+    assert_ne!(
+        id1, id2,
+        "sequential next_job_id() calls must produce different IDs"
+    );
     assert!(id1.starts_with("cl_"), "IDs should start with cl_");
     assert!(id2.starts_with("cl_"), "IDs should start with cl_");
 }
@@ -355,7 +366,10 @@ fn test_process_all_queues_drains_all_levels() {
     let mut scheduler = FocusScheduler::new(store).with_engine(engine);
 
     let make_window = || FocusWindow {
-        seed: FocusSeed::File { file_id, language: Default::default() },
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
         strategies: vec![],
         budget: WindowBudget::default(),
         language: Default::default(),
@@ -378,7 +392,10 @@ fn test_process_all_queues_drains_all_levels() {
     // All queues should be empty.
     assert!(!scheduler.has_pending());
     for (_priority, depth) in scheduler.queue_depths() {
-        assert_eq!(depth, 0, "all queues should be empty after process_all_queues");
+        assert_eq!(
+            depth, 0,
+            "all queues should be empty after process_all_queues"
+        );
     }
 }
 
@@ -406,7 +423,10 @@ fn test_process_all_queues_priority_order() {
     let mut scheduler = FocusScheduler::new(store).with_engine(engine);
 
     let make_window = || FocusWindow {
-        seed: FocusSeed::File { file_id, language: Default::default() },
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
         strategies: vec![],
         budget: WindowBudget::default(),
         language: Default::default(),
@@ -459,7 +479,10 @@ fn test_background_worker_drains_all_queues() {
 
     let file_id = FileId::generate("main.c");
     let make_window = || FocusWindow {
-        seed: FocusSeed::File { file_id, language: Default::default() },
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
         strategies: vec![],
         budget: WindowBudget::default(),
         language: Default::default(),
@@ -492,7 +515,10 @@ fn test_background_worker_drains_all_queues() {
 
     // All queues should be empty.
     let s = scheduler.lock().unwrap();
-    assert!(!s.has_pending(), "all queues should be drained by background worker");
+    assert!(
+        !s.has_pending(),
+        "all queues should be drained by background worker"
+    );
     for (_priority, depth) in s.queue_depths() {
         assert_eq!(depth, 0, "queue should be empty");
     }
@@ -510,7 +536,10 @@ fn test_background_worker_stops_on_cancel() {
     // Enqueue a job so the worker has something to process.
     let file_id = FileId::generate("main.c");
     let window = FocusWindow {
-        seed: FocusSeed::File { file_id, language: Default::default() },
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
         strategies: vec![],
         budget: WindowBudget::default(),
         language: Default::default(),
@@ -537,7 +566,10 @@ fn test_background_worker_stops_on_cancel() {
 
     // Worker should exit within a reasonable time.
     let result = handle.join();
-    assert!(result.is_ok(), "background worker should join cleanly after cancel");
+    assert!(
+        result.is_ok(),
+        "background worker should join cleanly after cancel"
+    );
 }
 
 #[test]
@@ -554,7 +586,10 @@ fn test_background_worker_processes_in_correct_order() {
 
     let file_id = FileId::generate("main.c");
     let make_window = || FocusWindow {
-        seed: FocusSeed::File { file_id, language: Default::default() },
+        seed: FocusSeed::File {
+            file_id,
+            language: Default::default(),
+        },
         strategies: vec![],
         budget: WindowBudget::default(),
         language: Default::default(),
@@ -592,7 +627,10 @@ fn test_background_worker_processes_in_correct_order() {
 
     // All queues drained.
     let s = scheduler.lock().unwrap();
-    assert!(!s.has_pending(), "background worker should drain all queues");
+    assert!(
+        !s.has_pending(),
+        "background worker should drain all queues"
+    );
 }
 
 // ── Write coordinator integration tests ─────────────────────────────────────

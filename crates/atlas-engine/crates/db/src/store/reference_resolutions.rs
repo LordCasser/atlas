@@ -110,7 +110,18 @@ impl Store {
                      resolution_strategy, provenance, is_visible)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
             )?;
-            for (closure_id, generation, ref_id_bytes, scope, target_bytes, tier, confidence, strategy, provenance) in resolutions.iter() {
+            for (
+                closure_id,
+                generation,
+                ref_id_bytes,
+                scope,
+                target_bytes,
+                tier,
+                confidence,
+                strategy,
+                provenance,
+            ) in resolutions.iter()
+            {
                 stmt.execute(rusqlite::params![
                     closure_id,
                     generation,
@@ -175,8 +186,10 @@ impl Store {
              FROM reference_resolutions
              WHERE reference_id = ?1 AND closure_id = ?2 AND is_visible = 1",
         )?;
-        let rows =
-            stmt.query_map(params![reference_id, closure_id], row_to_reference_resolution)?;
+        let rows = stmt.query_map(
+            params![reference_id, closure_id],
+            row_to_reference_resolution,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -210,10 +223,7 @@ impl Store {
     }
 
     /// Get resolution counts grouped by resolution strategy for a closure.
-    pub fn get_resolution_counts(
-        &self,
-        closure_id: &str,
-    ) -> anyhow::Result<Vec<(String, i64)>> {
+    pub fn get_resolution_counts(&self, closure_id: &str) -> anyhow::Result<Vec<(String, i64)>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT resolution_strategy, COUNT(*) FROM reference_resolutions

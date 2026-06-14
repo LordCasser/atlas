@@ -53,9 +53,9 @@ mod linux_augment;
 pub mod precision;
 /// Scoped search service: shared search orchestration with lazy structural fallback.
 pub mod scoped_search;
+mod source_extractor;
 /// Unified symbol resolution with fault-tolerant scoring.
 pub mod symbol_selector;
-mod source_extractor;
 
 // ── Stable Public API ─────────────────────────────────────────────────────
 // These items form the intended, stable contract of the Atlas engine.
@@ -117,8 +117,6 @@ pub use source_extractor::SourceExtractor;
 /// Investigation context types: focus, related symbols/files, desired capabilities.
 pub use investigation::{Investigation, InvestigationFocus};
 
-/// Focus-driven incremental analysis: core types.
-pub use focus::types::{ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, WindowBudget};
 /// Focus-driven incremental analysis: closure engine.
 pub use focus::engine::ClosureEngine;
 /// Focus-driven incremental analysis: query intent (MCP tool request).
@@ -127,6 +125,8 @@ pub use focus::query::QueryIntent;
 pub use focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 /// Focus-driven incremental analysis: priority scheduler.
 pub use focus::scheduler::{FocusPriority, FocusScheduler};
+/// Focus-driven incremental analysis: core types.
+pub use focus::types::{ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, WindowBudget};
 /// Focus-driven incremental analysis: visibility filter registry.
 pub use focus::visibility_filter::VisibilityFilterRegistry;
 
@@ -244,7 +244,6 @@ pub struct Engine {
     lazy_service: lazy_crate::LazyDataflowService,
     lazy_structural: LazyStructuralService,
     trace: analysis::trace::TraceEngine,
-
 }
 
 impl Engine {

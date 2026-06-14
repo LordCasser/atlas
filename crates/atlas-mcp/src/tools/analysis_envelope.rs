@@ -7,22 +7,22 @@
 
 use std::collections::HashMap;
 
-use atlas_engine::structs::KnownGap;
-use atlas_engine::structs::Precision;
 #[cfg(test)]
 use atlas_engine::structs::CapabilityMask;
 #[cfg(test)]
 use atlas_engine::structs::CoverageTier;
+use atlas_engine::structs::KnownGap;
+use atlas_engine::structs::Precision;
 #[cfg(test)]
 use atlas_engine::structs::SemanticConfidence;
 #[cfg(test)]
 use serde::Serialize;
 use serde_json::json;
 
-use super::query_snapshot::{QuerySnapshot, QueryStatus};
-use super::analysis_response::{WorkItem, precision_to_view};
 #[cfg(test)]
 use super::analysis_response::WorkProgress;
+use super::analysis_response::{WorkItem, precision_to_view};
+use super::query_snapshot::{QuerySnapshot, QueryStatus};
 
 // ── Analysis Contract ───────────────────────────────────────────────────
 
@@ -270,7 +270,7 @@ pub(crate) struct AnalysisEnvelope {
 impl AnalysisEnvelope {
     /// Create a new `AnalysisEnvelope`, generating a fresh `query_id`.
     ///
-    /// `tool_name` is stored in the [`QuerySnapshot`] for `atlas_resume`.
+    /// `tool_name` is stored in the [`QuerySnapshot`] for `resume_query`.
     /// `tool_args` is the original MCP arguments (cloned for storage).
     pub fn new(tool_name: &'static str, tool_args: &serde_json::Value) -> Self {
         Self {
@@ -450,7 +450,9 @@ impl AnalysisEnvelope {
             let have_any = ps.is_some() || cs.is_some();
 
             if have_any {
-                let index_mode = ps.and_then(|p| p.index_mode.as_deref()).unwrap_or("unknown");
+                let index_mode = ps
+                    .and_then(|p| p.index_mode.as_deref())
+                    .unwrap_or("unknown");
                 let total_files = ps.map(|p| p.total_files).unwrap_or(0usize);
                 let total_symbols = ps.map(|p| p.total_symbols).unwrap_or(0usize);
                 let total_edges = ps.map(|p| p.total_edges).unwrap_or(0usize);
@@ -524,7 +526,6 @@ impl AnalysisEnvelope {
         )
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -678,8 +679,7 @@ mod tests {
 
     #[test]
     fn contract_and_reconcile_manifest_only_structural_zero() {
-        let mask =
-            CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL);
+        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL);
         let stats = CapabilityStats {
             files_manifest_only: 1,
             files_structural_only: 0,
@@ -711,10 +711,7 @@ mod tests {
     fn capability_mask_from_counts_all_zero() {
         let stats = CapabilityStats::default();
         let mask = capability_mask_from_counts(&stats);
-        assert!(
-            mask.is_zero(),
-            "all-zero stats should produce a zero mask"
-        );
+        assert!(mask.is_zero(), "all-zero stats should produce a zero mask");
     }
 
     #[test]
@@ -787,7 +784,10 @@ mod tests {
         let (json_str, is_err) = lr.with_is_error(false).build(body, &mut store);
 
         assert!(!is_err);
-        assert!(json_str.contains("query_id"), "response must contain query_id");
+        assert!(
+            json_str.contains("query_id"),
+            "response must contain query_id"
+        );
         assert!(!store.snapshots.is_empty(), "snapshot must be stored");
         assert_eq!(store.snapshots[0].query_id, qid);
     }
@@ -810,7 +810,10 @@ mod tests {
         let (json_str, is_err) = lr.build(body, &mut MockStore::new());
 
         assert!(!is_err);
-        assert!(json_str.contains("\"precision\""), "should contain precision field");
+        assert!(
+            json_str.contains("\"precision\""),
+            "should contain precision field"
+        );
         // PrecisionView uses public labels: coverage=local_complete, confidence=high
         assert!(
             json_str.contains("local_complete"),
@@ -883,8 +886,7 @@ mod tests {
     fn test_lazy_response_no_analysis_block_without_explicit_data() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = AnalysisEnvelope::new("explore", &args)
-            .with_is_error(false);
+        let lr = AnalysisEnvelope::new("explore", &args).with_is_error(false);
 
         let body = json!({"ok": true, "data": "test_result"});
         let (json_str, is_err) = lr.build(body, &mut store);
@@ -941,17 +943,16 @@ mod tests {
     fn test_lazy_response_explicit_work_items() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = AnalysisEnvelope::new("explore", &args)
-            .with_work_items(vec![WorkItem {
-                id: "job-focus".into(),
-                kind: "extraction".into(),
-                state: "building".into(),
-                scope: "local".into(),
-                reason: "focus".into(),
-                progress: Some(WorkProgress { percent: 75 }),
-                waitable: true,
-                retry_after_ms: Some(1000),
-            }]);
+        let lr = AnalysisEnvelope::new("explore", &args).with_work_items(vec![WorkItem {
+            id: "job-focus".into(),
+            kind: "extraction".into(),
+            state: "building".into(),
+            scope: "local".into(),
+            reason: "focus".into(),
+            progress: Some(WorkProgress { percent: 75 }),
+            waitable: true,
+            retry_after_ms: Some(1000),
+        }]);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &mut store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -983,7 +984,10 @@ mod tests {
 
         assert!(!is_err);
         assert!(json_str.contains("precision"), "should contain precision");
-        assert!(json_str.contains("coverage_counts"), "should contain coverage_counts");
+        assert!(
+            json_str.contains("coverage_counts"),
+            "should contain coverage_counts"
+        );
         assert!(json_str.contains("gaps"), "should contain gaps");
         assert!(json_str.contains("query_id"), "should contain query_id");
     }

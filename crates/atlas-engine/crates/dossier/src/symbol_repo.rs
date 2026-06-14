@@ -135,7 +135,13 @@ mod tests {
         let store = make_store();
         let _ = seed_symbol(&store);
         let repo = SymbolRepo::new(store);
-        let unknown_id = SymbolId::generate(&FileId::generate("x.ts"), "typescript", "X", "function", None);
+        let unknown_id = SymbolId::generate(
+            &FileId::generate("x.ts"),
+            "typescript",
+            "X",
+            "function",
+            None,
+        );
 
         let sig = repo.get_signature(&unknown_id).unwrap();
         assert_eq!(sig, None);
@@ -157,7 +163,13 @@ mod tests {
         let store = make_store();
         let _ = seed_symbol(&store);
         let repo = SymbolRepo::new(store);
-        let unknown_id = SymbolId::generate(&FileId::generate("y.ts"), "typescript", "Y", "function", None);
+        let unknown_id = SymbolId::generate(
+            &FileId::generate("y.ts"),
+            "typescript",
+            "Y",
+            "function",
+            None,
+        );
 
         let found = repo.get_symbol_by_id(&unknown_id).unwrap();
         assert!(found.is_none());

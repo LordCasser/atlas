@@ -11,7 +11,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use db::{FullRebuildGuard, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION, IndexMode, Store};
+use db::{
+    FullRebuildGuard, IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
+    KEY_RESOLUTION_GENERATION, Store,
+};
 use extraction::ExtractionMode;
 use resolution::PathAliasConfig;
 use tracing::{debug_span, info};
@@ -305,7 +308,10 @@ impl IndexPipeline {
             let ct = Arc::clone(&cancel_token);
             let int_cell_for_progress = std::sync::Arc::clone(&int_cell);
             let on_file_progress = move |completed: usize, _total: usize| {
-                if (*int_cell_for_progress.lock().expect("cancellation check lock poisoned"))() {
+                if (*int_cell_for_progress
+                    .lock()
+                    .expect("cancellation check lock poisoned"))()
+                {
                     ct.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 sink.emit(ProgressEvent::ItemProgress {
@@ -439,23 +445,24 @@ impl IndexPipeline {
                 });
 
                 let ps = sink.progress_state();
-                let graph_result = match phase_resolve_and_build(&self.store, &self.project_root, ps)
-                {
-                    Ok(gr) => gr,
-                    Err(e) => {
-                        sink.emit(ProgressEvent::Warning {
-                            phase: PhaseName::Resolution,
-                            message: format!("{e:#}"),
-                        });
-                        return Err(e);
-                    }
-                };
+                let graph_result =
+                    match phase_resolve_and_build(&self.store, &self.project_root, ps) {
+                        Ok(gr) => gr,
+                        Err(e) => {
+                            sink.emit(ProgressEvent::Warning {
+                                phase: PhaseName::Resolution,
+                                message: format!("{e:#}"),
+                            });
+                            return Err(e);
+                        }
+                    };
                 stats.resolved = graph_result.resolved;
                 stats.edges_built = graph_result.edges_written;
                 if graph_result.edges_written < graph_result.edges_built {
                     return Err(anyhow::anyhow!(
                         "edge persistence failed: {} built, {} written — structural index is incomplete",
-                        graph_result.edges_built, graph_result.edges_written,
+                        graph_result.edges_built,
+                        graph_result.edges_written,
                     ));
                 }
                 sink.emit(ProgressEvent::PhaseFinished {
@@ -464,8 +471,7 @@ impl IndexPipeline {
                     failed: 0,
                     detail: Some(format!(
                         "{} resolved, {} edges built ({} written)",
-                        graph_result.resolved, graph_result.edges_built,
-                        graph_result.edges_written,
+                        graph_result.resolved, graph_result.edges_built, graph_result.edges_written,
                     )),
                 });
                 last_phase = PhaseName::Resolution;
@@ -664,9 +670,7 @@ impl IndexPipeline {
             return Ok(false);
         }
 
-        let stored_hash = self
-            .store
-            .get_metadata(KEY_RESOLUTION_CONFIG_HASH)?;
+        let stored_hash = self.store.get_metadata(KEY_RESOLUTION_CONFIG_HASH)?;
 
         let index_mode = match &self.options.mode {
             ExtractionMode::Manifest => IndexMode::Manifest,
@@ -684,9 +688,7 @@ impl IndexPipeline {
         // Path aliases are not tracked per-run; pass None.  Path-alias
         // config files (tsconfig.json / jsconfig.json) are detected by
         // phase_resolve_and_build's own change-detection logic.
-        let current_hash = self
-            .store
-            .resolution_config_hash(&index_mode, None)?;
+        let current_hash = self.store.resolution_config_hash(&index_mode, None)?;
 
         Ok(stored_hash == Some(current_hash))
     }
@@ -702,9 +704,7 @@ impl IndexPipeline {
             ExtractionMode::LazyDataflow { .. } => IndexMode::Full,
             ExtractionMode::Full => IndexMode::Full,
         };
-        let current_hash = self
-            .store
-            .resolution_config_hash(&index_mode, None)?;
+        let current_hash = self.store.resolution_config_hash(&index_mode, None)?;
 
         // Store config hash as plain metadata (string) so
         // should_skip_resolution can compare with lock_read().

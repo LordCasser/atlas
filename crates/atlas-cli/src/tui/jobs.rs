@@ -31,7 +31,7 @@ use atlas_engine::{
     CallerChain, Engine, GraphEngine, Language, SearchEngine, SearchResult, Store, SymbolId,
 };
 
-use super::search_session::{ParsedSearch, parse_query, do_search};
+use super::search_session::{ParsedSearch, do_search, parse_query};
 
 // ── Job types ────────────────────────────────────────────────────────────────
 

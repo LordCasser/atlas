@@ -7,9 +7,9 @@
 //!         │
 //!         └── tools/call ──► ToolRouter::call_tool()
 //!
-//! Progress notifications for long-running operations (e.g. `index`) follow
-//! the MCP spec: a progressToken from `_meta` triggers `notifications/progress`
-//! updates through the `peer` transport. See https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress.
+//! Progress notifications follow the MCP spec: a progressToken from `_meta`
+//! triggers `notifications/progress` updates through the `peer` transport.
+//! See https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,7 +25,6 @@ use rmcp::service::RequestContext;
 use self::tools::ToolRouter;
 
 pub mod protocol;
-pub mod task_manager;
 pub mod tools;
 
 // Re-export for integration tests and diagnostics
@@ -34,14 +33,22 @@ pub use tools::make_all_tools;
 
 /// The MCP server orchestrator.
 pub struct McpServer {
-    store: Arc<Store>,
-    workspace: Workspace,
+    initial_project: Option<(Arc<Store>, Workspace)>,
 }
 
 impl McpServer {
     /// Create a new MCP server backed by the given store and workspace.
     pub fn new(store: Arc<Store>, workspace: Workspace) -> Self {
-        Self { store, workspace }
+        Self {
+            initial_project: Some((store, workspace)),
+        }
+    }
+
+    /// Create a new MCP server without an active project.
+    pub fn new_unopened() -> Self {
+        Self {
+            initial_project: None,
+        }
     }
 
     /// Start the MCP server loop (blocking).
@@ -52,7 +59,7 @@ impl McpServer {
     /// (`tokio::spawn` in `call_tool`) can run on a separate worker while
     /// the primary tool dispatch holds the router mutex for synchronous
     /// CPU/IO work.  Two workers are sufficient: one for the rmcp
-    /// serve loop, one for progress forwarding and `wait_for_task` polls.
+    /// serve loop and progress forwarding.
     pub fn serve(self) -> anyhow::Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -63,9 +70,10 @@ impl McpServer {
 
     /// Async serve loop driven by the official `rmcp` stdio transport.
     async fn serve_async(self) -> anyhow::Result<()> {
-        let store = self.store;
-        let project_root = self.workspace.root().to_path_buf();
-        let service = AtlasMcpService::new(store, project_root);
+        let service = match self.initial_project {
+            Some((store, workspace)) => AtlasMcpService::new(store, workspace.root().to_path_buf()),
+            None => AtlasMcpService::new_unopened(),
+        };
 
         let running = service
             .serve(rmcp::transport::stdio())
@@ -88,6 +96,12 @@ impl AtlasMcpService {
     fn new(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         Self {
             router: Mutex::new(ToolRouter::new_empty(store, project_root)),
+        }
+    }
+
+    fn new_unopened() -> Self {
+        Self {
+            router: Mutex::new(ToolRouter::new_unopened()),
         }
     }
 
@@ -181,87 +195,40 @@ impl ServerHandler for AtlasMcpService {
             // ── Build request-scoped context (replaces global progress_sender) ──
             // For long-running tools with a progress token, create a channel and
             // spawn a forwarder that converts ProgressReport → MCP notifications.
-            let (ctx, _progress_task) =
-                if matches!(tool_name.as_str(), "index" | "project" | "search" | "symbol" | "trace")
-                    && has_progress_token
-                {
-                    let (tx, mut rx) =
-                        tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
-                    let token = progress_token.unwrap();
-                    let peer = context.peer.clone();
+            let (ctx, _progress_task) = if matches!(
+                tool_name.as_str(),
+                "project" | "search" | "symbol" | "trace"
+            ) && has_progress_token
+            {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                let token = progress_token.unwrap();
+                let peer = context.peer.clone();
 
-                    let ctx = tools::ToolCallContext::with_progress_sender(tx);
+                let ctx = tools::ToolCallContext::with_progress_sender(tx);
 
-                    let forwarder = tokio::spawn(async move {
-                        while let Some((progress, total, message)) = rx.recv().await {
-                            let mut params =
-                                rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
-                            if let Some(t) = total {
-                                params = params.with_total(t);
-                            }
-                            if let Some(m) = message {
-                                params = params.with_message(m);
-                            }
-                            let _ = peer.notify_progress(params).await;
+                let forwarder = tokio::spawn(async move {
+                    while let Some((progress, total, message)) = rx.recv().await {
+                        let mut params =
+                            rmcp_model::ProgressNotificationParam::new(token.clone(), progress);
+                        if let Some(t) = total {
+                            params = params.with_total(t);
                         }
-                    });
+                        if let Some(m) = message {
+                            params = params.with_message(m);
+                        }
+                        let _ = peer.notify_progress(params).await;
+                    }
+                });
 
-                    (ctx, Some(forwarder))
-                } else {
-                    (tools::ToolCallContext::empty(), None)
-                };
+                (ctx, Some(forwarder))
+            } else {
+                (tools::ToolCallContext::empty(), None)
+            };
 
-            let mut args = request
+            let args = request
                 .arguments
                 .map(serde_json::Value::Object)
                 .unwrap_or(serde_json::Value::Null);
-            if should_auto_background_without_progress(&tool_name, &args, has_progress_token) {
-                ensure_object_bool(&mut args, "background", true);
-                ensure_object_bool(&mut args, "_auto_background", true);
-            }
-
-            // ── wait_for_task: async poll loop (must not hold std Mutex) ──
-            if tool_name == "wait_for_task" {
-                let tm = {
-                    let mut router = self.lock_router().map_err(|_| {
-                        rmcp::ErrorData::internal_error("Atlas MCP router lock poisoned", None)
-                    })?;
-                    Arc::clone(&router.session_job.task_manager)
-                };
-
-                let wfr = tools::wait_for::handle_wait_for_task(&tm, &args).await;
-
-                // If a "project" background task completed, activate it.
-                let (json_text, is_error) = if wfr.task_is_project_completed {
-                    let mut router = self.lock_router().map_err(|_| {
-                        rmcp::ErrorData::internal_error(
-                            "Atlas MCP router lock poisoned during activation",
-                            None,
-                        )
-                    })?;
-                    let task_id = crate::tools::get_str(&args, "task_id");
-                    let mut val: serde_json::Value =
-                        serde_json::from_str(&wfr.json_text).unwrap_or_default();
-                    if let Some(proj) = router.activate_pending_project_for_task(task_id) {
-                        val["activation"] = serde_json::Value::String("activated".into());
-                        val["activated_project"] = serde_json::Value::String(proj);
-                    } else {
-                        val["activation"] = serde_json::Value::String("already_activated".into());
-                    }
-                    (
-                        serde_json::to_string_pretty(&val).unwrap_or_else(|e| e.to_string()),
-                        wfr.is_error,
-                    )
-                } else {
-                    (wfr.json_text, wfr.is_error)
-                };
-
-                let ct_result = protocol::CallToolResult {
-                    content: vec![protocol::ContentBlock::Text { text: json_text }],
-                    is_error: Some(is_error),
-                };
-                return Ok(Self::to_rmcp_result(ct_result));
-            }
 
             // ── Standard tool dispatch ────────────────────────────────────
             // Resource preparation (graph init / refresh) is now handled
@@ -295,63 +262,10 @@ impl ServerHandler for AtlasMcpService {
     }
 }
 
-fn should_auto_background_without_progress(
-    tool_name: &str,
-    args: &serde_json::Value,
-    has_progress_token: bool,
-) -> bool {
-    if has_progress_token {
-        return false;
-    }
-    match tool_name {
-        "index" => true,
-        "project" => args
-            .get("scan_files")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
-fn ensure_object_bool(args: &mut serde_json::Value, key: &str, value: bool) {
-    if !args.is_object() {
-        *args = serde_json::Value::Object(Default::default());
-    }
-    if let Some(obj) = args.as_object_mut() {
-        obj.insert(key.to_string(), serde_json::Value::Bool(value));
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     #[test]
-    fn auto_background_policy_protects_no_progress_clients() {
-        assert!(super::should_auto_background_without_progress(
-            "index",
-            &json!({}),
-            false
-        ));
-        assert!(!super::should_auto_background_without_progress(
-            "index",
-            &json!({}),
-            true
-        ));
-        assert!(super::should_auto_background_without_progress(
-            "project",
-            &json!({ "scan_files": true }),
-            false
-        ));
-        assert!(!super::should_auto_background_without_progress(
-            "project",
-            &json!({}),
-            false
-        ));
-        assert!(!super::should_auto_background_without_progress(
-            "search",
-            &json!({}),
-            false
-        ));
+    fn unopened_server_can_be_constructed() {
+        let _server = super::McpServer::new_unopened();
     }
 }

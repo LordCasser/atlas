@@ -228,16 +228,45 @@ pub enum SymbolTier {
 /// A known gap in analysis completeness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KnownGap {
-    UnresolvedImport { from: String, import_path: String },
-    IndirectCall { callsite: String, reason: String },
-    TypeOutside { type_name: String, ref_by: String },
-    BudgetExhausted { strategy: String, remaining: usize },
-    ConditionalBranch { symbol: String, guard: String, branches: usize },
-    CodeGenerationNotExpanded { at: String, generator: String },
-    HighFanoutName { name: String, candidates: usize, action: String },
+    UnresolvedImport {
+        from: String,
+        import_path: String,
+    },
+    IndirectCall {
+        callsite: String,
+        reason: String,
+    },
+    TypeOutside {
+        type_name: String,
+        ref_by: String,
+    },
+    BudgetExhausted {
+        strategy: String,
+        remaining: usize,
+    },
+    ConditionalBranch {
+        symbol: String,
+        guard: String,
+        branches: usize,
+    },
+    CodeGenerationNotExpanded {
+        at: String,
+        generator: String,
+    },
+    HighFanoutName {
+        name: String,
+        candidates: usize,
+        action: String,
+    },
     /// Coverage percentage as integer 0–100 (avoids floating-point Eq issue).
-    SymbolHintsIncomplete { name: String, coverage_pct: u32 },
-    VisibilityHidden { symbol: String, reason: String },
+    SymbolHintsIncomplete {
+        name: String,
+        coverage_pct: u32,
+    },
+    VisibilityHidden {
+        symbol: String,
+        reason: String,
+    },
 }
 
 /// Coverage tier — how much of the repository's relevant data was analyzed.

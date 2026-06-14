@@ -15,8 +15,7 @@
 //! Unknown prefixes and the remaining text become the freetext search term.
 
 use atlas_engine::{
-    Language, SearchEngine, SearchOptions, SearchResult,
-    parse_query as engine_parse_query,
+    Language, SearchEngine, SearchOptions, SearchResult, parse_query as engine_parse_query,
 };
 
 /// Parsed TUI search query with separated scope/filter and term.
@@ -64,10 +63,12 @@ pub(crate) fn parse_query(raw_query: &str) -> ParsedSearch {
         if prefix
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
-            && !rest.is_empty() && !prefix.contains(' ') {
-                legacy_scope = Some(format!("{prefix}/"));
-                legacy_term = Some(rest.trim().to_string());
-            }
+            && !rest.is_empty()
+            && !prefix.contains(' ')
+        {
+            legacy_scope = Some(format!("{prefix}/"));
+            legacy_term = Some(rest.trim().to_string());
+        }
     }
 
     // Decide scope: structured path_filter wins; legacy is fallback.

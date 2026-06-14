@@ -14,8 +14,8 @@ use types::ids::FileId;
 use types::structs::{CapabilityMask, FileInfo};
 use types::{layer, status};
 
-use crate::lazy_structural::{CandidateProvider, LazyStructuralService};
 use crate::LazyDataflowService;
+use crate::lazy_structural::{CandidateProvider, LazyStructuralService};
 
 use super::engine::ClosureEngine;
 use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
@@ -230,7 +230,13 @@ fn test_locate_seed_symbol() {
     );
 
     let df_store = store.clone();
-    let engine = ClosureEngine::new(store, lazy_structural, LazyDataflowService::new(df_store, None), None, vec![]);
+    let engine = ClosureEngine::new(
+        store,
+        lazy_structural,
+        LazyDataflowService::new(df_store, None),
+        None,
+        vec![],
+    );
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -403,9 +409,10 @@ fn test_build_closure_budget_exhausted() {
     );
 
     // A BudgetExhausted gap must be recorded
-    let has_budget_gap = closure.gaps.iter().any(|g| {
-        matches!(g, types::structs::KnownGap::BudgetExhausted { .. })
-    });
+    let has_budget_gap = closure
+        .gaps
+        .iter()
+        .any(|g| matches!(g, types::structs::KnownGap::BudgetExhausted { .. }));
     assert!(
         has_budget_gap,
         "closure must contain a BudgetExhausted gap when max_files=0 and additions exist"
@@ -423,7 +430,13 @@ fn test_build_closure_records_gap_on_missing_file() {
         Box::new(MockCandidateProvider { candidates: vec![] }),
     );
     let df_store = store.clone();
-    let engine = ClosureEngine::new(store, lazy_structural, LazyDataflowService::new(df_store, None), None, vec![]);
+    let engine = ClosureEngine::new(
+        store,
+        lazy_structural,
+        LazyDataflowService::new(df_store, None),
+        None,
+        vec![],
+    );
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -1099,10 +1112,7 @@ fn test_typegraph_dedup_same_type_multiple_refs() {
         .build_closure(&window, "test-typegraph-dedup")
         .expect("build_closure should succeed");
 
-    assert!(
-        closure.files.contains(&file_b),
-        "file B must be in closure"
-    );
+    assert!(closure.files.contains(&file_b), "file B must be in closure");
     // file B should appear exactly once: seed (file_a) + type dep (file_b) = 2
     assert_eq!(
         closure.files.len(),
@@ -1433,23 +1443,11 @@ fn test_callgraph_both_finds_both_directions() {
     let sym_c = insert_function_symbol(&store, file_c, "c");
 
     // Reference A → "b" (A calls B) — outgoing from B, incoming to A
-    let ref_a_to_b = make_unresolved_reference(
-        file_a,
-        Some(sym_a),
-        types::ReferenceKind::Call,
-        "b",
-        10,
-        11,
-    );
+    let ref_a_to_b =
+        make_unresolved_reference(file_a, Some(sym_a), types::ReferenceKind::Call, "b", 10, 11);
     // Reference B → "c" (B calls C) — outgoing from B, incoming to C
-    let ref_b_to_c = make_unresolved_reference(
-        file_b,
-        Some(sym_b),
-        types::ReferenceKind::Call,
-        "c",
-        10,
-        11,
-    );
+    let ref_b_to_c =
+        make_unresolved_reference(file_b, Some(sym_b), types::ReferenceKind::Call, "c", 10, 11);
     store.insert_references(&[ref_a_to_b, ref_b_to_c]).unwrap();
 
     let engine = test_engine(store);
@@ -1508,23 +1506,11 @@ fn test_callgraph_incoming_crosses_multiple_edges() {
     let _sym_z = insert_function_symbol(&store, file_z, "z");
 
     // Reference X → "z" (X calls Z)
-    let ref_x_to_z = make_unresolved_reference(
-        file_x,
-        Some(sym_x),
-        types::ReferenceKind::Call,
-        "z",
-        10,
-        11,
-    );
+    let ref_x_to_z =
+        make_unresolved_reference(file_x, Some(sym_x), types::ReferenceKind::Call, "z", 10, 11);
     // Reference Y → "z" (Y calls Z)
-    let ref_y_to_z = make_unresolved_reference(
-        file_y,
-        Some(sym_y),
-        types::ReferenceKind::Call,
-        "z",
-        10,
-        11,
-    );
+    let ref_y_to_z =
+        make_unresolved_reference(file_y, Some(sym_y), types::ReferenceKind::Call, "z", 10, 11);
     store.insert_references(&[ref_x_to_z, ref_y_to_z]).unwrap();
 
     let engine = test_engine(store);
@@ -1583,23 +1569,11 @@ fn test_callgraph_incoming_dedup_caller_files() {
     let _sym_w = insert_function_symbol(&store, file_w, "w");
 
     // Reference X → "z" (X calls Z)
-    let ref_x_to_z = make_unresolved_reference(
-        file_x,
-        Some(sym_x),
-        types::ReferenceKind::Call,
-        "z",
-        10,
-        11,
-    );
+    let ref_x_to_z =
+        make_unresolved_reference(file_x, Some(sym_x), types::ReferenceKind::Call, "z", 10, 11);
     // Reference X → "w" (X calls W)
-    let ref_x_to_w = make_unresolved_reference(
-        file_x,
-        Some(sym_x),
-        types::ReferenceKind::Call,
-        "w",
-        20,
-        21,
-    );
+    let ref_x_to_w =
+        make_unresolved_reference(file_x, Some(sym_x), types::ReferenceKind::Call, "w", 20, 21);
     store.insert_references(&[ref_x_to_z, ref_x_to_w]).unwrap();
 
     let engine = test_engine(store);
@@ -2090,7 +2064,13 @@ fn test_scoped_resolution_empty_closure_no_crash() {
         None,
         Box::new(MockCandidateProvider { candidates: vec![] }),
     );
-    let engine = ClosureEngine::new(store.clone(), lazy_structural, LazyDataflowService::new(store.clone(), None), None, vec![]);
+    let engine = ClosureEngine::new(
+        store.clone(),
+        lazy_structural,
+        LazyDataflowService::new(store.clone(), None),
+        None,
+        vec![],
+    );
 
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -2184,7 +2164,10 @@ fn test_graph_builder_produces_canonical_edges() {
     assert!(
         calls_edge.is_some(),
         "expected a Calls edge from caller to callee; found edges: {:?}",
-        edges.iter().map(|e| (e.kind.as_str(), &e.target)).collect::<Vec<_>>()
+        edges
+            .iter()
+            .map(|e| (e.kind.as_str(), &e.target))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2504,14 +2487,8 @@ fn test_visibility_filter_rust_private_excluded() {
         Some(Visibility::Private),
     );
 
-    let ref_use = make_unresolved_reference(
-        file_a,
-        None,
-        types::ReferenceKind::Call,
-        "helper",
-        10,
-        16,
-    );
+    let ref_use =
+        make_unresolved_reference(file_a, None, types::ReferenceKind::Call, "helper", 10, 16);
     store.insert_references(&[ref_use]).unwrap();
 
     let engine = test_engine(store.clone());
@@ -2561,14 +2538,8 @@ fn test_visibility_filter_public_visible() {
         None, // None = public/non-static in C
     );
 
-    let ref_use = make_unresolved_reference(
-        file_a,
-        None,
-        types::ReferenceKind::Call,
-        "helper",
-        10,
-        16,
-    );
+    let ref_use =
+        make_unresolved_reference(file_a, None, types::ReferenceKind::Call, "helper", 10, 16);
     store.insert_references(&[ref_use]).unwrap();
 
     let engine = test_engine(store.clone());
@@ -2623,8 +2594,7 @@ fn test_build_dataflow_for_function() {
     let file_id = insert_file_structural_complete(&store, "src/test_df.c");
 
     // Insert a function symbol for that file
-    let symbol_id =
-        types::ids::SymbolId::generate(&file_id, "c", "do_work", "function", None);
+    let symbol_id = types::ids::SymbolId::generate(&file_id, "c", "do_work", "function", None);
     let symbol_def = types::structs::SymbolDef {
         id: symbol_id,
         kind: types::SymbolKind::Function,

@@ -37,16 +37,14 @@ use types::enums::{Language, ReferenceKind, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::{KnownGap, SymbolDef};
 
+use crate::LazyDataflowService;
 use crate::closure_planner::{ClosurePlanner, IncludeRoot};
 use crate::focus::focus_graph_builder::FocusGraphBuilder;
 use crate::focus::visibility_filter::{VisibilityContext, VisibilityFilterRegistry};
 use crate::lazy_budget::LazyBudget;
 use crate::lazy_structural::{EnsureStructuralResult, LazyStructuralService};
-use crate::LazyDataflowService;
 
-use super::types::{
-    ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow,
-};
+use super::types::{ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow};
 
 /// Engine for building focus closures around a user's seed.
 ///
@@ -91,11 +89,7 @@ impl ClosureEngine {
     /// 4. Resolve references scoped to closure (writes to reference_resolutions)
     /// 5. Repeat until termination
     /// 6. Commit visibility atomically (coverage + resolutions)
-    pub fn build_closure(
-        &self,
-        window: &FocusWindow,
-        closure_id: &str,
-    ) -> Result<FocusClosure> {
+    pub fn build_closure(&self, window: &FocusWindow, closure_id: &str) -> Result<FocusClosure> {
         // Insert closure generation record
         self.store.insert_closure_generation(closure_id)?;
 
@@ -151,8 +145,7 @@ impl ClosureEngine {
                     };
                     Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
                         filter.is_visible(sym, from_file, &ctx)
-                    })
-                        as Box<dyn Fn(&SymbolDef, FileId) -> bool>
+                    }) as Box<dyn Fn(&SymbolDef, FileId) -> bool>
                 });
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
                 visibility_filter.as_deref();
@@ -206,9 +199,7 @@ impl ClosureEngine {
             }
 
             // Budget check
-            if !window.budget.can_absorb(&additions)
-                || additions.len() > window.budget.max_files
-            {
+            if !window.budget.can_absorb(&additions) || additions.len() > window.budget.max_files {
                 closure.record_gap(KnownGap::BudgetExhausted {
                     strategy: format!("iteration {iteration}"),
                     remaining: additions.len(),
@@ -260,9 +251,7 @@ impl ClosureEngine {
                 .collect();
             if !truly_new.is_empty() {
                 self.resolver.borrow_mut().resolve_for_closure(
-                    closure_id,
-                    generation,
-                    &truly_new,
+                    closure_id, generation, &truly_new,
                     None, // no visibility filter during incremental resolution
                 )?;
                 for f in &truly_new {
@@ -303,8 +292,7 @@ impl ClosureEngine {
                     };
                     Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
                         filter.is_visible(sym, from_file, &ctx)
-                    })
-                        as Box<dyn Fn(&SymbolDef, FileId) -> bool>
+                    }) as Box<dyn Fn(&SymbolDef, FileId) -> bool>
                 });
 
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
@@ -495,12 +483,10 @@ impl ClosureEngine {
                 ClosureStrategy::ImportNeighborhood { depth } => {
                     // Create a ClosurePlanner for import expansion; plan_closure
                     // takes &self so we reuse the same instance for all files.
-                    let planner = ClosurePlanner::new(
-                        self.store.clone(),
-                        self.project_root.clone(),
-                    )
-                    .with_include_roots(self.include_roots.clone())
-                    .with_limits(*depth as usize, 30);
+                    let planner =
+                        ClosurePlanner::new(self.store.clone(), self.project_root.clone())
+                            .with_include_roots(self.include_roots.clone())
+                            .with_limits(*depth as usize, 30);
 
                     for file_id in &closure.files {
                         let deps = planner.plan_closure(file_id)?;
@@ -573,7 +559,8 @@ impl ClosureEngine {
         let generation = self.store.commit_closure_generation(closure_id)?;
         self.store.make_all_staged_coverage_visible(closure_id)?;
         // T6/D: make scoped reference resolutions visible too
-        self.store.make_resolutions_visible(closure_id, resolution_generation)?;
+        self.store
+            .make_resolutions_visible(closure_id, resolution_generation)?;
         Ok(generation)
     }
 
@@ -643,8 +630,9 @@ impl ClosureEngine {
                 let mut resolved_target_ids: HashSet<SymbolId> = HashSet::new();
 
                 // 1. Closure-scoped resolutions (primary source)
-                let closure_targets =
-                    self.store.get_resolved_targets_for_file_and_kinds_in_closure(
+                let closure_targets = self
+                    .store
+                    .get_resolved_targets_for_file_and_kinds_in_closure(
                         closure_id,
                         file_id,
                         &type_ref_kinds,
@@ -658,10 +646,9 @@ impl ClosureEngine {
                 }
 
                 // 2. Global references table (fallback)
-                let global_refs = self.store.find_references_by_file_and_kinds(
-                    file_id,
-                    &type_ref_kinds,
-                )?;
+                let global_refs = self
+                    .store
+                    .find_references_by_file_and_kinds(file_id, &type_ref_kinds)?;
                 for r in &global_refs {
                     if let Some(resolved) = &r.resolved {
                         resolved_target_ids.insert(resolved.symbol_id);

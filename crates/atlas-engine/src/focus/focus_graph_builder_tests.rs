@@ -109,7 +109,11 @@ fn insert_reference(
         text: name.to_string(),
         name: name.to_string(),
         receiver: None,
-        arity: if kind == ReferenceKind::Call { Some(0) } else { None },
+        arity: if kind == ReferenceKind::Call {
+            Some(0)
+        } else {
+            None
+        },
         range,
         binding_id: None,
         resolved: None,
@@ -167,12 +171,7 @@ fn assert_canonical_edge_exists(
 }
 
 /// Assert no canonical edge exists.
-fn assert_no_canonical_edge(
-    store: &Store,
-    source: &SymbolId,
-    target: &SymbolId,
-    kind: EdgeKind,
-) {
+fn assert_no_canonical_edge(store: &Store, source: &SymbolId, target: &SymbolId, kind: EdgeKind) {
     let edge = store
         .find_edge_by_source_target_kind(source, target, &kind)
         .unwrap();
@@ -251,7 +250,10 @@ fn test_build_for_closure_candidate_edges() {
     let result = builder.build_for_closure("cl_med", 1).unwrap();
 
     assert!(result.stats.edges_built > 0, "should build candidate edges");
-    assert_eq!(result.stats.edges_written, 0, "no canonical edges for Medium");
+    assert_eq!(
+        result.stats.edges_written, 0,
+        "no canonical edges for Medium"
+    );
     assert!(result.candidate_count > 0, "candidate edges expected");
     assert_no_canonical_edge(&store, &caller.id, &target.id, EdgeKind::Calls);
 }
@@ -338,7 +340,10 @@ fn test_build_for_closure_certain_edges_immutable() {
     assert_canonical_edge_exists(&store, &caller.id, &target.id, EdgeKind::Calls);
     // Medium incoming is KEPT (skipped) because Certain is immutable.
     // It is NOT written as candidate — it's simply dropped.
-    assert_eq!(result.stats.edges_built, 0, "Medium should be skipped when Certain exists");
+    assert_eq!(
+        result.stats.edges_built, 0,
+        "Medium should be skipped when Certain exists"
+    );
     assert_eq!(result.candidate_count, 0, "no candidate for skipped Medium");
 }
 

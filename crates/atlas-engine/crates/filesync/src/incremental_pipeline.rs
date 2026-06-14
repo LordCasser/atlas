@@ -388,7 +388,8 @@ impl IncrementalPipeline {
             if graph_result.edges_written < graph_result.edges_built {
                 return Err(anyhow::anyhow!(
                     "edge persistence failed: {} built, {} written — structural index is incomplete",
-                    graph_result.edges_built, graph_result.edges_written,
+                    graph_result.edges_built,
+                    graph_result.edges_written,
                 ));
             }
 
@@ -398,8 +399,7 @@ impl IncrementalPipeline {
                 failed: 0,
                 detail: Some(format!(
                     "{} resolved, {} edges built ({} written)",
-                    graph_result.resolved, graph_result.edges_built,
-                    graph_result.edges_written,
+                    graph_result.resolved, graph_result.edges_built, graph_result.edges_written,
                 )),
             });
         }

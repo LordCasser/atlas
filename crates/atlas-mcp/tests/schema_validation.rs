@@ -9,47 +9,74 @@
 use atlas_mcp::make_all_tools;
 
 #[test]
-fn schema_index_tool_has_analysis_parameter() {
+fn removed_background_index_tools_are_not_registered() {
     let tools = make_all_tools();
-    let index_tool = tools
-        .iter()
-        .find(|t| t.name == "index")
-        .expect("index tool must exist");
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    for removed in ["index", "task_status", "wait_for_task", "resume_task"] {
+        assert!(
+            !names.contains(&removed),
+            "removed MCP tool '{removed}' must not be registered"
+        );
+    }
+    assert!(
+        names.contains(&"resume_query"),
+        "resume_query must replace resume_task"
+    );
+}
 
-    // Verify analysis parameter exists in the tool's inputSchema
-    let props = index_tool
+#[test]
+fn schema_search_requires_scope_and_has_no_background_flag() {
+    let tools = make_all_tools();
+    let search_tool = tools
+        .iter()
+        .find(|t| t.name == "search")
+        .expect("search tool must exist");
+
+    let required = search_tool
+        .input_schema
+        .required
+        .as_ref()
+        .expect("search tool must have required fields");
+    assert!(required.iter().any(|r| r == "query"));
+    assert!(
+        required.iter().any(|r| r == "scope"),
+        "search scope must be required"
+    );
+
+    let props = search_tool
         .input_schema
         .properties
         .as_ref()
-        .expect("index tool must have properties in its schema");
-    let analysis = props
-        .get("analysis")
-        .expect("index tool must have 'analysis' parameter");
-
-    // Verify it's not documented as manifest-only
-    let desc = analysis
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .expect("search tool must have properties in its schema");
     assert!(
-        desc.to_lowercase().contains("structural") || desc.to_lowercase().contains("full"),
-        "analysis parameter description must mention structural/full modes, got: {desc:?}",
+        props.get("background").is_none(),
+        "search.background was removed from MCP semantics"
     );
+}
 
-    // Verify the enum values cover all three modes
-    let enum_vals = analysis.get("enum").and_then(|v| v.as_array());
-    if let Some(vals) = enum_vals {
-        let vals: Vec<&str> = vals.iter().filter_map(|v| v.as_str()).collect();
+#[test]
+fn schema_project_open_has_no_background_index_parameters() {
+    let tools = make_all_tools();
+    let project_tool = tools
+        .iter()
+        .find(|t| t.name == "project")
+        .expect("project tool must exist");
+
+    let props = project_tool
+        .input_schema
+        .properties
+        .as_ref()
+        .expect("project tool must have properties in its schema");
+    for removed in ["background", "scan_files", "force_memory"] {
         assert!(
-            vals.contains(&"manifest"),
-            "analysis enum must contain 'manifest'"
+            props.get(removed).is_none(),
+            "project.{removed} must not be exposed in MCP schema"
         );
-        assert!(
-            vals.contains(&"structural"),
-            "analysis enum must contain 'structural'"
-        );
-        assert!(vals.contains(&"full"), "analysis enum must contain 'full'");
     }
+    assert!(
+        props.get("storage").is_some(),
+        "project.storage must remain the explicit persistence selector"
+    );
 }
 
 #[test]

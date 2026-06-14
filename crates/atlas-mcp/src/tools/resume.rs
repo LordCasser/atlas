@@ -1,19 +1,19 @@
-//! `resume_task` — resume a previous query to get enhanced results after
+//! `resume_query` — resume a previous query to get enhanced results after
 //! lazy background extraction completes.
 //!
 //! Re-dispatches to the original handler after re-running lazy extraction on
 //! the snapshot's window, so newly cached data is picked up.
 
 use super::CallsDispatch;
-use super::resolve_calls_dispatch;
 use super::ToolRouter;
 use super::query_snapshot::QueryStatus;
+use super::resolve_calls_dispatch;
 use serde_json::{Value, json};
 
 impl ToolRouter {
-    /// Handle `resume_task` — re-run lazy extraction then re-execute the
+    /// Handle `resume_query` — re-run lazy extraction then re-execute the
     /// original tool handler with the same arguments.
-    pub(crate) fn handle_resume_task(&mut self, args: &Value) -> (String, bool) {
+    pub(crate) fn handle_resume_query(&mut self, args: &Value) -> (String, bool) {
         let query_id = crate::tools::get_str(args, "query_id");
         if query_id.is_empty() {
             return (
@@ -25,7 +25,15 @@ impl ToolRouter {
         // Prune expired snapshots before lookup
         self.active_mut().job_runtime.prune_expired_snapshots();
 
-        let snapshot = match self.active_mut().job_runtime.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get(query_id).cloned() {
+        let snapshot = match self
+            .active_mut()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(query_id)
+            .cloned()
+        {
             Some(s) => s,
             None => {
                 return (
@@ -39,7 +47,14 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self.active_mut().job_runtime.query_snapshots.lock().unwrap_or_else(|e| e.into_inner()).get_mut(query_id) {
+        if let Some(s) = self
+            .active_mut()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(query_id)
+        {
             s.status = QueryStatus::Refining;
         }
 
@@ -49,7 +64,13 @@ impl ToolRouter {
             let intent = window
                 .seed_unit
                 .symbol_id
-                .and_then(|sid| self.active_mut().store.find_symbol_by_id(&sid).ok().flatten())
+                .and_then(|sid| {
+                    self.active_mut()
+                        .store
+                        .find_symbol_by_id(&sid)
+                        .ok()
+                        .flatten()
+                })
                 .map(|sym| atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
@@ -69,7 +90,11 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    if let Err(e) = self.active_mut().analysis_runtime.ensure_dataflow_for_function(sid, None) {
+                    if let Err(e) = self
+                        .active_mut()
+                        .analysis_runtime
+                        .ensure_dataflow_for_function(sid, None)
+                    {
                         tracing::warn!("Lazy dataflow re-trigger failed for {:?}: {e:#}", sid);
                     }
                 }
@@ -156,7 +181,9 @@ impl ToolRouter {
 
         // Mark as Ready if the re-run completed successfully
         if let Some(s) = self
-            .active_mut().job_runtime.query_snapshots
+            .active_mut()
+            .job_runtime
+            .query_snapshots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(&original_query_id)

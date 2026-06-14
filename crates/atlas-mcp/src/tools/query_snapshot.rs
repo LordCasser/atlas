@@ -1,6 +1,6 @@
 //! Query snapshot and investigation state — MCP session-scoped query tracking.
 //!
-//! QuerySnapshot records the original tool call for `atlas_resume` recovery.
+//! QuerySnapshot records the original tool call for `resume_query` recovery.
 //! InvestigationState tracks the active investigation focus for lazy job
 //! prioritization. Both are in-memory (lost on server restart).
 
@@ -12,7 +12,7 @@ use serde_json::Value;
 /// TTL for query snapshots before they expire (default 5 minutes).
 pub(crate) const QUERY_SNAPSHOT_TTL_SECS: u64 = 300;
 
-/// Snapshot of an MCP tool call, stored for potential `atlas_resume`.
+/// Snapshot of an MCP tool call, stored for potential `resume_query`.
 #[derive(Debug, Clone)]
 pub(crate) struct QuerySnapshot {
     pub query_id: String,

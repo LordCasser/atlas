@@ -1,7 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use std::sync::Arc;
 use atlas_engine::Store;
 use atlas_mcp::tools::ToolRouter;
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::sync::Arc;
 
 fn bench_graph_init(c: &mut Criterion) {
     let store = Arc::new(Store::open_in_memory().unwrap());

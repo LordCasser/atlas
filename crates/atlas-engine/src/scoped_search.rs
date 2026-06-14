@@ -186,13 +186,25 @@ impl ScopedSearchService {
             .as_deref()
             .map(normalize_scope)
             .unwrap_or_default();
-        let scope_file_count = if normalized_scope.is_empty() {
+        let mut warnings: Vec<String> = Vec::new();
+
+        let mut scope_file_count = if normalized_scope.is_empty() {
             self.store.count_files()?
         } else {
             self.store.count_files_in_scope(&normalized_scope)?
         };
-
-        let mut warnings: Vec<String> = Vec::new();
+        let mut inventory_backed = false;
+        let inventory_scope_count = self
+            .store
+            .count_file_inventory_in_scope(&normalized_scope)
+            .unwrap_or(0);
+        if inventory_scope_count > scope_file_count {
+            scope_file_count = inventory_scope_count;
+            inventory_backed = true;
+            warnings.push(
+                "Using focus file inventory because no manifest index exists yet".to_string(),
+            );
+        }
 
         // No files at all — bail early.
         if scope_file_count == 0 {
@@ -271,37 +283,32 @@ impl ScopedSearchService {
         )?;
 
         let mut triggered_lazy = false;
+        let mut lazy_covered_scope = false;
 
         // 5. Trigger lazy structural if manifest returned nothing and policy
-        //    says we should try.
-        if symbols.is_empty() && should_trigger_lazy && !term.is_empty() {
-            let file_ids = if normalized_scope.is_empty() {
-                self.store
-                    .list_files()?
-                    .into_iter()
-                    .map(|f| f.file_id)
-                    .collect()
-            } else {
-                self.store.list_file_ids_in_scope(&normalized_scope, 100)?
-            };
-
-            if !file_ids.is_empty() {
+        //    says we should try. For inventory-backed projects there is no
+        //    manifest index yet, so use the query text to locate a bounded
+        //    candidate set instead of expanding an arbitrary prefix of a large
+        //    scope.
+        if symbols.is_empty() && !term.is_empty() && (should_trigger_lazy || inventory_backed) {
+            if inventory_backed && !should_trigger_lazy {
                 let ensured = self
                     .engine
                     .lazy_structural()
-                    .ensure_structural_for_file_ids(&file_ids)?;
-                triggered_lazy = true;
-                precision_tier = ensured.precision_tier;
-                capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
-
+                    .ensure_structural_for_symbol_in_scope(&term, Some(&normalized_scope))?;
+                triggered_lazy = ensured.files_built > 0 || ensured.files_cached > 0;
+                lazy_covered_scope = scope_file_count <= ensured.files_built + ensured.files_cached
+                    && !ensured.budget_exceeded;
+                if triggered_lazy {
+                    precision_tier = ensured.precision_tier;
+                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+                }
                 if ensured.budget_exceeded {
                     warnings.push(
                         "Structural parsing hit budget; narrow the scope for exact results."
                             .to_string(),
                     );
                 }
-
-                // Re-search after fresh structural data.
                 symbols = search_symbols_scoped(
                     &self.store,
                     &term,
@@ -311,8 +318,55 @@ impl ScopedSearchService {
                     language,
                     scope_file_count,
                 )?;
+            } else {
+                let mut file_ids = if normalized_scope.is_empty() {
+                    self.store
+                        .list_files()?
+                        .into_iter()
+                        .map(|f| f.file_id)
+                        .collect()
+                } else {
+                    self.store.list_file_ids_in_scope(&normalized_scope, 100)?
+                };
+                if file_ids.is_empty() {
+                    file_ids = self
+                        .store
+                        .list_file_inventory_ids_in_scope(&normalized_scope, 100)
+                        .unwrap_or_default();
+                }
+
+                if !file_ids.is_empty() {
+                    let requested_files = file_ids.len();
+                    let ensured = self
+                        .engine
+                        .lazy_structural()
+                        .ensure_structural_for_file_ids(&file_ids)?;
+                    triggered_lazy = true;
+                    lazy_covered_scope =
+                        requested_files >= scope_file_count && !ensured.budget_exceeded;
+                    precision_tier = ensured.precision_tier;
+                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+
+                    if ensured.budget_exceeded {
+                        warnings.push(
+                            "Structural parsing hit budget; narrow the scope for exact results."
+                                .to_string(),
+                        );
+                    }
+
+                    // Re-search after fresh structural data.
+                    symbols = search_symbols_scoped(
+                        &self.store,
+                        &term,
+                        &normalized_scope,
+                        candidate_limit,
+                        kind_filter,
+                        language,
+                        scope_file_count,
+                    )?;
+                }
+                // else: scope exists but no files — nothing to extract.
             }
-            // else: scope exists but no files — nothing to extract.
         }
 
         let total = symbols.len();
@@ -346,6 +400,10 @@ impl ScopedSearchService {
         let coverage = if scope_file_count == 0 {
             SearchCoverage::Partial {
                 reason: "No indexed files".to_string(),
+            }
+        } else if inventory_backed && !lazy_covered_scope {
+            SearchCoverage::Partial {
+                reason: "Focus inventory is available, but only a bounded subset has structural facts for this query".to_string(),
             }
         } else {
             SearchCoverage::Full

@@ -112,7 +112,10 @@ impl ImportResolver {
             }
 
             if let Ok(syms) = self.store.find_symbols_by_qname(qname) {
-                self.qname_cache.lock().unwrap().insert(qname.clone(), syms.clone());
+                self.qname_cache
+                    .lock()
+                    .unwrap()
+                    .insert(qname.clone(), syms.clone());
                 results.extend(syms);
             }
             // DB errors not cached — transient failures should be retried
@@ -202,10 +205,12 @@ impl ImportResolver {
         // many references in the same file.  Each miss costs multiple recursive
         // DB queries (find_imports_by_file + resolve_relative_module +
         // find_symbols_by_file) in follow_reexport_chain.
-        let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
-        if let Some(cached) =
-            self.reexport_cache.lock().unwrap().get(&cache_key).cloned()
-        {
+        let cache_key = (
+            import.file_id,
+            import.module.clone(),
+            target_name.to_string(),
+        );
+        if let Some(cached) = self.reexport_cache.lock().unwrap().get(&cache_key).cloned() {
             return Ok(cached);
         }
 
@@ -223,8 +228,15 @@ impl ImportResolver {
             }
         }
         // Cache result for subsequent references with same (file, module, name)
-        let cache_key = (import.file_id, import.module.clone(), target_name.to_string());
-        self.reexport_cache.lock().unwrap().insert(cache_key, resolved.clone());
+        let cache_key = (
+            import.file_id,
+            import.module.clone(),
+            target_name.to_string(),
+        );
+        self.reexport_cache
+            .lock()
+            .unwrap()
+            .insert(cache_key, resolved.clone());
         Ok(resolved)
     }
 
@@ -298,7 +310,12 @@ impl ImportResolver {
         let cache_key = (resolved_module.to_string(), target_name.to_string());
 
         // Check instance-scoped cache first
-        let cached = self.module_path_cache.lock().unwrap().get(&cache_key).cloned();
+        let cached = self
+            .module_path_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key)
+            .cloned();
         if let Some(cached_result) = cached {
             return cached_result;
         }
@@ -307,7 +324,10 @@ impl ImportResolver {
             Ok(files) => files,
             Err(_) => {
                 // Cache negative result
-                self.module_path_cache.lock().unwrap().insert(cache_key, Vec::new());
+                self.module_path_cache
+                    .lock()
+                    .unwrap()
+                    .insert(cache_key, Vec::new());
                 return Vec::new();
             }
         };
@@ -320,7 +340,10 @@ impl ImportResolver {
         }
 
         // Cache the result (empty vec = known miss)
-        self.module_path_cache.lock().unwrap().insert(cache_key, results.clone());
+        self.module_path_cache
+            .lock()
+            .unwrap()
+            .insert(cache_key, results.clone());
 
         results
     }
@@ -731,7 +754,10 @@ mod tests {
         let results2 = resolver.resolve_import(&import).unwrap();
 
         assert!(results1.is_empty(), "first call should have no results");
-        assert!(results2.is_empty(), "second call should reuse negative cache entry");
+        assert!(
+            results2.is_empty(),
+            "second call should reuse negative cache entry"
+        );
     }
 
     #[test]
@@ -783,7 +809,10 @@ mod tests {
 
         // Query "bar" — different QName, should NOT use foo's cache entry
         let results_bar = resolver.resolve_import(&make_import("bar", 1)).unwrap();
-        assert!(results_bar.is_empty(), "bar should not match foo's cached result");
+        assert!(
+            results_bar.is_empty(),
+            "bar should not match foo's cached result"
+        );
     }
 
     /// Cache is scoped to the ImportResolver instance, not global.

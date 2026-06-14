@@ -1,20 +1,16 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result;
 use atlas_engine::Engine;
 use atlas_engine::Store;
-use anyhow::Result;
 
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
 use super::runtime::{
-    analysis_runtime::AnalysisRuntime,
-    graph_runtime::GraphRuntime,
-    invalidation::RuntimeInvalidation,
-    job_runtime::JobRuntime,
-    overlay_runtime::OverlayRuntime,
-    query_runtime::QueryRuntime,
-    store_query_runtime::StoreQueryRuntime,
+    analysis_runtime::AnalysisRuntime, graph_runtime::GraphRuntime,
+    invalidation::RuntimeInvalidation, job_runtime::JobRuntime, overlay_runtime::OverlayRuntime,
+    query_runtime::QueryRuntime, store_query_runtime::StoreQueryRuntime,
 };
 
 /// The active project aggregate.
@@ -51,8 +47,7 @@ impl ActiveProject {
             lazy_refresh_queue.clone(),
         );
 
-        let source_extractor =
-            atlas_engine::SourceExtractor::new(store.clone(), root.clone());
+        let source_extractor = atlas_engine::SourceExtractor::new(store.clone(), root.clone());
 
         let graph_runtime = GraphRuntime::new(
             store.clone(),
@@ -61,20 +56,14 @@ impl ActiveProject {
             invalidation.clone(),
         );
 
-        let store_query_runtime = StoreQueryRuntime::new(
-            store.clone(),
-            root.clone(),
-        );
+        let store_query_runtime = StoreQueryRuntime::new(store.clone(), root.clone());
 
         let engine = Engine::from_store(store.clone(), Some(root.as_ref()));
 
         Ok(Self {
             query_runtime,
             graph_runtime,
-            analysis_runtime: AnalysisRuntime::new(
-                store.clone(),
-                Some(root.clone()),
-            ),
+            analysis_runtime: AnalysisRuntime::new(store.clone(), Some(root.clone())),
             overlay_runtime: OverlayRuntime::new(store.clone(), invalidation),
             store_query_runtime,
             job_runtime: JobRuntime::new(),

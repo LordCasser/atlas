@@ -1,12 +1,11 @@
 //! Project-level job runtime — investigation state and query snapshots.
 //!
-//! Session-level resources (TaskManager, pending_project_activations, prewarm)
-//! live in [`SessionJobRuntime`](super::session_job_runtime::SessionJobRuntime)
-//! and persist across project switches.
+//! The MCP public contract no longer exposes task-manager background jobs;
+//! this runtime only owns per-project query and investigation state.
 //!
 //! # Responsibilities
 //! - InvestigationState: per-project lazy extraction prioritization
-//! - Query snapshots: store and retrieve query results for resume_task
+//! - Query snapshots: store and retrieve query results for resume_query
 //!
 //! # Usage pattern
 //! ```ignore
@@ -23,13 +22,12 @@ use std::time::Instant;
 
 use atlas_engine::InvestigationFocus;
 
-use crate::tools::query_snapshot::{QUERY_SNAPSHOT_TTL_SECS, InvestigationState, QuerySnapshot};
+use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, QuerySnapshot};
 
 /// Per-project query state and investigation tracking.
 ///
 /// Owns query snapshots for lazy responses and investigation state for
-/// lazy job prioritization. Session-level resources (TaskManager, etc.)
-/// are owned by [`SessionJobRuntime`](super::session_job_runtime::SessionJobRuntime).
+/// lazy job prioritization.
 pub struct JobRuntime {
     pub investigation_state: InvestigationState,
     pub query_snapshots: Mutex<HashMap<String, QuerySnapshot>>,
@@ -45,8 +43,7 @@ impl JobRuntime {
 
     /// Remove query snapshots older than TTL.
     pub fn prune_expired_snapshots(&self) {
-        let cutoff = Instant::now()
-            - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
+        let cutoff = Instant::now() - std::time::Duration::from_secs(QUERY_SNAPSHOT_TTL_SECS);
         self.query_snapshots
             .lock()
             .unwrap_or_else(|e| e.into_inner())

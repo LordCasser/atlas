@@ -7,7 +7,7 @@
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{
-    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 use serde_json::json;
 
@@ -41,7 +41,8 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
+        {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
@@ -69,15 +70,14 @@ impl ToolRouter {
 
         // Ensure structural data is available (may trigger lazy extraction)
         if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
-            let (_, focus_warnings) = self.prepare_focus_query(
-                Some(atlas_engine::QueryIntent::Calls {
+            let (_, focus_warnings) =
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                     direction: None,
                     depth: None,
-                }),
-            );
+                }));
             for w in focus_warnings {
                 tracing::warn!("Focus pre-warm warning (lifecycle): {w}");
             }
@@ -89,13 +89,18 @@ impl ToolRouter {
             Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
         };
         let mut cfg_edges = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
 
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction via the dataflow service
-            match self.active_mut().analysis_runtime.ensure_dataflow_for_function(&sid, Some(&query_id)) {
+            match self
+                .active_mut()
+                .analysis_runtime
+                .ensure_dataflow_for_function(&sid, Some(&query_id))
+            {
                 Ok(()) => {
                     // Re-query CFG after lazy extraction
                     cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
@@ -108,7 +113,8 @@ impl ToolRouter {
                         }
                     };
                     cfg_edges = self
-                        .active_mut().store
+                        .active_mut()
+                        .store
                         .find_cfg_edges_by_function(&sid)
                         .unwrap_or_default();
                 }
@@ -120,8 +126,7 @@ impl ToolRouter {
                         "field_path": field,
                         "error": format!("CFG not available for lifecycle analysis: {:#}", e),
                     });
-                    return lr.with_is_error(true)
-                        .build(resp, self);
+                    return lr.with_is_error(true).build(resp, self);
                 }
             }
         }
@@ -134,15 +139,15 @@ impl ToolRouter {
                 "field_path": field,
                 "message": "CFG not available for lifecycle analysis...",
             });
-            return lr.with_is_error(true)
-                .build(resp, self);
+            return lr.with_is_error(true).build(resp, self);
         }
 
         // --- CFG is available — run lifecycle analysis ---
 
         // Lifecycle analysis only supports C/C++ — gate on language
         let sym_info = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -171,7 +176,8 @@ impl ToolRouter {
         };
 
         // Load domain rules from DB for this symbol's language
-        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(&self.active_mut().store, lang_str);
+        let cpp_rules =
+            atlas_engine::analysis::CppOwnershipRules::load_for(&self.active_mut().store, lang_str);
         let has_any_rules = cpp_rules.has_any_rules();
         let has_user_rules = cpp_rules.has_user_rules();
         let ownership_rules = atlas_engine::analysis::OwnershipRules::default();
@@ -236,7 +242,6 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        lr.with_is_error(false)
-            .build(resp, self)
+        lr.with_is_error(false).build(resp, self)
     }
 }

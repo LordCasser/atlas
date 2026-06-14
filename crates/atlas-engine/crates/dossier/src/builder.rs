@@ -111,19 +111,13 @@ impl ExploreDossierBuilder {
     }
 
     /// Build an `AmbiguousResponse` when a query matches multiple candidates.
-    pub fn build_ambiguous(
-        query: &str,
-        candidates: Vec<SymbolCandidate>,
-    ) -> AmbiguousResponse {
+    pub fn build_ambiguous(query: &str, candidates: Vec<SymbolCandidate>) -> AmbiguousResponse {
         let recommended_next_queries = candidates
             .iter()
             .map(|c| RecommendedQuery {
                 tool: "atlas_explore".to_string(),
                 args: serde_json::json!({"symbol": c.qualified_name}),
-                reason: format!(
-                    "Explore '{}' at {}:{}",
-                    c.qualified_name, c.file, c.line
-                ),
+                reason: format!("Explore '{}' at {}:{}", c.qualified_name, c.file, c.line),
             })
             .collect();
 
@@ -244,23 +238,31 @@ fn build_call_evidence(
 ) -> CallEvidence {
     let call_kinds: &[InternalRelationKind] = &[InternalRelationKind::Calls];
 
-    let incoming_evidence = match rel_repo.incoming_evidence(symbol_id, Some(call_kinds), evidence_limit) {
-        Ok(v) => v,
-        Err(e) => {
-            warnings.push(format!("Failed to query incoming call evidence: {e}"));
-            Vec::new()
-        }
-    };
-    let outgoing_evidence = match rel_repo.outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit) {
-        Ok(v) => v,
-        Err(e) => {
-            warnings.push(format!("Failed to query outgoing call evidence: {e}"));
-            Vec::new()
-        }
-    };
+    let incoming_evidence =
+        match rel_repo.incoming_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!("Failed to query incoming call evidence: {e}"));
+                Vec::new()
+            }
+        };
+    let outgoing_evidence =
+        match rel_repo.outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!("Failed to query outgoing call evidence: {e}"));
+                Vec::new()
+            }
+        };
 
-    let incoming_total = incoming_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0);
-    let outgoing_total = outgoing_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0);
+    let incoming_total = incoming_counts
+        .get(&InternalRelationKind::Calls)
+        .copied()
+        .unwrap_or(0);
+    let outgoing_total = outgoing_counts
+        .get(&InternalRelationKind::Calls)
+        .copied()
+        .unwrap_or(0);
 
     let incoming = CallEvidenceGroup {
         total: incoming_total,
@@ -311,7 +313,10 @@ fn evidence_to_call_entries(
                 Ok(Some(s)) => s,
                 Ok(None) => return None,
                 Err(e) => {
-                    warnings.push(format!("Failed to look up peer symbol {}: {e}", peer_id.to_hex()));
+                    warnings.push(format!(
+                        "Failed to look up peer symbol {}: {e}",
+                        peer_id.to_hex()
+                    ));
                     return None;
                 }
             };
@@ -387,14 +392,16 @@ fn build_relation_groups(
         InternalRelationKind::RegistersCallback,
     ];
 
-    let incoming = match rel_repo.incoming_evidence(symbol_id, Some(non_call_kinds), relation_limit) {
+    let incoming = match rel_repo.incoming_evidence(symbol_id, Some(non_call_kinds), relation_limit)
+    {
         Ok(v) => v,
         Err(e) => {
             warnings.push(format!("Failed to query incoming non-call relations: {e}"));
             Vec::new()
         }
     };
-    let outgoing = match rel_repo.outgoing_evidence(symbol_id, Some(non_call_kinds), relation_limit) {
+    let outgoing = match rel_repo.outgoing_evidence(symbol_id, Some(non_call_kinds), relation_limit)
+    {
         Ok(v) => v,
         Err(e) => {
             warnings.push(format!("Failed to query outgoing non-call relations: {e}"));
@@ -495,10 +502,7 @@ fn build_relation_groups(
     // Helper: extract a RelationGroup from the grouped map.
     let mut take_group = |kind: InternalRelationKind| -> Option<RelationGroup> {
         grouped.remove(&kind).map(|examples| {
-            let total = incoming_counts
-                .get(&kind)
-                .copied()
-                .unwrap_or(0)
+            let total = incoming_counts.get(&kind).copied().unwrap_or(0)
                 + outgoing_counts.get(&kind).copied().unwrap_or(0);
             RelationGroup {
                 total: total.max(examples.len()),
@@ -606,18 +610,31 @@ fn generate_recommendations(
     let qname = &sym.qualified_name;
 
     // If there are callers → trace incoming call graph
-    let has_incoming_calls = incoming_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0) > 0;
+    let has_incoming_calls = incoming_counts
+        .get(&InternalRelationKind::Calls)
+        .copied()
+        .unwrap_or(0)
+        > 0;
     // If there are callees → trace outgoing call graph
-    let has_outgoing_calls = outgoing_counts.get(&InternalRelationKind::Calls).copied().unwrap_or(0) > 0;
+    let has_outgoing_calls = outgoing_counts
+        .get(&InternalRelationKind::Calls)
+        .copied()
+        .unwrap_or(0)
+        > 0;
     // If there are non-call relations → suggest context view
-    let has_non_call = incoming_counts.iter().any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls)
-        || outgoing_counts.iter().any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls);
+    let has_non_call = incoming_counts
+        .iter()
+        .any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls)
+        || outgoing_counts
+            .iter()
+            .any(|(k, &c)| c > 0 && *k != InternalRelationKind::Calls);
 
     if has_incoming_calls && has_outgoing_calls {
         recs.push(RecommendedQuery {
             tool: "atlas_calls".to_string(),
             args: serde_json::json!({"symbol": qname, "direction": "both", "depth": 2}),
-            reason: "Explore call graph 2 hops in both directions (has both callers and callees)".to_string(),
+            reason: "Explore call graph 2 hops in both directions (has both callers and callees)"
+                .to_string(),
         });
     } else if has_incoming_calls {
         recs.push(RecommendedQuery {
@@ -652,11 +669,13 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use types::{
-        Confidence, FileId, ImportDef, Language,
-        SymbolDef, SymbolId, SymbolKind, TextRange,
+        Confidence, FileId, ImportDef, Language, SymbolDef, SymbolId, SymbolKind, TextRange,
     };
 
-    use super::super::traits::{FileFactsRepository, RelationEvidence, RelationRepository, SourceRepository, SymbolRepository};
+    use super::super::traits::{
+        FileFactsRepository, RelationEvidence, RelationRepository, SourceRepository,
+        SymbolRepository,
+    };
 
     // ── helper constructors ──────────────────────────────────────────────
 
@@ -677,7 +696,11 @@ mod tests {
             symbol_path: qname.split('.').map(|s| s.to_string()).collect(),
             file_id,
             language: Language::TypeScript,
-            range: TextRange { start_line: 0, end_line: 9, ..Default::default() },
+            range: TextRange {
+                start_line: 0,
+                end_line: 9,
+                ..Default::default()
+            },
             name_range: TextRange::default(),
             signature: Some(format!("fn {name}()")),
             visibility: None,
@@ -693,7 +716,14 @@ mod tests {
     }
 
     fn tr(start_byte: u32, end_byte: u32, start_line: u32, end_line: u32) -> TextRange {
-        TextRange { start_byte, end_byte, start_line, start_column: 0, end_line, end_column: 0 }
+        TextRange {
+            start_byte,
+            end_byte,
+            start_line,
+            start_column: 0,
+            end_line,
+            end_column: 0,
+        }
     }
 
     // ── Mock implementations ─────────────────────────────────────────────
@@ -722,10 +752,19 @@ mod tests {
 
     impl SymbolRepository for MockSymbolRepo {
         fn resolve(&self, query: &str) -> anyhow::Result<Vec<SymbolDef>> {
-            Ok(self.resolve_results.borrow().get(query).cloned().unwrap_or_default())
+            Ok(self
+                .resolve_results
+                .borrow()
+                .get(query)
+                .cloned()
+                .unwrap_or_default())
         }
         fn get_signature(&self, symbol_id: &SymbolId) -> anyhow::Result<Option<String>> {
-            Ok(self.symbols.borrow().get(symbol_id).and_then(|s| s.signature.clone()))
+            Ok(self
+                .symbols
+                .borrow()
+                .get(symbol_id)
+                .and_then(|s| s.signature.clone()))
         }
         fn get_symbol_by_id(&self, id: &SymbolId) -> anyhow::Result<Option<SymbolDef>> {
             Ok(self.symbols.borrow().get(id).cloned())
@@ -760,9 +799,17 @@ mod tests {
             kinds: Option<&[InternalRelationKind]>,
             _limit: usize,
         ) -> anyhow::Result<Vec<RelationEvidence>> {
-            let all = self.incoming.borrow().get(symbol_id).cloned().unwrap_or_default();
+            let all = self
+                .incoming
+                .borrow()
+                .get(symbol_id)
+                .cloned()
+                .unwrap_or_default();
             let filtered: Vec<_> = match kinds {
-                Some(filter) => all.into_iter().filter(|e| filter.contains(&e.relation_kind)).collect(),
+                Some(filter) => all
+                    .into_iter()
+                    .filter(|e| filter.contains(&e.relation_kind))
+                    .collect(),
                 None => all,
             };
             Ok(filtered)
@@ -773,9 +820,17 @@ mod tests {
             kinds: Option<&[InternalRelationKind]>,
             _limit: usize,
         ) -> anyhow::Result<Vec<RelationEvidence>> {
-            let all = self.outgoing.borrow().get(symbol_id).cloned().unwrap_or_default();
+            let all = self
+                .outgoing
+                .borrow()
+                .get(symbol_id)
+                .cloned()
+                .unwrap_or_default();
             let filtered: Vec<_> = match kinds {
-                Some(filter) => all.into_iter().filter(|e| filter.contains(&e.relation_kind)).collect(),
+                Some(filter) => all
+                    .into_iter()
+                    .filter(|e| filter.contains(&e.relation_kind))
+                    .collect(),
                 None => all,
             };
             Ok(filtered)
@@ -784,13 +839,23 @@ mod tests {
             &self,
             symbol_id: &SymbolId,
         ) -> anyhow::Result<HashMap<InternalRelationKind, usize>> {
-            Ok(self.inc_counts.borrow().get(symbol_id).cloned().unwrap_or_default())
+            Ok(self
+                .inc_counts
+                .borrow()
+                .get(symbol_id)
+                .cloned()
+                .unwrap_or_default())
         }
         fn count_outgoing_by_kind(
             &self,
             symbol_id: &SymbolId,
         ) -> anyhow::Result<HashMap<InternalRelationKind, usize>> {
-            Ok(self.out_counts.borrow().get(symbol_id).cloned().unwrap_or_default())
+            Ok(self
+                .out_counts
+                .borrow()
+                .get(symbol_id)
+                .cloned()
+                .unwrap_or_default())
         }
     }
 
@@ -812,10 +877,20 @@ mod tests {
 
     impl FileFactsRepository for MockFileFactsRepo {
         fn get_imports(&self, file_id: &FileId) -> anyhow::Result<Vec<ImportDef>> {
-            Ok(self.imports.borrow().get(file_id).cloned().unwrap_or_default())
+            Ok(self
+                .imports
+                .borrow()
+                .get(file_id)
+                .cloned()
+                .unwrap_or_default())
         }
         fn get_exports(&self, file_id: &FileId) -> anyhow::Result<Vec<ExportFact>> {
-            Ok(self.exports.borrow().get(file_id).cloned().unwrap_or_default())
+            Ok(self
+                .exports
+                .borrow()
+                .get(file_id)
+                .cloned()
+                .unwrap_or_default())
         }
         fn get_peers(
             &self,
@@ -823,8 +898,17 @@ mod tests {
             exclude_id: &SymbolId,
             limit: usize,
         ) -> anyhow::Result<Vec<SymbolDef>> {
-            let all = self.peers.borrow().get(file_id).cloned().unwrap_or_default();
-            let filtered: Vec<_> = all.into_iter().filter(|s| &s.id != exclude_id).take(limit).collect();
+            let all = self
+                .peers
+                .borrow()
+                .get(file_id)
+                .cloned()
+                .unwrap_or_default();
+            let filtered: Vec<_> = all
+                .into_iter()
+                .filter(|s| &s.id != exclude_id)
+                .take(limit)
+                .collect();
             Ok(filtered)
         }
     }
@@ -837,7 +921,10 @@ mod tests {
 
     impl MockSourceRepo {
         fn new() -> Self {
-            Self { files: RefCell::new(HashMap::new()), read_count: RefCell::new(0) }
+            Self {
+                files: RefCell::new(HashMap::new()),
+                read_count: RefCell::new(0),
+            }
         }
         fn add_file(&self, file_id: FileId, content: &str) {
             self.files.borrow_mut().insert(file_id, content.to_string());
@@ -859,11 +946,21 @@ mod tests {
             let end = range.end_byte as usize;
             Ok(content.get(start..end).unwrap_or("").to_string())
         }
-        fn read_lines(&self, file_id: &FileId, start_line: u32, end_line: u32) -> anyhow::Result<String> {
+        fn read_lines(
+            &self,
+            file_id: &FileId,
+            start_line: u32,
+            end_line: u32,
+        ) -> anyhow::Result<String> {
             let content = self.load_content(file_id)?;
             let skip = start_line.saturating_sub(1) as usize;
             let take = end_line.saturating_sub(start_line).saturating_add(1) as usize;
-            let joined = content.lines().skip(skip).take(take).collect::<Vec<_>>().join("\n");
+            let joined = content
+                .lines()
+                .skip(skip)
+                .take(take)
+                .collect::<Vec<_>>()
+                .join("\n");
             Ok(joined)
         }
         fn clear_cache(&self) {
@@ -890,7 +987,12 @@ mod tests {
     #[test]
     fn build_assembles_valid_dossier() {
         let file = fid("src/main.ts");
-        let sym = make_symbol("main", "Main.main", sid(&file, "Main.main", "function"), file);
+        let sym = make_symbol(
+            "main",
+            "Main.main",
+            sid(&file, "Main.main", "function"),
+            file,
+        );
 
         let sym_repo = MockSymbolRepo::new();
         sym_repo.add_symbol(sym.clone());
@@ -900,7 +1002,10 @@ mod tests {
         // Prevent "relation count unavailable" warning by seeding a dummy count.
         let mut counts = HashMap::new();
         counts.insert(InternalRelationKind::Calls, 0);
-        rel_repo.inc_counts.borrow_mut().insert(sym.id, counts.clone());
+        rel_repo
+            .inc_counts
+            .borrow_mut()
+            .insert(sym.id, counts.clone());
         rel_repo.out_counts.borrow_mut().insert(sym.id, counts);
 
         let file_repo = MockFileFactsRepo::new();
@@ -911,10 +1016,16 @@ mod tests {
         let req = default_request();
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/main.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/main.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         // Check subject info
         assert_eq!(dossier.subject.name, "main");
@@ -972,10 +1083,7 @@ mod tests {
 
         // Each recommendation uses atlas_explore with the qualified name.
         assert_eq!(response.recommended_next_queries[0].tool, "atlas_explore");
-        assert_eq!(
-            response.recommended_next_queries[0].args["symbol"],
-            "A.foo"
-        );
+        assert_eq!(response.recommended_next_queries[0].args["symbol"], "A.foo");
     }
 
     #[test]
@@ -995,10 +1103,16 @@ mod tests {
         req.source_mode = SourceMode::None_;
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/a.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/a.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         assert!(dossier.source_excerpt.is_none());
     }
@@ -1016,16 +1130,25 @@ mod tests {
         let file_repo = MockFileFactsRepo::new();
 
         let src_repo = MockSourceRepo::new();
-        src_repo.add_file(file, "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n");
+        src_repo.add_file(
+            file,
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        );
 
         let mut req = default_request();
         req.source_mode = SourceMode::Full;
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/full.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/full.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         let excerpt = dossier.source_excerpt.unwrap();
         assert_eq!(excerpt.mode, SourceMode::Full);
@@ -1104,16 +1227,28 @@ mod tests {
         let req = default_request();
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/call.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/call.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         assert_eq!(dossier.call_evidence.incoming.total, 1);
         assert_eq!(dossier.call_evidence.incoming.examples.len(), 1);
         assert_eq!(dossier.call_evidence.incoming.examples[0].symbol.name, "g");
-        assert_eq!(dossier.call_evidence.incoming.examples[0].edge_kind, "calls");
-        assert_eq!(dossier.call_evidence.incoming.examples[0].confidence, "exact");
+        assert_eq!(
+            dossier.call_evidence.incoming.examples[0].edge_kind,
+            "calls"
+        );
+        assert_eq!(
+            dossier.call_evidence.incoming.examples[0].confidence,
+            "exact"
+        );
 
         assert_eq!(dossier.call_evidence.outgoing.total, 1);
         assert_eq!(dossier.call_evidence.outgoing.examples.len(), 1);
@@ -1139,15 +1274,25 @@ mod tests {
         let req = default_request();
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/err.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/err.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         // Empty relation counts → warning added
         assert!(
-            dossier.warnings.iter().any(|w| w.contains("Relation count data unavailable")),
-            "expected relation count warning, got: {:?}", dossier.warnings
+            dossier
+                .warnings
+                .iter()
+                .any(|w| w.contains("Relation count data unavailable")),
+            "expected relation count warning, got: {:?}",
+            dossier.warnings
         );
     }
 
@@ -1168,10 +1313,16 @@ mod tests {
         req.include_file_context = false;
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/noctx.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/noctx.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         assert!(dossier.file_context.is_none());
     }
@@ -1202,15 +1353,22 @@ mod tests {
         let req = default_request();
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/rec.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/rec.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         // Has both incoming and outgoing calls → should generate "both" direction
-        let has_both = dossier.recommended_next_queries.iter().any(|r| {
-            r.tool == "atlas_calls" && r.args["direction"] == "both"
-        });
+        let has_both = dossier
+            .recommended_next_queries
+            .iter()
+            .any(|r| r.tool == "atlas_calls" && r.args["direction"] == "both");
         assert!(has_both, "expected 'both' direction recommendation");
     }
 
@@ -1236,10 +1394,16 @@ mod tests {
         req.source_mode = SourceMode::Full;
 
         let dossier = ExploreDossierBuilder::build(
-            &sym, "src/big.ts",
-            &sym_repo, &rel_repo, &file_repo, &src_repo,
-            &req, "exact".to_string(),
-        ).unwrap();
+            &sym,
+            "src/big.ts",
+            &sym_repo,
+            &rel_repo,
+            &file_repo,
+            &src_repo,
+            &req,
+            "exact".to_string(),
+        )
+        .unwrap();
 
         let excerpt = dossier.source_excerpt.unwrap();
         assert!(excerpt.truncated);

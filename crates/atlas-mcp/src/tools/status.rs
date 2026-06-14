@@ -13,19 +13,25 @@ impl ToolRouter {
             Err(e) => return (format!("Error getting stats: {e}"), true),
         };
         let layer_counts = self
-            .active().store
+            .active()
+            .store
             .count_fresh_file_extraction_state()
             .unwrap_or_default();
-        let active_jobs = self.active().store.list_active_extraction_jobs().unwrap_or_default();
+        let active_jobs = self
+            .active()
+            .store
+            .list_active_extraction_jobs()
+            .unwrap_or_default();
 
         let index_mode = self
-            .active().store
+            .active()
+            .store
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
 
         let index_hint = if stats.total_files == 0 {
             Some(
-                "The project has not been indexed yet. For large projects, run the 'index' tool with background=true to build the fast manifest layer; scoped search/context/trace will perform deeper lazy parsing on demand.",
+                "No project facts have been materialized in this store yet. Use scoped queries such as search(query, scope) to trigger focus-driven extraction; explicit full indexing is available only through the CLI `atlas index` command.",
             )
         } else {
             None
@@ -33,14 +39,14 @@ impl ToolRouter {
 
         let next_action = if stats.total_files == 0 {
             Some(json!({
-                "tool": "index",
-                "args": { "background": true },
-                "reason": "Build the fast manifest layer without blocking MCP startup. This does not perform full structural parsing."
+                "tool": "search",
+                "args": { "query": "symbol or function name", "scope": "project-relative directory or file" },
+                "reason": "MCP uses scoped focus queries to materialize only the code needed for the current investigation. Run CLI `atlas index` outside MCP only when you want an explicit project-wide cache."
             }))
         } else if index_mode == "manifest" {
             Some(json!({
                 "tool": "search",
-                "args": { "scope": "project-relative directory or file", "background": false },
+                "args": { "query": "symbol or function name", "scope": "project-relative directory or file" },
                 "reason": "The project is in lazy mode. Use scoped queries; small scopes are structurally parsed on demand, large scopes remain manifest-level and ask you to narrow."
             }))
         } else {
@@ -66,7 +72,8 @@ impl ToolRouter {
         let lazy_dataflow = {
             let df_stats = self.active().store.get_lazy_dataflow_stats().ok();
             let (files_with_dataflow, _structural, _manifest, files_with_cfg) = self
-                .active().store
+                .active()
+                .store
                 .get_capability_counts()
                 .unwrap_or((0, 0, 0, 0));
 
@@ -89,10 +96,9 @@ impl ToolRouter {
                 "files_with_dataflow".to_string(),
                 json!(files_with_dataflow),
             );
-            df.as_object_mut().unwrap().insert(
-                "files_with_cfg".to_string(),
-                json!(files_with_cfg),
-            );
+            df.as_object_mut()
+                .unwrap()
+                .insert("files_with_cfg".to_string(), json!(files_with_cfg));
             df
         };
 
@@ -256,7 +262,10 @@ mod tests {
         store.init_schema().unwrap();
 
         let stats = store.get_lazy_dataflow_stats().unwrap();
-        assert!(!stats.has_dataflow, "empty DB should have has_dataflow=false");
+        assert!(
+            !stats.has_dataflow,
+            "empty DB should have has_dataflow=false"
+        );
 
         let (df, st, mn, cfg) = store.get_capability_counts().unwrap();
         assert_eq!(df, 0);

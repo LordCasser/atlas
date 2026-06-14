@@ -3,8 +3,8 @@
 use super::types::*;
 use types::enums::{Language, SymbolKind};
 use types::ids::FileId;
-use types::structs::precision::PrecisionTier;
 use types::structs::KnownGap;
+use types::structs::precision::PrecisionTier;
 
 #[test]
 fn test_default_window_budget() {

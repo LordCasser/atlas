@@ -7,11 +7,11 @@
 //! happened before the handler's own structural extraction.
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use super::symbol_selector::{
-    parse_symbol_input, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
-    SymbolResolutionPolicy, SymbolSelector, MAX_AGGREGATION_CANDIDATES,
+    MAX_AGGREGATION_CANDIDATES, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
+    SymbolResolutionPolicy, SymbolSelector, parse_symbol_input,
 };
+use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 
 use atlas_engine::InvestigationFocus;
 use serde_json::json;
@@ -74,14 +74,20 @@ impl ToolRouter {
 
         // Try to find symbol by qname before resolution for initial investigation
         let initial_sid = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_symbols_by_qname(qname)
             .ok()
             .and_then(|v| if v.len() == 1 { Some(v[0].id) } else { None });
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
-        let investigation = self.active_mut().job_runtime.investigation_state.active_investigation.clone();
+        let investigation = self
+            .active_mut()
+            .job_runtime
+            .investigation_state
+            .active_investigation
+            .clone();
 
         let (resolution, focus_result) = match self.resolve_context_symbol(
             ctx,
@@ -120,9 +126,15 @@ impl ToolRouter {
                     Ok(view) => {
                         ctx.send_progress(0.8, "Context complete");
                         self.build_context_response(
-                            &view, qname, include_code, &sid,
-                            root_warnings, lazy_warnings,
-                            resolved, lr, args,
+                            &view,
+                            qname,
+                            include_code,
+                            &sid,
+                            root_warnings,
+                            lazy_warnings,
+                            resolved,
+                            lr,
+                            args,
                         )
                     }
                     Err(e) => (format!("Context build error: {e}"), true),
@@ -165,7 +177,11 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self.active_mut().store_query_runtime.read_symbol_source(sid) {
+            if let Some(src) = self
+                .active_mut()
+                .store_query_runtime
+                .read_symbol_source(sid)
+            {
                 let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
                 let total = lines.len() as u32;
                 Some(json!({
@@ -299,8 +315,13 @@ impl ToolRouter {
         _include_roots: Vec<atlas_engine::IncludeRoot>,
         _investigation: Option<&atlas_engine::Investigation>,
         _query_id: Option<&str>,
-    ) -> Result<(ContextResolution, Option<atlas_engine::focus::runtime::FocusResult>), String> {
-
+    ) -> Result<
+        (
+            ContextResolution,
+            Option<atlas_engine::focus::runtime::FocusResult>,
+        ),
+        String,
+    > {
         let mut warnings = Vec::new();
         let mut focus_result_acc: Option<atlas_engine::focus::runtime::FocusResult> = None;
 
@@ -318,22 +339,20 @@ impl ToolRouter {
             } => {
                 // Look up symbol info for file_id
                 if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&symbol_id) {
-                    let (focus_result, focus_warnings) = self.prepare_focus_query(
-                        Some(atlas_engine::QueryIntent::Context {
+                    let (focus_result, focus_warnings) =
+                        self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
                             file_id: Some(sym.file_id),
                             symbol_id: None,
-                        }),
-                    );
+                        }));
                     warnings.extend(focus_warnings);
                     if focus_result_acc.is_none() {
                         focus_result_acc = focus_result;
                     }
-                    return Ok((ContextResolution::Found(
-                        symbol_id,
-                        warnings,
-                        Some(resolved),
-                    ), focus_result_acc));
+                    return Ok((
+                        ContextResolution::Found(symbol_id, warnings, Some(resolved)),
+                        focus_result_acc,
+                    ));
                 }
                 // Symbol ID not in store — fall through
             }
@@ -346,28 +365,30 @@ impl ToolRouter {
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self.active_mut().store.find_symbols_by_name(qname).unwrap_or_else(|e| {
-            tracing::warn!("DB error on find_symbols_by_name: {}", e);
-            Default::default()
-        });
+        let name_matches = self
+            .active_mut()
+            .store
+            .find_symbols_by_name(qname)
+            .unwrap_or_else(|e| {
+                tracing::warn!("DB error on find_symbols_by_name: {}", e);
+                Default::default()
+            });
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
-            let (focus_result, focus_warnings) = self.prepare_focus_query(
-                Some(atlas_engine::QueryIntent::Context {
+            let (focus_result, focus_warnings) =
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                     symbol_name: qname.to_string(),
                     file_id: Some(name_matches[0].file_id),
                     symbol_id: None,
-                }),
-            );
+                }));
             warnings.extend(focus_warnings);
             if focus_result_acc.is_none() {
                 focus_result_acc = focus_result;
             }
-            return Ok((ContextResolution::Found(
-                name_matches[0].id,
-                warnings,
-                None,
-            ), focus_result_acc));
+            return Ok((
+                ContextResolution::Found(name_matches[0].id, warnings, None),
+                focus_result_acc,
+            ));
         }
         if name_matches.len() > 1 {
             // Multiple matches — try case-insensitive qualified-name substring
@@ -377,22 +398,20 @@ impl ToolRouter {
                 .filter(|s| s.qualified_name.to_lowercase().contains(&q_lower))
                 .collect();
             if matching_qnames.len() == 1 {
-                let (focus_result, focus_warnings) = self.prepare_focus_query(
-                    Some(atlas_engine::QueryIntent::Context {
+                let (focus_result, focus_warnings) =
+                    self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                         symbol_name: qname.to_string(),
                         file_id: Some(matching_qnames[0].file_id),
                         symbol_id: None,
-                    }),
-                );
+                    }));
                 warnings.extend(focus_warnings);
                 if focus_result_acc.is_none() {
                     focus_result_acc = focus_result;
                 }
-                return Ok((ContextResolution::Found(
-                    matching_qnames[0].id,
-                    warnings,
-                    None,
-                ), focus_result_acc));
+                return Ok((
+                    ContextResolution::Found(matching_qnames[0].id, warnings, None),
+                    focus_result_acc,
+                ));
             }
             if matching_qnames.len() > 1 {
                 let candidates: Vec<ScoredCandidate> = matching_qnames
@@ -400,7 +419,10 @@ impl ToolRouter {
                     .take(MAX_AGGREGATION_CANDIDATES)
                     .map(|s| {
                         let line = s.range.start_line.saturating_add(1);
-                        let file_path = self.active_mut().store_query_runtime.resolve_file_path(&s.file_id);
+                        let file_path = self
+                            .active_mut()
+                            .store_query_runtime
+                            .resolve_file_path(&s.file_id);
                         ScoredCandidate {
                             qualified_name: s.qualified_name.clone(),
                             file_path: file_path.clone(),
@@ -426,13 +448,12 @@ impl ToolRouter {
 
         // ── Tier 3: try lazy structural, then re-query ──
         ctx.send_progress(0.5, "Extracting structural data...");
-        let (focus_result, focus_warnings) = self.prepare_focus_query(
-            Some(atlas_engine::QueryIntent::Context {
+        let (focus_result, focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                 symbol_name: qname.to_string(),
                 file_id: None,
                 symbol_id: None,
-            }),
-        );
+            }));
         warnings.extend(focus_warnings);
         if focus_result_acc.is_none() {
             focus_result_acc = focus_result;
@@ -442,11 +463,10 @@ impl ToolRouter {
         let re_input = SymbolInput::Name(qname.to_string());
         match self.resolve_symbol_input(&re_input, SymbolResolutionPolicy::UniqueOrCandidates)? {
             SymbolResolution::Single { symbol_id, .. } => {
-                return Ok((ContextResolution::Found(
-                    symbol_id,
-                    warnings,
-                    None,
-                ), focus_result_acc));
+                return Ok((
+                    ContextResolution::Found(symbol_id, warnings, None),
+                    focus_result_acc,
+                ));
             }
             SymbolResolution::Ambiguous { candidates, .. } => {
                 return Ok((ContextResolution::Ambiguous(candidates), focus_result_acc));
@@ -457,16 +477,19 @@ impl ToolRouter {
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self.active_mut().store.find_symbols_by_name(qname).unwrap_or_else(|e| {
-            tracing::warn!("DB error on retry find_symbols_by_name: {}", e);
-            Default::default()
-        });
+        let fresh_matches = self
+            .active_mut()
+            .store
+            .find_symbols_by_name(qname)
+            .unwrap_or_else(|e| {
+                tracing::warn!("DB error on retry find_symbols_by_name: {}", e);
+                Default::default()
+            });
         if fresh_matches.len() == 1 {
-            return Ok((ContextResolution::Found(
-                fresh_matches[0].id,
-                warnings,
-                None,
-            ), focus_result_acc));
+            return Ok((
+                ContextResolution::Found(fresh_matches[0].id, warnings, None),
+                focus_result_acc,
+            ));
         }
         if fresh_matches.len() > 1 {
             let candidates: Vec<ScoredCandidate> = fresh_matches
@@ -474,7 +497,10 @@ impl ToolRouter {
                 .take(MAX_AGGREGATION_CANDIDATES)
                 .map(|s| {
                     let line = s.range.start_line.saturating_add(1);
-                    let file_path = self.active_mut().store_query_runtime.resolve_file_path(&s.file_id);
+                    let file_path = self
+                        .active_mut()
+                        .store_query_runtime
+                        .resolve_file_path(&s.file_id);
                     ScoredCandidate {
                         qualified_name: s.qualified_name.clone(),
                         file_path: file_path.clone(),
@@ -616,19 +642,23 @@ mod tests {
         let (resp_str, is_error) = router.handle_context(&ctx, &args);
 
         assert!(!is_error, "expected no error, got: {resp_str}");
-        let resp: serde_json::Value =
-            serde_json::from_str(&resp_str).expect("expected valid JSON");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).expect("expected valid JSON");
 
         // Check envelope fields
         assert_eq!(resp["ambiguous"], serde_json::json!(true));
         let count = resp["count"].as_u64().expect("count should be a number");
         assert_eq!(count, 2);
-        let candidates = resp["candidates"].as_array().expect("candidates should be an array");
+        let candidates = resp["candidates"]
+            .as_array()
+            .expect("candidates should be an array");
         assert_eq!(candidates.len(), 2);
 
         // Each candidate should have symbol_ref
         for c in candidates {
-            assert!(c["symbol_ref"].is_object(), "candidate must have symbol_ref object");
+            assert!(
+                c["symbol_ref"].is_object(),
+                "candidate must have symbol_ref object"
+            );
             assert!(c["symbol_ref"]["qualified_name"].is_string());
             assert!(c["symbol_ref"]["file_path"].is_string());
             assert!(c["symbol_ref"]["line"].is_number());
@@ -678,15 +708,12 @@ mod tests {
         let (resp_str, is_error) = router.handle_context(&ctx, &args);
 
         assert!(!is_error, "expected no error, got: {resp_str}");
-        let resp: serde_json::Value =
-            serde_json::from_str(&resp_str).expect("expected valid JSON");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).expect("expected valid JSON");
 
         // Should be a full context response, not ambiguous
         assert!(resp["ambiguous"].is_null());
         assert!(resp["subject"].is_object());
-        assert!(
-            resp["subject"]["qualified_name"].as_str() == Some("crate.process")
-        );
+        assert!(resp["subject"]["qualified_name"].as_str() == Some("crate.process"));
     }
 
     #[test]
@@ -718,8 +745,7 @@ mod tests {
         let ctx = super::super::ToolCallContext::empty();
         let args = serde_json::json!({"symbol": "shared"});
         let (resp_str, _is_error) = router.handle_context(&ctx, &args);
-        let resp: serde_json::Value =
-            serde_json::from_str(&resp_str).expect("expected valid JSON");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).expect("expected valid JSON");
 
         let result = &resp;
 

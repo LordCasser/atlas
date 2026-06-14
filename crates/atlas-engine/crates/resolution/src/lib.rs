@@ -12,11 +12,11 @@
 //! their `resolved` field in place but leaves the record intact.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+use std::time::Instant;
 
 use db::Store;
 use rayon::prelude::*;
@@ -62,7 +62,8 @@ impl StrategyTimer {
 }
 impl Drop for StrategyTimer {
     fn drop(&mut self) {
-        self.0.fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.0
+            .fetch_add(self.1.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 }
 pub mod context;
@@ -116,13 +117,13 @@ fn resolve_one_core(
             if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
                 S2_COUNT.fetch_add(1, Ordering::Relaxed);
                 return Some(ResolvedTarget {
-                symbol_id: sym.id,
-                confidence: Confidence::certain(),
-                strategy: ResolutionStrategy::ExactMatch,
-                provenance: Provenance::TreeSitter,
-            });
+                    symbol_id: sym.id,
+                    confidence: Confidence::certain(),
+                    strategy: ResolutionStrategy::ExactMatch,
+                    provenance: Provenance::TreeSitter,
+                });
+            }
         }
-    }
     }
 
     // Strategy 3: Container/class-local
@@ -298,9 +299,7 @@ fn scope_and_tier(target: &ResolvedTarget) -> (&'static str, &'static str) {
         }
         ResolutionStrategy::NameOnly
         | ResolutionStrategy::FuzzyMatch
-        | ResolutionStrategy::Heuristic => {
-            ("boundary", "boundary")
-        }
+        | ResolutionStrategy::Heuristic => ("boundary", "boundary"),
         ResolutionStrategy::Builtin | ResolutionStrategy::DataflowPointer => {
             ("boundary", "boundary")
         }
@@ -439,7 +438,10 @@ impl ResolutionSession {
         }
 
         // Strategy 6: Project-wide name search + fuzzy fallback
-        if let Some(matched) = self.global_index.find_exact_name_target(&reference.name, None) {
+        if let Some(matched) = self
+            .global_index
+            .find_exact_name_target(&reference.name, None)
+        {
             S6_COUNT.fetch_add(1, Ordering::Relaxed);
             S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
             return Some(matched);
@@ -853,7 +855,10 @@ impl ReferenceResolver {
             let mut last_scanned = 0u64;
             let mut last_written = 0u64;
 
-            while monitor_stop_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+            while monitor_stop_rx
+                .recv_timeout(Duration::from_secs(10))
+                .is_err()
+            {
                 let now = Instant::now();
                 let interval_s = now.duration_since(last_tick).as_secs_f64();
                 let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -1070,7 +1075,7 @@ impl ReferenceResolver {
                 log_resolution_telemetry(&telemetry);
                 log_context_build_distribution(&telemetry.context_build_timings);
                 Ok((all_resolved, stats))
-            },
+            }
             Ok(Err(e)) => Err(e),
             Err(panic) => {
                 let msg = panic
@@ -1179,7 +1184,8 @@ impl ReferenceResolver {
                 match target {
                     Some(target) => {
                         let (resolution_scope, coverage_tier) = scope_and_tier(&target);
-                        let semantic_confidence = confidence_to_semantic(target.confidence.as_f32() as f64);
+                        let semantic_confidence =
+                            confidence_to_semantic(target.confidence.as_f32() as f64);
                         let provenance_str = format!(
                             "{}:{}:{}",
                             ctx.file.path,
@@ -1294,7 +1300,8 @@ impl ReferenceResolver {
             let _timer = StrategyTimer::new(&S4_TIME_NS);
             let same_file = ctx.find_in_file_by_name(&reference.name);
             if let Some(matched) =
-                self.name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
+                self.name_matcher
+                    .best_match(&same_file, &reference.name, Confidence::certain())
             {
                 S4_COUNT.fetch_add(1, Ordering::Relaxed);
                 return Some(ResolvedTarget {
@@ -1313,11 +1320,13 @@ impl ReferenceResolver {
                 for &idx in import_indices {
                     let import = &ctx.imports[idx];
                     let import_local = import.local_name.as_deref().unwrap_or("");
-                    let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
+                    let matches_by_alias =
+                        !import_local.is_empty() && import_local == reference.name;
 
                     if let Ok(candidates) = self.import_resolver.resolve_import(import) {
-                        if let Ok(chain_candidates) =
-                            self.import_resolver.resolve_through_reexports(import, candidates)
+                        if let Ok(chain_candidates) = self
+                            .import_resolver
+                            .resolve_through_reexports(import, candidates)
                         {
                             if matches_by_alias {
                                 if let Some(first) = chain_candidates.first() {
@@ -1640,8 +1649,13 @@ mod tests {
     /// what `build_incoming_precision` in the focus graph builder expects.
     #[test]
     fn test_scope_and_tier_returns_snake_case() {
-        let dummy_symbol_id =
-            SymbolId::generate(&FileId::generate("test.ts"), "typescript", "test", "function", None);
+        let dummy_symbol_id = SymbolId::generate(
+            &FileId::generate("test.ts"),
+            "typescript",
+            "test",
+            "function",
+            None,
+        );
         let confidence = Confidence::new(0.95);
 
         // ExactMatch → closure_complete
@@ -1652,8 +1666,14 @@ mod tests {
             provenance: Provenance::TreeSitter,
         };
         let (scope, tier) = scope_and_tier(&exact);
-        assert_eq!(scope, "closure_complete", "ExactMatch scope should be snake_case");
-        assert_eq!(tier, "closure_complete", "ExactMatch tier should be snake_case");
+        assert_eq!(
+            scope, "closure_complete",
+            "ExactMatch scope should be snake_case"
+        );
+        assert_eq!(
+            tier, "closure_complete",
+            "ExactMatch tier should be snake_case"
+        );
 
         // ImportResolved → closure_complete
         let import = ResolvedTarget {
@@ -1972,14 +1992,13 @@ main();
     /// and the resolve_all pipeline (step A/B spans, phase2 span).
     #[test]
     fn tracing_spans_do_not_panic() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
         tracing::subscriber::with_default(subscriber, || {
             let store = Arc::new(Store::open_in_memory().unwrap());
             store.init_schema().unwrap();
 
-            let lib_src = r#"export function greet(name: string): string { return 'Hello, ' + name; }"#;
+            let lib_src =
+                r#"export function greet(name: string): string { return 'Hello, ' + name; }"#;
             let main_src = r#"import { greet } from './lib';
 function main() {
     greet("World");
@@ -1989,25 +2008,12 @@ main();
             let ts = create_frontend(Language::TypeScript).unwrap();
 
             let lib_id = FileId::generate("lib.ts");
-            let lib = extract_file(
-                &ts,
-                lib_id,
-                &PathBuf::from("lib.ts"),
-                lib_src,
-                "abc",
-            )
-            .unwrap();
+            let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
             store.insert_file_facts(&lib).unwrap();
 
             let main_id = FileId::generate("main.ts");
-            let main = extract_file(
-                &ts,
-                main_id,
-                &PathBuf::from("main.ts"),
-                main_src,
-                "abc",
-            )
-            .unwrap();
+            let main =
+                extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
             store.insert_file_facts(&main).unwrap();
 
             let mut resolver = ReferenceResolver::new(Arc::clone(&store));
@@ -2063,7 +2069,10 @@ function other() { return "no call"; }
 
         let mut resolver_a = ReferenceResolver::new(store_a.clone());
         let (_resolved_a, stats_a) = resolver_a.resolve_all().unwrap();
-        assert!(stats_a.resolved > 0, "sync resolution should resolve at least one reference");
+        assert!(
+            stats_a.resolved > 0,
+            "sync resolution should resolve at least one reference"
+        );
 
         let callee_id = store_a
             .find_symbols_by_qname("helper")
@@ -2088,7 +2097,10 @@ function other() { return "no call"; }
         let (_resolved_b, stats_b) = resolver_b
             .resolve_all_parallel(store_b.clone(), None, None)
             .unwrap();
-        assert!(stats_b.resolved > 0, "parallel resolution should resolve at least one reference");
+        assert!(
+            stats_b.resolved > 0,
+            "parallel resolution should resolve at least one reference"
+        );
 
         let callsites_b = store_b
             .find_resolved_callsites_by_callee(&callee_id)
@@ -2111,8 +2123,14 @@ function other() { return "no call"; }
 
         for (a, b) in callsites_a.iter().zip(callsites_b.iter()) {
             assert_eq!(a.callsite.id, b.callsite.id, "callsite ids should match");
-            assert_eq!(a.callsite.caller, b.callsite.caller, "callsite callers should match");
-            assert_eq!(a.callee, b.callee, "callee symbols should match — resolution paths diverged!");
+            assert_eq!(
+                a.callsite.caller, b.callsite.caller,
+                "callsite callers should match"
+            );
+            assert_eq!(
+                a.callee, b.callee,
+                "callee symbols should match — resolution paths diverged!"
+            );
         }
     }
 
@@ -2136,25 +2154,11 @@ main();
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(
-            &ts,
-            lib_id,
-            &PathBuf::from("lib.ts"),
-            lib_src,
-            "abc",
-        )
-        .unwrap();
+        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(
-            &ts,
-            main_id,
-            &PathBuf::from("main.ts"),
-            main_src,
-            "abc",
-        )
-        .unwrap();
+        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);
@@ -2193,25 +2197,11 @@ main();
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(
-            &ts,
-            lib_id,
-            &PathBuf::from("lib.ts"),
-            lib_src,
-            "abc",
-        )
-        .unwrap();
+        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(
-            &ts,
-            main_id,
-            &PathBuf::from("main.ts"),
-            main_src,
-            "abc",
-        )
-        .unwrap();
+        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);
@@ -2243,25 +2233,11 @@ function other() { return "no call"; }
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(
-            &ts,
-            lib_id,
-            &PathBuf::from("lib.ts"),
-            lib_src,
-            "hash",
-        )
-        .unwrap();
+        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "hash").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(
-            &ts,
-            main_id,
-            &PathBuf::from("main.ts"),
-            main_src,
-            "hash",
-        )
-        .unwrap();
+        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "hash").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);

@@ -54,13 +54,7 @@ fn test_is_file_covered() {
 
     store.insert_closure_generation("cl_cov_2").unwrap();
     store
-        .insert_closure_coverage(
-            "cl_cov_2",
-            &file_id,
-            "extracted_manifest",
-            1,
-            None,
-        )
+        .insert_closure_coverage("cl_cov_2", &file_id, "extracted_manifest", 1, None)
         .unwrap();
 
     // Not yet visible
@@ -96,23 +90,11 @@ fn test_get_coverage_counts() {
         )
         .unwrap();
     store
-        .insert_closure_coverage(
-            "cl_counts",
-            &file_b,
-            "extracted_manifest",
-            1,
-            Some("hash2"),
-        )
+        .insert_closure_coverage("cl_counts", &file_b, "extracted_manifest", 1, Some("hash2"))
         .unwrap();
     // Same file, different generation for manifest source
     store
-        .insert_closure_coverage(
-            "cl_counts",
-            &file_a,
-            "extracted_manifest",
-            2,
-            Some("hash3"),
-        )
+        .insert_closure_coverage("cl_counts", &file_a, "extracted_manifest", 2, Some("hash3"))
         .unwrap();
 
     store.make_coverage_visible("cl_counts", 1).unwrap();
@@ -136,16 +118,10 @@ fn test_staged_to_visible_transition() {
 
     // Insert two staged entries
     store
-        .insert_closure_coverage(
-            "cl_transition", &f1, "extracted_structural", 1,
-            Some("h1"),
-        )
+        .insert_closure_coverage("cl_transition", &f1, "extracted_structural", 1, Some("h1"))
         .unwrap();
     store
-        .insert_closure_coverage(
-            "cl_transition", &f2, "extracted_manifest", 1,
-            Some("h2"),
-        )
+        .insert_closure_coverage("cl_transition", &f2, "extracted_manifest", 1, Some("h2"))
         .unwrap();
 
     // Both are staged — not visible
@@ -184,7 +160,10 @@ fn test_multiple_closures_same_file() {
     store.insert_closure_generation("cl_multi_a").unwrap();
     store
         .insert_closure_coverage(
-            "cl_multi_a", &shared_file, "extracted_structural", 1,
+            "cl_multi_a",
+            &shared_file,
+            "extracted_structural",
+            1,
             Some("hash_a"),
         )
         .unwrap();
@@ -194,7 +173,10 @@ fn test_multiple_closures_same_file() {
     store.insert_closure_generation("cl_multi_b").unwrap();
     store
         .insert_closure_coverage(
-            "cl_multi_b", &shared_file, "extracted_manifest", 1,
+            "cl_multi_b",
+            &shared_file,
+            "extracted_manifest",
+            1,
             Some("hash_b"),
         )
         .unwrap();
@@ -227,22 +209,25 @@ fn test_coverage_counts_by_source() {
     // 2 extracted_structural + 1 extracted_manifest
     store
         .insert_closure_coverage(
-            "cl_source_counts", &f1, "extracted_structural", 1,
+            "cl_source_counts",
+            &f1,
+            "extracted_structural",
+            1,
             Some("h1"),
         )
         .unwrap();
     store
         .insert_closure_coverage(
-            "cl_source_counts", &f2, "extracted_structural", 1,
+            "cl_source_counts",
+            &f2,
+            "extracted_structural",
+            1,
             Some("h2"),
         )
         .unwrap();
 
     store
-        .insert_closure_coverage(
-            "cl_source_counts", &f3, "extracted_manifest", 1,
-            Some("h3"),
-        )
+        .insert_closure_coverage("cl_source_counts", &f3, "extracted_manifest", 1, Some("h3"))
         .unwrap();
 
     store.make_coverage_visible("cl_source_counts", 1).unwrap();
@@ -277,18 +262,12 @@ fn test_make_visible_generation_isolation() {
 
     // Generation 1 entry
     store
-        .insert_closure_coverage(
-            "cl_iso", &f1, "extracted_structural", 1,
-            Some("g1"),
-        )
+        .insert_closure_coverage("cl_iso", &f1, "extracted_structural", 1, Some("g1"))
         .unwrap();
 
     // Generation 2 entry (same closure, different generation)
     store
-        .insert_closure_coverage(
-            "cl_iso", &f2, "extracted_manifest", 2,
-            Some("g2"),
-        )
+        .insert_closure_coverage("cl_iso", &f2, "extracted_manifest", 2, Some("g2"))
         .unwrap();
 
     // Only make generation 1 visible

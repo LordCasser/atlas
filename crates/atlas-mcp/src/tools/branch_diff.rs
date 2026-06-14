@@ -7,7 +7,7 @@
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
 use crate::tools::symbol_selector::{
-    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 use serde_json::json;
 
@@ -35,8 +35,14 @@ impl ToolRouter {
         let lr = AnalysisEnvelope::new("branch_diff", args);
         let query_id = lr.query_id().to_string();
 
-        // Resolve symbol to SymbolId
-        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+        // Resolve symbol to SymbolId. When a structured selector includes a
+        // file_path, focus can seed that file before retrying resolution.
+        let sid = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            None,
+            None,
+        ) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let candidates_str: Vec<String> = candidates
@@ -64,15 +70,14 @@ impl ToolRouter {
 
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
-            let (_, focus_warnings) = self.prepare_focus_query(
-                Some(atlas_engine::QueryIntent::Calls {
+            let (_, focus_warnings) =
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                     direction: None,
                     depth: None,
-                }),
-            );
+                }));
             for w in focus_warnings {
                 tracing::warn!("Focus pre-warm warning (branch_diff): {w}");
             }
@@ -86,7 +91,11 @@ impl ToolRouter {
 
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction via the dataflow service
-            match self.active_mut().analysis_runtime.ensure_dataflow_for_function(&sid, Some(&query_id)) {
+            match self
+                .active_mut()
+                .analysis_runtime
+                .ensure_dataflow_for_function(&sid, Some(&query_id))
+            {
                 Ok(()) => {
                     // Re-query CFG after lazy extraction
                     cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
@@ -106,8 +115,7 @@ impl ToolRouter {
                         "function": symbol,
                         "error": format!("CFG not available for branch diff analysis: {:#}", e),
                     });
-                    return lr.with_is_error(true)
-                        .build(resp, self);
+                    return lr.with_is_error(true).build(resp, self);
                 }
             }
         }
@@ -117,16 +125,16 @@ impl ToolRouter {
             let resp = json!({
                 "ok": false,
                 "function": symbol,
-                "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Consider running 'index' with full structural analysis first.",
+                "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Scoped focus/dataflow preparation could not produce the required CFG facts.",
             });
-            return lr.with_is_error(true)
-                .build(resp, self);
+            return lr.with_is_error(true).build(resp, self);
         }
 
         // --- CFG is available — run branch diff analysis ---
 
         let qname = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_symbol_by_id(&sid)
             .ok()
             .flatten()
@@ -134,7 +142,8 @@ impl ToolRouter {
             .unwrap_or_else(|| symbol.to_string());
 
         let cfg_edges = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_cfg_edges_by_function(&sid)
             .unwrap_or_default();
 
@@ -147,7 +156,8 @@ impl ToolRouter {
         let diffs = if use_semantic {
             // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
             let lang = self
-                .active_mut().store
+                .active_mut()
+                .store
                 .find_symbol_by_id(&sid)
                 .ok()
                 .flatten()
@@ -157,14 +167,16 @@ impl ToolRouter {
 
             // Load DataFlow nodes and edges
             let data_nodes = self
-                .active_mut().store
+                .active_mut()
+                .store
                 .find_data_nodes_by_function(&sid)
                 .unwrap_or_default();
             let dataflow_edges = if data_nodes.is_empty() {
                 vec![]
             } else {
                 let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                self.active_mut().store
+                self.active_mut()
+                    .store
                     .find_dataflow_edges_by_sources(&all_ids)
                     .unwrap_or_default()
             };
@@ -216,7 +228,6 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        lr.with_is_error(false)
-            .build(resp, self)
+        lr.with_is_error(false).build(resp, self)
     }
 }

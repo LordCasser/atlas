@@ -48,8 +48,7 @@ impl Store {
             placeholders.join(",")
         );
         let kind_strs: Vec<String> = kinds.iter().map(|k| k.as_str().to_string()).collect();
-        let mut params: Vec<&dyn rusqlite::types::ToSql> =
-            Vec::with_capacity(1 + kinds.len());
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(1 + kinds.len());
         params.push(file_id as &dyn rusqlite::types::ToSql);
         for k in &kind_strs {
             params.push(k as &dyn rusqlite::types::ToSql);
@@ -66,6 +65,28 @@ impl Store {
             "{REFERENCE_SELECT_NO_WHERE} WHERE resolved_symbol_id IS NULL"
         ))?;
         let rows = stmt.query_map([], row_to_reference)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find unresolved call references inside a source symbol.
+    ///
+    /// These are calls whose callee token was extracted but could not be
+    /// resolved to a local symbol. They are useful for C/C++ kernel-style
+    /// helper, macro, and externally-defined sink names such as
+    /// `copy_from_user`.
+    pub fn find_unresolved_call_references_by_source(
+        &self,
+        source_symbol: &SymbolId,
+    ) -> anyhow::Result<Vec<ReferenceUse>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "{REFERENCE_SELECT_NO_WHERE} \
+             WHERE source_symbol = ?1 AND kind = ?2 AND resolved_symbol_id IS NULL"
+        ))?;
+        let rows = stmt.query_map(
+            params![source_symbol, ReferenceKind::Call.as_str()],
+            row_to_reference,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -440,7 +461,10 @@ impl Store {
     /// Find all callsites whose resolved callee is the given symbol.
     ///
     /// JOINs `callsites` with `references` to filter by `resolved_symbol_id`.
-    pub fn find_resolved_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+    pub fn find_resolved_callsites_by_callee(
+        &self,
+        callee: &SymbolId,
+    ) -> anyhow::Result<Vec<ResolvedCallsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
@@ -456,7 +480,10 @@ impl Store {
         let rows = stmt.query_map(params![callee], |row| {
             let cs = row_to_callsite(row)?;
             let callee: SymbolId = row.get(17)?;
-            Ok(ResolvedCallsite { callsite: cs, callee })
+            Ok(ResolvedCallsite {
+                callsite: cs,
+                callee,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -499,7 +526,10 @@ impl Store {
     }
 
     /// Find all callsites with resolved callee, filtered by callsite ID.
-    pub fn find_resolved_callsites_by_id(&self, callsite_id: &CallsiteId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+    pub fn find_resolved_callsites_by_id(
+        &self,
+        callsite_id: &CallsiteId,
+    ) -> anyhow::Result<Vec<ResolvedCallsite>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
@@ -515,7 +545,10 @@ impl Store {
         let rows = stmt.query_map(params![callsite_id], |row| {
             let cs = row_to_callsite(row)?;
             let callee: SymbolId = row.get(17)?;
-            Ok(ResolvedCallsite { callsite: cs, callee })
+            Ok(ResolvedCallsite {
+                callsite: cs,
+                callee,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -540,7 +573,10 @@ impl Store {
         let mut rows = stmt.query_map(params![ref_id], |row| {
             let cs = row_to_callsite(row)?;
             let callee: SymbolId = row.get(17)?;
-            Ok(ResolvedCallsite { callsite: cs, callee })
+            Ok(ResolvedCallsite {
+                callsite: cs,
+                callee,
+            })
         })?;
         match rows.next() {
             Some(Ok(cs)) => Ok(Some(cs)),
@@ -563,10 +599,7 @@ impl Store {
     }
 
     /// Look up a single reference by its ID.
-    pub fn get_reference_by_id(
-        &self,
-        reference_id: &[u8],
-    ) -> anyhow::Result<Option<ReferenceUse>> {
+    pub fn get_reference_by_id(&self, reference_id: &[u8]) -> anyhow::Result<Option<ReferenceUse>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
             "{REFERENCE_SELECT_NO_WHERE} WHERE reference_id = ?1"
@@ -596,16 +629,11 @@ impl Store {
              WHERE source = ?1 AND target = ?2 AND kind = ?3
              LIMIT 1",
         )?;
-        let mut rows = stmt.query_map(
-            params![source, target, kind.as_str()],
-            row_to_edge,
-        )?;
+        let mut rows = stmt.query_map(params![source, target, kind.as_str()], row_to_edge)?;
         match rows.next() {
             Some(Ok(e)) => Ok(Some(e)),
             Some(Err(e)) => Err(e.into()),
             None => Ok(None),
         }
     }
-
-
 }

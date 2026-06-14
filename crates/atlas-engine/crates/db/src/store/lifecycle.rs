@@ -29,7 +29,10 @@ fn apply_focus_schema_migration(conn: &Connection) -> anyhow::Result<()> {
         conn.execute("ALTER TABLE extraction_jobs ADD COLUMN closure_id TEXT", [])?;
     }
     if !columns.iter().any(|c| c == "generation") {
-        conn.execute("ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER", [])?;
+        conn.execute(
+            "ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER",
+            [],
+        )?;
     }
 
     conn.execute_batch(

@@ -32,7 +32,10 @@ pub struct AnalysisRuntime {
 impl AnalysisRuntime {
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
         let lazy_service = LazyDataflowService::new(store.clone(), project_root);
-        Self { store, lazy_service }
+        Self {
+            store,
+            lazy_service,
+        }
     }
 
     /// Trigger lazy dataflow extraction for a function symbol.
@@ -67,7 +70,10 @@ mod tests {
         // SymbolId::default() is an all-zero ID that won't match any symbol.
         let symbol_id = SymbolId::default();
         let result = ar.ensure_dataflow_for_function(&symbol_id, None);
-        assert!(result.is_err(), "unknown SymbolId should return error, not Ok");
+        assert!(
+            result.is_err(),
+            "unknown SymbolId should return error, not Ok"
+        );
     }
 
     #[test]

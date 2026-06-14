@@ -681,8 +681,7 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
     create_ts_project(project.path());
 
     // ── Write initial tsconfig.json with path aliases ──
-    let tsconfig_v1 =
-        r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}"#;
+    let tsconfig_v1 = r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}"#;
     std::fs::write(project.path().join("tsconfig.json"), tsconfig_v1).unwrap();
 
     // ── Run 1: initial full index (commits alias config hash, builds edges) ──
@@ -703,7 +702,10 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
         stats1.resolved,
     );
     assert!(
-        store.get_metadata(KEY_RESOLUTION_CONFIG_HASH).unwrap().is_some(),
+        store
+            .get_metadata(KEY_RESOLUTION_CONFIG_HASH)
+            .unwrap()
+            .is_some(),
         "resolution config hash should be stored after first run"
     );
     let gen1 = store
@@ -711,7 +713,10 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
         .unwrap()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
-    assert!(gen1 > 0, "resolution generation should be bumped after first run");
+    assert!(
+        gen1 > 0,
+        "resolution generation should be bumped after first run"
+    );
 
     // ── Modify ONLY tsconfig.json — no source file changes ──
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -753,7 +758,10 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
 
     // The config hash stored after second run should match the new config.
     assert!(
-        store.get_metadata(KEY_RESOLUTION_CONFIG_HASH).unwrap().is_some(),
+        store
+            .get_metadata(KEY_RESOLUTION_CONFIG_HASH)
+            .unwrap()
+            .is_some(),
         "resolution config hash should be stored after second run"
     );
 }

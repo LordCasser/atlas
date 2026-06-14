@@ -9,11 +9,11 @@
 //! cargo test -p atlas-mcp --test focus_e2e_tests -- --nocapture
 //! ```
 
-use std::sync::Arc;
-use serde_json::{Value, json};
 use atlas_engine::Store;
-use atlas_mcp::tools::{ToolRouter, ToolCallContext};
 use atlas_mcp::protocol::ContentBlock;
+use atlas_mcp::tools::{ToolCallContext, ToolRouter};
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 // =========================================================================
 // Helpers
@@ -102,31 +102,18 @@ fn setup_router(project_root: &std::path::Path) -> ToolRouter {
 
 #[test]
 fn focus_context_triggers_lazy_extraction() {
-    let temp_dir =
-        tempfile::TempDir::with_prefix("atlas-focus-e2e-").expect("create temp dir");
+    let temp_dir = tempfile::TempDir::with_prefix("atlas-focus-e2e-").expect("create temp dir");
     let project_root = temp_dir.path().to_path_buf();
 
     // 1. Create C project and router
     create_temp_c_project(&project_root);
     let mut router = setup_router(&project_root);
 
-    // 2. Manifest index the project
-    let (index_resp, index_err) =
-        call_tool(&mut router, "index", &json!({"analysis": "manifest"}));
-    assert!(!index_err, "Manifest index failed: {index_resp:.300}");
-    let indexed_count = index_resp
-        .get("files_indexed")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    assert!(
-        indexed_count > 0,
-        "Index should find at least one file, got: {index_resp:.300}"
-    );
-
-    // 3. Initialize FocusRuntime so lazy structural extraction can run
+    // 2. Initialize FocusRuntime so lazy structural extraction can run.
+    // No MCP index call is allowed; the query must drive focus bootstrap.
     router.init_focus();
 
-    // 4. Trigger focus extraction via symbol context query
+    // 3. Trigger focus extraction via symbol context query
     let (ctx_resp, ctx_err) = call_tool(
         &mut router,
         "symbol",
@@ -159,10 +146,7 @@ fn focus_context_triggers_lazy_extraction() {
 
         // Check for focus-related analysis envelope fields
         if let Some(analysis) = ctx_resp.get("analysis") {
-            let state = analysis
-                .get("state")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let state = analysis.get("state").and_then(|v| v.as_str()).unwrap_or("");
             eprintln!("Focus analysis state: {state:?}");
             // Valid states: "building", "usable_partial", "ready"
             // All are acceptable — focus may have completed or be in progress
@@ -172,7 +156,7 @@ fn focus_context_triggers_lazy_extraction() {
         }
     }
 
-    // 5. Second call — verify no crash (cache/refresh behavior)
+    // 4. Second call — verify no crash (cache/refresh behavior)
     let (ctx_resp2, ctx_err2) = call_tool(
         &mut router,
         "symbol",
@@ -190,7 +174,7 @@ fn focus_context_triggers_lazy_extraction() {
         );
     }
 
-    // 6. Verify graph edges via calls tool
+    // 5. Verify graph edges via calls tool
     // After focus extraction, helper_foo → helper_bar edge may be present
     let (calls_resp, calls_err) = call_tool(
         &mut router,
@@ -225,19 +209,14 @@ fn focus_context_triggers_lazy_extraction() {
 
 #[test]
 fn focus_calls_query_intent_works() {
-    let temp_dir =
-        tempfile::TempDir::with_prefix("atlas-focus-calls-").expect("create temp dir");
+    let temp_dir = tempfile::TempDir::with_prefix("atlas-focus-calls-").expect("create temp dir");
     let project_root = temp_dir.path().to_path_buf();
 
     create_temp_c_project(&project_root);
     let mut router = setup_router(&project_root);
 
-    // Manifest index
-    let (_, index_err) =
-        call_tool(&mut router, "index", &json!({"analysis": "manifest"}));
-    assert!(!index_err, "Manifest index failed");
-
-    // Initialize focus runtime
+    // Initialize focus runtime. No MCP index call is allowed; the focus
+    // query below must discover and prepare the relevant project slice.
     router.init_focus();
 
     // Direct focus query for Calls intent
@@ -254,7 +233,7 @@ fn focus_calls_query_intent_works() {
         eprintln!("Focus warnings: {warnings:?}");
     }
 
-    // Focus should return a result for a manifest-only DB with FocusRuntime active
+    // Focus should return a result for a cold DB with FocusRuntime active.
     if let Some(result) = focus_opt {
         eprintln!(
             "Focus result: mode={:?}, closure_id={:?}, built_files={}, precision={:?}",
@@ -264,7 +243,7 @@ fn focus_calls_query_intent_works() {
             result.precision,
         );
 
-        // In a fresh manifest-only DB, Focus mode is expected
+        // In a fresh cold DB, Focus mode is expected.
         assert_eq!(
             result.mode,
             atlas_engine::focus::runtime::IndexMode::Focus,
@@ -294,19 +273,14 @@ fn focus_calls_query_intent_works() {
 
 #[test]
 fn symbol_context_without_focus_init() {
-    let temp_dir =
-        tempfile::TempDir::with_prefix("atlas-no-focus-").expect("create temp dir");
+    let temp_dir = tempfile::TempDir::with_prefix("atlas-no-focus-").expect("create temp dir");
     let project_root = temp_dir.path().to_path_buf();
 
     create_temp_c_project(&project_root);
     let mut router = setup_router(&project_root);
 
-    // Manifest index only — no focus init
-    let (_, index_err) =
-        call_tool(&mut router, "index", &json!({"analysis": "manifest"}));
-    assert!(!index_err, "Manifest index failed");
-
-    // Call symbol context without focus — should still work (degraded behavior)
+    // Call symbol context without explicit focus configuration — should
+    // still work as a structured degraded response.
     let (ctx_resp, ctx_err) = call_tool(
         &mut router,
         "symbol",

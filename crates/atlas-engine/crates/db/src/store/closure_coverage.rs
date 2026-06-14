@@ -63,10 +63,7 @@ impl Store {
     /// This is used at commit time when a closure may have files spread across
     /// multiple generations (seed=0, iteration 1, iteration 2, ...).
     /// Returns the number of rows updated.
-    pub fn make_all_staged_coverage_visible(
-        &self,
-        closure_id: &str,
-    ) -> anyhow::Result<usize> {
+    pub fn make_all_staged_coverage_visible(&self, closure_id: &str) -> anyhow::Result<usize> {
         let conn = self.lock();
         let updated = conn.execute(
             "UPDATE closure_coverage
@@ -78,10 +75,7 @@ impl Store {
     }
 
     /// Get all visible files for a closure.
-    pub fn get_visible_coverage(
-        &self,
-        closure_id: &str,
-    ) -> anyhow::Result<Vec<ClosureCoverage>> {
+    pub fn get_visible_coverage(&self, closure_id: &str) -> anyhow::Result<Vec<ClosureCoverage>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT closure_id, file_id, source, visibility_state, generation,
@@ -106,10 +100,7 @@ impl Store {
     }
 
     /// Get counts by source for a closure.
-    pub fn get_coverage_counts(
-        &self,
-        closure_id: &str,
-    ) -> anyhow::Result<Vec<(String, i64)>> {
+    pub fn get_coverage_counts(&self, closure_id: &str) -> anyhow::Result<Vec<(String, i64)>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT source, COUNT(*) FROM closure_coverage

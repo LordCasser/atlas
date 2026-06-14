@@ -9,15 +9,14 @@
 //! cargo test -p atlas-mcp --test e2e_tests -- --test-threads=1
 //! ```
 
-use std::path::PathBuf;
-use serde_json::{Value, json};
 use atlas_engine::Store;
-use atlas_mcp::tools::{ToolRouter, ToolCallContext};
+use atlas_mcp::tools::{ToolCallContext, ToolRouter};
+use serde_json::{Value, json};
+use std::path::PathBuf;
 
 /// Discover example directories that have `.atlas/atlas.db`.
 fn discover_example_projects() -> Vec<PathBuf> {
-    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut projects = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&examples_dir) {
         for entry in entries.flatten() {
@@ -58,11 +57,7 @@ fn parse_response(s: &str) -> Value {
 }
 
 /// Call a tool and return the parsed JSON response + is_error flag.
-fn call_tool(
-    router: &mut ToolRouter,
-    name: &str,
-    args: &Value,
-) -> (Value, bool) {
+fn call_tool(router: &mut ToolRouter, name: &str, args: &Value) -> (Value, bool) {
     let ctx = ToolCallContext::empty();
     let result = router.call_tool(&ctx, name, args);
     let text = result
@@ -120,7 +115,9 @@ fn e2e_all_example_projects() {
         let mut found_qname: Option<String> = None;
         let mut found_file: Option<String> = None;
 
-        for broad_query in &["a", "the", "fn", "class", "def", "int", "struct", "func", "void", "let"] {
+        for broad_query in &[
+            "a", "the", "fn", "class", "def", "int", "struct", "func", "void", "let",
+        ] {
             let (resp, is_err) = call_tool(
                 &mut router,
                 "search",
@@ -140,7 +137,9 @@ fn e2e_all_example_projects() {
 
         // Accept projects where broad search finds nothing (e.g. very small)
         if found_qname.is_none() {
-            eprintln!("[{project_name}] No search results for any broad query — skipping symbol-dependent tests");
+            eprintln!(
+                "[{project_name}] No search results for any broad query — skipping symbol-dependent tests"
+            );
             // Still run infrastructure tests
         }
 
@@ -181,11 +180,7 @@ fn e2e_all_example_projects() {
 
         // ── 4. impact on found symbol ─────────────────────────────────
         if let Some(ref qname) = found_qname {
-            let (impact, is_err) = call_tool(
-                &mut router,
-                "impact",
-                &json!({"symbol": qname}),
-            );
+            let (impact, is_err) = call_tool(&mut router, "impact", &json!({"symbol": qname}));
             if !is_err {
                 let has_impact = impact.get("file_groups").is_some()
                     || impact.get("impacted").is_some()
@@ -199,14 +194,10 @@ fn e2e_all_example_projects() {
 
         // ── 5. explore on found symbol ────────────────────────────────
         if let Some(ref qname) = found_qname {
-            let (explore, is_err) = call_tool(
-                &mut router,
-                "explore",
-                &json!({"symbol": qname}),
-            );
+            let (explore, is_err) = call_tool(&mut router, "explore", &json!({"symbol": qname}));
             if !is_err {
-                let has_data = explore.get("callEvidence").is_some()
-                    || explore.get("fileContext").is_some();
+                let has_data =
+                    explore.get("callEvidence").is_some() || explore.get("fileContext").is_some();
                 assert!(
                     has_data,
                     "[{project_name}] explore missing callEvidence/fileContext: {explore:.300}"
@@ -288,7 +279,7 @@ fn e2e_all_example_projects() {
             ("fp_dispatches", json!({"action": "list"})),
             ("domain_rules", json!({"action": "list"})),
             ("tasks", json!({})),
-            ("task_status", json!({"task_id": "nonexistent"})),
+            ("resume_query", json!({"query_id": "nonexistent"})),
         ];
 
         for (name, args) in all_tools {
@@ -315,8 +306,7 @@ fn e2e_all_example_projects() {
 
 #[test]
 fn e2e_focus_runtime_python_example() {
-    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples");
+    let examples_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let python_root = examples_dir
         .join("python_example")
         .canonicalize()
@@ -324,9 +314,8 @@ fn e2e_focus_runtime_python_example() {
     let db_path = python_root.join(".atlas/atlas.db");
     assert!(db_path.exists(), "python_example .atlas/atlas.db not found");
 
-    let store = std::sync::Arc::new(
-        Store::open_db(&db_path).expect("Failed to open python_example DB"),
-    );
+    let store =
+        std::sync::Arc::new(Store::open_db(&db_path).expect("Failed to open python_example DB"));
     let mut router = ToolRouter::new_empty(store, python_root.clone());
     router
         .ensure_graph_initialized()
@@ -345,19 +334,14 @@ fn e2e_focus_runtime_python_example() {
     };
     let (focus_opt, _warnings) = router.prepare_focus_query(Some(intent));
 
-    // 3. Verify focus response has closure_id, mode, precision
+    // 3. Verify focus response has mode and precision. closure_id is an
+    // internal scheduler detail and must not be part of the public MCP
+    // contract.
     if let Some(result) = focus_opt {
         // Focus mode is expected for manifest-only DB
         assert!(
-            result.closure_id.is_some()
+            result.precision.is_some()
                 || result.mode == atlas_engine::focus::runtime::IndexMode::FullIndex,
-            "Focus result should have closure_id or be FullIndex. \
-             closure_id={:?}, mode={:?}",
-            result.closure_id,
-            result.mode
-        );
-        assert!(
-            result.precision.is_some() || result.mode == atlas_engine::focus::runtime::IndexMode::FullIndex,
             "Focus result should have precision or be FullIndex. precision={:?}",
             result.precision
         );

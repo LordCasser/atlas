@@ -1,7 +1,7 @@
 //! Tests for symbol_hints store module.
 
-use super::*;
 use super::symbol_hints::SymbolHint;
+use super::*;
 
 fn test_store() -> Store {
     let store = Store::open_in_memory().unwrap();

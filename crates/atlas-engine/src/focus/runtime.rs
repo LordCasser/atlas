@@ -30,17 +30,15 @@ use types::structs::{
     CapabilityMask, CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier,
 };
 
+use crate::LazyDataflowService;
 use crate::investigation::{Investigation, InvestigationFocus};
 use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazyStructuralService};
-use crate::LazyDataflowService;
 
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
 use super::query::QueryIntent;
 use super::scheduler::{self, FocusPriority, FocusScheduler};
-use super::types::{
-    ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget,
-};
+use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
 
 // ── IndexMode ───────────────────────────────────────────────────────────────
 
@@ -203,26 +201,38 @@ impl FocusRuntime {
                         _ => Direction::Both,
                     };
                     vec![
-                        ClosureStrategy::CallGraph { direction: call_dir, depth: 2 },
+                        ClosureStrategy::CallGraph {
+                            direction: call_dir,
+                            depth: 2,
+                        },
                         ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ]
-                },
+                }
                 QueryIntent::Context { .. } => vec![
-                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 2 },
+                    ClosureStrategy::CallGraph {
+                        direction: Direction::Both,
+                        depth: 2,
+                    },
                     ClosureStrategy::TypeGraph { max_depth: 1 },
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
                 QueryIntent::Explore { .. } => vec![
-                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 2 },
+                    ClosureStrategy::CallGraph {
+                        direction: Direction::Both,
+                        depth: 2,
+                    },
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
                 QueryIntent::Path { .. } => vec![
-                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 3 },
+                    ClosureStrategy::CallGraph {
+                        direction: Direction::Both,
+                        depth: 3,
+                    },
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
-                QueryIntent::Impact { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
-                ],
+                QueryIntent::Impact { .. } => {
+                    vec![ClosureStrategy::ImportNeighborhood { depth: 2 }]
+                }
                 QueryIntent::Search { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::SameDirectory,
@@ -238,7 +248,9 @@ impl FocusRuntime {
         };
 
         let closure_id = scheduler::next_job_id();
-        let engine = self.closure_engine.as_ref()
+        let engine = self
+            .closure_engine
+            .as_ref()
             .context("ClosureEngine not initialized")?;
         let closure = engine.build_closure(&minimal_window, &closure_id)?;
 
@@ -277,22 +289,31 @@ impl FocusRuntime {
                         _ => Direction::Both,
                     };
                     vec![
-                        ClosureStrategy::CallGraph { direction: call_dir, depth: 3 },
+                        ClosureStrategy::CallGraph {
+                            direction: call_dir,
+                            depth: 3,
+                        },
                         ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ]
-                },
+                }
                 QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
-                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 3 },
+                    ClosureStrategy::CallGraph {
+                        direction: Direction::Both,
+                        depth: 3,
+                    },
                     ClosureStrategy::TypeGraph { max_depth: 2 },
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::Path { .. } => vec![
-                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 4 },
+                    ClosureStrategy::CallGraph {
+                        direction: Direction::Both,
+                        depth: 4,
+                    },
                     ClosureStrategy::ImportNeighborhood { depth: 3 },
                 ],
-                QueryIntent::Impact { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 3 },
-                ],
+                QueryIntent::Impact { .. } => {
+                    vec![ClosureStrategy::ImportNeighborhood { depth: 3 }]
+                }
                 QueryIntent::Search { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ClosureStrategy::SameDirectory,
@@ -306,7 +327,8 @@ impl FocusRuntime {
             language,
             max_iterations: 3,
         };
-        let bg_closure_id = self.scheduler
+        let bg_closure_id = self
+            .scheduler
             .lock()
             .unwrap()
             .enqueue(bg_window, FocusPriority::UserFocus);
@@ -453,9 +475,12 @@ impl FocusRuntime {
         intent: &QueryIntent,
     ) -> Result<(FocusSeed, Option<FileId>, Option<SymbolId>, Language)> {
         match intent {
-            QueryIntent::Calls { symbol_name, file_id, symbol_id, .. } => {
-                self.locate_calls_seed(symbol_name, file_id, symbol_id)
-            }
+            QueryIntent::Calls {
+                symbol_name,
+                file_id,
+                symbol_id,
+                ..
+            } => self.locate_calls_seed(symbol_name, file_id, symbol_id),
             QueryIntent::Path { from_name, .. } => {
                 // Use the "from" symbol as the seed for path queries.
                 self.locate_calls_seed(from_name, &None, &None)
@@ -464,30 +489,43 @@ impl FocusRuntime {
                 // Use the symbol name as the seed for impact analysis.
                 self.locate_calls_seed(symbol_name, &None, &None)
             }
-            QueryIntent::Explore { symbol_name, file_id, symbol_id } => {
+            QueryIntent::Explore {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => {
                 // Explore uses the same symbol-based seed location as Calls
                 self.locate_calls_seed(symbol_name, file_id, symbol_id)
             }
-            QueryIntent::Context { symbol_name, file_id, symbol_id } => {
+            QueryIntent::Context {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => {
                 // Context uses the same symbol-based seed location as Calls
                 self.locate_calls_seed(symbol_name, file_id, symbol_id)
             }
-            QueryIntent::Search { query: _query, scope } => {
-                // Search: use scope to find a starting file, then fall back
+            QueryIntent::Search {
+                query,
+                scope: _scope,
+            } => {
+                // Search is also a seed-bearing query: use the actual query
+                // text so the candidate provider can find matching files from
+                // symbol hints, indexed symbols, or ripgrep + file_inventory.
                 let language = Language::default();
-                // If scope is provided, try to locate a file matching the scope prefix.
-                // For now, return a generic seed — the closure will expand from
-                // the scope's file inventory.
                 let seed = FocusSeed::Symbol {
-                    name: format!("search:{}", scope.as_deref().unwrap_or("*")),
+                    name: query.clone(),
                     kind: None,
                     language,
                 };
                 Ok((seed, None, None, language))
             }
-            QueryIntent::TracePoint { file_id, line, column } => {
-                let language = self.resolve_language_for_file(file_id)
-                    .unwrap_or_default();
+            QueryIntent::TracePoint {
+                file_id,
+                line,
+                column,
+            } => {
+                let language = self.resolve_language_for_file(file_id).unwrap_or_default();
                 let seed = FocusSeed::Position {
                     file_id: *file_id,
                     line: *line,
@@ -495,10 +533,13 @@ impl FocusRuntime {
                 };
                 Ok((seed, Some(*file_id), None, language))
             }
-            QueryIntent::TraceVariable { file_id, line, column } => {
+            QueryIntent::TraceVariable {
+                file_id,
+                line,
+                column,
+            } => {
                 // TraceVariable uses same position-based seed as TracePoint
-                let language = self.resolve_language_for_file(file_id)
-                    .unwrap_or_default();
+                let language = self.resolve_language_for_file(file_id).unwrap_or_default();
                 let seed = FocusSeed::Position {
                     file_id: *file_id,
                     line: *line,
@@ -518,7 +559,8 @@ impl FocusRuntime {
     ) -> Result<(FocusSeed, Option<FileId>, Option<SymbolId>, Language)> {
         // Priority: symbol_id > file_id > candidate search
         if let Some(sym_id) = symbol_id {
-            let sym = self.store
+            let sym = self
+                .store
                 .find_symbol_by_id(sym_id)?
                 .with_context(|| format!("Symbol not found: {:?}", sym_id))?;
             let seed = FocusSeed::Symbol {
@@ -539,10 +581,7 @@ impl FocusRuntime {
         }
 
         // Candidate-based search using DefaultCandidateProvider
-        let provider = DefaultCandidateProvider::new(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
+        let provider = DefaultCandidateProvider::new(self.store.clone(), self.project_root.clone());
         let candidates = provider
             .candidates_for_symbol(symbol_name)
             .context("Failed to locate candidates for symbol")?;
@@ -572,16 +611,11 @@ impl FocusRuntime {
         if self.closure_engine.is_some() {
             return Ok(());
         }
-        let lazy_structural = LazyStructuralService::new(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
-        let lazy_dataflow = self
-            .shared_lazy_dataflow
-            .clone()
-            .unwrap_or_else(|| {
-                LazyDataflowService::new(self.store.clone(), self.project_root.clone())
-            });
+        let lazy_structural =
+            LazyStructuralService::new(self.store.clone(), self.project_root.clone());
+        let lazy_dataflow = self.shared_lazy_dataflow.clone().unwrap_or_else(|| {
+            LazyDataflowService::new(self.store.clone(), self.project_root.clone())
+        });
         let engine = ClosureEngine::new(
             self.store.clone(),
             lazy_structural,
@@ -591,14 +625,9 @@ impl FocusRuntime {
         );
 
         // Create a second engine instance for the scheduler's background worker.
-        let sched_lazy = LazyStructuralService::new(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
-        let sched_dataflow = LazyDataflowService::new(
-            self.store.clone(),
-            self.project_root.clone(),
-        );
+        let sched_lazy = LazyStructuralService::new(self.store.clone(), self.project_root.clone());
+        let sched_dataflow =
+            LazyDataflowService::new(self.store.clone(), self.project_root.clone());
         let sched_engine = ClosureEngine::new(
             self.store.clone(),
             sched_lazy,

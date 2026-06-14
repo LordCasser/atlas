@@ -36,7 +36,7 @@ use extraction::{
 };
 use types::ids::FileId;
 use types::structs::precision::PrecisionTier;
-use types::{layer, status};
+use types::{FileInfo, Language, ParseStatus, layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
 const MAX_CANDIDATE_FILES: usize = 10;
@@ -111,7 +111,11 @@ impl CandidateProvider for DefaultCandidateProvider {
         match &self.project_root {
             Some(root) => match self.store.resolve_file_id(root, path) {
                 Ok(Some(file_id)) => Ok(vec![file_id]),
-                _ => Ok(Vec::new()),
+                _ => self.store.find_file_inventory_by_path(path).map(|row| {
+                    row.and_then(|r| file_id_from_inventory_bytes(&r.file_id))
+                        .map(|file_id| vec![file_id])
+                        .unwrap_or_default()
+                }),
             },
             None => Ok(vec![FileId::generate(path)]),
         }
@@ -169,11 +173,22 @@ impl DefaultCandidateProvider {
             }
             match self.store.resolve_file_id(&project_root, line) {
                 Ok(Some(file_id)) => file_ids.push(file_id),
-                _ => {} // skip files unknown to the store
+                _ => {
+                    if let Some(row) = self.store.find_file_inventory_by_path(line)? {
+                        if let Some(file_id) = file_id_from_inventory_bytes(&row.file_id) {
+                            file_ids.push(file_id);
+                        }
+                    }
+                }
             }
         }
         Ok(file_ids)
     }
+}
+
+fn file_id_from_inventory_bytes(bytes: &[u8]) -> Option<FileId> {
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    Some(FileId::from_bytes(arr))
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +260,32 @@ impl LazyStructuralService {
     /// Ensure the file containing `symbol_name` has full structural facts.
     pub fn ensure_structural_for_symbol(&self, name: &str) -> Result<EnsureStructuralResult> {
         let candidates = self.candidate_provider.candidates_for_symbol(name)?;
+        if candidates.is_empty() {
+            return Ok(EnsureStructuralResult {
+                files_built: 0,
+                files_cached: 0,
+                budget_exceeded: false,
+                built_file_ids: vec![],
+                cached_file_ids: vec![],
+                precision_tier: PrecisionTier::Unavailable,
+                files_pending: 0,
+                pending_job_ids: vec![],
+            });
+        }
+        self.ensure_structural_for_files(&candidates, None)
+    }
+
+    /// Ensure files matching `symbol_name` inside a project-relative scope.
+    ///
+    /// Scoped search uses this when only the focus inventory exists. It keeps
+    /// extraction tied to the user's requested hot area instead of parsing an
+    /// arbitrary prefix of a large directory.
+    pub fn ensure_structural_for_symbol_in_scope(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<EnsureStructuralResult> {
+        let candidates = self.candidates_for_symbol_in_scope(name, scope)?;
         if candidates.is_empty() {
             return Ok(EnsureStructuralResult {
                 files_built: 0,
@@ -376,10 +417,7 @@ impl LazyStructuralService {
 
     /// Re-extract a single file with ResolutionSymbols mode.
     fn reindex_file_resolution_symbols(&self, file_id: &FileId) -> Result<()> {
-        let file_info = self
-            .store
-            .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
+        let file_info = self.file_info_for_lazy(file_id)?;
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;
@@ -513,10 +551,7 @@ impl LazyStructuralService {
         file_id: &FileId,
         token: Option<&dyn CancelCheck>,
     ) -> Result<ReindexOutcome> {
-        let file_info = self
-            .store
-            .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
+        let file_info = self.file_info_for_lazy(file_id)?;
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;
@@ -629,6 +664,96 @@ impl LazyStructuralService {
             Some(root) => root.join(relative),
             None => PathBuf::from(relative),
         }
+    }
+
+    fn file_info_for_lazy(&self, file_id: &FileId) -> Result<FileInfo> {
+        if let Some(file_info) = self.store.get_file(file_id)? {
+            return Ok(file_info);
+        }
+
+        let row = self
+            .store
+            .find_file_inventory_by_id(file_id)?
+            .ok_or_else(|| anyhow::anyhow!("file not found in files or inventory: {file_id:?}"))?;
+        let language = Language::from_str(&row.language)
+            .or_else(|| Language::from_path(std::path::Path::new(&row.path)))
+            .unwrap_or_default();
+        Ok(FileInfo {
+            file_id: *file_id,
+            path: row.path,
+            language,
+            content_hash: row.content_hash.unwrap_or_default(),
+            status: ParseStatus::Success,
+        })
+    }
+
+    fn candidates_for_symbol_in_scope(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<Vec<FileId>> {
+        let normalized_scope = scope
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches("./")
+                    .trim_start_matches('/')
+                    .trim_end_matches('/')
+                    .replace('\\', "/")
+            })
+            .unwrap_or_default();
+        if normalized_scope.is_empty() || normalized_scope == "." {
+            return self.candidate_provider.candidates_for_symbol(name);
+        }
+
+        let project_root = match &self.project_root {
+            Some(root) => root,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut cmd = std::process::Command::new("rg");
+        cmd.args([
+            "--files-with-matches",
+            "--no-heading",
+            "--word-regexp",
+            "--fixed-strings",
+            "--max-count=1",
+        ]);
+        if project_root.join(".atlasignore").exists() {
+            cmd.args(["--ignore-file", ".atlasignore"]);
+        }
+        cmd.arg(name)
+            .arg(&normalized_scope)
+            .current_dir(project_root);
+
+        let output = match cmd.output() {
+            Ok(o) if o.status.success() => o,
+            _ => return Ok(Vec::new()),
+        };
+
+        let mut seen = std::collections::HashSet::new();
+        let mut file_ids = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .take(MAX_CANDIDATE_FILES)
+        {
+            let rel = line.trim();
+            if rel.is_empty() {
+                continue;
+            }
+            let file_id = match self.store.resolve_file_id(project_root, rel)? {
+                Some(file_id) => Some(file_id),
+                None => self
+                    .store
+                    .find_file_inventory_by_path(rel)?
+                    .and_then(|row| file_id_from_inventory_bytes(&row.file_id)),
+            };
+            if let Some(file_id) = file_id {
+                if seen.insert(file_id) {
+                    file_ids.push(file_id);
+                }
+            }
+        }
+        Ok(file_ids)
     }
 }
 

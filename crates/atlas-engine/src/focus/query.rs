@@ -104,7 +104,12 @@ mod tests {
             depth: Some(2),
         };
         match intent {
-            QueryIntent::Calls { symbol_name, direction, depth, .. } => {
+            QueryIntent::Calls {
+                symbol_name,
+                direction,
+                depth,
+                ..
+            } => {
                 assert_eq!(symbol_name, "func");
                 assert_eq!(direction, Some("incoming".to_string()));
                 assert_eq!(depth, Some(2));
@@ -123,7 +128,9 @@ mod tests {
             depth: None,
         };
         match intent {
-            QueryIntent::Calls { direction, depth, .. } => {
+            QueryIntent::Calls {
+                direction, depth, ..
+            } => {
                 assert!(direction.is_none());
                 assert!(depth.is_none());
             }
@@ -139,7 +146,11 @@ mod tests {
             max_depth: Some(5),
         };
         match intent {
-            QueryIntent::Path { from_name, to_name, max_depth } => {
+            QueryIntent::Path {
+                from_name,
+                to_name,
+                max_depth,
+            } => {
                 assert_eq!(from_name, "A::foo");
                 assert_eq!(to_name, "B::bar");
                 assert_eq!(max_depth, Some(5));
@@ -156,7 +167,10 @@ mod tests {
             max_depth: None,
         };
         let debug_str = format!("{intent:?}");
-        assert!(debug_str.contains("Path"), "Debug output should contain 'Path': {debug_str}");
+        assert!(
+            debug_str.contains("Path"),
+            "Debug output should contain 'Path': {debug_str}"
+        );
     }
 
     #[test]
@@ -181,7 +195,10 @@ mod tests {
             depth: None,
         };
         let debug_str = format!("{intent:?}");
-        assert!(debug_str.contains("Impact"), "Debug output should contain 'Impact': {debug_str}");
+        assert!(
+            debug_str.contains("Impact"),
+            "Debug output should contain 'Impact': {debug_str}"
+        );
     }
 
     #[test]
@@ -192,7 +209,11 @@ mod tests {
             symbol_id: None,
         };
         match intent {
-            QueryIntent::Explore { symbol_name, file_id, symbol_id } => {
+            QueryIntent::Explore {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => {
                 assert_eq!(symbol_name, "foo");
                 assert!(file_id.is_none());
                 assert!(symbol_id.is_none());
@@ -224,7 +245,11 @@ mod tests {
             symbol_id: None,
         };
         match intent {
-            QueryIntent::Context { symbol_name, file_id, symbol_id } => {
+            QueryIntent::Context {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => {
                 assert_eq!(symbol_name, "bar");
                 assert!(file_id.is_none());
                 assert!(symbol_id.is_none());
@@ -242,7 +267,11 @@ mod tests {
             column: 10,
         };
         match intent {
-            QueryIntent::TraceVariable { file_id, line, column } => {
+            QueryIntent::TraceVariable {
+                file_id,
+                line,
+                column,
+            } => {
                 assert_eq!(file_id, fid);
                 assert_eq!(line, 42);
                 assert_eq!(column, 10);
@@ -259,7 +288,10 @@ mod tests {
             symbol_id: None,
         };
         let debug_str = format!("{intent:?}");
-        assert!(debug_str.contains("Explore"), "Debug output should contain 'Explore': {debug_str}");
+        assert!(
+            debug_str.contains("Explore"),
+            "Debug output should contain 'Explore': {debug_str}"
+        );
     }
 
     #[test]
@@ -269,6 +301,9 @@ mod tests {
             scope: None,
         };
         let debug_str = format!("{intent:?}");
-        assert!(debug_str.contains("Search"), "Debug output should contain 'Search': {debug_str}");
+        assert!(
+            debug_str.contains("Search"),
+            "Debug output should contain 'Search': {debug_str}"
+        );
     }
 }

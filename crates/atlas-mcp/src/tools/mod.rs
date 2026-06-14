@@ -6,9 +6,6 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, lifecycle, branch_diff.
 
-use std::collections::HashSet;
-use std::path::Path;
-use std::sync::Arc;
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
@@ -16,21 +13,23 @@ use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
 use atlas_engine::structs::SemanticConfidence;
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
 use serde_json::{Value, json};
 
+use crate::tools::analysis_envelope::{AnalysisEnvelope, CapabilityStats, SnapshotStore};
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
-use crate::tools::analysis_envelope::{CapabilityStats, AnalysisEnvelope, SnapshotStore};
-use crate::tools::runtime::graph_runtime::GraphMode;
-use symbol_selector::{parse_symbol_input, SymbolInput};
 use crate::tools::query_snapshot::QuerySnapshot;
+use crate::tools::runtime::graph_runtime::GraphMode;
+use symbol_selector::{SymbolInput, parse_symbol_input};
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::project_slot::ProjectSlot;
-use crate::tools::runtime::session_job_runtime::SessionJobRuntime;
-use crate::tools::tool_contract::{contract_for, ToolContract};
+use crate::tools::tool_contract::{ToolContract, contract_for};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
@@ -47,16 +46,12 @@ pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 5;
 
 /// Request-scoped context for a single tool call.
 ///
-/// Carries the progress sender, task manager, and task id so that handlers
-/// do not rely on global mutable state on [`ToolRouter`].
+/// Carries the progress sender so handlers do not rely on global mutable state
+/// on [`ToolRouter`].
 #[derive(Clone)]
 pub struct ToolCallContext {
     /// MCP progress notification sender (None = no progress token).
     pub progress_sender: Option<ProgressSender>,
-    /// Task manager for background task progress (None = foreground).
-    pub task_manager: Option<std::sync::Arc<crate::task_manager::TaskManager>>,
-    /// Task id for background task progress (None = foreground).
-    pub task_id: Option<String>,
 }
 
 impl ToolCallContext {
@@ -64,8 +59,6 @@ impl ToolCallContext {
     pub fn empty() -> Self {
         Self {
             progress_sender: None,
-            task_manager: None,
-            task_id: None,
         }
     }
 
@@ -73,20 +66,6 @@ impl ToolCallContext {
     pub fn with_progress_sender(sender: ProgressSender) -> Self {
         Self {
             progress_sender: Some(sender),
-            task_manager: None,
-            task_id: None,
-        }
-    }
-
-    /// Create a context for background tasks (task-manager-based progress).
-    pub fn with_task_manager(
-        task_manager: std::sync::Arc<crate::task_manager::TaskManager>,
-        task_id: String,
-    ) -> Self {
-        Self {
-            progress_sender: None,
-            task_manager: Some(task_manager),
-            task_id: Some(task_id),
         }
     }
 
@@ -98,16 +77,6 @@ impl ToolCallContext {
             let _ = sender.send((fraction, None, Some(message.to_string())));
         }
     }
-}
-
-/// Prepared project state produced by `open_project(background=true)`.
-///
-/// The background worker cannot mutate the live router safely, so it stores the
-/// prepared store/root here. `task_status` and `wait_for_task` activate it after
-/// the task reaches `completed`.
-pub(crate) struct PendingProjectActivation {
-    pub(crate) project_root: std::path::PathBuf,
-    pub(crate) store: Arc<Store>,
 }
 
 // -------------------------------------------------------------------
@@ -128,7 +97,7 @@ pub(crate) const MAX_ANNOTATION_QNAME_LENGTH: usize = 512;
 pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
 pub(crate) mod active_project;
-pub(crate) mod project_slot;
+pub(crate) mod analysis_envelope;
 pub(crate) mod analysis_response;
 pub(crate) mod annotations;
 pub(crate) mod atlas_jobs;
@@ -138,21 +107,19 @@ pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod domain_rules;
 pub(crate) mod graph;
-pub(crate) mod index;
 pub(crate) mod lazy_refresh;
-pub(crate) mod analysis_envelope;
 pub(crate) mod lifecycle;
 pub(crate) mod open_project;
+pub(crate) mod project_slot;
 pub(crate) mod query_snapshot;
 pub(crate) mod resume;
 pub(crate) mod runtime;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod symbol_selector;
-pub(crate) mod trace;
 pub(crate) mod tool_contract;
+pub(crate) mod trace;
 pub(crate) mod usages;
-pub(crate) mod wait_for;
 
 /// Apply focus-aware envelope fields from a [`FocusResult`] to the AnalysisEnvelope.
 ///
@@ -234,7 +201,6 @@ pub(crate) fn apply_focus_result_to_lr(
 /// Dispatches tools/list and tools/call.
 pub struct ToolRouter {
     pub(crate) project: ProjectSlot,
-    pub(crate) session_job: SessionJobRuntime,
     tools: Vec<Tool>,
 }
 
@@ -250,13 +216,12 @@ impl ToolRouter {
         context: ContextBuilder,
         project_root: std::path::PathBuf,
     ) -> Self {
-        let mut active = ActiveProject::new(store, project_root)
-            .expect("Failed to construct ActiveProject");
+        let mut active =
+            ActiveProject::new(store, project_root).expect("Failed to construct ActiveProject");
         // Initialize graph state with pre-built search and context engines.
         active.graph_runtime.state.init_with(search, context);
         let mut router = Self {
             project: ProjectSlot::new(Some(active)),
-            session_job: SessionJobRuntime::new(),
             tools: make_all_tools(),
         };
         router.init_focus();
@@ -266,27 +231,39 @@ impl ToolRouter {
     /// Create a router without building the graph (fast startup).
     /// Graph is built lazily on the first request via `ensure_graph_initialized`.
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
-        let active = ActiveProject::new(store, project_root)
-            .expect("Failed to construct ActiveProject");
+        let active =
+            ActiveProject::new(store, project_root).expect("Failed to construct ActiveProject");
         let mut router = Self {
             project: ProjectSlot::new(Some(active)),
-            session_job: SessionJobRuntime::new(),
             tools: make_all_tools(),
         };
         router.init_focus();
         router
     }
 
+    /// Create a router with no active project.
+    ///
+    /// This is the normal stdio MCP startup path. Clients must call
+    /// `project(action="open")` before using project-scoped tools.
+    pub fn new_unopened() -> Self {
+        Self {
+            project: ProjectSlot::new(None),
+            tools: make_all_tools(),
+        }
+    }
+
     /// Access the active project (mutable). Panics if no project is active.
     /// Callers are protected by the gate in `call_tool()`.
     fn active_mut(&mut self) -> &mut ActiveProject {
-        self.project.require_mut()
+        self.project
+            .require_mut()
             .expect("call_tool gate ensures project is active")
     }
 
     /// Access the active project (immutable). Panics if no project is active.
     fn active(&self) -> &ActiveProject {
-        self.project.require()
+        self.project
+            .require()
             .expect("call_tool gate ensures project is active")
     }
 
@@ -331,7 +308,10 @@ impl ToolRouter {
     pub fn prepare_focus_query(
         &mut self,
         intent: Option<atlas_engine::QueryIntent>,
-    ) -> (Option<atlas_engine::focus::runtime::FocusResult>, Vec<String>) {
+    ) -> (
+        Option<atlas_engine::focus::runtime::FocusResult>,
+        Vec<String>,
+    ) {
         let active = self.active_mut();
         // 1. Full index already exists — no focus needed.
         if active.query_runtime.has_full_index(&active.store) {
@@ -345,8 +325,7 @@ impl ToolRouter {
         };
 
         // 3. Delegate FocusRuntime interaction to QueryRuntime.
-        let (focus_result, warnings) =
-            active.query_runtime.prepare(&intent, &active.store);
+        let (focus_result, warnings) = active.query_runtime.prepare(&intent, &active.store);
 
         // 4. Post-processing: record lazy writes and refresh graph.
         if let Some(ref result) = focus_result {
@@ -398,12 +377,22 @@ impl ToolRouter {
     /// Rebuild the graph snapshot from the store if the index signature changed.
     fn rebuild_if_signature_changed(&mut self, reason: &str) -> anyhow::Result<()> {
         let current = self
-            .active_mut().store
+            .active_mut()
+            .store
             .index_signature()
-            .unwrap_or_else(|_| self.active_mut().query_runtime.cache.cached_signature.clone());
+            .unwrap_or_else(|_| {
+                self.active_mut()
+                    .query_runtime
+                    .cache
+                    .cached_signature
+                    .clone()
+            });
         if current != self.active_mut().graph_runtime.state.last_graph_signature {
             tracing::info!("{reason}");
-            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&self.active_mut().store, 0.3)?);
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(
+                &self.active_mut().store,
+                0.3,
+            )?);
             if let Some(ref mut s) = self.active_mut().graph_runtime.state.search {
                 s.refresh_graph(Arc::clone(&graph));
             }
@@ -413,7 +402,13 @@ impl ToolRouter {
             self.active_mut().graph_runtime.state.last_graph_signature = current.clone();
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
-            *self.active_mut().query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .active_mut()
+                .query_runtime
+                .cache
+                .cached_manual_full_index
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         self.active_mut().query_runtime.cache.cached_signature = current;
         Ok(())
@@ -425,23 +420,11 @@ impl ToolRouter {
     /// After activation, the next graph-backed tool call will lazily rebuild the
     /// snapshot from the new store.
     pub(crate) fn activate_project(&mut self, project_root: std::path::PathBuf, store: Arc<Store>) {
-        self.project.replace(ActiveProject::new(store, project_root)
-            .expect("Failed to construct ActiveProject during project activation"));
+        self.project.replace(
+            ActiveProject::new(store, project_root)
+                .expect("Failed to construct ActiveProject during project activation"),
+        );
         self.init_focus();
-    }
-
-    /// Activate a prepared background `open_project` result, if one exists.
-    pub(crate) fn activate_pending_project_for_task(&mut self, task_id: &str) -> Option<String> {
-        let pending = self
-            .session_job.pending_project_activations
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.remove(task_id));
-        pending.map(|activation| {
-            let project = activation.project_root.display().to_string();
-            self.activate_project(activation.project_root, activation.store);
-            project
-        })
     }
 
     /// Ensure the in-memory call-graph reflects any newly extracted structural data.
@@ -460,13 +443,28 @@ impl ToolRouter {
 
         // Step 1: Always flush pending incremental writes (no cooldown).
         // This ensures lazy writes from THIS request are visible before graph queries.
-        let batch = active.query_runtime.lazy_refresh_queue.take_incremental_batch(500);
-        active.graph_runtime.state.refresh_graph_for_files(&active.store, &batch)?;
+        let batch = active
+            .query_runtime
+            .lazy_refresh_queue
+            .take_incremental_batch(500);
+        active
+            .graph_runtime
+            .state
+            .refresh_graph_for_files(&active.store, &batch)?;
         // Cache invalidation: new store data may have changed layer distribution.
         // Lazy writes affect the graph — bump generation so the next check triggers rebuild.
         if !batch.is_empty() {
-            *active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
-            active.graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *active
+                .query_runtime
+                .cache
+                .cached_manual_full_index
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            active
+                .graph_runtime
+                .invalidation
+                .graph_generation
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
@@ -495,7 +493,12 @@ impl ToolRouter {
                 .unwrap_or_else(|_| active.query_runtime.cache.cached_signature.clone());
             active.graph_runtime.state.last_graph_signature = current.clone();
             active.query_runtime.cache.cached_signature = current;
-            *active.query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) = None;
+            *active
+                .query_runtime
+                .cache
+                .cached_manual_full_index
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             active.graph_runtime.mark_graph_fresh();
         }
 
@@ -581,7 +584,6 @@ impl ToolRouter {
         let (mut result, is_error) = match contract {
             ToolContract::ProjectLifecycle => self.handle_project(arguments),
             ToolContract::StatusRead => self.dispatch_status_read(ctx, name, arguments),
-            ToolContract::ExplicitIndexBuild => self.handle_index(ctx, arguments),
             ToolContract::SemanticGraphQuery(_) => self.dispatch_graph_query(ctx, name, arguments),
             ToolContract::TraceQuery(_) => self.dispatch_trace_query(ctx, name, arguments),
             ToolContract::StoreFactQuery(_) => self.dispatch_store_query(ctx, name, arguments),
@@ -720,55 +722,8 @@ impl ToolRouter {
     ) -> (String, bool) {
         match name {
             "tasks" => self.handle_tasks(args),
-            "task_status" => self.handle_task_status(args),
-            "wait_for_task" => self.handle_wait_for_task_sync(args),
-            "resume_task" => self.handle_resume_task(args),
+            "resume_query" => self.handle_resume_query(args),
             _ => (format!("Unknown task tool: {name}"), true),
-        }
-    }
-
-    pub(crate) fn handle_task_status(&mut self, args: &serde_json::Value) -> (String, bool) {
-        let task_id = get_str(args, "task_id");
-        if task_id.is_empty() {
-            return ("Missing task_id parameter".to_string(), true);
-        }
-        match self.session_job.task_manager.get_task(task_id) {
-            Some(info) => {
-                let status_str = match info.status {
-                    crate::task_manager::TaskStatus::Running => "running",
-                    crate::task_manager::TaskStatus::Completed => "completed",
-                    crate::task_manager::TaskStatus::Failed => "failed",
-                };
-                let mut response = json!({
-                    "task_id": info.task_id,
-                    "tool_name": info.tool_name,
-                    "method": info.method,
-                    "status": status_str,
-                    "progress": info.progress,
-                    "progress_message": info.progress_message,
-                    "elapsed_secs": info.elapsed_secs(),
-                });
-                if let Some(ref result) = info.result {
-                    response["result"] = result.clone();
-                }
-                if let Some(ref error) = info.error {
-                    response["error"] = serde_json::Value::String(error.clone());
-                }
-                if status_str == "completed" && info.method == "project" {
-                    if let Some(project) = self.activate_pending_project_for_task(&info.task_id) {
-                        response["activation"] = serde_json::Value::String("activated".into());
-                        response["activated_project"] = serde_json::Value::String(project);
-                    } else {
-                        response["activation"] =
-                            serde_json::Value::String("already_activated".into());
-                    }
-                }
-                (
-                    serde_json::to_string_pretty(&response).unwrap_or_else(|e| e.to_string()),
-                    false,
-                )
-            }
-            None => (format!("Task not found: {task_id}"), true),
         }
     }
 
@@ -854,8 +809,6 @@ impl ToolRouter {
 
         (roots, warnings)
     }
-
-
 
     // -------------------------------------------------------------------
     // Query snapshot + investigation helpers
@@ -958,57 +911,37 @@ pub(crate) fn warnings_to_trace_diagnostics(
 }
 
 // ===================================================================
-// Tool registration — 18 tools (refactored from 33)
+// Tool registration — 15 tools (open-first focus MCP surface)
 // ===================================================================
 
 // ── Project tools ────────────────────────────────────────────────────
 
 fn make_project_tools() -> Vec<Tool> {
-    vec![
-        Tool {
-            name: "project".into(),
-            description: "Open, inspect, or list files in a project. Use action='open' to activate a project (never indexes), 'status' for a comprehensive overview including language capabilities and index mode, 'files' to list indexed files with language and parse status. Parameters for action='open': project_path (required), storage, force_memory, scan_files, background. If storage is omitted or 'auto', Atlas reuses persistent storage when project status shows a reusable index; otherwise it opens an in-memory project. Explicit storage='memory' is refused when a reusable persistent index exists unless force_memory=true. action='status' returns file/symbol/edge counts, extraction state, per-language capability profiles. action='files' supports optional limit, language, and path_prefix filters.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
-                    "action": {
-                        "type": "string",
-                        "enum": ["open", "status", "files"],
-                        "description": "Operation: 'open' activates a project (requires project_path), 'status' shows overview with language capabilities, 'files' lists indexed files."
-                    },
-                    "project_path": { "type": "string", "description": "Absolute path to the project directory to open (required for action='open')." },
-                    "storage": {
-                        "type": "string",
-                        "enum": ["auto", "memory", "persistent"],
-                        "description": "Storage mode: \"auto\" (default; reuse project/.atlas/atlas.db when project status shows a reusable index, otherwise memory), \"memory\" (in-memory, zero footprint; refused if a reusable persistent index exists unless force_memory=true), or \"persistent\" (project/.atlas/atlas.db)."
-                    },
-                    "force_memory": { "type": "boolean", "description": "Allow storage='memory' even when an existing persistent Atlas index would otherwise be reused. This intentionally starts an empty temporary index." },
-                    "scan_files": { "type": "boolean", "description": "Run file discovery to estimate file_count without indexing (default false; can be slow on very large trees)." },
-                    "background": { "type": "boolean", "description": "Prepare/open in a background task; task_status/wait_for_task activates the completed project." },
-                    "verbose": { "type": "boolean", "description": "Include verbose details (action='status')." },
-                    "limit": { "type": "integer", "description": "Max files returned (action='files', default unlimited)." },
-                    "language": { "type": "string", "description": "Filter files by language (action='files', e.g. 'rust', 'typescript')." },
-                    "path_prefix": { "type": "string", "description": "Filter files by path prefix (action='files')." },
-                })),
-                required: None,
-            },
+    vec![Tool {
+        name: "project".into(),
+        description: "Open, inspect, or list files in a project. Use action='open' to synchronously activate a project; MCP open never indexes or scans the whole tree. storage='auto' reuses an existing compatible project/.atlas/atlas.db, otherwise opens zero-footprint memory storage. storage='memory' ignores .atlas; storage='persistent' opens or creates project/.atlas/atlas.db. Explicit indexing is CLI-only (`atlas index`). action='status' reports the active project and cache/focus state; action='files' lists known project files.".into(),
+        input_schema: ToolInputSchema {
+            schema_type: "object".into(),
+            properties: Some(json!({
+                "action": {
+                    "type": "string",
+                    "enum": ["open", "status", "files"],
+                    "description": "Operation: 'open' activates a project, 'status' shows overview, 'files' lists known project files."
+                },
+                "project_path": { "type": "string", "description": "Absolute path to the project directory to open (required for action='open')." },
+                "storage": {
+                    "type": "string",
+                    "enum": ["auto", "memory", "persistent"],
+                    "description": "Storage mode for focus/cache/overlay writes: 'auto' reuses existing .atlas/atlas.db when compatible, otherwise memory; 'memory' is session-local; 'persistent' writes project/.atlas/atlas.db."
+                },
+                "verbose": { "type": "boolean", "description": "Include verbose details (action='status')." },
+                "limit": { "type": "integer", "description": "Max files returned (action='files', default unlimited)." },
+                "language": { "type": "string", "description": "Filter files by language (action='files', e.g. 'rust', 'typescript')." },
+                "path_prefix": { "type": "string", "description": "Filter files by path prefix (action='files')." },
+            })),
+            required: None,
         },
-        Tool {
-            name: "index".into(),
-            description: "Index/re-index the active project for MCP use. Defaults to fast manifest indexing (files plus basic symbols/functions). If the existing fresh index is structural/full, Atlas refuses lower-precision re-indexing unless force_reindex=true. Pass analysis='structural' for imports/references/call graph, or analysis='full' for dataflow too. Use background=true + wait_for_task for very large projects. Parameters: include/exclude glob patterns, analysis, force_reindex, background (default false).".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
-                    "include": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns to restrict indexing to specific directories/files (e.g. [\"src/**\"])" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Glob patterns for directories/files to skip (e.g. [\"**/test/**\", \"**/*.spec.ts\"])" },
-                    "analysis": { "type": "string", "enum": ["manifest", "structural", "full"], "description": "Index depth. manifest is fast and default; structural adds imports/references/call graph; full also builds dataflow." },
-                    "force_reindex": { "type": "boolean", "description": "Allow a lower analysis depth to replace an existing structural/full index. Default false protects manually built rich indexes." },
-                    "background": { "type": "boolean", "description": "Run indexing as a background task (returns task_id for task_status/wait_for_task)" },
-                })),
-                required: None,
-            },
-        },
-    ]
+    }]
 }
 // ── SymbolSelector schema helpers ────────────────────────────────────
 
@@ -1054,25 +987,23 @@ fn symbol_param_schema(string_desc: &str) -> serde_json::Value {
     })
 }
 
-
 // ── Symbol tools ─────────────────────────────────────────────────────
 
 fn make_symbol_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "search".into(),
-            description: "Search symbols by name within a project-relative scope. When a manual full structural index exists (built via CLI `atlas index`), scope is optional and defaults to the whole project. Small scopes are structurally parsed for precise function search; large scopes stay manifest-level and return a warning to narrow scope. Supports kind filter and background=true.".into(),
+            description: "Search symbols by name within a required project-relative scope. Scope is always required because it is both the result boundary and the focus seed; an existing CLI-built full index improves precision/performance but does not make scope optional.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
-                    "scope": { "type": "string", "description": "Project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Required for manifest-only indexes; optional when a full structural index exists. Use 'files' to discover indexed paths." },
+                    "scope": { "type": "string", "description": "Required project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Defines the search boundary and focus hotspot." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "description": "Max results (default 20)" },
-                    "background": { "type": "boolean", "description": "Run search as background task (returns task_id for task_status polling)" },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
-                required: Some(vec!["query".into()]),
+                required: Some(vec!["query".into(), "scope".into()]),
             },
         },
         Tool {
@@ -1234,7 +1165,7 @@ fn make_trace_tools() -> Vec<Tool> {
                         "oneOf": [
                             {
                                 "const": "point",
-                                "description": "Resolve a source position (file+line+column) to its full context — enclosing symbol, reference, scope, data node, and callsite. Requires structural index. Dataflow layer enables reference/callsite resolution; without it returns enclosing symbol only."
+                                "description": "Resolve a source position (file+line+column) to its full context — enclosing symbol, reference, scope, data node, and callsite. Triggers scoped structural/dataflow preparation when needed; capability gaps are reported in the response."
                             },
                             {
                                 "const": "variable",
@@ -1242,11 +1173,11 @@ fn make_trace_tools() -> Vec<Tool> {
                             },
                             {
                                 "const": "forward",
-                                "description": "Trace the forward call chain from source symbol to target symbol. Requires call-graph edges (available with structural index)."
+                                "description": "Trace the forward call chain from source symbol to target symbol. Scoped focus prepares call-graph edges when needed; partial coverage is reported in the response."
                             },
                             {
                                 "const": "callers",
-                                "description": "Trace how a function gets invoked — backward call chain to the farthest caller. Requires call-graph edges (available with structural index)."
+                                "description": "Trace how a function gets invoked — backward call chain to the farthest caller. Scoped focus prepares call-graph edges when needed; partial coverage is reported in the response."
                             }
                         ]
                     },
@@ -1336,7 +1267,7 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "fp_dispatches".into(),
-            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). After deletion, the materialized edge is removed on next re-index.".into(),
+            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). Annotations are session-local with storage='memory' and persisted with storage='persistent'; graph edges are materialized immediately.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1356,13 +1287,13 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
     ]
 }
 
-// ── Task tools ───────────────────────────────────────────────────────
+// ── Query/job tools ──────────────────────────────────────────────────
 
 fn make_task_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "tasks".into(),
-            description: "List all background tasks: active extraction jobs (from the store) and lazy extraction jobs. Optionally filter by query_id to see jobs for a specific query. Returns unified task view.".into(),
+            description: "List focus/lazy extraction jobs. Optionally filter by query_id to see refinement work triggered by a specific query. These jobs are observational and are not waitable task_id jobs.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1372,32 +1303,8 @@ fn make_task_tools() -> Vec<Tool> {
             },
         },
         Tool {
-            name: "task_status".into(),
-            description: "Poll the status of a background task. This is the preferred progress path for clients that do not support MCP progress notifications. Returns running/completed/failed, progress percentage, progress_message, and result when complete.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
-                    "task_id": { "type": "string", "description": "Task ID returned by a tool when background=true" },
-                })),
-                required: Some(vec!["task_id".into()]),
-            },
-        },
-        Tool {
-            name: "wait_for_task".into(),
-            description: "Block until a background task completes or timeout_secs elapses. Prefer task_status polling for clients with short tool-call timeouts. Parameters: task_id (required), timeout_secs (default 30, max 300; 0 means single status check), poll_interval_secs (default 2).".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
-                    "task_id": { "type": "string", "description": "Task ID from a background=true response" },
-                    "timeout_secs": { "type": "integer", "description": "Max seconds to wait (default 30, max 300)" },
-                    "poll_interval_secs": { "type": "integer", "description": "Seconds between polls (default 2, 1-10)" },
-                })),
-                required: Some(vec!["task_id".into()]),
-            },
-        },
-        Tool {
-            name: "resume_task".into(),
-            description: "Resume a previous query to get enhanced results after lazy background extraction completes. Returns the same format as the original tool with potentially richer data.".into(),
+            name: "resume_query".into(),
+            description: "Re-run a previous query snapshot to get enhanced results after focus/lazy refinement. This uses query_id, not task_id, and returns the same format as the original tool with potentially richer data.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1461,8 +1368,32 @@ impl ToolRouter {
         let action = get_str(args, "action");
         match action {
             "open" => self.handle_open_project(args),
-            "status" => self.handle_status(),
-            "files" => self.handle_files(args),
+            "status" if self.project.is_active() => self.handle_status(),
+            "status" => (
+                serde_json::to_string_pretty(&json!({
+                    "state": "not_open",
+                    "active_project": null,
+                    "next_action": {
+                        "tool": "project",
+                        "args": {
+                            "action": "open",
+                            "project_path": "absolute project path",
+                            "storage": "auto"
+                        }
+                    }
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
+            "files" if self.project.is_active() => self.handle_files(args),
+            "files" => (
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": "No active project. Call project(action=\"open\") first."
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                true,
+            ),
             "" => (
                 "Missing required 'action' parameter. Must be one of: open, status, files"
                     .to_string(),
@@ -1508,7 +1439,9 @@ impl ToolRouter {
                 let mut mapped = serde_json::Map::new();
                 mapped.insert(
                     "symbol".into(),
-                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
                 );
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
@@ -1523,7 +1456,9 @@ impl ToolRouter {
                 let mut mapped = serde_json::Map::new();
                 mapped.insert(
                     "symbol".into(),
-                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
                 );
                 if let Some(v) = args.get("includeCode") {
                     mapped.insert("includeCode".into(), v.clone());
@@ -1541,7 +1476,9 @@ impl ToolRouter {
                 let mut mapped = serde_json::Map::new();
                 mapped.insert(
                     "symbol".into(),
-                    args.get("symbol").cloned().unwrap_or(Value::String(qname.clone())),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
                 );
                 if let Some(v) = args.get("limit") {
                     mapped.insert("limit".into(), v.clone());
@@ -1568,9 +1505,7 @@ pub(crate) enum CallsDispatch {
 
 // ── calls dispatch helper ─────────────────────────────────────────
 
-pub(crate) fn resolve_calls_dispatch(
-    args: &serde_json::Value,
-) -> CallsDispatch {
+pub(crate) fn resolve_calls_dispatch(args: &serde_json::Value) -> CallsDispatch {
     let direction = crate::tools::get_str(args, "direction");
     let depth = crate::tools::get_u64(args, "depth").unwrap_or(1);
 
@@ -1582,16 +1517,10 @@ pub(crate) fn resolve_calls_dispatch(
         }
         None => (false, vec!["calls", "instantiates", "implements"]),
     };
-    let is_default_edges =
-        !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
+    let is_default_edges = !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
     let is_custom_edges = !is_wildcard && !is_default_edges;
 
-    if is_custom_edges
-        || is_wildcard
-        || depth > 1
-        || direction == "both"
-        || direction.is_empty()
-    {
+    if is_custom_edges || is_wildcard || depth > 1 || direction == "both" || direction.is_empty() {
         let call_args = if args.get("depth").is_none() {
             let mut m = serde_json::Map::new();
             if let Some(obj) = args.as_object() {
@@ -1701,9 +1630,15 @@ impl ToolRouter {
             });
             let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
             lazy_warnings = focus_warnings;
-            built_file_count = focus_result.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
+            built_file_count = focus_result
+                .as_ref()
+                .map(|r| r.built_files.len())
+                .unwrap_or(0);
         } else {
-            _capability_mask = self.active_mut().store.derive_capability_for_files(&[file_id]);
+            _capability_mask = self
+                .active_mut()
+                .store
+                .derive_capability_for_files(&[file_id]);
         }
 
         let file_id_hex = file_id.to_hex();
@@ -1853,7 +1788,12 @@ impl ToolRouter {
 
                 let mut outgoing = serde_json::from_str::<Value>(&out_str).unwrap_or_default();
                 let mut incoming = serde_json::from_str::<Value>(&in_str).unwrap_or_default();
-                merge_edge_deps(&mut outgoing, &edge_out, "dependencies", "total_dependencies");
+                merge_edge_deps(
+                    &mut outgoing,
+                    &edge_out,
+                    "dependencies",
+                    "total_dependencies",
+                );
                 merge_edge_deps(&mut incoming, &edge_in, "dependents", "total_dependents");
 
                 let result = json!({
@@ -1871,77 +1811,6 @@ impl ToolRouter {
             }
             _ => unreachable!("direction was validated above"),
         }
-    }
-
-    /// Collect candidate file IDs for incoming structural file_dependencies.
-    ///
-    /// Uses manifest symbol edges to discover files whose symbols have edges
-    /// targeting symbols in the given `target_file_ids`.  This is the bounded
-    /// candidate-discovery counterpart of `manifest_edge_dependents` (which
-    /// returns JSON rows); here we only collect the unique `FileId`s and cap at
-    /// `max_files`.
-    ///
-    /// Returns `(file_ids, truncated)` where `truncated` is `true` when there
-    /// were more unique source-file candidates than `max_files`.
-    fn collect_edge_dependent_file_ids(
-        &self,
-        target_file_ids: &[FileId],
-        max_files: usize,
-    ) -> (Vec<FileId>, bool) {
-        if max_files == 0 || target_file_ids.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        // Gather all symbols in the target file(s).
-        let mut our_ids: HashSet<SymbolId> = HashSet::new();
-        for fid in target_file_ids {
-            let syms = match self.active().store.find_symbols_by_file(fid) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            for sym in &syms {
-                our_ids.insert(sym.id);
-            }
-        }
-        if our_ids.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        // Edges whose target is in `our_ids` and whose source is NOT → that
-        // source's file is a candidate dependent.
-        let edges = match self.active().store.find_edges_for_files(target_file_ids) {
-            Ok(e) => e,
-            Err(_) => return (Vec::new(), false),
-        };
-
-        let mut source_ids: HashSet<SymbolId> = HashSet::new();
-        for edge in &edges {
-            if our_ids.contains(&edge.target) && !our_ids.contains(&edge.source) {
-                source_ids.insert(edge.source);
-            }
-        }
-
-        if source_ids.is_empty() {
-            return (Vec::new(), false);
-        }
-
-        let ids_vec: Vec<SymbolId> = source_ids.into_iter().collect();
-        let symbols = match self.active().store.find_symbols_by_ids(&ids_vec) {
-            Ok(s) => s,
-            Err(_) => return (Vec::new(), false),
-        };
-
-        let mut file_ids: HashSet<FileId> = HashSet::new();
-        let mut truncated = false;
-        for sym in &symbols {
-            if file_ids.len() >= max_files {
-                truncated = true;
-                break;
-            }
-            file_ids.insert(sym.file_id);
-        }
-
-        (file_ids.into_iter().collect(), truncated)
     }
 
     /// Query symbol_edges for incoming file dependencies (manifest mode).
@@ -1988,7 +1857,10 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.active().store_query_runtime.resolve_file_path(&sym.file_id);
+            let path = self
+                .active()
+                .store_query_runtime
+                .resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "file": path,
@@ -2043,7 +1915,10 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.active().store_query_runtime.resolve_file_path(&sym.file_id);
+            let path = self
+                .active()
+                .store_query_runtime
+                .resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
                 results.push(json!({
                     "module": path,
@@ -2111,31 +1986,6 @@ impl ToolRouter {
         (
             serde_json::to_string_pretty(&result).unwrap_or_default(),
             jobs_err || atlas_err,
-        )
-    }
-
-    /// Synchronous direct-call wrapper for `wait_for_task`.
-    ///
-    /// The MCP service layer uses the async implementation so it does not block
-    /// the runtime. This path exists for tests and embedded callers that invoke
-    /// `ToolRouter::call_tool` directly.
-    pub(crate) fn handle_wait_for_task_sync(&mut self, args: &Value) -> (String, bool) {
-        let wfr = wait_for::handle_wait_for_task_sync(&self.session_job.task_manager, args);
-        if !wfr.task_is_project_completed {
-            return (wfr.json_text, wfr.is_error);
-        }
-
-        let task_id = get_str(args, "task_id");
-        let mut val: Value = serde_json::from_str(&wfr.json_text).unwrap_or_default();
-        if let Some(project) = self.activate_pending_project_for_task(task_id) {
-            val["activation"] = Value::String("activated".into());
-            val["activated_project"] = Value::String(project);
-        } else {
-            val["activation"] = Value::String("already_activated".into());
-        }
-        (
-            serde_json::to_string_pretty(&val).unwrap_or_else(|e| e.to_string()),
-            wfr.is_error,
         )
     }
 }
@@ -2290,7 +2140,14 @@ impl ToolRouter {
             }
         };
         let file_id = FileId::generate(&normalized);
-        if self.active_mut().store.get_file(&file_id).ok().flatten().is_none() {
+        if self
+            .active_mut()
+            .store
+            .get_file(&file_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
             return (
                 serde_json::to_string_pretty(&serde_json::json!({
                     "ok": false,
@@ -2358,10 +2215,7 @@ impl ToolRouter {
         let symbol = candidates[0];
 
         // Dispatch to the appropriate sub-handler based on view.
-        let view = args
-            .get("view")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("");
 
         match view {
             "detail" | "" => {
@@ -2380,9 +2234,7 @@ impl ToolRouter {
                 let (mut result, is_error) =
                     self.handle_symbol_detail(&serde_json::Value::Object(mapped));
                 if !warnings.is_empty() && !is_error {
-                    if let Ok(mut parsed) =
-                        serde_json::from_str::<serde_json::Value>(&result)
-                    {
+                    if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result) {
                         add_json_warnings(&mut parsed, warnings.clone(), vec![]);
                         if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
                             result = pretty;
@@ -2420,9 +2272,7 @@ impl ToolRouter {
                 self.handle_usages(&serde_json::Value::Object(mapped))
             }
             other => (
-                format!(
-                    "Unknown view: '{other}'. Must be one of: detail, context, usages"
-                ),
+                format!("Unknown view: '{other}'. Must be one of: detail, context, usages"),
                 true,
             ),
         }
@@ -2627,8 +2477,6 @@ mod tests {
             Some("a/c".into())
         );
     }
-
-
 
     #[test]
     fn warnings_to_trace_diagnostics_converts() {
@@ -3274,8 +3122,7 @@ mod tests {
         qualified_name: &str,
         kind: atlas_engine::SymbolKind,
     ) -> SymbolId {
-        let id =
-            SymbolId::generate(&file_id, "typescript", simple_name, kind.as_str(), None);
+        let id = SymbolId::generate(&file_id, "typescript", simple_name, kind.as_str(), None);
         // Use the existing insert_test_symbol_with_qname to insert the symbol.
         // Reconstruct the same SymbolId to ensure edges refer to the correct id.
         insert_test_symbol_with_qname(store, file_id, simple_name, qualified_name, kind);
@@ -3358,7 +3205,10 @@ mod tests {
         let args = serde_json::json!({"symbol": "turn"});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
-        assert!(!is_error, "BestEffortSingle should pick a candidate, got: {resp_str}");
+        assert!(
+            !is_error,
+            "BestEffortSingle should pick a candidate, got: {resp_str}"
+        );
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(
             resp["kind"].as_str(),
@@ -3491,7 +3341,10 @@ mod tests {
         let args = serde_json::json!({"from": "from_func", "to": "to_func"});
         let (resp_str, is_error) = router.handle_trace_forward(&args);
 
-        assert!(!is_error, "BestEffortSingle should pick candidate even without path, got: {resp_str}");
+        assert!(
+            !is_error,
+            "BestEffortSingle should pick candidate even without path, got: {resp_str}"
+        );
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(
             resp["kind"].as_str(),
@@ -3500,10 +3353,7 @@ mod tests {
         );
         // No path should be found between the two
         let diags = resp["diagnostics"].as_array().unwrap();
-        let codes: Vec<&str> = diags
-            .iter()
-            .filter_map(|d| d["code"].as_str())
-            .collect();
+        let codes: Vec<&str> = diags.iter().filter_map(|d| d["code"].as_str()).collect();
         assert!(
             codes.contains(&"no_path_found"),
             "Expected no_path_found code, got: {codes:?}"
@@ -3559,8 +3409,7 @@ mod tests {
         let file_id = register_test_file(&store, "test.ts");
         let sym_name = "my_func";
         let kind = atlas_engine::SymbolKind::Function;
-        let sym_id =
-            SymbolId::generate(&file_id, "typescript", sym_name, kind.as_str(), None);
+        let sym_id = SymbolId::generate(&file_id, "typescript", sym_name, kind.as_str(), None);
         insert_test_symbol_with_qname(&store, file_id, sym_name, "my_func", kind);
         let hex_id = sym_id.to_hex();
 
@@ -3581,7 +3430,11 @@ mod tests {
         let tool = &tools[0];
         assert_eq!(tool.name, "trace");
 
-        let props = tool.input_schema.properties.as_ref().expect("should have properties");
+        let props = tool
+            .input_schema
+            .properties
+            .as_ref()
+            .expect("should have properties");
         let kind = props.get("kind").expect("should have kind property");
 
         // Verify oneOf is present with 4 variants
@@ -3589,14 +3442,28 @@ mod tests {
         let variants = one_of.as_array().expect("oneOf should be array");
         assert_eq!(variants.len(), 4);
 
-        let descriptions: Vec<&str> = variants.iter()
+        let descriptions: Vec<&str> = variants
+            .iter()
             .map(|v| v.get("description").and_then(|d| d.as_str()).unwrap_or(""))
             .collect();
 
-        assert!(descriptions[0].contains("position"), "point description missing: {:?}", descriptions[0]);
-        assert!(descriptions[1].contains("dataflow"), "variable description should mention dataflow");
-        assert!(descriptions[2].contains("call-graph"), "forward description should mention call-graph");
-        assert!(descriptions[3].contains("call-graph"), "callers description should mention call-graph");
+        assert!(
+            descriptions[0].contains("position"),
+            "point description missing: {:?}",
+            descriptions[0]
+        );
+        assert!(
+            descriptions[1].contains("dataflow"),
+            "variable description should mention dataflow"
+        );
+        assert!(
+            descriptions[2].contains("call-graph"),
+            "forward description should mention call-graph"
+        );
+        assert!(
+            descriptions[3].contains("call-graph"),
+            "callers description should mention call-graph"
+        );
     }
 
     // ── Position-based symbol lookup tests ───────────────────────────
@@ -3620,9 +3487,7 @@ mod tests {
             end_line,
             end_column: end_col,
         };
-        let id = atlas_engine::SymbolId::generate(
-            &file_id, "typescript", name, "function", None,
-        );
+        let id = atlas_engine::SymbolId::generate(&file_id, "typescript", name, "function", None);
         let sym = atlas_engine::SymbolDef {
             id,
             kind,
@@ -3671,13 +3536,25 @@ mod tests {
 
         // Outer: function at lines 1-10 (0-based: 0..9), cols 0-80
         insert_symbol_with_range(
-            &store, file_id, "outer", atlas_engine::SymbolKind::Function,
-            0, 0, 9, 80,
+            &store,
+            file_id,
+            "outer",
+            atlas_engine::SymbolKind::Function,
+            0,
+            0,
+            9,
+            80,
         );
         // Inner: function at lines 3-5 (0-based: 2..4), cols 0-40
         insert_symbol_with_range(
-            &store, file_id, "inner", atlas_engine::SymbolKind::Function,
-            2, 0, 4, 40,
+            &store,
+            file_id,
+            "inner",
+            atlas_engine::SymbolKind::Function,
+            2,
+            0,
+            4,
+            40,
         );
 
         let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -3697,11 +3574,7 @@ mod tests {
                     && target_col_0based <= s.range.end_column
             })
             .collect();
-        assert_eq!(
-            inner_symbols.len(),
-            2,
-            "both outer and inner cover line 4"
-        );
+        assert_eq!(inner_symbols.len(), 2, "both outer and inner cover line 4");
 
         // Pick smallest range: (line_span, column_span)
         let mut sorted: Vec<_> = inner_symbols.iter().collect();
@@ -3722,8 +3595,14 @@ mod tests {
 
         // Insert symbol at lines 1-3
         insert_symbol_with_range(
-            &store, file_id, "func", atlas_engine::SymbolKind::Function,
-            0, 0, 2, 10,
+            &store,
+            file_id,
+            "func",
+            atlas_engine::SymbolKind::Function,
+            0,
+            0,
+            2,
+            10,
         );
 
         let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -3750,12 +3629,24 @@ mod tests {
 
         // Two symbols on the same line span but different columns
         insert_symbol_with_range(
-            &store, file_id, "left", atlas_engine::SymbolKind::Variable,
-            2, 0, 2, 20,  // line 3 (0-based 2), cols 0-20
+            &store,
+            file_id,
+            "left",
+            atlas_engine::SymbolKind::Variable,
+            2,
+            0,
+            2,
+            20, // line 3 (0-based 2), cols 0-20
         );
         insert_symbol_with_range(
-            &store, file_id, "right", atlas_engine::SymbolKind::Variable,
-            2, 25, 2, 45, // line 3 (0-based 2), cols 25-45
+            &store,
+            file_id,
+            "right",
+            atlas_engine::SymbolKind::Variable,
+            2,
+            25,
+            2,
+            45, // line 3 (0-based 2), cols 25-45
         );
 
         let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -3827,9 +3718,14 @@ mod tests {
         // Use insert_symbol_with_range to place symbol at 0-based line 0 so that
         // user's 1-based line=1 matches it.
         insert_symbol_with_range(
-            &store, file_id, "myFunc",
+            &store,
+            file_id,
+            "myFunc",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,  // (start_line, start_col, end_line, end_col) 0-based
+            0,
+            1,
+            0,
+            80, // (start_line, start_col, end_line, end_col) 0-based
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3847,8 +3743,14 @@ mod tests {
         let resp: serde_json::Value =
             serde_json::from_str(&resp_str).expect("response should be valid JSON");
         // Detail view should have 'name' and 'qualified_name' fields
-        assert!(resp.get("name").is_some(), "detail response should have 'name' field");
-        assert!(resp.get("qualified_name").is_some(), "detail response should have 'qualified_name' field");
+        assert!(
+            resp.get("name").is_some(),
+            "detail response should have 'name' field"
+        );
+        assert!(
+            resp.get("qualified_name").is_some(),
+            "detail response should have 'qualified_name' field"
+        );
     }
 
     #[test]
@@ -3856,9 +3758,14 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "src/main.rs");
         insert_symbol_with_range(
-            &store, file_id, "process",
+            &store,
+            file_id,
+            "process",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,
+            0,
+            1,
+            0,
+            80,
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3888,9 +3795,14 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "src/lib.rs");
         insert_symbol_with_range(
-            &store, file_id, "helper",
+            &store,
+            file_id,
+            "helper",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,
+            0,
+            1,
+            0,
+            80,
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3924,9 +3836,14 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "src/bad.rs");
         insert_symbol_with_range(
-            &store, file_id, "func",
+            &store,
+            file_id,
+            "func",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,
+            0,
+            1,
+            0,
+            80,
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3952,14 +3869,24 @@ mod tests {
         let file_a = register_test_file(&store, "src/a.ts");
         let file_b = register_test_file(&store, "src/b.ts");
         insert_symbol_with_range(
-            &store, file_a, "Helper",
+            &store,
+            file_a,
+            "Helper",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,
+            0,
+            1,
+            0,
+            80,
         );
         insert_symbol_with_range(
-            &store, file_b, "Helper",
+            &store,
+            file_b,
+            "Helper",
             atlas_engine::SymbolKind::Function,
-            5, 1, 5, 80,
+            5,
+            1,
+            5,
+            80,
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3976,7 +3903,10 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_symbol(&ctx, &args);
-        assert!(!is_error, "Expected unique resolution, got error: {resp_str}");
+        assert!(
+            !is_error,
+            "Expected unique resolution, got error: {resp_str}"
+        );
         let resp: serde_json::Value =
             serde_json::from_str(&resp_str).expect("response should be valid JSON");
         assert!(
@@ -3996,9 +3926,14 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "src/main.ts");
         insert_symbol_with_range(
-            &store, file_id, "SingleFunction",
+            &store,
+            file_id,
+            "SingleFunction",
             atlas_engine::SymbolKind::Function,
-            0, 1, 0, 80,
+            0,
+            1,
+            0,
+            80,
         );
 
         let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -4035,11 +3970,17 @@ mod tests {
 
         // Two symbols with the same qualified name in different files → ambiguous.
         insert_test_symbol_with_qname(
-            &store, file_a, "Foo", "Foo.Foo",
+            &store,
+            file_a,
+            "Foo",
+            "Foo.Foo",
             atlas_engine::SymbolKind::Function,
         );
         insert_test_symbol_with_qname(
-            &store, file_b, "Foo", "Foo.Foo",
+            &store,
+            file_b,
+            "Foo",
+            "Foo.Foo",
             atlas_engine::SymbolKind::Function,
         );
 
@@ -4053,7 +3994,10 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_symbol_detail(&args);
-        assert!(is_error, "Expected error for ambiguous symbol, got: {resp_str}");
+        assert!(
+            is_error,
+            "Expected error for ambiguous symbol, got: {resp_str}"
+        );
         assert!(
             resp_str.contains("file_path 'src/nonexistent.ts' does not match any file"),
             "Expected file_path diagnostic in error, got: {resp_str}"
@@ -4068,11 +4012,17 @@ mod tests {
 
         // Two symbols with the same qualified name → ambiguous.
         insert_test_symbol_with_qname(
-            &store, file_a, "Foo", "Foo.Foo",
+            &store,
+            file_a,
+            "Foo",
+            "Foo.Foo",
             atlas_engine::SymbolKind::Function,
         );
         insert_test_symbol_with_qname(
-            &store, file_b, "Foo", "Foo.Foo",
+            &store,
+            file_b,
+            "Foo",
+            "Foo.Foo",
             atlas_engine::SymbolKind::Function,
         );
 
@@ -4083,7 +4033,10 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_symbol_detail(&args);
-        assert!(is_error, "Expected error for ambiguous symbol, got: {resp_str}");
+        assert!(
+            is_error,
+            "Expected error for ambiguous symbol, got: {resp_str}"
+        );
         assert!(
             !resp_str.contains("does not match any file"),
             "Should NOT contain file_path diagnostic for plain string input, got: {resp_str}"
@@ -4096,7 +4049,10 @@ mod tests {
         let file_id = register_test_file(&store, "src/main.ts");
 
         insert_test_symbol_with_qname(
-            &store, file_id, "MyFunc", "MyFunc.MyFunc",
+            &store,
+            file_id,
+            "MyFunc",
+            "MyFunc.MyFunc",
             atlas_engine::SymbolKind::Function,
         );
 
@@ -4111,7 +4067,10 @@ mod tests {
         });
 
         let (resp_str, is_error) = router.handle_symbol_detail(&args);
-        assert!(!is_error, "Expected successful resolution, got error: {resp_str}");
+        assert!(
+            !is_error,
+            "Expected successful resolution, got error: {resp_str}"
+        );
         assert!(
             !resp_str.contains("does not match any file"),
             "Should NOT contain file_path diagnostic on successful resolution, got: {resp_str}"
@@ -4167,8 +4126,13 @@ mod tests {
         });
         let (_result, warnings) = router.prepare_focus_query(intent);
         // Should not crash; shared dataflow service is used internally
-        assert!(warnings.iter().all(|w| !w.contains("panic") && !w.contains("unwrap")),
-            "warnings should not contain panics: {:?}", warnings);
+        assert!(
+            warnings
+                .iter()
+                .all(|w| !w.contains("panic") && !w.contains("unwrap")),
+            "warnings should not contain panics: {:?}",
+            warnings
+        );
     }
 
     // ── apply_focus_result_to_lr work items tests ────────────────────
@@ -4192,9 +4156,7 @@ mod tests {
         let result = atlas_engine::focus::runtime::FocusResult {
             mode: atlas_engine::focus::runtime::IndexMode::Focus,
             precision: Some(Precision {
-                coverage: CoverageTier::Partial {
-                    gaps: vec![],
-                },
+                coverage: CoverageTier::Partial { gaps: vec![] },
                 confidence: SemanticConfidence::Medium,
             }),
             gaps: vec![],
@@ -4265,18 +4227,16 @@ mod tests {
 
         // Project lifecycle
         assert_eq!(
-            contract_for("project", &json!({"action": "open", "project_path": "/tmp"})),
+            contract_for(
+                "project",
+                &json!({"action": "open", "project_path": "/tmp"})
+            ),
             ToolContract::ProjectLifecycle
         );
         // Status read
         assert_eq!(
             contract_for("project", &json!({"action": "status"})),
             ToolContract::StatusRead
-        );
-        // Explicit index
-        assert_eq!(
-            contract_for("index", &json!({"analysis": "structural"})),
-            ToolContract::ExplicitIndexBuild
         );
         // Semantic graph queries
         assert_eq!(
@@ -4296,7 +4256,10 @@ mod tests {
             ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
         );
         assert_eq!(
-            contract_for("trace", &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1})),
+            contract_for(
+                "trace",
+                &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1})
+            ),
             ToolContract::TraceQuery(QueryNeeds::Full)
         );
         // Store fact queries
@@ -4323,7 +4286,10 @@ mod tests {
         );
         // Overlay mutations
         assert_eq!(
-            contract_for("fp_dispatches", &json!({"action": "add", "field_qname": "f", "target_qname": "t"})),
+            contract_for(
+                "fp_dispatches",
+                &json!({"action": "add", "field_qname": "f", "target_qname": "t"})
+            ),
             ToolContract::OverlayMutation(OverlayKind::FunctionPointerDispatch)
         );
         assert_eq!(
@@ -4331,7 +4297,10 @@ mod tests {
             ToolContract::OverlayRead
         );
         assert_eq!(
-            contract_for("domain_rules", &json!({"action": "add", "rule_kind": "free_fn", "pattern": "xfree"})),
+            contract_for(
+                "domain_rules",
+                &json!({"action": "add", "rule_kind": "free_fn", "pattern": "xfree"})
+            ),
             ToolContract::OverlayMutation(OverlayKind::DomainRules)
         );
         assert_eq!(
@@ -4339,20 +4308,9 @@ mod tests {
             ToolContract::OverlayRead
         );
         // Task control
+        assert_eq!(contract_for("tasks", &json!({})), ToolContract::TaskControl);
         assert_eq!(
-            contract_for("tasks", &json!({})),
-            ToolContract::TaskControl
-        );
-        assert_eq!(
-            contract_for("task_status", &json!({"task_id": "abc"})),
-            ToolContract::TaskControl
-        );
-        assert_eq!(
-            contract_for("wait_for_task", &json!({"task_id": "abc"})),
-            ToolContract::TaskControl
-        );
-        assert_eq!(
-            contract_for("resume_task", &json!({"query_id": "abc"})),
+            contract_for("resume_query", &json!({"query_id": "abc"})),
             ToolContract::TaskControl
         );
     }
@@ -4367,7 +4325,10 @@ mod tests {
         let mut router = ToolRouter::new_empty(store, tmp);
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "nonexistent_tool", &json!({}));
-        assert!(result.is_error.unwrap_or(false), "unknown tool should set is_error=true");
+        assert!(
+            result.is_error.unwrap_or(false),
+            "unknown tool should set is_error=true"
+        );
     }
 
     /// Every tool registered via `make_all_tools()` must have a valid dispatch path
@@ -4398,8 +4359,6 @@ mod tests {
             ToolContract::ProjectLifecycle => true,
             // StatusRead → dispatch_status_read only handles "project"
             ToolContract::StatusRead => name == "project",
-            // ExplicitIndexBuild → handle_index, any name works (only "index" routes here)
-            ToolContract::ExplicitIndexBuild => name == "index",
             // SemanticGraphQuery → dispatch_graph_query
             ToolContract::SemanticGraphQuery(_) => {
                 matches!(name, "calls" | "explore" | "path" | "impact" | "symbol")
@@ -4422,7 +4381,7 @@ mod tests {
             }
             // TaskControl → dispatch_task_control
             ToolContract::TaskControl => {
-                matches!(name, "tasks" | "task_status" | "wait_for_task" | "resume_task")
+                matches!(name, "tasks" | "resume_query")
             }
         }
     }
@@ -4489,22 +4448,6 @@ mod tests {
             "project files should route to StatusRead, got: {text2}"
         );
         assert_eq!(result2.is_error, Some(false), "files should succeed");
-    }
-
-    // ── Test 3: ExplicitIndexBuild contract — "index" tool ───────────────
-
-    #[test]
-    fn e2e_index_build_contract_routes_correctly() {
-        let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        let ctx = ToolCallContext::empty();
-        let args = serde_json::json!({"analysis": "manifest"});
-        let result = router.call_tool(&ctx, "index", &args);
-        let text = extract_text(&result);
-        assert!(
-            !text.contains("Unknown tool"),
-            "index should route to ExplicitIndexBuild, got: {text}"
-        );
     }
 
     // ── Test 4: SemanticGraphQuery contract — "calls" / "explore" ────────
@@ -4619,7 +4562,8 @@ mod tests {
 
         // domain_rules add → OverlayMutation(DomainRules) — needs args, will
         // fail validation but routing should be correct.
-        let args3 = serde_json::json!({"action": "add", "rule_kind": "free_fn", "pattern": "xfree"});
+        let args3 =
+            serde_json::json!({"action": "add", "rule_kind": "free_fn", "pattern": "xfree"});
         let result3 = router.call_tool(&ctx, "domain_rules", &args3);
         let text3 = extract_text(&result3);
         assert!(
@@ -4628,7 +4572,7 @@ mod tests {
         );
     }
 
-    // ── Test 8: TaskControl contract — "tasks" / "task_status" ───────────
+    // ── Test 8: TaskControl contract — "tasks" / "resume_query" ──────────
 
     #[test]
     fn e2e_task_control_contract_routes_correctly() {
@@ -4645,31 +4589,13 @@ mod tests {
             "tasks should route to TaskControl, got: {text}"
         );
 
-        // task_status → TaskControl
-        let args2 = serde_json::json!({"task_id": "nonexistent"});
-        let result2 = router.call_tool(&ctx, "task_status", &args2);
+        // resume_query → TaskControl
+        let args2 = serde_json::json!({"query_id": "nonexistent"});
+        let result2 = router.call_tool(&ctx, "resume_query", &args2);
         let text2 = extract_text(&result2);
         assert!(
             !text2.contains("Unknown tool"),
-            "task_status should route to TaskControl, got: {text2}"
-        );
-
-        // wait_for_task → TaskControl
-        let args3 = serde_json::json!({"task_id": "nonexistent"});
-        let result3 = router.call_tool(&ctx, "wait_for_task", &args3);
-        let text3 = extract_text(&result3);
-        assert!(
-            !text3.contains("Unknown tool"),
-            "wait_for_task should route to TaskControl, got: {text3}"
-        );
-
-        // resume_task → TaskControl
-        let args4 = serde_json::json!({"query_id": "nonexistent"});
-        let result4 = router.call_tool(&ctx, "resume_task", &args4);
-        let text4 = extract_text(&result4);
-        assert!(
-            !text4.contains("Unknown tool"),
-            "resume_task should route to TaskControl, got: {text4}"
+            "resume_query should route to TaskControl, got: {text2}"
         );
     }
 
@@ -4701,12 +4627,14 @@ mod tests {
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
 
-        // Tools that receive ctx: search, symbol, index, trace
+        // Tools that receive ctx: search, symbol, trace
         let cases: &[(&str, serde_json::Value)] = &[
-            ("search", serde_json::json!({"query": "test"})),
+            ("search", serde_json::json!({"query": "test", "scope": "."})),
             ("symbol", serde_json::json!({"symbol": "test"})),
-            ("index", serde_json::json!({})),
-            ("trace", serde_json::json!({"kind": "callers", "symbol": "test"})),
+            (
+                "trace",
+                serde_json::json!({"kind": "callers", "symbol": "test"}),
+            ),
         ];
 
         for (tool_name, args) in cases {
@@ -4733,7 +4661,11 @@ mod tests {
             text.contains("Unknown tool"),
             "Unknown tool should return error via StatusRead fallback, got: {text}"
         );
-        assert_eq!(result.is_error, Some(true), "unknown tool should be an error");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "unknown tool should be an error"
+        );
     }
 
     // ── Phase 9: auto-inject graph precision for SemanticGraphQuery tools ─
@@ -4780,17 +4712,16 @@ mod tests {
     #[test]
     fn graph_tool_missing_symbol_returns_error() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "calls", &serde_json::json!({}));
         assert!(
-            result.is_error == Some(true) || result.content.iter().any(|b| {
-                if let ContentBlock::Text { text } = b {
+            result.is_error == Some(true)
+                || result.content.iter().any(|b| {
+                    let ContentBlock::Text { text } = b;
                     text.contains("error") || text.contains("missing") || text.contains("symbol")
-                } else {
-                    false
-                }
-            }),
+                }),
             "calls without symbol should return error"
         );
     }
@@ -4799,12 +4730,16 @@ mod tests {
     #[test]
     fn lifecycle_missing_field_returns_error() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "lifecycle", &serde_json::json!({"symbol": "malloc"}));
         let text = extract_text(&result);
         assert!(
-            result.is_error == Some(true) || text.contains("field") || text.contains("error") || text.contains("not found"),
+            result.is_error == Some(true)
+                || text.contains("field")
+                || text.contains("error")
+                || text.contains("not found"),
             "lifecycle without field should return error, got: {text}"
         );
     }
@@ -4813,17 +4748,16 @@ mod tests {
     #[test]
     fn branch_diff_missing_symbol_returns_error() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "branch_diff", &serde_json::json!({}));
         assert!(
-            result.is_error == Some(true) || result.content.iter().any(|b| {
-                if let ContentBlock::Text { text } = b {
+            result.is_error == Some(true)
+                || result.content.iter().any(|b| {
+                    let ContentBlock::Text { text } = b;
                     text.contains("error") || text.contains("symbol") || text.contains("missing")
-                } else {
-                    false
-                }
-            }),
+                }),
             "branch_diff without symbol should return error"
         );
     }
@@ -4832,12 +4766,17 @@ mod tests {
     #[test]
     fn symbol_tool_routes_all_views_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+        let tmp = tempfile::tempdir().unwrap();
+        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
 
         // view=detail → StoreFactQuery (no graph needed)
-        let r1 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "detail"}));
+        let r1 = router.call_tool(
+            &ctx,
+            "symbol",
+            &serde_json::json!({"symbol": "main", "view": "detail"}),
+        );
         let t1 = extract_text(&r1);
         assert!(
             r1.is_error == Some(true) || t1.contains("not found") || t1.contains("error"),
@@ -4845,7 +4784,11 @@ mod tests {
         );
 
         // view=context → SemanticGraphQuery (needs graph)
-        let r2 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "context"}));
+        let r2 = router.call_tool(
+            &ctx,
+            "symbol",
+            &serde_json::json!({"symbol": "main", "view": "context"}),
+        );
         let t2 = extract_text(&r2);
         assert!(
             r2.is_error == Some(true) || t2.contains("not found") || t2.contains("error"),
@@ -4853,7 +4796,11 @@ mod tests {
         );
 
         // view=usages → StoreFactQuery
-        let r3 = router.call_tool(&ctx, "symbol", &serde_json::json!({"symbol": "main", "view": "usages"}));
+        let r3 = router.call_tool(
+            &ctx,
+            "symbol",
+            &serde_json::json!({"symbol": "main", "view": "usages"}),
+        );
         let t3 = extract_text(&r3);
         assert!(
             r3.is_error == Some(true) || t3.contains("not found") || t3.contains("error"),
@@ -4901,7 +4848,10 @@ mod tests {
         // Call maybe_refresh_graph — no lazy writes, no generation bump → no rebuild.
         router.maybe_refresh_graph().unwrap();
         assert!(!router.active_mut().graph_runtime.is_graph_stale());
-        assert_eq!(router.active_mut().graph_runtime.last_graph_generation, gen_before);
+        assert_eq!(
+            router.active_mut().graph_runtime.last_graph_generation,
+            gen_before
+        );
     }
 
     #[test]
@@ -4961,82 +4911,65 @@ mod tests {
         );
     }
 
-    /// Verify graph counts increase after a manifest index adds files.
+    /// Verify graph counts increase after external store writes add symbols.
     #[test]
-    fn graph_refresh_after_index_updates_graph() {
-        use tempfile::TempDir;
-
-        // Create temp project with a C file
-        let dir = TempDir::new().unwrap();
-        let c_path = dir.path().join("test.c");
-        std::fs::write(&c_path, "int foo(void) { return 0; }\n").unwrap();
-
-        let store = Arc::new(atlas_engine::Store::open_in_memory().unwrap());
-        store.init_schema().unwrap();
-
-        let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+    fn graph_refresh_after_external_store_write_updates_graph() {
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
-        // Record initial graph counts (should be 0 for an empty store)
         let node_before = router.active_mut().graph_runtime.state.symbol_count();
         assert_eq!(
             node_before, 0,
             "empty graph should have 0 nodes, got {node_before}"
         );
 
-        // Run manifest index — handle_index bumps graph_generation on success.
-        let ctx = ToolCallContext::empty();
-        let args = serde_json::json!({"analysis": "manifest"});
-        let result = router.call_tool(&ctx, "index", &args);
-        assert_eq!(result.is_error, Some(false), "index should succeed");
+        let file_id = register_test_file(&store, "src/test.ts");
+        insert_test_symbol(&store, file_id, "foo");
 
-        // Index handler bumped graph_generation → generation-based refresh detects stale graph.
+        router
+            .active_mut()
+            .graph_runtime
+            .invalidation
+            .graph_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert!(router.active_mut().graph_runtime.is_graph_stale());
 
-        // Refresh graph to pick up new symbols
         router.maybe_refresh_graph().unwrap();
 
         let node_after = router.active_mut().graph_runtime.state.symbol_count();
         assert!(
             node_after > 0,
-            "node count should increase after index + refresh, got {node_after}"
+            "node count should increase after external store write + refresh, got {node_after}"
         );
     }
 
-    /// Verify edges built from manifest index survive an incremental refresh.
+    /// Verify externally written graph facts survive an incremental refresh.
     #[test]
     fn graph_refresh_preserves_existing_edges() {
-        use tempfile::TempDir;
-
-        // Setup: create temp project with C file, index, refresh
-        let dir = TempDir::new().unwrap();
-        let c_path = dir.path().join("test.c");
-        std::fs::write(&c_path, "int foo(void) { return 0; }\n").unwrap();
-
-        let store = Arc::new(atlas_engine::Store::open_in_memory().unwrap());
-        store.init_schema().unwrap();
-
-        let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+        let store = test_store();
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
-        // Index + first refresh
-        let ctx = ToolCallContext::empty();
-        let args = serde_json::json!({"analysis": "manifest"});
-        router.call_tool(&ctx, "index", &args);
+        let file_id = register_test_file(&store, "src/test.ts");
+        insert_test_symbol(&store, file_id, "foo");
+        router
+            .active_mut()
+            .graph_runtime
+            .invalidation
+            .graph_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         router.maybe_refresh_graph().unwrap();
 
-        // Record current counts
         let node_before = router.active_mut().graph_runtime.state.symbol_count();
         let edge_before = router.active_mut().graph_runtime.state.edge_count();
         assert!(
             node_before > 0,
-            "should have nodes after initial index + refresh, got {node_before}"
+            "should have nodes after initial store write + refresh, got {node_before}"
         );
 
-        // Second refresh (generation unchanged → should be noop)
         router.maybe_refresh_graph().unwrap();
 
-        // Counts should be unchanged
         assert_eq!(
             router.active_mut().graph_runtime.state.symbol_count(),
             node_before,
@@ -5048,62 +4981,6 @@ mod tests {
             "second refresh within cooldown should not change edge count"
         );
     }
-
-    // ── SessionJobRuntime tests ──────────────────────────────────────
-
-    /// Verify that `session_job.task_manager` remains accessible after
-    /// a project switch (activate_project), because it is session-scoped
-    /// and not tied to the active project's JobRuntime.
-    #[test]
-    fn session_job_runtime_survives_project_switch() {
-        let store_a = test_store();
-        let store_b = test_store();
-        let mut router = ToolRouter::new_empty(store_a, PathBuf::from("/tmp"));
-
-        // Can access session-level task_manager with project A active
-        let tm_a = router.session_job.task_manager.clone();
-        let _task = tm_a.create_task("test", "test");
-        assert!(tm_a.get_task(&_task).is_some());
-
-        // Switch to project B
-        router.activate_project(PathBuf::from("/other"), store_b);
-
-        // task_manager should STILL be accessible and contain the old task
-        assert!(tm_a.get_task(&_task).is_some());
-        // New tasks can still be created through the same session-level TM
-        let tm_after = router.session_job.task_manager.clone();
-        let _task2 = tm_after.create_task("test", "test");
-        assert!(tm_after.get_task(&_task2).is_some());
-    }
-
-    /// Verify that background project open uses the session-level
-    /// task_manager (not the project-level JobRuntime).
-    #[test]
-    fn background_project_open_uses_session_task_manager() {
-        use tempfile::TempDir;
-
-        let dir = TempDir::new().unwrap();
-        let mut router = ToolRouter::new_empty(
-            Arc::new(atlas_engine::Store::open_in_memory().unwrap()),
-            dir.path().to_path_buf(),
-        );
-
-        // Verify session_job.task_manager is the same Arc instance used
-        // by handle_open_project_background (no direct call, but we can
-        // verify the session_job.task_manager is properly initialized).
-        let session_tm = router.session_job.task_manager.clone();
-        assert!(Arc::ptr_eq(
-            &session_tm,
-            &router.session_job.task_manager
-        ));
-
-        // Verify pending_project_activations is accessible
-        {
-            let pending = router.session_job.pending_project_activations.lock().unwrap();
-            assert!(pending.is_empty());
-        }
-    }
-
 }
 
 #[cfg(test)]

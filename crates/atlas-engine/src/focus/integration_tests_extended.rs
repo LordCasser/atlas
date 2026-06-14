@@ -11,17 +11,17 @@ mod tests {
     use types::enums::{Language, ParseStatus, SymbolKind};
     use types::ids::{FileId, ImportId, SymbolId};
     use types::structs::{
-        CoverageTier, FileInfo, ImportDef, Precision, SemanticConfidence, SymbolDef,
-        SymbolTier, TextRange,
+        CoverageTier, FileInfo, ImportDef, Precision, SemanticConfidence, SymbolDef, SymbolTier,
+        TextRange,
     };
     use types::{ImportKind, Visibility, layer, status};
 
+    use crate::LazyDataflowService;
     use crate::focus::edge_policy::{EdgeConflictPolicy, EdgeResolution};
     use crate::focus::engine::ClosureEngine;
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use crate::focus::visibility_filter::{CVisibilityFilter, VisibilityContext, VisibilityFilter};
     use crate::lazy_structural::LazyStructuralService;
-use crate::LazyDataflowService;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 

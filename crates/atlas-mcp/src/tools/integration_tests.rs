@@ -7,10 +7,10 @@
 //!
 //! End-to-end content-adaptive tests live in `tests/e2e_tests.rs`.
 
-use std::sync::Arc;
-use serde_json::json;
-use atlas_engine::Store;
 use super::{ToolCallContext, ToolRouter};
+use atlas_engine::Store;
+use serde_json::json;
+use std::sync::Arc;
 
 // =========================================================================
 // Helpers
@@ -25,14 +25,19 @@ fn python_example_root() -> std::path::PathBuf {
 
 fn open_python_example_store() -> Arc<Store> {
     let db_path = python_example_root().join(".atlas/atlas.db");
-    assert!(db_path.exists(), ".atlas DB not found. Run 'atlas index' in examples/python_example first.");
+    assert!(
+        db_path.exists(),
+        ".atlas DB not found. Run 'atlas index' in examples/python_example first."
+    );
     Arc::new(Store::open_db(&db_path).expect("Failed to open DB"))
 }
 
 fn python_example_router() -> ToolRouter {
     let store = open_python_example_store();
     let mut router = ToolRouter::new_empty(store, python_example_root());
-    router.ensure_graph_initialized().expect("Failed to init graph");
+    router
+        .ensure_graph_initialized()
+        .expect("Failed to init graph");
     router
 }
 
@@ -45,7 +50,10 @@ fn parse_json(s: &str) -> serde_json::Value {
 }
 
 fn assert_ok(resp: &serde_json::Value) {
-    let err = resp.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+    let err = resp
+        .get("is_error")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(!err, "Response has is_error=true: {resp:.300}");
 }
 
@@ -57,7 +65,11 @@ fn assert_ok(resp: &serde_json::Value) {
 fn list_tools_has_all_categories() {
     let router = python_example_router();
     let tools = &router.list_tools().tools;
-    assert!(tools.len() >= 15, "expected >=15 tools, got {}", tools.len());
+    assert!(
+        tools.len() >= 15,
+        "expected >=15 tools, got {}",
+        tools.len()
+    );
 
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     for required in ["search", "symbol", "calls", "impact", "trace", "project"] {
@@ -87,8 +99,13 @@ fn status_has_required_fields() {
 #[test]
 fn search_scope_filters() {
     let mut router = python_example_router();
-    let (s, err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "def", "scope": "spiders", "analysis": "manifest"}));
-    if err { return; } // skip if scope search not supported in manifest mode
+    let (s, err) = router.handle_search(
+        &ToolCallContext::empty(),
+        &json!({"query": "def", "scope": "spiders", "analysis": "manifest"}),
+    );
+    if err {
+        return;
+    } // skip if scope search not supported in manifest mode
     let r = parse_json(&s);
     for hit in r["results"].as_array().unwrap_or(&vec![]) {
         let f = hit["file"].as_str().unwrap_or("");
@@ -99,7 +116,10 @@ fn search_scope_filters() {
 #[test]
 fn search_nonexistent_returns_zero() {
     let mut router = python_example_router();
-    let (s, err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "ZZZNonExistentXYZZY", "scope": ".", "analysis": "manifest"}));
+    let (s, err) = router.handle_search(
+        &ToolCallContext::empty(),
+        &json!({"query": "ZZZNonExistentXYZZY", "scope": ".", "analysis": "manifest"}),
+    );
     assert!(!err, "search error: {s}");
     assert_eq!(parse_json(&s)["total"].as_u64().unwrap_or(99), 0);
 }
@@ -107,13 +127,20 @@ fn search_nonexistent_returns_zero() {
 #[test]
 fn search_empty_query_is_error() {
     let mut router = python_example_router();
-    let (s, _err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "", "scope": ".", "analysis": "manifest"}));
+    let (s, _err) = router.handle_search(
+        &ToolCallContext::empty(),
+        &json!({"query": "", "scope": ".", "analysis": "manifest"}),
+    );
     let r = parse_json(&s);
     let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
     if is_error {
         // fine — error is expected
     } else {
-        assert_eq!(r["total"].as_u64().unwrap_or(99), 0, "empty query should return 0 results");
+        assert_eq!(
+            r["total"].as_u64().unwrap_or(99),
+            0,
+            "empty query should return 0 results"
+        );
     }
 }
 
@@ -124,11 +151,14 @@ fn search_empty_query_is_error() {
 #[test]
 fn graph_nonexistent_symbol() {
     let mut router = python_example_router();
-    let (s, err) = router.handle_callers(&json!({"symbol": "NonExistent_XYZ123", "direction": "incoming"}));
+    let (s, err) =
+        router.handle_callers(&json!({"symbol": "NonExistent_XYZ123", "direction": "incoming"}));
     if err {
         let r = parse_json(&s);
-        assert!(r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
-            "nonexistent should set is_error: {s:.200}");
+        assert!(
+            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+            "nonexistent should set is_error: {s:.200}"
+        );
     }
 }
 
@@ -155,8 +185,10 @@ fn tasks_has_tasks_field() {
     let (s, err) = router.handle_tasks(&json!({}));
     assert!(!err, "tasks error: {s}");
     let r = parse_json(&s);
-    assert!(r.get("active_extraction_jobs").is_some() || r.get("atlas_jobs").is_some(),
-        "missing tasks: {s:.200}");
+    assert!(
+        r.get("active_extraction_jobs").is_some() || r.get("atlas_jobs").is_some(),
+        "missing tasks: {s:.200}"
+    );
 }
 
 #[test]
@@ -165,7 +197,10 @@ fn jobs_has_jobs_field() {
     let (s, err) = router.handle_jobs();
     assert!(!err, "jobs error: {s}");
     let r = parse_json(&s);
-    assert!(r.get("active_jobs").is_some() || r.get("jobs").is_some(), "missing jobs: {s:.200}");
+    assert!(
+        r.get("active_jobs").is_some() || r.get("jobs").is_some(),
+        "missing jobs: {s:.200}"
+    );
 }
 
 // =========================================================================
@@ -177,7 +212,10 @@ fn list_fp_annotations_does_not_panic() {
     let router = python_example_router();
     let (s, _) = router.handle_list_fp_annotations();
     let r = parse_json(&s);
-    assert!(r.get("annotations").is_some(), "missing annotations: {s:.200}");
+    assert!(
+        r.get("annotations").is_some(),
+        "missing annotations: {s:.200}"
+    );
 }
 
 // =========================================================================
@@ -187,12 +225,15 @@ fn list_fp_annotations_does_not_panic() {
 #[test]
 fn handlers_no_panic_empty_args() {
     let mut router = python_example_router();
-    let mut router2 = python_example_router();
+    let router2 = python_example_router();
 
     let read_only: Vec<(&str, Box<dyn Fn() -> (String, bool)>)> = vec![
         ("status", Box::new(|| router2.handle_status())),
         ("jobs", Box::new(|| router2.handle_jobs())),
-        ("list_fp_annotations", Box::new(|| router2.handle_list_fp_annotations())),
+        (
+            "list_fp_annotations",
+            Box::new(|| router2.handle_list_fp_annotations()),
+        ),
     ];
 
     for (name, handler) in &read_only {
@@ -206,12 +247,14 @@ fn handlers_no_panic_empty_args() {
     ];
 
     for (name, args) in &mut_handlers {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match *name {
-                "domain_rules" => { router.handle_atlas_domain_rules(args); }
-                "tasks" => { router.handle_tasks(args); }
-                _ => {}
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match *name {
+            "domain_rules" => {
+                router.handle_atlas_domain_rules(args);
             }
+            "tasks" => {
+                router.handle_tasks(args);
+            }
+            _ => {}
         }));
         assert!(r.is_ok(), "Handler '{name}' panicked");
     }
@@ -281,10 +324,6 @@ mod focus_tests {
             result.precision.is_some(),
             "Focus result should have precision"
         );
-        assert!(
-            result.closure_id.is_some(),
-            "Focus result should have closure_id"
-        );
     }
 
     /// When FocusRuntime is active, handler responses should carry analysis
@@ -318,10 +357,11 @@ mod focus_tests {
         // Check that analysis envelope is present when focus *is* active.
         // When focus is not needed (full index exists), its absence is expected.
         if let Some(analysis) = parsed.get("analysis") {
-            let state = analysis.get("state")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            assert!(!state.is_empty(), "Analysis state should be non-empty (focus active)");
+            let state = analysis.get("state").and_then(|v| v.as_str()).unwrap_or("");
+            assert!(
+                !state.is_empty(),
+                "Analysis state should be non-empty (focus active)"
+            );
         }
     }
 
@@ -370,7 +410,9 @@ mod focus_tests {
         // predictable than incoming callers).
         let full_store = open_python_example_store(); // full-indexed DB
         let mut full_router = ToolRouter::new_empty(full_store, root.clone());
-        full_router.ensure_graph_initialized().expect("full graph init");
+        full_router
+            .ensure_graph_initialized()
+            .expect("full graph init");
 
         let candidates = [
             "main",
@@ -406,7 +448,11 @@ mod focus_tests {
                     continue;
                 }
                 let sym = parse_json(&sym_resp);
-                if sym.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if sym
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     println!("  [full] symbol {name}: is_error=true");
                     continue;
                 }
@@ -451,7 +497,9 @@ mod focus_tests {
                     vec![]
                 };
                 let total_callers = if !caller_err {
-                    parse_json(&caller_resp)["total_callers"].as_u64().unwrap_or(0)
+                    parse_json(&caller_resp)["total_callers"]
+                        .as_u64()
+                        .unwrap_or(0)
                 } else {
                     0
                 };
@@ -481,7 +529,9 @@ mod focus_tests {
         let gt = match found_gt {
             Some(gt) => gt,
             None => {
-                println!("Skipping equivalence check: no symbol with non-zero callees in full index");
+                println!(
+                    "Skipping equivalence check: no symbol with non-zero callees in full index"
+                );
                 return;
             }
         };
@@ -490,7 +540,10 @@ mod focus_tests {
         println!(
             "\nSelected: {symbol_name} (kind={}, file={}), \
              {total_callees} callee(s), {total_callers} caller(s)",
-            gt.kind, gt.file, total_callees = gt.total_callees, total_callers = gt.total_callers,
+            gt.kind,
+            gt.file,
+            total_callees = gt.total_callees,
+            total_callers = gt.total_callers,
         );
 
         // ── Phase 2: Fresh DB, pure Focus path ─────────────────────────
@@ -575,8 +628,10 @@ mod focus_tests {
             // ends_with to normalize.
             let gt_file = &gt.file;
             assert!(
-                focus_file.ends_with(gt_file.as_str()) || gt_file.ends_with(&focus_file)
-                    || focus_file.contains(gt_file.as_str()) || gt_file.contains(&focus_file),
+                focus_file.ends_with(gt_file.as_str())
+                    || gt_file.ends_with(&focus_file)
+                    || focus_file.contains(gt_file.as_str())
+                    || gt_file.contains(&focus_file),
                 "Symbol file mismatch: full=[{}], focus=[{focus_file}]",
                 gt.file,
             );
@@ -591,16 +646,21 @@ mod focus_tests {
             }));
             if focus_err {
                 let err_r = parse_json(&focus_resp);
-                let msg = err_r.get("message").and_then(|v| v.as_str()).unwrap_or(&focus_resp);
+                let msg = err_r
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&focus_resp);
                 if msg.contains("not found") {
-                    panic!(
-                        "Focus resolved symbol but callees could not locate it: {msg}"
-                    );
+                    panic!("Focus resolved symbol but callees could not locate it: {msg}");
                 }
                 println!("  [B] Focus callees returned error: {msg:.200} (acceptable)");
             } else {
                 let focus_callee = parse_json(&focus_resp);
-                if focus_callee.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if focus_callee
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     let msg = focus_callee["message"].as_str().unwrap_or("");
                     println!("  [B] Focus callees is_error: {msg:.200} (acceptable)");
                 } else {
@@ -652,18 +712,23 @@ mod focus_tests {
                 focus_router.handle_callers(&json!({"symbol": symbol_name}));
             if focus_err {
                 let err_r = parse_json(&focus_resp);
-                let msg = err_r.get("message").and_then(|v| v.as_str()).unwrap_or(&focus_resp);
+                let msg = err_r
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&focus_resp);
                 if msg.contains("not found") {
                     // Acceptable: focus closure may not include inbound callers.
-                    println!(
-                        "  [C] Focus callers could not locate {symbol_name}: {msg:.200}"
-                    );
+                    println!("  [C] Focus callers could not locate {symbol_name}: {msg:.200}");
                 } else {
                     println!("  [C] Focus callers returned error: {msg:.200} (acceptable)");
                 }
             } else {
                 let focus_caller = parse_json(&focus_resp);
-                if focus_caller.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if focus_caller
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     let msg = focus_caller["message"].as_str().unwrap_or("");
                     println!("  [C] Focus callers is_error: {msg:.200} (acceptable)");
                 } else {
@@ -712,11 +777,16 @@ mod focus_tests {
             let focus_files: Vec<String> = focus_result
                 .built_files
                 .iter()
-                .map(|f| focus_router.active_mut().store_query_runtime.resolve_file_path(f))
+                .map(|f| {
+                    focus_router
+                        .active_mut()
+                        .store_query_runtime
+                        .resolve_file_path(f)
+                })
                 .collect();
-            let found = focus_files.iter().any(|f| {
-                f == &gt.file || f.ends_with(&format!("/{}", gt.file))
-            });
+            let found = focus_files
+                .iter()
+                .any(|f| f == &gt.file || f.ends_with(&format!("/{}", gt.file)));
             assert!(
                 found,
                 "Focus closure does not include symbol's file '{file}'.\n\
@@ -724,8 +794,11 @@ mod focus_tests {
                 file = gt.file,
                 count = focus_files.len(),
             );
-            println!("  [D] File completeness OK: '{file}' in closure ({num} files)",
-                file = gt.file, num = focus_files.len());
+            println!(
+                "  [D] File completeness OK: '{file}' in closure ({num} files)",
+                file = gt.file,
+                num = focus_files.len()
+            );
         }
     }
 
@@ -750,7 +823,10 @@ mod focus_tests {
 
         let queries: &[(&str, serde_json::Value)] = &[
             ("search", json!({"query": "spider", "scope": "."})),
-            ("symbol", json!({"symbol": {"qualified_name": "WikipediaSpider"}})),
+            (
+                "symbol",
+                json!({"symbol": {"qualified_name": "WikipediaSpider"}}),
+            ),
             ("explore", json!({"symbol": "WikipediaSpider"})),
         ];
 
@@ -764,7 +840,8 @@ mod focus_tests {
 
             let parsed = parse_json(&resp_str);
             if is_error {
-                let msg = parsed.get("message")
+                let msg = parsed
+                    .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&resp_str);
                 assert!(
@@ -866,22 +943,24 @@ mod focus_tests {
         // Clean up any previous run
         let _ = std::fs::remove_dir_all(&temp_dir);
 
-        let file_rel =
-            "examples/elasticsearch/server/src/main/java/org/elasticsearch/ElasticsearchException.java";
+        let file_rel = "examples/elasticsearch/server/src/main/java/org/elasticsearch/ElasticsearchException.java";
         let file_abs = temp_dir.join(file_rel);
-        std::fs::create_dir_all(file_abs.parent().unwrap())
-            .expect("create dirs");
+        std::fs::create_dir_all(file_abs.parent().unwrap()).expect("create dirs");
 
         // Minimal valid Java class — tree-sitter can parse it.
         // Does NOT contain logError/wrapException/getStatusMessage so
         // tree-sitter won't create conflicting symbols for our callees.
-        std::fs::write(&file_abs, r#"package org.elasticsearch;
+        std::fs::write(
+            &file_abs,
+            r#"package org.elasticsearch;
 
 public class ElasticsearchException extends RuntimeException {
     public ElasticsearchException(String msg) { super(msg); }
     public ElasticsearchException(String msg, Throwable cause) { super(msg, cause); }
 }
-"#).expect("write Java file");
+"#,
+        )
+        .expect("write Java file");
 
         let store = fresh_focus_store();
 
@@ -931,13 +1010,8 @@ public class ElasticsearchException extends RuntimeException {
         // (from tree-sitter's extraction) so we insert our symbols safely.
         // The salt on SymbolId ensures no collision with tree-sitter's
         // symbols (different hash inputs → different primary keys).
-        let primary_sid = insert_focus_es_symbol(
-            &store,
-            file_id,
-            primary_simple,
-            primary_qname,
-            primary_kind,
-        );
+        let primary_sid =
+            insert_focus_es_symbol(&store, file_id, primary_simple, primary_qname, primary_kind);
 
         let callee1_simple = "logError";
         let callee1_sid = insert_focus_es_symbol(
@@ -966,8 +1040,7 @@ public class ElasticsearchException extends RuntimeException {
             atlas_engine::SymbolKind::Method,
         );
 
-        let expected: Vec<&str> =
-            vec![callee1_simple, callee2_simple, callee3_simple];
+        let expected: Vec<&str> = vec![callee1_simple, callee2_simple, callee3_simple];
 
         insert_focus_es_edge(&store, primary_sid, callee1_sid);
         insert_focus_es_edge(&store, primary_sid, callee2_sid);
@@ -996,9 +1069,7 @@ public class ElasticsearchException extends RuntimeException {
             .collect();
 
         let total = resp["total_callees"].as_u64().unwrap_or(0);
-        println!(
-            "Focus callees: {callee_names:?} (total={total})\nExpected: {expected:?}",
-        );
+        println!("Focus callees: {callee_names:?} (total={total})\nExpected: {expected:?}",);
 
         let overlap: Vec<_> = callee_names
             .iter()
@@ -1010,5 +1081,4 @@ public class ElasticsearchException extends RuntimeException {
             "No callee overlap! Focus found: {callee_names:?}\nExpected: {expected:?}"
         );
     }
-
 }

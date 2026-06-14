@@ -31,6 +31,7 @@ const MIN_SCORE_GAP_FOR_UNIQUE: u64 = 400;
 
 // Qualified name: base score for all matching candidates
 const SCORE_QNAME_EXACT: u64 = 10_000;
+const SCORE_NAME_EXACT: u64 = 9_000;
 
 // File path: strong signal
 const SCORE_PATH_EXACT: u64 = 3_000;
@@ -329,8 +330,14 @@ fn score_single_candidate(
     path_match_quality: PathMatchQuality,
     path_overlap: usize,
 ) -> CandidateScore {
-    let mut score = SCORE_QNAME_EXACT;
-    let mut reasons: Vec<String> = vec!["qualified_name_exact".into()];
+    let simple = simple_symbol_name(&sel.qualified_name);
+    let (mut score, mut reasons) = if symbol_def.qualified_name == sel.qualified_name {
+        (SCORE_QNAME_EXACT, vec!["qualified_name_exact".into()])
+    } else if symbol_def.name == simple {
+        (SCORE_NAME_EXACT, vec!["name_exact".into()])
+    } else {
+        (0, Vec::new())
+    };
 
     // File path scoring
     let path_score = score_path_match(path_match_quality, path_overlap);
@@ -460,10 +467,7 @@ pub fn compute_ignored_mismatches(
 /// Look up candidates by qualified name.
 ///
 /// Returns `Vec` of `(SymbolDef, resolved_file_path)` tuples.
-pub fn lookup_candidates(
-    store: &Store,
-    qname: &str,
-) -> Result<Vec<(SymbolDef, String)>, String> {
+pub fn lookup_candidates(store: &Store, qname: &str) -> Result<Vec<(SymbolDef, String)>, String> {
     let symbols = store
         .find_symbols_by_qname(qname)
         .map_err(|e| format!("Lookup error: {e}"))?;
@@ -491,7 +495,23 @@ pub(crate) fn score_candidates(
     store: &Store,
     sel: &SymbolSelector,
 ) -> Result<Vec<CandidateScore>, String> {
-    let candidates = lookup_candidates(store, &sel.qualified_name)?;
+    let candidates = if sel.file_path.is_some() {
+        let path_candidates = lookup_candidates_by_selector_name_in_path(store, sel)?;
+        if is_unqualified_symbol_name(&sel.qualified_name) {
+            if path_candidates.is_empty() {
+                lookup_candidates(store, &sel.qualified_name)?
+            } else {
+                path_candidates
+            }
+        } else {
+            merge_candidate_sets(
+                lookup_candidates(store, &sel.qualified_name)?,
+                path_candidates,
+            )
+        }
+    } else {
+        lookup_candidates(store, &sel.qualified_name)?
+    };
 
     let mut scored: Vec<CandidateScore> = candidates
         .iter()
@@ -507,6 +527,63 @@ pub(crate) fn score_candidates(
 
     scored.sort_by(|a, b| b.score.cmp(&a.score));
     Ok(scored)
+}
+
+fn merge_candidate_sets(
+    first: Vec<(SymbolDef, String)>,
+    second: Vec<(SymbolDef, String)>,
+) -> Vec<(SymbolDef, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut merged = Vec::with_capacity(first.len() + second.len());
+    for (sym, path) in first.into_iter().chain(second) {
+        if seen.insert(sym.id) {
+            merged.push((sym, path));
+        }
+    }
+    merged
+}
+
+fn lookup_candidates_by_selector_name_in_path(
+    store: &Store,
+    sel: &SymbolSelector,
+) -> Result<Vec<(SymbolDef, String)>, String> {
+    let Some(input_path) = sel.file_path.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let simple = simple_symbol_name(&sel.qualified_name);
+    if simple.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let symbols = store
+        .find_symbols_by_name(simple)
+        .map_err(|e| format!("Lookup error: {e}"))?;
+
+    let mut candidates = Vec::new();
+    for sym in symbols {
+        let path = store
+            .get_file(&sym.file_id)
+            .ok()
+            .flatten()
+            .map(|f| f.path)
+            .unwrap_or_default();
+        let (quality, _) = analyze_path_match(input_path, &path);
+        if quality != PathMatchQuality::None_ {
+            candidates.push((sym, path));
+        }
+    }
+    Ok(candidates)
+}
+
+fn simple_symbol_name(qname: &str) -> &str {
+    qname
+        .rsplit(&['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(qname)
+}
+
+fn is_unqualified_symbol_name(qname: &str) -> bool {
+    !qname.contains('.') && !qname.contains(':')
 }
 
 /// Unified symbol resolution entry point.
@@ -610,8 +687,7 @@ pub fn resolve_by_selector(
     if scored.len() == 1 {
         let best = &scored[0];
         let line = best.symbol_def.range.start_line.saturating_add(1);
-        let mismatches =
-            compute_ignored_mismatches(sel, &best.symbol_def, &best.file_path, line);
+        let mismatches = compute_ignored_mismatches(sel, &best.symbol_def, &best.file_path, line);
         return Ok(SymbolResolution::Single {
             symbol_id: best.symbol_def.id,
             resolved: ResolvedSymbol {
@@ -768,7 +844,6 @@ pub fn find_similar_names(store: &Store, qname: &str, limit: usize) -> Vec<Strin
 mod tests {
     use super::*;
     use crate::{FileId, FileInfo, Language, ParseStatus, Store, SymbolKind, TextRange};
-    use std::sync::Arc;
 
     /// Helper: build a minimal SymbolDef for testing.
     fn make_symbol(
@@ -1122,12 +1197,7 @@ mod tests {
             kind: None,
             language: Some("typescript".into()),
         };
-        let sym = make_symbol(
-            SymbolKind::Function,
-            Language::JavaScript,
-            "foo",
-            10,
-        );
+        let sym = make_symbol(SymbolKind::Function, Language::JavaScript, "foo", 10);
         let ignored = compute_ignored_mismatches(&sel, &sym, "src/main.ts", 10);
         assert!(ignored.contains(&"language".to_string()));
     }
@@ -1163,8 +1233,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
 
-        let result =
-            lookup_candidates(&store, "nonexistent::symbol").unwrap();
+        let result = lookup_candidates(&store, "nonexistent::symbol").unwrap();
         assert!(result.is_empty());
     }
 
@@ -1183,8 +1252,7 @@ mod tests {
         };
         store.upsert_file(&file).unwrap();
 
-        let mut sym =
-            make_symbol(SymbolKind::Function, Language::Rust, "Engine.run", 42);
+        let mut sym = make_symbol(SymbolKind::Function, Language::Rust, "Engine.run", 42);
         sym.file_id = file_id;
         sym.id = SymbolId::generate(&file_id, "rust", "Engine.run", "function", None);
         store.insert_symbols(&[sym]).unwrap();
@@ -1192,10 +1260,145 @@ mod tests {
         let result = lookup_candidates(&store, "Engine.run").unwrap();
         assert_eq!(result.len(), 1, "should find exactly one candidate");
         assert_eq!(result[0].0.qualified_name, "Engine.run");
-        assert!(
-            !result[0].1.is_empty(),
-            "file_path should not be empty"
-        );
+        assert!(!result[0].1.is_empty(), "file_path should not be empty");
+    }
+
+    #[test]
+    fn selector_short_name_uses_file_path_fallback() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let target_file_id = FileId::generate("src/app.rs");
+        let other_file_id = FileId::generate("src/other.rs");
+        store
+            .upsert_file(&FileInfo {
+                file_id: target_file_id,
+                path: "src/app.rs".into(),
+                language: Language::Rust,
+                content_hash: "target".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: other_file_id,
+                path: "src/other.rs".into(),
+                language: Language::Rust,
+                content_hash: "other".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let mut target = make_symbol(SymbolKind::Function, Language::Rust, "App.main", 10);
+        target.file_id = target_file_id;
+        target.id = SymbolId::generate(&target_file_id, "rust", "App.main", "function", None);
+        let mut other = make_symbol(SymbolKind::Function, Language::Rust, "Other.main", 20);
+        other.file_id = other_file_id;
+        other.id = SymbolId::generate(&other_file_id, "rust", "Other.main", "function", None);
+        store.insert_symbols(&[target, other]).unwrap();
+
+        let selector = SymbolSelector {
+            qualified_name: "main".into(),
+            file_path: Some("src/app.rs".into()),
+            line: None,
+            kind: Some("function".into()),
+            language: Some("rust".into()),
+        };
+        let resolved = resolve_by_selector(
+            &store,
+            &selector,
+            SymbolResolutionPolicy::UniqueOrCandidates,
+        )
+        .unwrap();
+        match resolved {
+            SymbolResolution::Single { resolved, .. } => {
+                assert_eq!(resolved.qualified_name, "App.main");
+                assert_eq!(resolved.file_path, "src/app.rs");
+            }
+            other => panic!("expected single fallback match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selector_short_name_does_not_pick_unrelated_exact_qname() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let other_file_id = FileId::generate("src/other.rs");
+        store
+            .upsert_file(&FileInfo {
+                file_id: other_file_id,
+                path: "src/other.rs".into(),
+                language: Language::Rust,
+                content_hash: "other".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let mut unrelated = make_symbol(SymbolKind::Function, Language::Rust, "main", 20);
+        unrelated.file_id = other_file_id;
+        unrelated.id = SymbolId::generate(&other_file_id, "rust", "main", "function", None);
+        store.insert_symbols(&[unrelated]).unwrap();
+
+        let selector = SymbolSelector {
+            qualified_name: "main".into(),
+            file_path: Some("src/app.rs".into()),
+            line: None,
+            kind: Some("function".into()),
+            language: Some("rust".into()),
+        };
+        let resolved = resolve_by_selector(
+            &store,
+            &selector,
+            SymbolResolutionPolicy::UniqueOrCandidates,
+        )
+        .unwrap();
+        match resolved {
+            SymbolResolution::NotFound { qname, .. } => assert_eq!(qname, "main"),
+            other => panic!("expected NotFound for unmatched selector path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selector_partial_qname_uses_simple_name_file_path_fallback() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let file_id = FileId::generate("src/app.rs");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/app.rs".into(),
+                language: Language::Rust,
+                content_hash: "target".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let mut sym = make_symbol(SymbolKind::Function, Language::Rust, "App.main", 10);
+        sym.file_id = file_id;
+        sym.id = SymbolId::generate(&file_id, "rust", "App.main", "function", None);
+        store.insert_symbols(&[sym]).unwrap();
+
+        let selector = SymbolSelector {
+            qualified_name: "crate::App::main".into(),
+            file_path: Some("src/app.rs".into()),
+            line: None,
+            kind: Some("function".into()),
+            language: Some("rust".into()),
+        };
+        let resolved = resolve_by_selector(
+            &store,
+            &selector,
+            SymbolResolutionPolicy::UniqueOrCandidates,
+        )
+        .unwrap();
+        match resolved {
+            SymbolResolution::Single { resolved, .. } => {
+                assert_eq!(resolved.qualified_name, "App.main");
+                assert_eq!(resolved.file_path, "src/app.rs");
+            }
+            other => panic!("expected single fallback match, got {other:?}"),
+        }
     }
 
     #[test]

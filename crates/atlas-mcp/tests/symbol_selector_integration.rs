@@ -121,9 +121,7 @@ fn get_oneof_for_param<'a>(tool: &'a atlas_mcp::Tool, prop_name: &str) -> &'a se
 /// Helper: assert that a property's oneOf array has exactly 2 entries
 /// (plain string + SymbolSelector object), and the second is the object variant.
 fn assert_oneof_has_string_and_object(oneof: &serde_json::Value) {
-    let arr = oneof
-        .as_array()
-        .expect("oneOf must be an array");
+    let arr = oneof.as_array().expect("oneOf must be an array");
     assert!(
         arr.len() >= 2,
         "oneOf must have at least 2 entries, got {arr:?}"
@@ -212,7 +210,10 @@ fn resolve_single(store: &Store, input: &SymbolInput) -> SymbolResolution {
         .expect("resolution should succeed");
     match res {
         SymbolResolution::Single { .. } => res,
-        SymbolResolution::Ambiguous { ref candidates, score_gap } => {
+        SymbolResolution::Ambiguous {
+            ref candidates,
+            score_gap,
+        } => {
             panic!(
                 "expected Single but got Ambiguous with {} candidates (gap={})",
                 candidates.len(),
@@ -230,9 +231,8 @@ fn resolve_single(store: &Store, input: &SymbolInput) -> SymbolResolution {
 
 /// Helper: resolve with Aggregate policy, expect an Ambiguous result.
 fn resolve_ambiguous(store: &Store, input: &SymbolInput) -> SymbolResolution {
-    let res =
-        resolve_symbol_input(store, input, SymbolResolutionPolicy::Aggregate)
-            .expect("resolution should succeed");
+    let res = resolve_symbol_input(store, input, SymbolResolutionPolicy::Aggregate)
+        .expect("resolution should succeed");
     match res {
         SymbolResolution::Ambiguous { .. } => res,
         other => panic!("expected Ambiguous but got {other:?}"),
@@ -250,10 +250,41 @@ fn extract_candidates(res: &SymbolResolution) -> &[ScoredCandidate] {
 /// Helper: extract single resolved symbol info.
 fn extract_single(res: &SymbolResolution) -> (MatchMode, &[String]) {
     match res {
-        SymbolResolution::Single { resolved, .. } => {
-            (resolved.match_info.mode.clone(), &resolved.match_info.ignored_mismatches)
-        }
+        SymbolResolution::Single { resolved, .. } => (
+            resolved.match_info.mode.clone(),
+            &resolved.match_info.ignored_mismatches,
+        ),
         other => panic!("expected Single but got {other:?}"),
+    }
+}
+
+/// Assert that resolving a selected symbol_ref lands on the candidate the
+/// client picked. A precise selector may now resolve directly to Single;
+/// older aggregate-style paths may return Ambiguous with the selected symbol
+/// as the top candidate.
+fn assert_roundtrip_lands_on_candidate(res: &SymbolResolution, expected: &ScoredCandidate) {
+    match res {
+        SymbolResolution::Single {
+            symbol_id,
+            resolved,
+        } => {
+            assert_eq!(*symbol_id, expected.symbol_id);
+            assert_eq!(resolved.qualified_name, expected.qualified_name);
+            assert_eq!(resolved.file_path, expected.file_path);
+            assert_eq!(resolved.line, expected.line);
+        }
+        SymbolResolution::Ambiguous { candidates, .. } => {
+            let top = candidates
+                .first()
+                .expect("ambiguous round-trip should return candidates");
+            assert_eq!(top.symbol_id, expected.symbol_id);
+            assert_eq!(top.qualified_name, expected.qualified_name);
+            assert!(
+                top.score >= candidates.last().unwrap().score,
+                "top candidate should have highest or equal score"
+            );
+        }
+        other => panic!("expected selected symbol_ref to resolve, got {other:?}"),
     }
 }
 
@@ -262,7 +293,7 @@ fn extract_single(res: &SymbolResolution) -> (MatchMode, &[String]) {
 /// search → calls round-trip:
 /// 1. Call resolve with ambiguous qname → get candidates with symbol_ref
 /// 2. Pass first candidate's symbol_ref back to resolve with Aggregate policy
-/// 3. Verify top candidate matches the original
+/// 3. Verify the selected candidate is preserved
 #[test]
 fn test_search_to_calls_roundtrip() {
     let store = test_store();
@@ -274,8 +305,22 @@ fn test_search_to_calls_roundtrip() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "turn", "turn", 10),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Method, "turn", "turn", 42),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "turn",
+                "turn",
+                10,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Method,
+                "turn",
+                "turn",
+                42,
+            ),
         ],
     );
 
@@ -287,26 +332,15 @@ fn test_search_to_calls_roundtrip() {
 
     // Step 2: pick first candidate's symbol_ref and resolve with Aggregate
     let symbol_ref = SymbolInput::Selector(candidates[0].symbol_ref.clone());
-    let res2 = resolve_ambiguous(&store, &symbol_ref);
-    let candidates2 = extract_candidates(&res2);
-    // Aggregate policy returns all qname matches as candidates.
-    // The top candidate (highest score) should match the original symbol_ref.
-    let top = &candidates2[0];
-    assert_eq!(
-        top.qualified_name,
-        candidates[0].qualified_name,
-        "top candidate should match original qname"
-    );
-    assert!(
-        top.score >= candidates2.last().unwrap().score,
-        "top candidate should have highest or equal score"
-    );
+    let res2 = resolve_symbol_input(&store, &symbol_ref, SymbolResolutionPolicy::Aggregate)
+        .expect("resolution should succeed");
+    assert_roundtrip_lands_on_candidate(&res2, &candidates[0]);
 }
 
 /// symbol → impact round-trip:
 /// 1. Resolve with ambiguous qname → get candidates
 /// 2. Pass first candidate's symbol_ref to resolve with Aggregate policy
-/// 3. Verify top candidate matches the original
+/// 3. Verify the selected candidate is preserved
 #[test]
 fn test_symbol_to_impact_roundtrip() {
     let store = test_store();
@@ -317,8 +351,22 @@ fn test_symbol_to_impact_roundtrip() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Class, "Handler", "Handler", 5),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Class, "Handler", "Handler", 100),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Class,
+                "Handler",
+                "Handler",
+                5,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Class,
+                "Handler",
+                "Handler",
+                100,
+            ),
         ],
     );
 
@@ -328,11 +376,9 @@ fn test_symbol_to_impact_roundtrip() {
     let candidates = extract_candidates(&res);
 
     let symbol_ref = SymbolInput::Selector(candidates[0].symbol_ref.clone());
-    let res2 = resolve_ambiguous(&store, &symbol_ref);
-    let candidates2 = extract_candidates(&res2);
-    let top = &candidates2[0];
-    assert_eq!(top.qualified_name, candidates[0].qualified_name);
-    assert!(top.score >= candidates2.last().unwrap().score);
+    let res2 = resolve_symbol_input(&store, &symbol_ref, SymbolResolutionPolicy::Aggregate)
+        .expect("resolution should succeed");
+    assert_roundtrip_lands_on_candidate(&res2, &candidates[0]);
 }
 
 /// symbol → explore round-trip (UniqueOrCandidates policy).
@@ -346,8 +392,22 @@ fn test_symbol_to_explore_roundtrip() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "init", "init", 1),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Function, "init", "init", 99),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "init",
+                "init",
+                1,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "init",
+                "init",
+                99,
+            ),
         ],
     );
 
@@ -358,7 +418,10 @@ fn test_symbol_to_explore_roundtrip() {
     let symbol_ref = SymbolInput::Selector(candidates[0].symbol_ref.clone());
     let res2 = resolve_single(&store, &symbol_ref);
     let (mode, mismatches) = extract_single(&res2);
-    assert!(!matches!(mode, MatchMode::BestEffort), "should not be BestEffort");
+    assert!(
+        !matches!(mode, MatchMode::BestEffort),
+        "should not be BestEffort"
+    );
     assert!(mismatches.is_empty());
 }
 
@@ -373,8 +436,22 @@ fn test_symbol_to_context_roundtrip() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Method, "run", "run", 20),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Function, "run", "run", 300),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Method,
+                "run",
+                "run",
+                20,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "run",
+                "run",
+                300,
+            ),
         ],
     );
 
@@ -388,7 +465,7 @@ fn test_symbol_to_context_roundtrip() {
 }
 
 /// explore → calls round-trip:
-/// Ambiguous explore → pick candidate symbol_ref → feed to Aggregate → verify top match
+/// Ambiguous explore → pick candidate symbol_ref → feed to Aggregate → verify selected match
 #[test]
 fn test_explore_to_calls_roundtrip() {
     let store = test_store();
@@ -399,8 +476,22 @@ fn test_explore_to_calls_roundtrip() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "process", "process", 5),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Method, "process", "process", 50),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "process",
+                "process",
+                5,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Method,
+                "process",
+                "process",
+                50,
+            ),
         ],
     );
 
@@ -409,11 +500,9 @@ fn test_explore_to_calls_roundtrip() {
     let candidates = extract_candidates(&res);
 
     let symbol_ref = SymbolInput::Selector(candidates[1].symbol_ref.clone());
-    let res2 = resolve_ambiguous(&store, &symbol_ref);
-    let candidates2 = extract_candidates(&res2);
-    let top = &candidates2[0];
-    assert_eq!(top.line, candidates[1].line);
-    assert!(top.score >= candidates2.last().unwrap().score);
+    let res2 = resolve_symbol_input(&store, &symbol_ref, SymbolResolutionPolicy::Aggregate)
+        .expect("resolution should succeed");
+    assert_roundtrip_lands_on_candidate(&res2, &candidates[1]);
 }
 
 // ── Aggregation tests ─────────────────────────────────────────────────
@@ -431,9 +520,30 @@ fn test_calls_aggregation() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "turn", "turn", 10),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Method, "turn", "turn", 50),
-            make_symbol(f3, Language::TypeScript, SymbolKind::Function, "turn", "turn", 200),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "turn",
+                "turn",
+                10,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Method,
+                "turn",
+                "turn",
+                50,
+            ),
+            make_symbol(
+                f3,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "turn",
+                "turn",
+                200,
+            ),
         ],
     );
 
@@ -448,7 +558,10 @@ fn test_calls_aggregation() {
     );
 
     for c in candidates {
-        assert_eq!(c.qualified_name, "turn", "all candidates must match the qname");
+        assert_eq!(
+            c.qualified_name, "turn",
+            "all candidates must match the qname"
+        );
     }
 }
 
@@ -463,8 +576,22 @@ fn test_impact_aggregation() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "init", "init", 1),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Function, "init", "init", 5),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "init",
+                "init",
+                1,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "init",
+                "init",
+                5,
+            ),
         ],
     );
 
@@ -495,17 +622,48 @@ fn test_path_dual_aggregation() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f1, Language::TypeScript, SymbolKind::Function, "send", "send", 10),
-            make_symbol(f2, Language::TypeScript, SymbolKind::Method, "send", "send", 99),
-            make_symbol(f3, Language::TypeScript, SymbolKind::Function, "recv", "recv", 5),
-            make_symbol(f4, Language::TypeScript, SymbolKind::Function, "recv", "recv", 500),
+            make_symbol(
+                f1,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "send",
+                "send",
+                10,
+            ),
+            make_symbol(
+                f2,
+                Language::TypeScript,
+                SymbolKind::Method,
+                "send",
+                "send",
+                99,
+            ),
+            make_symbol(
+                f3,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "recv",
+                "recv",
+                5,
+            ),
+            make_symbol(
+                f4,
+                Language::TypeScript,
+                SymbolKind::Function,
+                "recv",
+                "recv",
+                500,
+            ),
         ],
     );
 
     let from_input = SymbolInput::Name("send".into());
     let from_res = resolve_ambiguous(&store, &from_input);
     let from_cands = extract_candidates(&from_res);
-    assert!(from_cands.len() >= 2, "from should have multiple candidates");
+    assert!(
+        from_cands.len() >= 2,
+        "from should have multiple candidates"
+    );
 
     let to_input = SymbolInput::Name("recv".into());
     let to_res = resolve_ambiguous(&store, &to_input);
@@ -523,7 +681,14 @@ fn test_wrong_file_path_does_not_block() {
     let f = register_file(&store, "src/main.ts", Language::TypeScript);
     insert_symbols(
         &store,
-        &[make_symbol(f, Language::TypeScript, SymbolKind::Function, "turn", "turn", 42)],
+        &[make_symbol(
+            f,
+            Language::TypeScript,
+            SymbolKind::Function,
+            "turn",
+            "turn",
+            42,
+        )],
     );
 
     let sel = SymbolSelector {
@@ -551,7 +716,14 @@ fn test_wrong_line_does_not_block() {
     let f = register_file(&store, "src/unique.rs", Language::Rust);
     insert_symbols(
         &store,
-        &[make_symbol(f, Language::Rust, SymbolKind::Function, "unique_func", "unique_func", 10)],
+        &[make_symbol(
+            f,
+            Language::Rust,
+            SymbolKind::Function,
+            "unique_func",
+            "unique_func",
+            10,
+        )],
     );
 
     let sel = SymbolSelector {
@@ -579,7 +751,14 @@ fn test_wrong_kind_does_not_block() {
     let f = register_file(&store, "src/lib.rs", Language::Rust);
     insert_symbols(
         &store,
-        &[make_symbol(f, Language::Rust, SymbolKind::Function, "unique_func", "unique_func", 1)],
+        &[make_symbol(
+            f,
+            Language::Rust,
+            SymbolKind::Function,
+            "unique_func",
+            "unique_func",
+            1,
+        )],
     );
 
     let sel = SymbolSelector {
@@ -614,8 +793,22 @@ fn test_best_effort_single_low_confidence() {
     insert_symbols(
         &store,
         &[
-            make_symbol(f, Language::Rust, SymbolKind::Function, "foobar", "foobar", 12),
-            make_symbol(f, Language::Rust, SymbolKind::Method, "foobar", "foobar", 13),
+            make_symbol(
+                f,
+                Language::Rust,
+                SymbolKind::Function,
+                "foobar",
+                "foobar",
+                12,
+            ),
+            make_symbol(
+                f,
+                Language::Rust,
+                SymbolKind::Method,
+                "foobar",
+                "foobar",
+                13,
+            ),
         ],
     );
 
@@ -666,13 +859,27 @@ fn test_no_hex_id_in_candidate_output() {
     let f = register_file(&store, "src/main.ts", Language::TypeScript);
     insert_symbols(
         &store,
-        &[make_symbol(f, Language::TypeScript, SymbolKind::Function, "hex_test", "hex_test", 1)],
+        &[make_symbol(
+            f,
+            Language::TypeScript,
+            SymbolKind::Function,
+            "hex_test",
+            "hex_test",
+            1,
+        )],
     );
 
     let f2 = register_file(&store, "src/other.ts", Language::TypeScript);
     insert_symbols(
         &store,
-        &[make_symbol(f2, Language::TypeScript, SymbolKind::Method, "hex_test", "hex_test", 100)],
+        &[make_symbol(
+            f2,
+            Language::TypeScript,
+            SymbolKind::Method,
+            "hex_test",
+            "hex_test",
+            100,
+        )],
     );
 
     let input = SymbolInput::Name("hex_test".into());
@@ -680,8 +887,7 @@ fn test_no_hex_id_in_candidate_output() {
     let candidates = extract_candidates(&res);
 
     for candidate in candidates {
-        let json_str =
-            serde_json::to_string(candidate).expect("ScoredCandidate should serialize");
+        let json_str = serde_json::to_string(candidate).expect("ScoredCandidate should serialize");
         let json_val: serde_json::Value =
             serde_json::from_str(&json_str).expect("should be valid JSON");
         check_no_hex_id(&json_val, "ScoredCandidate");
@@ -740,7 +946,14 @@ fn test_hex_input_rejected_gracefully() {
     let f = register_file(&store, "src/test.ts", Language::TypeScript);
     insert_symbols(
         &store,
-        &[make_symbol(f, Language::TypeScript, SymbolKind::Function, "real", "real", 1)],
+        &[make_symbol(
+            f,
+            Language::TypeScript,
+            SymbolKind::Function,
+            "real",
+            "real",
+            1,
+        )],
     );
 
     let hex_name = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0";
@@ -762,8 +975,22 @@ fn scored_candidate_symbol_id_survives_resolution_roundtrip() {
     let store = test_store();
     let fid1 = register_file(&store, "src/a.rs", Language::Rust);
     let fid2 = register_file(&store, "src/b.rs", Language::Rust);
-    let sym1 = make_symbol(fid1, Language::Rust, SymbolKind::Function, "my_fn", "my_fn", 10);
-    let sym2 = make_symbol(fid2, Language::Rust, SymbolKind::Function, "my_fn", "my_fn", 20);
+    let sym1 = make_symbol(
+        fid1,
+        Language::Rust,
+        SymbolKind::Function,
+        "my_fn",
+        "my_fn",
+        10,
+    );
+    let sym2 = make_symbol(
+        fid2,
+        Language::Rust,
+        SymbolKind::Function,
+        "my_fn",
+        "my_fn",
+        20,
+    );
     insert_symbols(&store, &[sym1.clone(), sym2.clone()]);
 
     let sel = SymbolSelector {

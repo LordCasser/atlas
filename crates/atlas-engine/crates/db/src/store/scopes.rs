@@ -257,9 +257,7 @@ impl Store {
                             }
                         }
                         // If no extension match, try index variants
-                        for idx_ext in
-                            ["index.ts", "index.tsx", "index.js", "index.jsx"]
-                        {
+                        for idx_ext in ["index.ts", "index.tsx", "index.js", "index.jsx"] {
                             let with_index = resolved.join(idx_ext);
                             if with_index.to_string_lossy() == target_path {
                                 insert(importing_path.clone(), module.clone());
@@ -328,13 +326,7 @@ mod tests {
         is_relative: bool,
     ) -> ImportDef {
         ImportDef {
-            id: ImportId::generate(
-                file_id,
-                kind.as_str(),
-                module,
-                None,
-                0,
-            ),
+            id: ImportId::generate(file_id, kind.as_str(), module, None, 0),
             file_id: *file_id,
             kind,
             module: module.to_string(),
@@ -367,9 +359,7 @@ mod tests {
             ])
             .unwrap();
 
-        let deps = store
-            .find_dependents_by_file(&target_fid)
-            .unwrap();
+        let deps = store.find_dependents_by_file(&target_fid).unwrap();
 
         let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(deps.len(), 2);
@@ -395,9 +385,7 @@ mod tests {
             ])
             .unwrap();
 
-        let deps = store
-            .find_dependents_by_file(&target_fid)
-            .unwrap();
+        let deps = store.find_dependents_by_file(&target_fid).unwrap();
 
         let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(deps.len(), 2, "expected 2 dependents, got {deps:?}");
@@ -416,20 +404,12 @@ mod tests {
 
         // "helpers.ts" is matched by Path A (LIKE) AND Path B (bare basename).
         store
-            .insert_imports(&[
-                make_import(&a_fid, ImportKind::Import, "helpers.ts", true),
-            ])
+            .insert_imports(&[make_import(&a_fid, ImportKind::Import, "helpers.ts", true)])
             .unwrap();
 
-        let deps = store
-            .find_dependents_by_file(&target_fid)
-            .unwrap();
+        let deps = store.find_dependents_by_file(&target_fid).unwrap();
 
-        assert_eq!(
-            deps.len(),
-            1,
-            "duplicates detected: {deps:?}"
-        );
+        assert_eq!(deps.len(), 1, "duplicates detected: {deps:?}");
         assert_eq!(deps[0].0, "app.ts");
     }
 
@@ -451,9 +431,7 @@ mod tests {
             ])
             .unwrap();
 
-        let deps = store
-            .find_dependents_by_file(&target_fid)
-            .unwrap();
+        let deps = store.find_dependents_by_file(&target_fid).unwrap();
 
         let paths: Vec<&str> = deps.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(deps.len(), 2, "expected 2 dependents, got {deps:?}");

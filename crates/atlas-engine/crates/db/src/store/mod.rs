@@ -40,8 +40,6 @@ mod cfg;
 mod closure_coverage;
 mod closure_generations;
 mod dataflow;
-pub(crate) mod reference_resolutions;
-pub mod symbol_edge_candidates;
 pub(crate) mod domain_rules;
 mod edges;
 pub(crate) mod extraction_jobs;
@@ -50,8 +48,12 @@ pub mod file_inventory;
 mod files;
 mod fk_guards;
 mod lifecycle;
+pub(crate) mod reference_resolutions;
+pub mod symbol_edge_candidates;
 #[allow(unused_imports)]
-pub use lifecycle::{IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION};
+pub use lifecycle::{
+    IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+};
 mod scopes;
 mod stats;
 pub mod summary;
@@ -213,9 +215,7 @@ impl Store {
         let started = Instant::now();
         let mut stmt = conn.prepare("PRAGMA wal_checkpoint(PASSIVE);")?;
         let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
-            stmt.query_row([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         let elapsed = started.elapsed();
         Ok(WalCheckpointStats {
             busy,
@@ -232,9 +232,7 @@ impl Store {
         let started = Instant::now();
         let mut stmt = conn.prepare("PRAGMA wal_checkpoint(TRUNCATE);")?;
         let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
-            stmt.query_row([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
+            stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         let elapsed = started.elapsed();
         Ok(WalCheckpointStats {
             busy,
@@ -279,7 +277,10 @@ pub struct FullRebuildGuard {
 #[allow(dead_code)]
 impl FullRebuildGuard {
     pub fn new(store: &Arc<Store>) -> Self {
-        Self { store: Arc::clone(store), active: true }
+        Self {
+            store: Arc::clone(store),
+            active: true,
+        }
     }
 
     /// Commit the guard — schema is complete, don't repair on drop.
@@ -494,9 +495,8 @@ impl Store {
             expected.insert(idx.to_string());
         }
         // Query existing indexes
-        let mut stmt = conn.prepare(
-            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")?;
         let existing: std::collections::HashSet<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -1077,7 +1077,10 @@ impl CallGraphReader for Store {
     fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
         Store::find_callsites_by_file(self, file_id)
     }
-    fn find_resolved_callsites_by_callee(&self, callee: &SymbolId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+    fn find_resolved_callsites_by_callee(
+        &self,
+        callee: &SymbolId,
+    ) -> anyhow::Result<Vec<ResolvedCallsite>> {
         Store::find_resolved_callsites_by_callee(self, callee)
     }
     fn find_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<Callsite>> {
@@ -1089,7 +1092,10 @@ impl CallGraphReader for Store {
     ) -> anyhow::Result<Option<Callsite>> {
         Store::find_callsite_by_reference_id(self, reference_id)
     }
-    fn find_resolved_callsites_by_id(&self, id: &CallsiteId) -> anyhow::Result<Vec<ResolvedCallsite>> {
+    fn find_resolved_callsites_by_id(
+        &self,
+        id: &CallsiteId,
+    ) -> anyhow::Result<Vec<ResolvedCallsite>> {
         Store::find_resolved_callsites_by_id(self, id)
     }
     fn find_resolved_callsite_by_reference_id(
@@ -1144,9 +1150,9 @@ impl FileReader for Store {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod closure_generations_tests;
-#[cfg(test)]
 mod closure_coverage_tests;
+#[cfg(test)]
+mod closure_generations_tests;
 #[cfg(test)]
 mod reference_resolutions_tests;
 
@@ -1284,6 +1290,113 @@ mod tests {
         let unresolved = store.find_unresolved_references().unwrap();
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].id, ref_id);
+    }
+
+    #[test]
+    fn test_find_unresolved_call_references_by_source() {
+        let store = test_store();
+        let file = test_file();
+        store.upsert_file(&file).unwrap();
+
+        let src = test_symbol(file.file_id, "caller", SymbolKind::Function);
+        let other = test_symbol(file.file_id, "other", SymbolKind::Function);
+        store.insert_symbols(&[src.clone(), other.clone()]).unwrap();
+
+        let range = TextRange {
+            start_byte: 50,
+            end_byte: 64,
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 19,
+        };
+        let call_ref = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&src.id),
+                range.start_byte,
+                range.end_byte,
+                "copy_from_user",
+                ReferenceKind::Call,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(src.id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "copy_from_user".into(),
+            name: "copy_from_user".into(),
+            receiver: None,
+            arity: Some(3),
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+        let usage_ref = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&src.id),
+                70,
+                74,
+                "flag",
+                ReferenceKind::Usage,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(src.id),
+            scope_id: None,
+            kind: ReferenceKind::Usage,
+            text: "flag".into(),
+            name: "flag".into(),
+            receiver: None,
+            arity: None,
+            range: TextRange {
+                start_byte: 70,
+                end_byte: 74,
+                start_line: 4,
+                start_column: 1,
+                end_line: 4,
+                end_column: 5,
+            },
+            binding_id: None,
+            resolved: None,
+        };
+        let other_call = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&other.id),
+                80,
+                86,
+                "helper",
+                ReferenceKind::Call,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(other.id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "helper".into(),
+            name: "helper".into(),
+            receiver: None,
+            arity: None,
+            range: TextRange {
+                start_byte: 80,
+                end_byte: 86,
+                start_line: 5,
+                start_column: 1,
+                end_line: 5,
+                end_column: 7,
+            },
+            binding_id: None,
+            resolved: None,
+        };
+        store
+            .insert_references(&[call_ref.clone(), usage_ref, other_call])
+            .unwrap();
+
+        let unresolved_calls = store
+            .find_unresolved_call_references_by_source(&src.id)
+            .unwrap();
+        assert_eq!(unresolved_calls.len(), 1);
+        assert_eq!(unresolved_calls[0].id, call_ref.id);
+        assert_eq!(unresolved_calls[0].name, "copy_from_user");
     }
 
     #[test]
@@ -2552,7 +2665,8 @@ mod tests {
             // Drop one index to simulate partial schema
             {
                 let conn = store.lock();
-                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname").unwrap();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname")
+                    .unwrap();
             }
             assert!(
                 !index_exists(&store, "idx_symbols_qname"),
@@ -2578,7 +2692,8 @@ mod tests {
             // Drop one index
             {
                 let conn = store.lock();
-                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname").unwrap();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_qname")
+                    .unwrap();
             }
             assert!(!index_exists(&store, "idx_symbols_qname"));
 
@@ -2663,7 +2778,8 @@ mod tests {
             // Drop one index
             {
                 let conn = store.lock();
-                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_kind").unwrap();
+                conn.execute_batch("DROP INDEX IF EXISTS idx_symbols_kind")
+                    .unwrap();
             }
             assert!(
                 !index_exists(&store, "idx_symbols_kind"),
@@ -2700,10 +2816,7 @@ mod tests {
 
             // When everything is present, 0 objects are repaired.
             let repaired = store.ensure_required_schema_objects().unwrap();
-            assert_eq!(
-                repaired, 0,
-                "fresh schema should require no repair"
-            );
+            assert_eq!(repaired, 0, "fresh schema should require no repair");
 
             // Drop one index — now exactly 1 object is missing.
             {

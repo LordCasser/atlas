@@ -81,7 +81,7 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 - `CapabilityMask` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
 - Lazy MCP responses expose `analysis_contract` with safe conclusions, unsafe conclusions, capability summary, and refinement jobs.
-- MCP query snapshots support `resume_task(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
+- MCP query snapshots support `resume_query(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
 - Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
 - `tasks` exposes query-related lazy/background job state.
 
@@ -99,9 +99,9 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 - C/C++ ownership semantics live in `analysis::CppOwnershipRules`; the generic engine does not interpret ownership or lifecycle semantics.
 - Language extension guidance is documented in `docs/domain-rules-language-guide.md`.
 
-### 2.8 MCP tool consolidation (33 → 18) ✅
+### 2.8 MCP tool consolidation (open-first focus surface) ✅
 
-v1.3.1 完成 MCP 工具全面重构：33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留别名兼容。详见 `docs/architecture.md` §11.3。
+MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_status`、`wait_for_task`、`resume_task` 和后台 open/search 参数不再属于 MCP；显式全项目索引只保留 CLI `atlas index`。
 
 ## 3. Trace and language capability work
 
@@ -125,7 +125,7 @@ Continue expanding end-to-end smoke tests for all languages.
 
 - Keep all lazy-triggering MCP tools aligned on `analysis_contract`.
 - Ensure `safe_conclusions` and `unsafe_conclusions` map directly to `CapabilityMask`.
-- Keep `query_id`, `resume_task`, and `tasks` behavior documented and covered by tests.
+- Keep `query_id`, `resume_query`, and `tasks` behavior documented and covered by tests.
 - No MCP response may return a semantic/CFG result while its contract says that same capability is unavailable.
 - No lazy-triggered query may omit `lazy_diagnostics` solely because the final trace/search result is empty.
 

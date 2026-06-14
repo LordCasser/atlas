@@ -182,8 +182,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                                         if let Ok(inner_rcs) =
                                             store.find_resolved_callsites_by_id(&inner_csid)
                                         {
-                                            if let Some(inner_rc) = inner_rcs.first()
-                                            {
+                                            if let Some(inner_rc) = inner_rcs.first() {
                                                 let inner_callee = &inner_rc.callee;
                                                 if let Ok(inner_summary) =
                                                     crate::summary::SummaryBuilder::build(

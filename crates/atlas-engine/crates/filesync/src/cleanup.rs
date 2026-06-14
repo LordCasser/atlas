@@ -36,7 +36,9 @@ pub fn clean_stale_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result<(
     if file_ids.is_empty() {
         return Ok(());
     }
-    let _span = debug_span!(target: "atlas_sync", "sync.incremental.cleanup", dirty_count = file_ids.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_sync", "sync.incremental.cleanup", dirty_count = file_ids.len())
+            .entered();
     store.clean_stale_file_facts(file_ids)
 }
 

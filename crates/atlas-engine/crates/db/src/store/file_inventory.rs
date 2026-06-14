@@ -43,7 +43,10 @@ impl Store {
 
     /// Get files that need fingerprinting (no content_hash yet).
     /// Returns (file_id, path) pairs up to `limit`.
-    pub fn get_unfingerprinted_files(&self, limit: usize) -> anyhow::Result<Vec<(Vec<u8>, String)>> {
+    pub fn get_unfingerprinted_files(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(Vec<u8>, String)>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, path FROM file_inventory WHERE content_hash IS NULL LIMIT ?1",
@@ -81,8 +84,7 @@ impl Store {
     /// Get the file_inventory row count.
     pub fn file_inventory_count(&self) -> anyhow::Result<usize> {
         let conn = self.lock_read();
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM file_inventory", [], |r| r.get(0))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM file_inventory", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
@@ -113,6 +115,83 @@ impl Store {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Look up a file inventory row by FileId.
+    pub fn find_file_inventory_by_id(
+        &self,
+        file_id: &FileId,
+    ) -> anyhow::Result<Option<FileInventoryRow>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, mtime, size, inode, dev, content_hash
+             FROM file_inventory WHERE file_id = ?1",
+        )?;
+        let result = stmt.query_row(params![file_id], |row| {
+            Ok(FileInventoryRow {
+                file_id: row.get(0)?,
+                path: row.get(1)?,
+                language: row.get(2)?,
+                mtime: row.get(3)?,
+                size: row.get(4)?,
+                inode: row.get(5)?,
+                dev: row.get(6)?,
+                content_hash: row.get(7)?,
+            })
+        });
+        match result {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Count inventory files under a user-facing scope.
+    pub fn count_file_inventory_in_scope(&self, scope: &str) -> anyhow::Result<usize> {
+        let normalized = normalize_inventory_scope(scope);
+        let conn = self.lock_read();
+        if normalized.is_empty() {
+            let count: i64 =
+                conn.query_row("SELECT COUNT(*) FROM file_inventory", [], |r| r.get(0))?;
+            return Ok(count as usize);
+        }
+        let (lower, upper) = inventory_scope_child_bounds(&normalized);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM file_inventory
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
+            params![normalized, lower, upper],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Return inventory file IDs under a scope, ordered by path and capped by `limit`.
+    pub fn list_file_inventory_ids_in_scope(
+        &self,
+        scope: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<FileId>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let normalized = normalize_inventory_scope(scope);
+        let conn = self.lock_read();
+        if normalized.is_empty() {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT file_id FROM file_inventory ORDER BY path LIMIT {limit}"
+            ))?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
+        }
+        let (lower, upper) = inventory_scope_child_bounds(&normalized);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT file_id FROM file_inventory
+             WHERE path = ?1 OR (path >= ?2 AND path < ?3)
+             ORDER BY path
+             LIMIT {limit}"
+        ))?;
+        let rows = stmt.query_map(params![normalized, lower, upper], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Get fingerprinted files that lack manifest extraction state.
@@ -158,6 +237,24 @@ impl Store {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+fn normalize_inventory_scope(scope: &str) -> String {
+    let trimmed = scope
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/');
+    if trimmed == "." {
+        String::new()
+    } else {
+        trimmed.trim_end_matches('/').to_string()
+    }
+}
+
+fn inventory_scope_child_bounds(scope: &str) -> (String, String) {
+    let lower = format!("{scope}/");
+    let upper = format!("{scope}0");
+    (lower, upper)
 }
 
 /// A row from the file_inventory table.

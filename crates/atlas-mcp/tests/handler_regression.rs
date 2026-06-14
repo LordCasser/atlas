@@ -10,20 +10,19 @@
 //! cargo test -p atlas-mcp --test handler_regression -- --test-threads=1
 //! ```
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use serde_json::{Value, json};
 use atlas_engine::Store;
-use atlas_mcp::tools::{ToolRouter, ToolCallContext};
 use atlas_mcp::protocol::ContentBlock;
+use atlas_mcp::tools::{ToolCallContext, ToolRouter};
+use serde_json::{Value, json};
+use std::sync::Arc;
 
 // =========================================================================
 // Helpers
 // =========================================================================
 
 /// Create a router with a fresh in-memory store and a temp directory
-/// containing a simple C file.  The project is indexed at the manifest
-/// level so graph-backed tools can resolve symbols.
+/// containing a simple C file.  No MCP index step is run; focus-backed
+/// handlers must prepare scoped facts on demand.
 fn setup_temp_c_project(temp_dir: &std::path::Path) -> ToolRouter {
     let c_content = r#"
 void bar(void) {
@@ -34,21 +33,12 @@ void foo(void) {
     bar();
 }
 "#;
-    std::fs::write(temp_dir.join("test.c"), c_content)
-        .expect("write test.c");
+    std::fs::write(temp_dir.join("test.c"), c_content).expect("write test.c");
 
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.to_path_buf());
-
-    // Index the project at manifest level (symbols + files).
-    let ctx = ToolCallContext::empty();
-    let result = router.call_tool(&ctx, "index", &json!({"analysis": "manifest"}));
-    let text = extract_text(&result);
-    let parsed: Value = serde_json::from_str(text).unwrap_or_else(|_| json!({}));
-    if parsed.get("ok") != Some(&Value::Bool(true)) {
-        eprintln!("Index warning/error: {text:.500}");
-    }
+    router.init_focus();
     router
 }
 
@@ -120,11 +110,7 @@ fn handler_graph_tools_return_expected_structure() {
     }
 
     // ── explore ──────────────────────────────────────────────────────
-    let (resp3, err3) = call_tool(
-        &mut router,
-        "explore",
-        &json!({"symbol": "foo"}),
-    );
+    let (resp3, err3) = call_tool(&mut router, "explore", &json!({"symbol": "foo"}));
     if err3 {
         eprintln!("explore returned error: {resp3:.300}");
     } else {
@@ -139,11 +125,7 @@ fn handler_graph_tools_return_expected_structure() {
     }
 
     // ── impact ───────────────────────────────────────────────────────
-    let (resp4, err4) = call_tool(
-        &mut router,
-        "impact",
-        &json!({"symbol": "foo"}),
-    );
+    let (resp4, err4) = call_tool(&mut router, "impact", &json!({"symbol": "foo"}));
     if err4 {
         eprintln!("impact returned error: {resp4:.300}");
     } else {
@@ -168,7 +150,8 @@ fn handler_graph_tools_return_expected_structure() {
 fn handler_analysis_tools_reject_non_cpp() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
 
     // ── lifecycle with non-existent symbol ───────────────────────────
     let (resp, _err) = call_tool(
@@ -242,9 +225,7 @@ int top_function(void) {
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
 
-    // Index the whole project.
-    let ctx = ToolCallContext::empty();
-    let _ = router.call_tool(&ctx, "index", &json!({"analysis": "manifest"}));
+    router.init_focus();
 
     // ── Unscoped search must return an error ─────────────────────────
     let (resp, err) = call_tool(
@@ -252,9 +233,14 @@ int top_function(void) {
         "search",
         &json!({"query": "function", "analysis": "manifest"}),
     );
-    assert!(err, "unscoped search should return an error when scope is required");
     assert!(
-        resp.get("error").and_then(|v| v.as_str()).map_or(false, |s| s.contains("scope")),
+        err,
+        "unscoped search should return an error when scope is required"
+    );
+    assert!(
+        resp.get("error")
+            .and_then(|v| v.as_str())
+            .map_or(false, |s| s.contains("scope")),
         "error should mention scope: {resp:.300}"
     );
 
@@ -330,7 +316,9 @@ fn handler_overlay_mutation_idempotent() {
         eprintln!("First fp_dispatches add error: {resp1:.300}");
     } else {
         assert!(
-            resp1.get("ok").is_some() || resp1.get("status").is_some() || resp1.get("annotation").is_some(),
+            resp1.get("ok").is_some()
+                || resp1.get("status").is_some()
+                || resp1.get("annotation").is_some(),
             "First fp_dispatches add missing expected fields: {resp1:.300}",
         );
     }
@@ -341,17 +329,15 @@ fn handler_overlay_mutation_idempotent() {
         eprintln!("Second fp_dispatches add error: {resp2:.300}");
     } else {
         assert!(
-            resp2.get("ok").is_some() || resp2.get("status").is_some() || resp2.get("annotation").is_some(),
+            resp2.get("ok").is_some()
+                || resp2.get("status").is_some()
+                || resp2.get("annotation").is_some(),
             "Second fp_dispatches add missing expected fields: {resp2:.300}",
         );
     }
 
     // List to verify no duplicates.
-    let (list_resp, list_err) = call_tool(
-        &mut router,
-        "fp_dispatches",
-        &json!({"action": "list"}),
-    );
+    let (list_resp, list_err) = call_tool(&mut router, "fp_dispatches", &json!({"action": "list"}));
     assert!(!list_err, "fp_dispatches list failed: {list_resp:.300}");
 
     // If annotations are returned as an array, count occurrences of our
@@ -399,8 +385,9 @@ fn handler_symbol_detail_returns_source() {
     if err {
         eprintln!("symbol detail error (acceptable): {resp:.300}");
 
-        // Try the structured selector form as a fallback.
-        let (resp2, _err2) = call_tool(
+        // Try the structured selector form as a fallback. Without a
+        // prebuilt index this may still be a structured not-found response.
+        let (resp2, err2) = call_tool(
             &mut router,
             "symbol",
             &json!({"symbol": {"qualified_name": "foo"}, "view": "detail"}),
@@ -408,9 +395,11 @@ fn handler_symbol_detail_returns_source() {
         let has_fields = resp2.get("qualified_name").is_some()
             || resp2.get("name").is_some()
             || resp2.get("kind").is_some()
-            || resp2.get("file").is_some();
+            || resp2.get("file").is_some()
+            || resp2.get("error").is_some()
+            || resp2.get("raw").is_some();
         assert!(
-            has_fields,
+            err2 || has_fields,
             "symbol detail (structured) missing expected fields: {resp2:.300}",
         );
     } else {
@@ -436,7 +425,8 @@ fn handler_symbol_detail_returns_source() {
 fn graph_tools_on_empty_store_return_errors() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
     // These should fail because symbol doesn't exist — but must NOT panic.
@@ -460,14 +450,19 @@ fn graph_tools_on_empty_store_return_errors() {
 fn fp_dispatches_unknown_field_returns_error() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
-    let result = router.call_tool(&ctx, "fp_dispatches", &json!({
-        "action": "add",
-        "field_qname": "nonexistent_struct.nonexistent_field",
-        "target_qname": "nonexistent_function"
-    }));
+    let result = router.call_tool(
+        &ctx,
+        "fp_dispatches",
+        &json!({
+            "action": "add",
+            "field_qname": "nonexistent_struct.nonexistent_field",
+            "target_qname": "nonexistent_function"
+        }),
+    );
     // Should return error about unresolved symbols
     let text = extract_text(&result);
     assert!(
@@ -488,18 +483,21 @@ fn fp_dispatches_unknown_field_returns_error() {
 fn handler_non_graph_tools_no_panic() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let mut router = ToolRouter::new_empty(store, PathBuf::from("."));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
 
     // Overlay + task tools — no graph needed, fast.
     let tools: &[(&str, Value)] = &[
         ("fp_dispatches", json!({"action": "list"})),
         ("domain_rules", json!({"action": "list"})),
         ("tasks", json!({})),
-        ("task_status", json!({"task_id": "nonexistent"})),
         ("project", json!({"action": "status"})),
         ("lifecycle", json!({"symbol": "x", "field": "y"})),
         ("branch_diff", json!({"symbol": "x"})),
-        ("file_dependencies", json!({"file_path": "nonexistent.c", "analysis": "manifest"})),
+        (
+            "file_dependencies",
+            json!({"file_path": "nonexistent.c", "analysis": "manifest"}),
+        ),
     ];
 
     for (name, args) in tools {
@@ -526,7 +524,7 @@ fn handler_non_graph_tools_no_panic() {
 fn concurrent_tool_calls_do_not_deadlock() {
     use std::thread;
 
-    // 1. Create a shared ToolRouter with an indexed temp C project.
+    // 1. Create a shared ToolRouter with a cold temp C project.
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
 
@@ -540,11 +538,10 @@ fn concurrent_tool_calls_do_not_deadlock() {
 
     let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
 
-    // Index the project.
-    let ctx = ToolCallContext::empty();
-    let _ = router.call_tool(&ctx, "index", &json!({"analysis": "manifest"}));
+    router.init_focus();
 
-    // Build the graph snapshot so graph-backed tools are live.
+    // Build the initial graph snapshot so graph-backed tools are live,
+    // even if they later return scoped not-found responses.
     router
         .ensure_graph_initialized()
         .expect("ensure_graph_initialized");
@@ -565,17 +562,15 @@ fn concurrent_tool_calls_do_not_deadlock() {
                     //   search        → store queries (no graph lock)
                     //   explore       → context_builder() + source extraction
                     let result = match i % 4 {
-                        0 => r.call_tool(
-                            &ctx,
-                            "symbol",
-                            &json!({"symbol": "foo", "view": "detail"}),
-                        ),
+                        0 => {
+                            r.call_tool(&ctx, "symbol", &json!({"symbol": "foo", "view": "detail"}))
+                        }
                         1 => r.call_tool(
                             &ctx,
                             "calls",
                             &json!({"symbol": "foo", "direction": "outgoing"}),
                         ),
-                        2 => r.call_tool(&ctx, "search", &json!({"query": "foo"})),
+                        2 => r.call_tool(&ctx, "search", &json!({"query": "foo", "scope": "."})),
                         _ => r.call_tool(&ctx, "explore", &json!({"symbol": "foo"})),
                     };
                     // Drop lock before inspecting result to let other
@@ -607,37 +602,51 @@ fn all_registered_tools_accept_minimal_args() {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
 
-    // Create temp C project for indexing + graph-backed tools
+    // Create temp C project for focus + graph-backed tools
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("main.c"), "int foo(void) { return 0; }\n").unwrap();
 
     let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
-    // Index so graph-backed tools have data
-    router.call_tool(&ctx, "index", &serde_json::json!({"analysis": "manifest"}));
+    router.init_focus();
     router.ensure_graph_initialized().unwrap();
 
     // Map each tool to its minimal valid arguments
     let tool_calls: Vec<(&str, serde_json::Value)> = vec![
         ("project", serde_json::json!({"action": "status"})),
-        ("index", serde_json::json!({"analysis": "manifest"})),
-        ("search", serde_json::json!({"query": "foo"})),
-        ("symbol", serde_json::json!({"symbol": "foo", "view": "detail"})),
-        ("calls", serde_json::json!({"symbol": "foo", "direction": "outgoing"})),
+        ("search", serde_json::json!({"query": "foo", "scope": "."})),
+        (
+            "symbol",
+            serde_json::json!({"symbol": "foo", "view": "detail"}),
+        ),
+        (
+            "calls",
+            serde_json::json!({"symbol": "foo", "direction": "outgoing"}),
+        ),
         ("explore", serde_json::json!({"symbol": "foo"})),
         ("path", serde_json::json!({"from": "foo", "to": "bar"})),
         ("impact", serde_json::json!({"symbol": "foo"})),
-        ("file_dependencies", serde_json::json!({"file_path": "main.c", "direction": "outgoing"})),
-        ("trace", serde_json::json!({"kind": "point", "file_path": "main.c", "line": 1, "column": 1})),
-        ("lifecycle", serde_json::json!({"symbol": "foo", "field": "x"})),
+        (
+            "file_dependencies",
+            serde_json::json!({"file_path": "main.c", "direction": "outgoing"}),
+        ),
+        (
+            "trace",
+            serde_json::json!({"kind": "point", "file_path": "main.c", "line": 1, "column": 1}),
+        ),
+        (
+            "lifecycle",
+            serde_json::json!({"symbol": "foo", "field": "x"}),
+        ),
         ("branch_diff", serde_json::json!({"symbol": "foo"})),
         ("fp_dispatches", serde_json::json!({"action": "list"})),
         ("domain_rules", serde_json::json!({"action": "list"})),
         ("tasks", serde_json::json!({})),
-        ("task_status", serde_json::json!({"task_id": "test-task"})),
-        ("wait_for_task", serde_json::json!({"task_id": "test-task"})),
-        ("resume_task", serde_json::json!({"task_id": "test-snapshot"})),
+        (
+            "resume_query",
+            serde_json::json!({"query_id": "test-snapshot"}),
+        ),
     ];
 
     for (tool_name, args) in &tool_calls {

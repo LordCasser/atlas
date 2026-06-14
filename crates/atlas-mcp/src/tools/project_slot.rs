@@ -27,4 +27,8 @@ impl ProjectSlot {
     pub(crate) fn replace(&mut self, project: ActiveProject) {
         self.active = Some(project);
     }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.is_some()
+    }
 }

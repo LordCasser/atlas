@@ -35,7 +35,7 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 
 强制回归场景：
-- `run_index_pipeline(Manifest)` 和 MCP `index` 必须覆盖“文件已删除后再次索引”的场景，断言 stale file、symbol、reference、edge 和 extraction_state 均被清理。
+- `run_index_pipeline(Manifest)`、CLI `atlas index --analysis manifest` 和 `atlas sync --analysis manifest` 必须覆盖“文件已删除后再次索引”的场景，断言 stale file、symbol、reference、edge 和 extraction_state 均被清理。
 - `run_index_pipeline(Full)`、`atlas index --analysis full`、`atlas sync --analysis full` 必须分别断言 summary tables 已构建，并且 `summaries` capability 只在 summary build 成功后出现。
 - 每种语言的 Manifest 测试必须断言只产生顶层符号。不得仅测试 query parse 成功；fixture 必须包含函数/方法内部局部定义以证明不会过度索引。
 - `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
@@ -153,7 +153,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 最低要求：
 - 删除代码前必须确认零生产调用点、零测试支撑用途，或明确替代路径；测试 helper 不得按死代码处理。
 - 抽取 helper 或 builder 时，必须至少覆盖一个最简单调用点和一个有分支/merge 的调用点，防止共享抽象只适用于 happy path。
-- MCP lazy response 迁移必须断言 `precision_tier`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `resume_task` snapshot 语义没有丢失；`ok=false` 路径也不能丢 lazy diagnostics。
+- MCP lazy response 迁移必须断言 `precision_tier`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `resume_query` snapshot 语义没有丢失；`ok=false` 路径也不能丢 lazy diagnostics。
 - stable facade API 重构必须有编译级兼容验证。若旧 API 接受闭包、函数指针或常见 wrapper，新 trait/API 必须保留等价调用方式，或在文档中声明 breaking change。
 - 每个清理批次至少运行 `cargo fmt --check`、`cargo check` 和受影响 crate 的测试；如果全量 `cargo test` 存在已知失败，PR/review 必须列出具体失败测试、原因和是否与本次变更相关。
 
@@ -184,7 +184,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 要求：
 - 触发 lazy extraction 的 MCP 工具必须断言 `analysis_contract` 存在。
 - `safe_conclusions` 和 `unsafe_conclusions` 不能是泛泛提示，必须能对应到具体缺失或存在的 `CapabilityMask` bit。
-- `resume_task(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
+- `resume_query(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
 - `tasks(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
 - Investigation state 必须测试 symbol、position、field focus 对 related files/symbols 和 desired capabilities 的更新。
 

@@ -105,9 +105,8 @@ impl Store {
     /// Returns a map of state → count (e.g. `{"building": 3, "committed": 12, "stale": 0}`).
     pub fn get_closure_counts(&self) -> anyhow::Result<HashMap<String, usize>> {
         let conn = self.lock_read();
-        let mut stmt = conn.prepare(
-            "SELECT state, COUNT(*) FROM closure_generations GROUP BY state",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT state, COUNT(*) FROM closure_generations GROUP BY state")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;

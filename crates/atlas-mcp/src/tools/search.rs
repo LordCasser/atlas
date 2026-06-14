@@ -11,12 +11,18 @@ use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
 use atlas_engine::ScopedSearchService;
 use atlas_engine::SearchAnalysis;
+use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::analysis_envelope::{AnalysisEnvelope, CapabilityStats};
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate, parse_symbol_input};
-use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
+use super::analysis_envelope::AnalysisEnvelope;
+use super::{
+    MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
+    get_u64,
+};
+use crate::tools::symbol_selector::{
+    ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
+};
 
 use serde_json::json;
 use std::sync::Arc;
@@ -62,17 +68,16 @@ impl ToolRouter {
         let scope = get_str_opt(args, "scope")
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let background = args
-            .get("background")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // When a manual full structural index exists (built via CLI `atlas index`),
         // the search analysis mode is set to Manifest (structural facts are already
         // in the store) instead of Auto (lazy triggering).  Scope is still required
         // — it defines the search boundary.
-        let is_manual_full = self.active().query_runtime.has_full_index(&self.active().store);
+        let is_manual_full = self
+            .active()
+            .query_runtime
+            .has_full_index(&self.active().store);
 
         let scope = match scope {
             Some(s) => s.to_string(),
@@ -90,17 +95,6 @@ impl ToolRouter {
             }
         };
 
-        if background {
-            return self.handle_search_background(
-                query,
-                limit,
-                kind,
-                &scope,
-                is_manual_full,
-                include_roots,
-                root_warnings,
-            );
-        }
         let (result_str, is_err) = self.handle_search_sync(
             ctx,
             args,
@@ -133,31 +127,17 @@ impl ToolRouter {
         scope: &str,
         is_manual_full: bool,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-        root_warnings: Vec<String>,
+        mut root_warnings: Vec<String>,
     ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
 
-        if self.active().store.count_files().unwrap_or(0) == 0 {
-            return (
-                serde_json::to_string_pretty(&json!({
-                    "ok": false,
-                    "error": "No indexed files found.",
-                    "query": query,
-                    "scope": scope,
-                    "next_action": {
-                        "tool": "index",
-                        "args": { "background": true },
-                        "reason": "Build the fast manifest layer first. Atlas MCP stays in lazy mode; scoped search/context/trace will do deeper parsing on demand."
-                    },
-                    "ux": {
-                        "mode": "lazy",
-                        "startup_policy": "do_not_full_index_on_connect",
-                        "after_index": "retry search with a project-relative scope such as drivers/net, kernel/sched, include/linux, or a specific file"
-                    }
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        if !is_manual_full {
+            let (_focus_result, focus_warnings) =
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Search {
+                    query: query.to_string(),
+                    scope: Some(scope.to_string()),
+                }));
+            root_warnings.extend(focus_warnings);
         }
 
         // Build the search request → delegate to ScopedSearchService.
@@ -214,33 +194,14 @@ impl ToolRouter {
             "scope_file_count": engine_resp.scope_file_count,
         });
 
-        // Inject coverage signals: tell the client whether results are
-        // complete, partial, or manifest-only.
-        if let Ok((df, st, mn, cfg)) = self.active().store.get_capability_counts() {
-            let best = if df > 0 {
-                "dataflow"
-            } else if st > 0 {
-                "structural"
-            } else if mn > 0 {
-                "manifest"
-            } else {
-                "none"
-            };
-            response["coverage"] = json!(best);
-
-            let caps = CapabilityStats {
-                files_with_dataflow: df,
-                files_structural_only: st,
-                files_manifest_only: mn,
-                files_with_cfg: cfg,
-            };
-            response["capability_mask"] = json!(format!("{:?}", caps));
-        }
-
-        if engine_resp.triggered_lazy {
-            response["triggered_lazy"] = json!(true);
-        }
-
+        response["coverage"] = match &engine_resp.coverage {
+            SearchCoverage::Full => json!({"state": "complete"}),
+            SearchCoverage::Partial { reason } => {
+                json!({"state": "partial", "reason": reason})
+            }
+        };
+        response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
+        response["capability_mask"] = json!(engine_resp.capability_mask.bits());
         response["precision_tier"] = json!(engine_resp.precision_tier);
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
@@ -252,101 +213,6 @@ impl ToolRouter {
             .build(response, self)
     }
 
-    // ── handle_search_background ──────────────────────────────────────────
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_search_background(
-        &self,
-        query: &str,
-        limit: usize,
-        kind: Option<&str>,
-        scope: &str,
-        is_manual_full: bool,
-        include_roots: Vec<atlas_engine::IncludeRoot>,
-        root_warnings: Vec<String>,
-    ) -> (String, bool) {
-        let task_id = self.session_job.task_manager.create_task("search", "search");
-        let tid = task_id.clone();
-        let store = self.active().store.clone();
-        let project_root = self.active().root.clone();
-        let task_manager = self.session_job.task_manager.clone();
-        let q = query.to_string();
-        let k = kind.map(|s| s.to_string());
-        let sc = scope.to_string();
-        let include_roots_strs: Vec<String> =
-            include_roots.iter().map(|r| r.path.clone()).collect();
-        let root_warnings_for_thread = root_warnings.clone();
-
-        std::thread::spawn(move || {
-            task_manager.update_progress(&tid, 5.0, "Starting scoped search...");
-
-            let kind_filter = k.as_deref().and_then(SymbolKind::from_str);
-            let analysis = if is_manual_full {
-                SearchAnalysis::Manifest
-            } else {
-                SearchAnalysis::Auto
-            };
-
-            let req = ScopedSearchRequest {
-                query: q.clone(),
-                scope: Some(sc.clone()),
-                kind: kind_filter,
-                analysis,
-                limit,
-                include_roots: include_roots_strs,
-                ..Default::default()
-            };
-
-            let engine: Arc<Engine> =
-                Arc::new(Engine::from_store(store.clone(), Some(&project_root)));
-            let svc = ScopedSearchService::new(store.clone(), engine.clone());
-
-            let engine_resp = match svc.execute(req) {
-                Ok(r) => r,
-                Err(err) => {
-                    task_manager.fail_task(&tid, &format!("Search error: {err}"));
-                    return;
-                }
-            };
-
-            let mut all_warnings = root_warnings_for_thread;
-            all_warnings.extend(engine_resp.warnings.iter().cloned());
-
-            let hits: Vec<SearchHit> = engine_resp
-                .results
-                .iter()
-                .map(ToolRouter::search_result_to_hit)
-                .collect();
-
-        let mut response = json!({
-                "query": q,
-                "scope": sc,
-                "results": hits,
-                "total": engine_resp.total,
-                "warnings": all_warnings,
-            });
-
-            response["scope_file_count"] = json!(engine_resp.scope_file_count);
-
-            task_manager.complete_task(&tid, response);
-        });
-
-        (
-            serde_json::to_string_pretty(&json!({
-                "background": true,
-                "task_id": task_id,
-                "tool_name": "search",
-                "method": "search",
-                "status": "running",
-                "progress": 0.0,
-                "progress_message": "queued",
-                "note": "Search is running in background. Poll task_status for progress percentages and completion."
-            }))
-            .unwrap_or_else(|e| e.to_string()),
-            false,
-        )
-    }
-
     // ── symbol detail ─────────────────────────────────────────────────────
 
     /// Check if the selector's file_path matches any file in the store.
@@ -355,15 +221,20 @@ impl ToolRouter {
         match input {
             SymbolInput::Selector(sel) => {
                 if let Some(ref fp) = sel.file_path {
-                    let replaced = fp
-                        .trim_start_matches("./")
-                        .replace('\\', "/");
+                    let replaced = fp.trim_start_matches("./").replace('\\', "/");
                     let normalized = replaced.trim_end_matches('/');
                     if normalized.is_empty() {
                         return None;
                     }
                     let file_id = FileId::generate(normalized);
-                    if self.active().store.get_file(&file_id).ok().flatten().is_none() {
+                    if self
+                        .active()
+                        .store
+                        .get_file(&file_id)
+                        .ok()
+                        .flatten()
+                        .is_none()
+                    {
                         return Some(format!(
                             "file_path '{fp}' does not match any file in the project"
                         ));
@@ -377,10 +248,8 @@ impl ToolRouter {
 
     pub(crate) fn handle_symbol_detail(&mut self, args: &serde_json::Value) -> (String, bool) {
         // Accept both "symbol" (structured selector from handle_symbol)
-        // and "qualified_name" (legacy from handle_symbol_by_position / resume_task).
-        let (qname, symbol_input) = if let Ok(input) =
-            parse_symbol_input(args, "symbol")
-        {
+        // and "qualified_name" (legacy from handle_symbol_by_position / resume_query).
+        let (qname, symbol_input) = if let Ok(input) = parse_symbol_input(args, "symbol") {
             let name = match &input {
                 SymbolInput::Name(s) => s.clone(),
                 SymbolInput::Selector(sel) => sel.qualified_name.clone(),
@@ -413,10 +282,8 @@ impl ToolRouter {
         }
 
         let mut lr = AnalysisEnvelope::new("symbol", args);
-        let resolution = self.resolve_symbol_input(
-            &symbol_input,
-            SymbolResolutionPolicy::UniqueOrCandidates,
-        );
+        let resolution =
+            self.resolve_symbol_input(&symbol_input, SymbolResolutionPolicy::UniqueOrCandidates);
         let sym;
         let lazy_warnings;
         match resolution {
@@ -426,13 +293,12 @@ impl ToolRouter {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
                     // Ensure structural data so caller/callee results
                     // include fresh edges from lazy extraction.
-                    let (focus_result, focus_warnings) = self.prepare_focus_query(
-                        Some(atlas_engine::QueryIntent::Context {
+                    let (focus_result, focus_warnings) =
+                        self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
                             file_id: Some(s.file_id),
                             symbol_id: None,
-                        }),
-                    );
+                        }));
                     if let Some(ref result) = focus_result {
                         lr = crate::tools::apply_focus_result_to_lr(lr, result);
                     }
@@ -443,17 +309,25 @@ impl ToolRouter {
                         &symbol_input,
                         SymbolResolutionPolicy::UniqueOrCandidates,
                     ) {
-                        Ok(SymbolResolution::Single { symbol_id: new_id, .. }) => self
-                            .active().store
+                        Ok(SymbolResolution::Single {
+                            symbol_id: new_id, ..
+                        }) => self
+                            .active()
+                            .store
                             .find_symbol_by_id(&new_id)
                             .unwrap_or_default()
                             .unwrap_or(s),
                         Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                             let diag = self.file_path_diagnostic(&symbol_input);
-                            let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
-                            return lr.with_is_error(true)
-                                     .with_lazy_warnings(lazy_warnings)
-                                     .build_with_args(amb_resp, args, self);
+                            let amb_resp = Self::build_ambiguous_symbol_body(
+                                &qname,
+                                &candidates,
+                                diag.as_deref(),
+                            );
+                            return lr
+                                .with_is_error(true)
+                                .with_lazy_warnings(lazy_warnings)
+                                .build_with_args(amb_resp, args, self);
                         }
                         _ => s,
                     };
@@ -465,27 +339,39 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 let diag = self.file_path_diagnostic(&symbol_input);
-                let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
-                return lr.with_is_error(true)
-                         .build_with_args(amb_resp, args, self);
+                let amb_resp =
+                    Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
+                return lr.with_is_error(true).build_with_args(amb_resp, args, self);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 // Not found in manifest — trigger lazy structural extraction
-                let (focus_result, focus_warnings) = self.prepare_focus_query(
-                    Some(atlas_engine::QueryIntent::Context {
+                let has_file_hint = matches!(
+                    &symbol_input,
+                    SymbolInput::Selector(sel)
+                        if sel.file_path.as_deref().is_some_and(|p| !p.trim().is_empty())
+                );
+                let mut selector_file_id = self.resolve_selector_file_id(&symbol_input);
+                if selector_file_id.is_none() && has_file_hint {
+                    let _ = self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                         symbol_name: qname.to_string(),
                         file_id: None,
                         symbol_id: None,
-                    }),
-                );
+                    }));
+                    selector_file_id = self.resolve_selector_file_id(&symbol_input);
+                }
+                let (focus_result, focus_warnings) =
+                    self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
+                        symbol_name: qname.to_string(),
+                        file_id: selector_file_id,
+                        symbol_id: None,
+                    }));
                 if let Some(ref result) = focus_result {
                     lr = crate::tools::apply_focus_result_to_lr(lr, result);
                 }
                 lazy_warnings = focus_warnings;
-                match self.resolve_symbol_input(
-                    &symbol_input,
-                    SymbolResolutionPolicy::UniqueOrCandidates,
-                ) {
+                match self
+                    .resolve_symbol_input(&symbol_input, SymbolResolutionPolicy::UniqueOrCandidates)
+                {
                     Ok(SymbolResolution::Single { symbol_id, .. }) => {
                         if let Ok(Some(s)) = self.active().store.find_symbol_by_id(&symbol_id) {
                             self.update_investigation(InvestigationFocus::Symbol(s.id));
@@ -498,10 +384,12 @@ impl ToolRouter {
                     }
                     Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                         let diag = self.file_path_diagnostic(&symbol_input);
-                        let amb_resp = Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
-                        return lr.with_is_error(true)
-                                 .with_lazy_warnings(lazy_warnings)
-                                 .build_with_args(amb_resp, args, self);
+                        let amb_resp =
+                            Self::build_ambiguous_symbol_body(&qname, &candidates, diag.as_deref());
+                        return lr
+                            .with_is_error(true)
+                            .with_lazy_warnings(lazy_warnings)
+                            .build_with_args(amb_resp, args, self);
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
                         let mut err = format!("Symbol not found: {qname}");
@@ -515,6 +403,13 @@ impl ToolRouter {
             }
             Err(e) => return (e, true),
         };
+        if let Err(e) = self.ensure_graph_initialized() {
+            return (format!("Graph initialization error: {e:#}"), true);
+        }
+        if let Err(e) = self.force_refresh_graph() {
+            return (format!("Graph refresh error: {e:#}"), true);
+        }
+
         // Re-acquire graph after lazy structural may have refreshed it
         let se = match self.active_mut().graph_runtime.provider().search_engine() {
             Some(se) => se,
@@ -546,7 +441,11 @@ impl ToolRouter {
             "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
-            if let Some(src) = self.active().store_query_runtime.read_symbol_source(&sym.id) {
+            if let Some(src) = self
+                .active()
+                .store_query_runtime
+                .read_symbol_source(&sym.id)
+            {
                 result["source"] = json!(src);
             }
         }

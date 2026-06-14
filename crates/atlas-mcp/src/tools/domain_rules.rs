@@ -65,7 +65,11 @@ impl ToolRouter {
                 if rule_id.is_empty() {
                     return ("Missing rule_id for delete action".to_string(), true);
                 }
-                match self.active_mut().overlay_runtime.delete_domain_rule(rule_id) {
+                match self
+                    .active_mut()
+                    .overlay_runtime
+                    .delete_domain_rule(rule_id)
+                {
                     Ok(true) => {
                         let resp = json!({"ok": true, "deleted": rule_id});
                         (
@@ -89,7 +93,11 @@ impl ToolRouter {
                 } else {
                     Some(status)
                 };
-                match self.active_mut().store.list_domain_rules(lang_filter, status_filter) {
+                match self
+                    .active_mut()
+                    .store
+                    .list_domain_rules(lang_filter, status_filter)
+                {
                     Ok(rules) => {
                         let items: Vec<_> = rules
                             .iter()

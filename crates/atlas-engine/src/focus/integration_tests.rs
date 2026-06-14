@@ -113,9 +113,7 @@ mod tests {
                 assert_eq!(gaps.len(), 1);
                 match &gaps[0] {
                     KnownGap::HighFanoutName {
-                        name,
-                        candidates,
-                        ..
+                        name, candidates, ..
                     } => {
                         assert_eq!(name, "printk");
                         assert_eq!(*candidates, 1420);

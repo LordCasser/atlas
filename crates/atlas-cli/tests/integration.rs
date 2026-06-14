@@ -784,12 +784,13 @@ function main() {
     let main_callsites = store.find_callsites_by_file(&main_id).unwrap();
     // Find the callsite that has a callee symbol named "helper"
     let call_cs = main_callsites.iter().find(|cs| {
-        store.find_resolved_callsites_by_id(&cs.id)
+        store
+            .find_resolved_callsites_by_id(&cs.id)
             .ok()
             .and_then(|resolved| {
-                resolved.first().and_then(|r| {
-                    store.find_symbol_by_id(&r.callee).ok().flatten()
-                })
+                resolved
+                    .first()
+                    .and_then(|r| store.find_symbol_by_id(&r.callee).ok().flatten())
             })
             .map(|sym| sym.name == "helper")
             .unwrap_or(false)

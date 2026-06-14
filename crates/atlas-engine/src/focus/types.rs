@@ -16,8 +16,8 @@ use std::collections::HashSet;
 
 use types::enums::{Language, SymbolKind};
 use types::ids::{FileId, SymbolId};
-use types::structs::precision::PrecisionTier;
 use types::structs::KnownGap;
+use types::structs::precision::PrecisionTier;
 
 // ---------------------------------------------------------------------------
 // Direction — expansion direction for graph-based strategies
@@ -59,10 +59,7 @@ pub enum FocusSeed {
         field_path: String,
     },
     /// An entire file.
-    File {
-        file_id: FileId,
-        language: Language,
-    },
+    File { file_id: FileId, language: Language },
 }
 
 // ---------------------------------------------------------------------------
@@ -77,10 +74,7 @@ pub enum ClosureStrategy {
     /// Include sibling files in the same directory.
     SameDirectory,
     /// Expand through call graph (callers or callees).
-    CallGraph {
-        direction: Direction,
-        depth: u32,
-    },
+    CallGraph { direction: Direction, depth: u32 },
     /// Expand through type definitions.
     TypeGraph { max_depth: u32 },
 }

@@ -48,9 +48,7 @@ fn test_mark_stale() {
 fn test_get_committed_generation_not_found() {
     let store = test_store();
 
-    let generation = store
-        .get_committed_generation("nonexistent")
-        .unwrap();
+    let generation = store.get_committed_generation("nonexistent").unwrap();
     assert!(generation.is_none());
 }
 

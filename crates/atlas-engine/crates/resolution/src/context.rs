@@ -258,8 +258,7 @@ impl GlobalSymbolIndex {
                 true
             })
             .filter_map(|(s, s_lower)| {
-                types::levenshtein_bounded(&lower, s_lower, max_distance)
-                    .map(|d| (d, s.clone()))
+                types::levenshtein_bounded(&lower, s_lower, max_distance).map(|d| (d, s.clone()))
             })
             .collect();
 

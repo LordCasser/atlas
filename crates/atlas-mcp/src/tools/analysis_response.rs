@@ -356,7 +356,10 @@ pub fn known_gap_to_view(g: &KnownGap) -> KnownGapView {
             ref_by: Some(ref_by.clone()),
             ..Default::default()
         },
-        KnownGap::BudgetExhausted { strategy, remaining } => KnownGapView {
+        KnownGap::BudgetExhausted {
+            strategy,
+            remaining,
+        } => KnownGapView {
             kind: "budget_exhausted".into(),
             strategy: Some(strategy.clone()),
             remaining: Some(*remaining),
@@ -390,10 +393,7 @@ pub fn known_gap_to_view(g: &KnownGap) -> KnownGapView {
             action: Some(action.clone()),
             ..Default::default()
         },
-        KnownGap::SymbolHintsIncomplete {
-            name,
-            coverage_pct,
-        } => KnownGapView {
+        KnownGap::SymbolHintsIncomplete { name, coverage_pct } => KnownGapView {
             kind: "symbol_hints_incomplete".into(),
             name: Some(name.clone()),
             coverage_pct: Some(*coverage_pct),
@@ -485,8 +485,7 @@ mod tests {
 
     #[test]
     fn test_analysis_response_empty_result() {
-        let resp = AnalysisResponseBuilder::new(json!({"key": "val"}), "q_001".into())
-            .build();
+        let resp = AnalysisResponseBuilder::new(json!({"key": "val"}), "q_001".into()).build();
         let json_str = serde_json::to_string(&resp).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -598,10 +597,7 @@ mod tests {
         );
 
         // Manifest → basic
-        assert_eq!(
-            coverage_tier_to_label(&CoverageTier::Manifest),
-            "basic"
-        );
+        assert_eq!(coverage_tier_to_label(&CoverageTier::Manifest), "basic");
     }
 
     // ── test 6: KnownGap::UnresolvedImport → KnownGapView → JSON ────
@@ -734,7 +730,10 @@ mod tests {
         // analysis
         assert_eq!(json["analysis"]["state"], "usable_partial");
         assert_eq!(json["analysis"]["scope"], "local");
-        assert_eq!(json["analysis"]["summary"], "3 files extracted, 2 import gaps");
+        assert_eq!(
+            json["analysis"]["summary"],
+            "3 files extracted, 2 import gaps"
+        );
         assert_eq!(
             json["analysis"]["next_action"],
             "use_result_or_wait_for_refinement"

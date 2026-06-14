@@ -9,7 +9,9 @@ use super::{
     MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
 };
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input};
+use crate::tools::symbol_selector::{
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
+};
 
 use serde_json::json;
 
@@ -50,9 +52,9 @@ impl ToolRouter {
                 Ok(None) => {
                     let msg = if file_hex.is_some() || file_path.is_some() {
                         if active.store.count_files().unwrap_or(0) == 0 {
-                            "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                            "No project facts have been materialized yet. Provide a project-relative file_path so focus can extract the local file, or run CLI `atlas index` outside MCP to prebuild a project-wide cache."
                         } else {
-                            "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                            "File not found in the active project facts. Check that the file_id or file_path is correct and belongs to the opened project."
                         }
                     } else {
                         "Missing file_id or file_path"
@@ -66,7 +68,8 @@ impl ToolRouter {
                 Err(e) => {
                     let mut err_msg = format!("Error resolving file: {e}");
                     err_msg.push_str(active.store_query_runtime.not_indexed_guidance());
-                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_point", &err_msg);
+                    let resp: TraceQueryResponse<()> =
+                        TraceQueryResponse::err("trace_point", &err_msg);
                     return (
                         serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                         true,
@@ -96,15 +99,19 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
-        let (focus_result, focus_warnings) = self.prepare_focus_query(
-            Some(atlas_engine::QueryIntent::TracePoint { file_id, line, column }),
-        );
+        let (focus_result, focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::TracePoint {
+                file_id,
+                line,
+                column,
+            }));
         if let Some(ref result) = focus_result {
             lr = super::apply_focus_result_to_lr(lr, result);
         }
         ctx.send_progress(0.8, "Running trace point...");
         let mut resp = self
-            .active_mut().engine
+            .active_mut()
+            .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_point(&file_id, line, column);
@@ -163,14 +170,15 @@ impl ToolRouter {
                 Ok(None) => {
                     let msg = if file_hex.is_some() || file_path.is_some() {
                         if active.store.count_files().unwrap_or(0) == 0 {
-                            "No files indexed yet. Please run the 'index' tool first to build the code index, then retry this query."
+                            "No project facts have been materialized yet. Provide a project-relative file_path so focus can extract the local file, or run CLI `atlas index` outside MCP to prebuild a project-wide cache."
                         } else {
-                            "File not found in index. Check that the file_id or file_path is correct and belongs to the indexed project."
+                            "File not found in the active project facts. Check that the file_id or file_path is correct and belongs to the opened project."
                         }
                     } else {
                         "Missing file_id or file_path"
                     };
-                    let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_variable", msg);
+                    let resp: TraceQueryResponse<()> =
+                        TraceQueryResponse::err("trace_variable", msg);
                     return (
                         serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                         true,
@@ -210,9 +218,12 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
-        let (focus_result, focus_warnings) = self.prepare_focus_query(
-            Some(atlas_engine::QueryIntent::TraceVariable { file_id, line, column }),
-        );
+        let (focus_result, focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::TraceVariable {
+                file_id,
+                line,
+                column,
+            }));
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -220,7 +231,8 @@ impl ToolRouter {
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
         let mut resp = self
-            .active_mut().engine
+            .active_mut()
+            .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_variable(&file_id, line, column, max_depth);
@@ -253,8 +265,7 @@ impl ToolRouter {
         let input: SymbolInput = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
             Err(e) => {
-                let resp: TraceQueryResponse<()> =
-                    TraceQueryResponse::err("trace_callers", &e);
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_callers", &e);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -297,14 +308,13 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Unified symbol resolution — BestEffortSingle always picks one symbol.
-        let resolution = match self
-            .resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return (format!("Symbol resolution error: {e}"), true);
-            }
-        };
+        let resolution =
+            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (format!("Symbol resolution error: {e}"), true);
+                }
+            };
         let (target_id, resolved_symbol) = match resolution {
             SymbolResolution::Single {
                 symbol_id,
@@ -315,7 +325,11 @@ impl ToolRouter {
                 // ties.  Pick the first candidate and look up its SymbolId
                 // from the store so we can proceed with tracing.
                 let first = &candidates[0];
-                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self
+                    .active_mut()
+                    .store
+                    .find_symbols_by_qname(&first.qualified_name)
+                {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -332,14 +346,9 @@ impl ToolRouter {
                 };
                 (sid, None)
             }
-            SymbolResolution::NotFound {
-                qname,
-                suggestions,
-            } => {
+            SymbolResolution::NotFound { qname, suggestions } => {
                 return (
-                    format!(
-                        "Symbol not found: {qname}. Suggestions: {suggestions:?}"
-                    ),
+                    format!("Symbol not found: {qname}. Suggestions: {suggestions:?}"),
                     true,
                 );
             }
@@ -349,22 +358,22 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(target_id));
         // Ensure structural data for this symbol's file
         if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&target_id) {
-            let (focus_result, focus_warnings) = self.prepare_focus_query(
-                Some(atlas_engine::QueryIntent::Calls {
+            let (focus_result, focus_warnings) =
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
                     symbol_id: None,
                     direction: None,
                     depth: None,
-                }),
-            );
+                }));
             if let Some(ref result) = focus_result {
                 lr = crate::tools::apply_focus_result_to_lr(lr, result);
             }
             lazy_warnings = focus_warnings;
         }
         let resp = self
-            .active_mut().engine
+            .active_mut()
+            .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_callers(&target_id, max_depth);
@@ -393,8 +402,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -405,10 +413,7 @@ impl ToolRouter {
         let from_input: SymbolInput = match parse_symbol_input(args, "from") {
             Ok(inp) => inp,
             Err(e) => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_forward",
-                    &e,
-                );
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -419,10 +424,7 @@ impl ToolRouter {
         let to_input: SymbolInput = match parse_symbol_input(args, "to") {
             Ok(inp) => inp,
             Err(e) => {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_forward",
-                    &e,
-                );
+                let resp: TraceQueryResponse<()> = TraceQueryResponse::err("trace_forward", &e);
                 return (
                     serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                     true,
@@ -474,7 +476,7 @@ impl ToolRouter {
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
         }
-        
+
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // -- Resolve 'from' symbol --
@@ -493,7 +495,11 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self
+                    .active_mut()
+                    .store
+                    .find_symbols_by_qname(&first.qualified_name)
+                {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -516,14 +522,13 @@ impl ToolRouter {
         };
 
         // -- Resolve 'to' symbol --
-        let to_resolution = match self
-            .resolve_symbol_input(&to_input, SymbolResolutionPolicy::BestEffortSingle)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return (format!("Symbol resolution error for 'to': {e}"), true);
-            }
-        };
+        let to_resolution =
+            match self.resolve_symbol_input(&to_input, SymbolResolutionPolicy::BestEffortSingle) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (format!("Symbol resolution error for 'to': {e}"), true);
+                }
+            };
         let (to_id, resolved_to) = match to_resolution {
             SymbolResolution::Single {
                 symbol_id,
@@ -531,7 +536,11 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.active_mut().store.find_symbols_by_qname(&first.qualified_name) {
+                let sid = match self
+                    .active_mut()
+                    .store
+                    .find_symbols_by_qname(&first.qualified_name)
+                {
                     Ok(symbols) => match symbols.first() {
                         Some(s) => s.id,
                         None => {
@@ -549,6 +558,9 @@ impl ToolRouter {
                 (sid, None)
             }
             SymbolResolution::NotFound { qname, .. } => {
+                if let Some(hint) = self.unresolved_call_target_hint(&[from_id], &qname) {
+                    return (format!("Symbol not found: {qname}.{hint}"), true);
+                }
                 return (format!("Symbol not found: {qname}"), true);
             }
         };
@@ -558,7 +570,8 @@ impl ToolRouter {
 
         // Ensure structural for endpoint files via focus query
         let intent = self
-            .active_mut().store
+            .active_mut()
+            .store
             .find_symbol_by_id(&from_id)
             .ok()
             .flatten()
@@ -575,7 +588,8 @@ impl ToolRouter {
         }
 
         let mut resp = self
-            .active_mut().engine
+            .active_mut()
+            .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .trace_forward(&from_id, &to_id, max_depth);
@@ -609,8 +623,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 }
 
@@ -695,6 +708,43 @@ mod tests {
         sid
     }
 
+    fn insert_unresolved_call_reference(store: &Store, source: SymbolId, name: &str) {
+        let source_symbol = store
+            .find_symbol_by_id(&source)
+            .unwrap()
+            .expect("source symbol should exist");
+        let range = TextRange {
+            start_byte: 32,
+            end_byte: 32 + name.len() as u32,
+            start_line: 4,
+            start_column: 8,
+            end_line: 4,
+            end_column: 8 + name.len() as u32,
+        };
+        let reference = atlas_engine::ReferenceUse {
+            id: atlas_engine::ReferenceId::generate(
+                &source_symbol.file_id,
+                Some(&source),
+                range.start_byte,
+                range.end_byte,
+                name,
+                atlas_engine::ReferenceKind::Call,
+            ),
+            file_id: source_symbol.file_id,
+            source_symbol: Some(source),
+            scope_id: None,
+            kind: atlas_engine::ReferenceKind::Call,
+            text: name.to_string(),
+            name: name.to_string(),
+            receiver: None,
+            arity: Some(1),
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+        store.insert_references(&[reference]).unwrap();
+    }
+
     // -- Handler tests -----------------------------------------------------
 
     fn new_router(store: Arc<Store>) -> ToolRouter {
@@ -764,5 +814,23 @@ mod tests {
         let args = serde_json::json!({"from": "a", "to": ""});
         let (_resp_str, is_error) = router.handle_trace_forward(&args);
         assert!(is_error, "empty 'to' should error");
+    }
+
+    #[test]
+    fn trace_forward_not_found_target_reports_unresolved_call_hint() {
+        let store = test_store();
+        let file = register_file(&store, "test.ts");
+        let from_id = insert_symbol(&store, file, "sender", "sender", SymbolKind::Function);
+        insert_unresolved_call_reference(&store, from_id, "copy_from_user");
+
+        let mut router = new_router(store);
+        let args = serde_json::json!({"from": "sender", "to": "copy_from_user"});
+        let (resp, is_error) = router.handle_trace_forward(&args);
+
+        assert!(is_error, "target should remain unresolved: {resp}");
+        assert!(
+            resp.contains("unresolved call token") && resp.contains("trace(kind=\"point\")"),
+            "missing actionable unresolved-call hint: {resp}"
+        );
     }
 }

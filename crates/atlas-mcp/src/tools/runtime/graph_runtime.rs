@@ -252,7 +252,10 @@ mod tests {
         let result = gr.ensure_initialized();
         assert!(result.is_ok(), "ensure_initialized should succeed");
         let se_opt = gr.provider().search_engine();
-        assert!(se_opt.is_some(), "search_engine should be accessible after init");
+        assert!(
+            se_opt.is_some(),
+            "search_engine should be accessible after init"
+        );
     }
 
     #[test]
@@ -307,7 +310,9 @@ mod tests {
     fn graph_stale_after_bump() {
         let mut gr = create_test_graph_runtime();
         let initial_gen = gr.last_graph_generation;
-        gr.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
+        gr.invalidation
+            .graph_generation
+            .fetch_add(1, Ordering::Relaxed);
         assert!(gr.is_graph_stale());
         gr.mark_graph_fresh();
         assert!(!gr.is_graph_stale());

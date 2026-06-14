@@ -266,7 +266,11 @@ mod tests {
 
     #[test]
     fn fts_triggers_has_three_entries() {
-        assert_eq!(FTS_TRIGGERS.len(), 3, "FTS_TRIGGERS must have exactly 3 entries (ai, ad, au)");
+        assert_eq!(
+            FTS_TRIGGERS.len(),
+            3,
+            "FTS_TRIGGERS must have exactly 3 entries (ai, ad, au)"
+        );
         let set: HashSet<_> = FTS_TRIGGERS.iter().copied().collect();
         assert!(set.contains("symbols_ai"));
         assert!(set.contains("symbols_ad"));

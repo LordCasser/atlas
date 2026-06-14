@@ -26,11 +26,7 @@ impl GraphState {
     ///
     /// Used by `ToolRouter::new()` when the caller already has pre-built
     /// `SearchEngine` and `ContextBuilder` (e.g. integration tests).
-    pub(crate) fn init_with(
-        &mut self,
-        search: SearchEngine,
-        context: ContextBuilder,
-    ) {
+    pub(crate) fn init_with(&mut self, search: SearchEngine, context: ContextBuilder) {
         self.search = Some(search);
         self.context = Some(context);
         self.graph_initialized = true;
@@ -51,10 +47,7 @@ impl GraphState {
         }
         tracing::info!("Building graph snapshot (first request)...");
         let graph = Arc::new(GraphEngine::from_store(store, 0.3)?);
-        self.search = Some(SearchEngine::new(
-            Arc::clone(store),
-            Arc::clone(&graph),
-        ));
+        self.search = Some(SearchEngine::new(Arc::clone(store), Arc::clone(&graph)));
         self.context = Some(
             ContextBuilder::new(Arc::clone(store), graph)
                 .with_project_root(project_root.to_path_buf()),
@@ -185,7 +178,9 @@ impl GraphState {
                 // No existing graph — fall through to full rebuild via signature check
                 let current = store.index_signature().unwrap_or_default();
                 if current != self.last_graph_signature {
-                    tracing::info!("Index signature changed, refreshing graph (no existing snapshot)");
+                    tracing::info!(
+                        "Index signature changed, refreshing graph (no existing snapshot)"
+                    );
                     let graph = Arc::new(GraphEngine::from_store(store, 0.3)?);
                     self.swap_graph(store, graph);
                 }

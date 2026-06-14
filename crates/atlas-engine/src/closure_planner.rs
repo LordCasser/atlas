@@ -534,15 +534,13 @@ impl ClosurePlanner {
 /// - `#include <...>` → never relative (system/library include paths)
 /// Compiled once, then reused for every scanned C file. Avoids per-call
 /// re-compilation of a static regex pattern.
-static QUOTE_INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r##"#include\s+"([^"]+)""##).unwrap()
-});
+static QUOTE_INCLUDE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r##"#include\s+"([^"]+)""##).unwrap());
 
 /// Compiled once, then reused for every scanned C file. Avoids per-call
 /// re-compilation of a static regex pattern.
-static ANGLE_INCLUDE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"#include\s+<([^>]+)>"#).unwrap()
-});
+static ANGLE_INCLUDE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"#include\s+<([^>]+)>"#).unwrap());
 
 pub(crate) fn scan_c_includes(file_id: &FileId, source: &str) -> Vec<ImportDef> {
     let quote_re = &QUOTE_INCLUDE_RE;
@@ -722,7 +720,10 @@ mod tests {
         let file_id = FileId::generate("src/main.c");
         let source = "int main() { return 0; }\n";
         let imports = scan_c_includes(&file_id, source);
-        assert!(imports.is_empty(), "source without includes should produce no imports");
+        assert!(
+            imports.is_empty(),
+            "source without includes should produce no imports"
+        );
     }
 
     #[test]

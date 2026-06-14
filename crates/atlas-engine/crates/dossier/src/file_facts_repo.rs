@@ -180,7 +180,9 @@ mod tests {
         let b = make_symbol(file_id, "src/lib.ts", "beta", "Lib.beta");
         let c = make_symbol(file_id, "src/lib.ts", "gamma", "Lib.gamma");
 
-        store.insert_symbols(&[a.clone(), b.clone(), c.clone()]).unwrap();
+        store
+            .insert_symbols(&[a.clone(), b.clone(), c.clone()])
+            .unwrap();
 
         let repo = FileFactsRepo::new(store);
         let peers = repo.get_peers(&file_id, &a.id, 10).unwrap();

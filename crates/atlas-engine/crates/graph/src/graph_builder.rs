@@ -14,12 +14,12 @@
 #![allow(clippy::items_after_test_module)]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use tracing::{debug_span, info_span};
 use db::Store;
 use rayon::prelude::*;
+use tracing::{debug_span, info_span};
 use types::enums::{DataFlowKind, DataNodeKind};
 use types::*;
 
@@ -76,7 +76,8 @@ impl GraphBuilder {
     ) -> GraphBuilderStats {
         let _span = info_span!(target: "atlas_graph", "graph.build_all").entered();
         // Use pre-loaded symbols if provided; otherwise fall back to N×1 DB queries.
-        let symbol_cache: HashMap<SymbolId, SymbolDef> = if let Some(override_map) = symbol_override {
+        let symbol_cache: HashMap<SymbolId, SymbolDef> = if let Some(override_map) = symbol_override
+        {
             override_map
         } else {
             let _cache_span = debug_span!(target: "atlas_graph", "graph.symbol_cache").entered();
@@ -98,18 +99,19 @@ impl GraphBuilder {
         let edges: Vec<RawEdge> = resolved
             .par_iter()
             .filter_map(|(reference, target)| {
-                let result = match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
-                    Ok(edges) => Some(edges),
-                    Err(e) => {
-                        if let Ok(mut w) = warnings.lock() {
-                            w.push(format!(
-                                "failed to create edges for reference {:?}: {}",
-                                reference.id, e
-                            ));
+                let result =
+                    match self.create_edges_for_reference(reference, target, Some(&symbol_cache)) {
+                        Ok(edges) => Some(edges),
+                        Err(e) => {
+                            if let Ok(mut w) = warnings.lock() {
+                                w.push(format!(
+                                    "failed to create edges for reference {:?}: {}",
+                                    reference.id, e
+                                ));
+                            }
+                            None
                         }
-                        None
-                    }
-                };
+                    };
                 if let Some(p) = progress {
                     p.fetch_add(1, Ordering::Relaxed);
                 }
@@ -765,18 +767,14 @@ main();
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let lib_facts = extract_file(
-            &frontend,
-            lib_id,
-            &PathBuf::from("lib.ts"),
-            lib_src,
-            "abc",
-        )
-        .expect("lib.ts extraction failed");
+        let lib_facts = extract_file(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
+            .expect("lib.ts extraction failed");
 
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
-        store.insert_file_facts(&main_facts).expect("insert main.ts");
+        store
+            .insert_file_facts(&main_facts)
+            .expect("insert main.ts");
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
 
         let mut resolver = ReferenceResolver::new(store.clone());

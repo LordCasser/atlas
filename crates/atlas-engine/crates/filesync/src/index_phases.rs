@@ -38,15 +38,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use db::Store;
 use db::DbWriteTiming;
-use tracing::{debug, info, info_span};
+use db::Store;
 use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     create_frontend,
 };
 use graph::GraphBuilder;
 use resolution::{PathAliasConfig, ReferenceResolver};
+use tracing::{debug, info, info_span};
 use types::progress::{ProgressPhase, ProgressState};
 use types::{FileFacts, FileId, Language, SymbolDef, SymbolId};
 
@@ -494,7 +494,9 @@ pub fn phase_extract_parallel_cancellable(
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     cancel_token: Option<&std::sync::atomic::AtomicBool>,
 ) -> ExtractedFiles {
-    let _span = info_span!(target: "atlas_sync", "sync.phase_extract_parallel", file_count = files.len()).entered();
+    let _span =
+        info_span!(target: "atlas_sync", "sync.phase_extract_parallel", file_count = files.len())
+            .entered();
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -717,26 +719,23 @@ pub fn phase_write_batched(
                     + chunk_timing.cfg_edges_ns
                     + chunk_timing.extraction_state_ns
                     + chunk_timing.commit_ns;
-                if slowest_chunk_timing
-                    .as_ref()
-                    .is_none_or(|(_, prev)| {
-                        let prev_total = prev.files_ns
-                            + prev.symbols_ns
-                            + prev.scopes_ns
-                            + prev.references_ns
-                            + prev.imports_ns
-                            + prev.callsites_ns
-                            + prev.bindings_ns
-                            + prev.binding_uses_ns
-                            + prev.data_nodes_ns
-                            + prev.dataflow_edges_ns
-                            + prev.cfg_nodes_ns
-                            + prev.cfg_edges_ns
-                            + prev.extraction_state_ns
-                            + prev.commit_ns;
-                        chunk_total_ns > prev_total
-                    })
-                {
+                if slowest_chunk_timing.as_ref().is_none_or(|(_, prev)| {
+                    let prev_total = prev.files_ns
+                        + prev.symbols_ns
+                        + prev.scopes_ns
+                        + prev.references_ns
+                        + prev.imports_ns
+                        + prev.callsites_ns
+                        + prev.bindings_ns
+                        + prev.binding_uses_ns
+                        + prev.data_nodes_ns
+                        + prev.dataflow_edges_ns
+                        + prev.cfg_nodes_ns
+                        + prev.cfg_edges_ns
+                        + prev.extraction_state_ns
+                        + prev.commit_ns;
+                    chunk_total_ns > prev_total
+                }) {
                     slowest_chunk_timing = Some((chunk_idx, chunk_timing));
                 }
                 // Record slow chunks (same threshold as logging)
@@ -1431,7 +1430,10 @@ mod tests {
         phase_write_batched(&store, extracted, 500, 500, |_| {}, || false).unwrap();
 
         let result = phase_resolve_and_build(&store, dir.path(), None);
-        assert!(result.is_ok(), "phase_resolve_and_build should not crash: {result:?}");
+        assert!(
+            result.is_ok(),
+            "phase_resolve_and_build should not crash: {result:?}"
+        );
     }
 
     /// Verify weight-budget chunking produces reasonable splits.
@@ -1447,7 +1449,14 @@ mod tests {
 
         fn make_ref(file_id: &FileId, idx: u32) -> ReferenceUse {
             ReferenceUse {
-                id: ReferenceId::generate(file_id, None, idx, idx + 1, &format!("r{idx}"), ReferenceKind::Usage),
+                id: ReferenceId::generate(
+                    file_id,
+                    None,
+                    idx,
+                    idx + 1,
+                    &format!("r{idx}"),
+                    ReferenceKind::Usage,
+                ),
                 file_id: *file_id,
                 source_symbol: None,
                 scope_id: None,
@@ -1491,6 +1500,10 @@ mod tests {
         // fact3 (60) alone: 90+60=150 > 95 → new chunk
         assert_eq!(chunks.len(), 2, "expected 2 chunks, got {}", chunks.len());
         assert_eq!(chunks[0].len(), 2, "first chunk should contain facts 1+2");
-        assert_eq!(chunks[1].len(), 1, "second chunk should contain fact3 alone");
+        assert_eq!(
+            chunks[1].len(),
+            1,
+            "second chunk should contain fact3 alone"
+        );
     }
 }

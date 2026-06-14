@@ -4,7 +4,9 @@ use atlas_engine::InvestigationFocus;
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{ToolRouter, get_u64};
-use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input};
+use crate::tools::symbol_selector::{
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
+};
 use serde_json::json;
 
 impl ToolRouter {
@@ -16,24 +18,26 @@ impl ToolRouter {
             Ok(inp) => inp,
             Err(e) => return (e, true),
         };
-        let resolution = match self
-            .resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
-        {
-            Ok(r) => r,
-            Err(e) => return (e, true),
-        };
+        let resolution =
+            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
         let sid = match resolution {
             SymbolResolution::Single { symbol_id, .. } => symbol_id,
-            SymbolResolution::Ambiguous { candidates, .. } => {
-                candidates[0].symbol_id
-            }
+            SymbolResolution::Ambiguous { candidates, .. } => candidates[0].symbol_id,
             SymbolResolution::NotFound { qname, .. } => {
                 return (format!("Symbol not found: {qname}"), true);
             }
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.active_mut().job_runtime.investigation_state.active_investigation.clone();
+        let _investigation = self
+            .active_mut()
+            .job_runtime
+            .investigation_state
+            .active_investigation
+            .clone();
 
         // Resolve symbol display name early so it's available for both the
         // focus intent and the response "symbol" field.
@@ -45,15 +49,14 @@ impl ToolRouter {
         // Prepare focus query to inject coverage / closure provenance.
         // Uses Calls intent with the resolved symbol_id so the focus engine
         // can locate the seed and build structural coverage data.  (P1-F7)
-        let (focus_opt, _focus_warnings) = self.prepare_focus_query(Some(
-            atlas_engine::QueryIntent::Calls {
+        let (focus_opt, _focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                 symbol_name: symbol_display.clone(),
                 direction: None,
                 depth: None,
                 file_id: None,
                 symbol_id: Some(sid),
-            },
-        ));
+            }));
 
         let mut lr = AnalysisEnvelope::new("symbol", args);
 
@@ -66,7 +69,8 @@ impl ToolRouter {
         let usages: Vec<_> = shown
             .map(|r| {
                 let mask = self
-                    .active_mut().store
+                    .active_mut()
+                    .store
                     .get_capability_mask(&r.file_id)
                     .unwrap_or_default();
                 json!({
@@ -81,18 +85,15 @@ impl ToolRouter {
             })
             .collect();
 
-        let mut resp = json!({
+        let resp = json!({
             "symbol": symbol_display,
             "total_usages": refs.len(),
             "usages": usages,
         });
 
-        // Inject focus coverage & closure provenance into the response (P1-F7).
+        // Inject public focus coverage into the response.
         if let Some(ref result) = focus_opt {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
-            if let Some(ref cid) = result.closure_id {
-                resp["closure_id"] = json!(cid);
-            }
         }
 
         let mut stored_args = args.clone();

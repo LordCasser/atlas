@@ -11,7 +11,6 @@
 //! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), RuntimeInvalidation counters |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
 //! | `job_runtime` | Per-project investigation + query snapshots | InvestigationState, QuerySnapshot map |
-//! | `session_job_runtime` | Session-level background task orchestration | TaskManager, pending_project_activations, prewarm_running |
 //! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
 //! | `graph_provider` | Trait contract for graph backends | (trait definition) |
 //!
@@ -59,16 +58,15 @@
 //!
 //! | Contract | Runtimes Involved |
 //! |----------|-------------------|
-//! | `ProjectLifecycle` | job_runtime, graph_runtime (reset), session_job_runtime (background open) |
+//! | `ProjectLifecycle` | job_runtime, graph_runtime (reset) |
 //! | `StatusRead` | store_query_runtime (stats queries) |
-//! | `ExplicitIndexBuild` | session_job_runtime (background), query_runtime.cache (invalidation) |
 //! | `SemanticGraphQuery` | graph_runtime (snapshot), query_runtime (focus), store_query_runtime (source) |
 //! | `TraceQuery` | engine (direct, not graph_runtime), query_runtime (focus), store_query_runtime |
 //! | `StoreFactQuery` | query_runtime (focus, +graph for symbol context), store_query_runtime |
 //! | `SemanticAnalysis` | analysis_runtime (CFG/dataflow), store_query_runtime |
 //! | `OverlayMutation` | overlay_runtime (mutation + generation counter) |
 //! | `OverlayRead` | store_query_runtime (read-only) |
-//! | `TaskControl` | session_job_runtime (task_manager) |
+//! | `TaskControl` | store_query_runtime (extraction job observability), job_runtime (query snapshots) |
 //!
 //! # Concurrency Model
 //!
@@ -80,7 +78,7 @@
 //!   (independent thread, separate lock).
 //! - **graph_runtime.state** holds a `RwLock<Arc<GraphEngine>>` — readers share the snapshot.
 //! - **RuntimeInvalidation** counters (`AtomicU64`) are lock-free for fast-path invalidation.
-//! - **Background tasks** (index, graph rebuild, focus scheduler) use `std::thread::spawn`
+//! - **Background tasks** (graph rebuild, focus scheduler) use `std::thread::spawn`
 //!   with cloned `Arc<Store>` — they never access ToolRouter directly.
 //!
 //! # Anti-Patterns
@@ -98,15 +96,14 @@
 //!
 //! These patterns ensure all future changes respect the v6.0 boundary model.
 
+pub(crate) mod analysis_runtime;
 pub(crate) mod cache_state;
 pub(crate) mod closure_graph_provider;
 pub(crate) mod graph_provider;
+pub(crate) mod graph_runtime;
 pub(crate) mod graph_state;
 pub(crate) mod invalidation;
-pub(crate) mod query_runtime;
-pub(crate) mod graph_runtime;
-pub(crate) mod analysis_runtime;
-pub(crate) mod overlay_runtime;
-pub(crate) mod store_query_runtime;
 pub(crate) mod job_runtime;
-pub(crate) mod session_job_runtime;
+pub(crate) mod overlay_runtime;
+pub(crate) mod query_runtime;
+pub(crate) mod store_query_runtime;

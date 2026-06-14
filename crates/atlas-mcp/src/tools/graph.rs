@@ -4,14 +4,15 @@
 use std::collections::HashSet;
 
 use atlas_engine::analysis;
-use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 use atlas_engine::dossier::SourceRepository;
+use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64};
+use super::{
+    MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
+};
 use crate::tools::symbol_selector::{
-    ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
-    parse_symbol_input,
+    ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 
 use serde_json::json;
@@ -74,7 +75,10 @@ pub(crate) fn resolution_to_symbol_ids_and_meta(
     qname: &str,
 ) -> Result<(Vec<SymbolId>, Option<serde_json::Value>), String> {
     match resolution {
-        SymbolResolution::Single { symbol_id, resolved } => {
+        SymbolResolution::Single {
+            symbol_id,
+            resolved,
+        } => {
             let meta = json!({
                 "policy": "aggregated",
                 "count": 1,
@@ -138,7 +142,6 @@ fn build_resolution_meta_for_path(resolution: &SymbolResolution) -> serde_json::
         }
     }
 }
-
 
 /// Default edge kinds for call-graph traversal (call relationships).
 const DEFAULT_CALL_EDGES: &[EdgeKind] = &[
@@ -275,6 +278,149 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
 }
 
 impl ToolRouter {
+    pub(crate) fn unresolved_call_refs_json(
+        &self,
+        source_ids: &[SymbolId],
+        limit: usize,
+    ) -> (Vec<serde_json::Value>, usize) {
+        self.unresolved_call_refs_json_filtered(source_ids, limit, None)
+    }
+
+    fn unresolved_call_refs_json_filtered(
+        &self,
+        source_ids: &[SymbolId],
+        limit: usize,
+        target_name: Option<&str>,
+    ) -> (Vec<serde_json::Value>, usize) {
+        let store = &self.active().store;
+        let mut seen = HashSet::new();
+        let mut refs = Vec::new();
+        let normalized_target = target_name.map(str::trim).filter(|s| !s.is_empty());
+
+        for source_id in source_ids {
+            let Ok(unresolved) = store.find_unresolved_call_references_by_source(source_id) else {
+                continue;
+            };
+            for reference in unresolved {
+                if let Some(target) = normalized_target {
+                    let matches_target = reference.name == target
+                        || reference.text == target
+                        || reference.name.rsplit("::").next() == Some(target)
+                        || reference.name.rsplit('.').next() == Some(target);
+                    if !matches_target {
+                        continue;
+                    }
+                }
+                let line = reference.range.start_line.saturating_add(1);
+                let key = format!("{}:{}:{}", reference.file_id.to_hex(), reference.name, line);
+                if !seen.insert(key) {
+                    continue;
+                }
+                let file = store
+                    .get_file(&reference.file_id)
+                    .ok()
+                    .flatten()
+                    .map(|f| f.path)
+                    .unwrap_or_default();
+                refs.push(json!({
+                    "name": reference.name,
+                    "text": reference.text,
+                    "file": file,
+                    "line": line,
+                    "column": reference.range.start_column,
+                    "kind": "unresolved_call",
+                    "resolution": "unresolved",
+                }));
+            }
+        }
+
+        refs.sort_by(|a, b| {
+            let af = a.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let bf = b.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            let al = a.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let bl = b.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+            af.cmp(bf).then(al.cmp(&bl))
+        });
+        let total = refs.len();
+        refs.truncate(limit);
+        (refs, total)
+    }
+
+    pub(crate) fn unresolved_call_target_hint(
+        &self,
+        source_ids: &[SymbolId],
+        target_name: &str,
+    ) -> Option<String> {
+        let (matches, total) =
+            self.unresolved_call_refs_json_filtered(source_ids, 3, Some(target_name));
+        if matches.is_empty() {
+            return None;
+        }
+
+        let locations = matches
+            .iter()
+            .filter_map(|m| {
+                let file = m.get("file")?.as_str()?;
+                let line = m.get("line")?.as_u64()?;
+                let column = m.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
+                Some(format!("{file}:{line}:{column}"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let suffix = if total > matches.len() {
+            format!(" and {} more callsite(s)", total - matches.len())
+        } else {
+            String::new()
+        };
+
+        Some(format!(
+            " Target '{target_name}' appears as an unresolved call token from the source at {locations}{suffix}. This is usually an external helper, macro, builtin, or a symbol outside the current focus/full index. Use calls(direction=\"outgoing\") to inspect unresolved_callees, or trace(kind=\"point\") at the callsite. path/trace forward require both endpoints to resolve to local symbols."
+        ))
+    }
+
+    pub(crate) fn resolve_graph_symbol_with_focus_retry(
+        &mut self,
+        input: &SymbolInput,
+        policy: SymbolResolutionPolicy,
+        direction: Option<String>,
+        depth: Option<usize>,
+    ) -> Result<SymbolResolution, String> {
+        let qname = symbol_input_qname(input);
+        let resolution = self.resolve_symbol_input(input, policy)?;
+        if !matches!(resolution, SymbolResolution::NotFound { .. }) {
+            return Ok(resolution);
+        }
+
+        let has_file_hint = matches!(
+            input,
+            SymbolInput::Selector(sel) if sel.file_path.as_deref().is_some_and(|p| !p.trim().is_empty())
+        );
+        let mut selector_file_id = self.resolve_selector_file_id(input);
+        if selector_file_id.is_none() && has_file_hint {
+            let _ = self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: qname.to_string(),
+                file_id: None,
+                symbol_id: None,
+                direction: direction.clone(),
+                depth,
+            }));
+            selector_file_id = self.resolve_selector_file_id(input);
+        }
+
+        let Some(file_id) = selector_file_id else {
+            return Ok(resolution);
+        };
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: Some(file_id),
+            symbol_id: None,
+            direction,
+            depth,
+        });
+        let _ = self.prepare_focus_query(intent);
+        self.resolve_symbol_input(input, policy)
+    }
+
     pub(crate) fn handle_callers(&mut self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
@@ -289,7 +435,12 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate) {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            Some("incoming".to_string()),
+            None,
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -335,7 +486,9 @@ impl ToolRouter {
         // ── callers ────────────────────────────────────────────────────
         let total_callers = all_callers.len();
         let shown = all_callers.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown
+            .map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None))
+            .collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -363,13 +516,6 @@ impl ToolRouter {
         } else {
             lr
         };
-        // Inject closure_id from focus preparation so clients can track
-        // closure provenance (P0-F2-A).
-        if let Some(ref result) = focus_result {
-            if let Some(ref cid) = result.closure_id {
-                resp["closure_id"] = json!(cid);
-            }
-        }
         lr.build_with_args(resp, args, self)
     }
 
@@ -387,7 +533,12 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate) {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            Some("outgoing".to_string()),
+            None,
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -405,7 +556,13 @@ impl ToolRouter {
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.active_mut().store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self
+                .active_mut()
+                .store
+                .find_symbol_by_id(&id)
+                .ok()
+                .flatten()
+            {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -440,13 +597,24 @@ impl ToolRouter {
         // ── callees ────────────────────────────────────────────────────
         let total_callees = all_callees.len();
         let shown = all_callees.iter().take(limit);
-        let nodes: Vec<_> = shown.map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None)).collect();
+        let nodes: Vec<_> = shown
+            .map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None))
+            .collect();
+        let (unresolved_callees, total_unresolved_callees) =
+            self.unresolved_call_refs_json(&symbol_ids, limit);
 
         let mut resp = json!({
             "symbol": qname,
             "total_callees": total_callees,
             "callees": nodes,
         });
+        if total_unresolved_callees > 0 {
+            resp["total_unresolved_callees"] = json!(total_unresolved_callees);
+            resp["unresolved_callees"] = json!(unresolved_callees);
+            resp["unresolved_callee_note"] = json!(
+                "These call tokens were extracted from the function body but did not resolve to local symbols. They may be macros, builtins, external helpers, or code outside the current focus/full index."
+            );
+        }
         if let Some(rm) = resolution_meta_opt {
             if symbol_ids.len() > 1 {
                 resp["resolution"] = rm;
@@ -492,7 +660,17 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate) {
+        let retry_direction = if direction.is_empty() {
+            None
+        } else {
+            Some(direction.to_string())
+        };
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            retry_direction,
+            Some(depth),
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -510,7 +688,13 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.active_mut().store.find_symbol_by_id(&id).ok().flatten() {
+            if let Some(sym) = self
+                .active_mut()
+                .store
+                .find_symbol_by_id(&id)
+                .ok()
+                .flatten()
+            {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -520,7 +704,11 @@ impl ToolRouter {
             symbol_id: None,
             direction: {
                 let d = get_str(args, "direction");
-                if d.is_empty() { None } else { Some(d.to_string()) }
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d.to_string())
+                }
             },
             depth: Some(depth),
         });
@@ -544,7 +732,12 @@ impl ToolRouter {
         let mut frontier: Vec<SymbolId> = Vec::new();
         for &root_id in &symbol_ids {
             if let Some(ix) = snap.id_to_idx.get(&root_id).copied() {
-                root_nodes.push(super::node_json(&self.active_mut().store_query_runtime, snap, ix, None));
+                root_nodes.push(super::node_json(
+                    &self.active_mut().store_query_runtime,
+                    snap,
+                    ix,
+                    None,
+                ));
                 visited.insert(root_id);
                 frontier.push(root_id);
                 total_nodes += 1;
@@ -723,14 +916,16 @@ impl ToolRouter {
         };
 
         // Resolve both sides with Aggregate policy.
-        let from_resolution = match self.resolve_symbol_input(&from_input, SymbolResolutionPolicy::Aggregate) {
-            Ok(r) => r,
-            Err(e) => return (e, true),
-        };
-        let to_resolution = match self.resolve_symbol_input(&to_input, SymbolResolutionPolicy::Aggregate) {
-            Ok(r) => r,
-            Err(e) => return (e, true),
-        };
+        let from_resolution =
+            match self.resolve_symbol_input(&from_input, SymbolResolutionPolicy::Aggregate) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
+        let to_resolution =
+            match self.resolve_symbol_input(&to_input, SymbolResolutionPolicy::Aggregate) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
 
         // Extract SymbolId lists from both resolutions.
         let from_ids: Vec<SymbolId> =
@@ -742,7 +937,12 @@ impl ToolRouter {
         let to_ids: Vec<SymbolId> =
             match resolution_to_symbol_ids_and_meta(&to_resolution, to_qname) {
                 Ok((ids, _)) => ids,
-                Err(e) => return (e, true),
+                Err(e) => {
+                    if let Some(hint) = self.unresolved_call_target_hint(&from_ids, to_qname) {
+                        return (format!("{e}.{hint}"), true);
+                    }
+                    return (e, true);
+                }
             };
 
         // Update investigation with the first "from" symbol
@@ -884,7 +1084,12 @@ impl ToolRouter {
 
             // Primary path (rank 0) gets the full treatment.
             let primary = &ranked[0];
-            let hops = build_hops(&self.active_mut().store_query_runtime, snap, &primary.path, include_code);
+            let hops = build_hops(
+                &self.active_mut().store_query_runtime,
+                snap,
+                &primary.path,
+                include_code,
+            );
             let breakpoints: Vec<serde_json::Value> = primary.path.breakpoints.iter().map(|bp| {
                 json!({ "kind": bp.kind.as_str(), "edge_index": bp.edge_index, "message": bp.message })
             }).collect();
@@ -912,7 +1117,12 @@ impl ToolRouter {
                 let alternatives: Vec<serde_json::Value> = ranked[1..]
                     .iter()
                     .map(|r| {
-                        let alt_hops = build_hops(&self.active_mut().store_query_runtime, snap, &r.path, false);
+                        let alt_hops = build_hops(
+                            &self.active_mut().store_query_runtime,
+                            snap,
+                            &r.path,
+                            false,
+                        );
                         json!({
                             "path": alt_hops,
                             "total_weight": r.path.total_weight,
@@ -933,7 +1143,8 @@ impl ToolRouter {
                 let mut ambiguity = json!({});
                 if from_ids.len() > 1 {
                     if let Some(ref wid) = winning_from {
-                        ambiguity["matched_from"] = json!(symbol_label(&self.active_mut().store, wid));
+                        ambiguity["matched_from"] =
+                            json!(symbol_label(&self.active_mut().store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
                     // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -954,7 +1165,8 @@ impl ToolRouter {
                 }
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
-                        ambiguity["matched_to"] = json!(symbol_label(&self.active_mut().store, wid));
+                        ambiguity["matched_to"] =
+                            json!(symbol_label(&self.active_mut().store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
                     // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -980,9 +1192,8 @@ impl ToolRouter {
                 }
                 // Add selection note
                 if from_ids.len() > 1 || to_ids.len() > 1 {
-                    ambiguity["selection_note"] = json!(
-                        "Selected first (from, to) pair with a discoverable path."
-                    );
+                    ambiguity["selection_note"] =
+                        json!("Selected first (from, to) pair with a discoverable path.");
                 }
                 resp["ambiguity"] = ambiguity;
             }
@@ -1063,7 +1274,8 @@ impl ToolRouter {
 
             resp["path_quality"] = insight;
 
-            let lr = lr.with_root_warnings(root_warnings)
+            let lr = lr
+                .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_partial_result(false);
             let lr = if let Some(ref result) = focus_result {
@@ -1178,10 +1390,13 @@ impl ToolRouter {
                         resp["to_candidates"] = json!(to_candidates);
                     }
                 }
-                resp["hint"] = json!("Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly.");
+                resp["hint"] = json!(
+                    "Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly."
+                );
             }
 
-            let lr = lr.with_root_warnings(root_warnings)
+            let lr = lr
+                .with_root_warnings(root_warnings)
                 .with_lazy_warnings(lazy_warnings)
                 .with_partial_result(false);
             let lr = if let Some(ref result) = focus_result {
@@ -1278,7 +1493,12 @@ impl ToolRouter {
             .unwrap_or(true);
 
         // Resolve with UniqueOrCandidates policy.
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::UniqueOrCandidates) {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::UniqueOrCandidates,
+            None,
+            None,
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -1286,10 +1506,14 @@ impl ToolRouter {
         let lr = AnalysisEnvelope::new("explore", args);
 
         let (sym_id, resolved_opt) = match resolution {
-            SymbolResolution::Single { symbol_id, resolved } => {
-                (symbol_id, Some(resolved))
-            }
-            SymbolResolution::Ambiguous { candidates, score_gap } => {
+            SymbolResolution::Single {
+                symbol_id,
+                resolved,
+            } => (symbol_id, Some(resolved)),
+            SymbolResolution::Ambiguous {
+                candidates,
+                score_gap,
+            } => {
                 let candidate_list: Vec<serde_json::Value> = candidates
                     .iter()
                     .map(|c| {
@@ -1313,7 +1537,10 @@ impl ToolRouter {
                 });
                 return lr.with_is_error(false).build(resp, self);
             }
-            SymbolResolution::NotFound { ref qname, ref suggestions } => {
+            SymbolResolution::NotFound {
+                ref qname,
+                ref suggestions,
+            } => {
                 let mut err = format!("Symbol not found: {qname}");
                 if !suggestions.is_empty() {
                     err.push_str(&format!(". Did you mean: {}?", suggestions.join(", ")));
@@ -1337,7 +1564,10 @@ impl ToolRouter {
             }
         };
 
-        let file_path = self.active_mut().store_query_runtime.resolve_file_path(&sym.file_id);
+        let file_path = self
+            .active_mut()
+            .store_query_runtime
+            .resolve_file_path(&sym.file_id);
 
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
 
@@ -1354,18 +1584,13 @@ impl ToolRouter {
             (active.store.clone(), active.root.clone())
         };
         let sym_repo = atlas_engine::dossier::SymbolRepo::new(store_clone.clone());
-        let source_repo = atlas_engine::dossier::SourceRepo::new(
-            store_clone.clone(),
-            root_clone,
-        );
+        let source_repo = atlas_engine::dossier::SourceRepo::new(store_clone.clone(), root_clone);
         let cb = match self.active_mut().graph_runtime.provider().context_builder() {
             Some(cb) => cb,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let relation_repo = atlas_engine::dossier::RelationRepo::new(
-            store_clone.clone(),
-            cb.graph_snapshot(),
-        );
+        let relation_repo =
+            atlas_engine::dossier::RelationRepo::new(store_clone.clone(), cb.graph_snapshot());
         let file_repo = atlas_engine::dossier::FileFactsRepo::new(store_clone);
 
         let request = atlas_engine::dossier::types::ExploreRequest {
@@ -1401,8 +1626,8 @@ impl ToolRouter {
         // Merge focus warnings into dossier warnings
         dossier.warnings.extend(focus_warnings);
 
-        let mut resp_value = serde_json::to_value(&dossier)
-            .unwrap_or_else(|e| json!({"error": e.to_string()}));
+        let mut resp_value =
+            serde_json::to_value(&dossier).unwrap_or_else(|e| json!({"error": e.to_string()}));
 
         // Include resolution metadata when resolved
         if let Some(ref resolved) = resolved_opt {
@@ -1491,7 +1716,8 @@ impl ToolRouter {
             }
         };
 
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate) {
+        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
+        {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -1571,13 +1797,17 @@ impl ToolRouter {
             match self.active_mut().store.list_domain_rules(None, None) {
                 Ok(_rows) => {
                     let lang_str = self
-                        .active_mut().store
+                        .active_mut()
+                        .store
                         .find_symbol_by_id(&sid)
                         .ok()
                         .flatten()
                         .map(|s| s.language.as_str())
                         .unwrap_or("c");
-                    Some(analysis::CppOwnershipRules::load_for(&self.active_mut().store, lang_str))
+                    Some(analysis::CppOwnershipRules::load_for(
+                        &self.active_mut().store,
+                        lang_str,
+                    ))
                 }
                 Err(e) => {
                     tracing::warn!("Failed to load domain rules: {e}");
@@ -1597,7 +1827,11 @@ impl ToolRouter {
                 }
 
                 // Load CFG for this function
-                let cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&node.symbol_id) {
+                let cfg_nodes = match self
+                    .active_mut()
+                    .store
+                    .find_cfg_nodes_by_function(&node.symbol_id)
+                {
                     Ok(nodes) => nodes,
                     Err(_) => continue,
                 };
@@ -1607,12 +1841,14 @@ impl ToolRouter {
 
                 // Run branch diff analysis
                 let cfg_edges = self
-                    .active_mut().store
+                    .active_mut()
+                    .store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 // ── Semantic branch diff with dataflow composition ──
                 let lang = self
-                    .active_mut().store
+                    .active_mut()
+                    .store
                     .find_symbol_by_id(&node.symbol_id)
                     .ok()
                     .flatten()
@@ -1622,14 +1858,16 @@ impl ToolRouter {
 
                 // Load DataFlow nodes and edges
                 let data_nodes = self
-                    .active_mut().store
+                    .active_mut()
+                    .store
                     .find_data_nodes_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 let dataflow_edges = if data_nodes.is_empty() {
                     vec![]
                 } else {
                     let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                    self.active_mut().store
+                    self.active_mut()
+                        .store
                         .find_dataflow_edges_by_sources(&all_ids)
                         .unwrap_or_default()
                 };
@@ -1780,7 +2018,8 @@ impl ToolRouter {
             );
         }
 
-        let lr = lr.with_root_warnings(Vec::new())
+        let lr = lr
+            .with_root_warnings(Vec::new())
             .with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
@@ -1889,7 +2128,12 @@ mod tests {
         // Bump graph_generation to signal that the store has changed (external
         // store mutation that bypasses the overlay runtime). This replaces the
         // old TTL + signature-check cooldown bypass.
-        router.active_mut().graph_runtime.invalidation.graph_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        router
+            .active_mut()
+            .graph_runtime
+            .invalidation
+            .graph_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         router.maybe_refresh_graph().unwrap();
         let after = router
@@ -2249,7 +2493,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callees(&json!({"symbol": "g"}));
         assert!(!is_error, "expected success, got: {resp_str}");
-        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let _resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     }
 
     #[test]
@@ -2292,7 +2536,7 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "h"}));
         assert!(!is_error, "expected success, got: {resp_str}");
-        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let _resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     }
 
     /// Verify `handle_callers` deduplicates when aggregating multiple
@@ -2466,6 +2710,43 @@ mod tests {
         store.insert_edges(&[edge]).unwrap();
     }
 
+    fn insert_unresolved_call_reference(store: &Store, source: atlas_engine::SymbolId, name: &str) {
+        let source_symbol = store
+            .find_symbol_by_id(&source)
+            .unwrap()
+            .expect("source symbol should exist");
+        let range = atlas_engine::TextRange {
+            start_byte: 32,
+            end_byte: 32 + name.len() as u32,
+            start_line: 4,
+            start_column: 8,
+            end_line: 4,
+            end_column: 8 + name.len() as u32,
+        };
+        let reference = atlas_engine::ReferenceUse {
+            id: atlas_engine::ReferenceId::generate(
+                &source_symbol.file_id,
+                Some(&source),
+                range.start_byte,
+                range.end_byte,
+                name,
+                atlas_engine::ReferenceKind::Call,
+            ),
+            file_id: source_symbol.file_id,
+            source_symbol: Some(source),
+            scope_id: None,
+            kind: atlas_engine::ReferenceKind::Call,
+            text: name.to_string(),
+            name: name.to_string(),
+            receiver: None,
+            arity: Some(1),
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+        store.insert_references(&[reference]).unwrap();
+    }
+
     /// Verify that handle_path with ambiguous string qnames tries all
     /// SymbolId pairs and returns resolution + candidate metadata.
     ///
@@ -2527,11 +2808,7 @@ mod tests {
         let from_cands = ambiguity["from_candidates"]
             .as_array()
             .expect("from_candidates should be an array");
-        assert_eq!(
-            from_cands.len(),
-            2,
-            "from_candidates should have 2 entries"
-        );
+        assert_eq!(from_cands.len(), 2, "from_candidates should have 2 entries");
 
         let to_cands = ambiguity["to_candidates"]
             .as_array()
@@ -2591,11 +2868,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn path_not_found_target_reports_unresolved_call_hint() {
+        let store = test_store();
+        let from_id = insert_test_symbol(&store, "src/a.ts", "sender");
+        insert_unresolved_call_reference(&store, from_id, "copy_from_user");
+
+        let mut router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp, is_error) = router.handle_path(&json!({
+            "from": "sender",
+            "to": "copy_from_user"
+        }));
+
+        assert!(is_error, "target should remain unresolved: {resp}");
+        assert!(
+            resp.contains("unresolved call token")
+                && resp.contains("calls(direction=\"outgoing\")"),
+            "missing actionable unresolved-call hint: {resp}"
+        );
+    }
+
     // ── resolution_to_symbol_ids_and_meta unit tests ──────────────────
 
     #[test]
     fn resolution_helper_single_returns_id_and_meta() {
-        use atlas_engine::symbol_selector::{MatchInfo, MatchMode, PathMatchQuality, ResolvedSymbol};
+        use atlas_engine::symbol_selector::{
+            MatchInfo, MatchMode, PathMatchQuality, ResolvedSymbol,
+        };
         let sid = atlas_engine::SymbolId::from_bytes([1u8; 32]);
         let resolved = ResolvedSymbol {
             qualified_name: "foo".into(),
@@ -2610,7 +2911,10 @@ mod tests {
                 line_delta: None,
             },
         };
-        let resolution = SymbolResolution::Single { symbol_id: sid, resolved };
+        let resolution = SymbolResolution::Single {
+            symbol_id: sid,
+            resolved,
+        };
         let (ids, meta) = resolution_to_symbol_ids_and_meta(&resolution, "foo").unwrap();
         assert_eq!(ids, vec![sid]);
         assert!(meta.is_some());
@@ -2625,29 +2929,42 @@ mod tests {
             ScoredCandidate {
                 qualified_name: "foo".into(),
                 file_path: "a.rs".into(),
-                line: 10, kind: "function".into(), language: "rust".into(),
-                score: 100, reasons: vec![],
+                line: 10,
+                kind: "function".into(),
+                language: "rust".into(),
+                score: 100,
+                reasons: vec![],
                 symbol_ref: SymbolSelector {
                     qualified_name: "foo".into(),
                     file_path: Some("a.rs".into()),
-                    line: Some(10), kind: Some("function".into()), language: Some("rust".into()),
+                    line: Some(10),
+                    kind: Some("function".into()),
+                    language: Some("rust".into()),
                 },
                 symbol_id: sid1,
             },
             ScoredCandidate {
                 qualified_name: "foo".into(),
                 file_path: "b.rs".into(),
-                line: 20, kind: "function".into(), language: "rust".into(),
-                score: 80, reasons: vec![],
+                line: 20,
+                kind: "function".into(),
+                language: "rust".into(),
+                score: 80,
+                reasons: vec![],
                 symbol_ref: SymbolSelector {
                     qualified_name: "foo".into(),
                     file_path: Some("b.rs".into()),
-                    line: Some(20), kind: Some("function".into()), language: Some("rust".into()),
+                    line: Some(20),
+                    kind: Some("function".into()),
+                    language: Some("rust".into()),
                 },
                 symbol_id: sid2,
             },
         ];
-        let resolution = SymbolResolution::Ambiguous { candidates, score_gap: 20 };
+        let resolution = SymbolResolution::Ambiguous {
+            candidates,
+            score_gap: 20,
+        };
         let (ids, meta) = resolution_to_symbol_ids_and_meta(&resolution, "foo").unwrap();
         assert_eq!(ids, vec![sid1, sid2]);
         assert!(meta.is_some());
@@ -2885,13 +3202,21 @@ mod tests {
         let mut router = test_router(store);
         // Simulate a full index so prepare_focus_query returns early
         // without focus data — the equivalent of the old "no focus" path.
-        let signature = router.active_mut().store.index_signature().unwrap_or_default();
-        *router.active_mut().query_runtime.cache.cached_manual_full_index.write().unwrap_or_else(|e| e.into_inner()) =
-            Some((signature, true));
+        let signature = router
+            .active_mut()
+            .store
+            .index_signature()
+            .unwrap_or_default();
+        *router
+            .active_mut()
+            .query_runtime
+            .cache
+            .cached_manual_full_index
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some((signature, true));
         router.ensure_graph_initialized().unwrap();
         // focus is NOT active for this query — focus fields should NOT appear
-        let (resp_str, is_error) =
-            router.handle_impact(&json!({"symbol": "focus_test_fn"}));
+        let (resp_str, is_error) = router.handle_impact(&json!({"symbol": "focus_test_fn"}));
         assert!(!is_error, "expected success, got: {resp_str}");
         let resp: serde_json::Value =
             serde_json::from_str(&resp_str).expect("response should be valid JSON");
@@ -2913,8 +3238,8 @@ mod tests {
 
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
-        use atlas_engine::focus::runtime::{FocusResult, IndexMode};
         use crate::tools::analysis_envelope::AnalysisEnvelope;
+        use atlas_engine::focus::runtime::{FocusResult, IndexMode};
 
         let result = FocusResult {
             mode: IndexMode::FullIndex,
@@ -2929,8 +3254,7 @@ mod tests {
         };
 
         let args = json!({"symbol": "test"});
-        let lr = AnalysisEnvelope::new("test", &args)
-            .with_is_error(false);
+        let lr = AnalysisEnvelope::new("test", &args).with_is_error(false);
         let lr = crate::tools::apply_focus_result_to_lr(lr, &result);
 
         // Build with a mock store to verify no crash
@@ -2965,10 +3289,7 @@ mod tests {
         }
     }
     impl crate::tools::analysis_envelope::SnapshotStore for MockStore {
-        fn store_query_snapshot(
-            &mut self,
-            snapshot: crate::tools::query_snapshot::QuerySnapshot,
-        ) {
+        fn store_query_snapshot(&mut self, snapshot: crate::tools::query_snapshot::QuerySnapshot) {
             self.snapshots.push(snapshot);
         }
     }

@@ -67,13 +67,13 @@ impl StoreQueryRuntime {
         self.source_extractor.extract_source(symbol_id)
     }
 
-    /// Return a guidance hint when the project has no indexed files.
+    /// Return a guidance hint when the project has no materialized files.
     ///
-    /// Returns a user-facing guidance string suggesting the `index` tool
-    /// when the store has no indexed files, or an empty string otherwise.
+    /// Returns a user-facing guidance string suggesting scoped focus queries
+    /// when the store has no materialized files, or an empty string otherwise.
     pub fn not_indexed_guidance(&self) -> &'static str {
         if self.store.count_files().unwrap_or(0) == 0 {
-            "\nHint: The project has not been indexed yet. Please run the 'index' tool first (fast manifest indexing) to build the code index, then retry this query."
+            "\nHint: No project facts have been materialized in this MCP store yet. Start with a scoped search or provide a file_path/scope so focus can extract the relevant local code. For explicit project-wide indexing, use the CLI `atlas index` command outside MCP."
         } else {
             ""
         }

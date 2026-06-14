@@ -26,10 +26,7 @@ impl Store {
     /// All rows are inserted in a single transaction.  Call
     /// [`make_candidate_edges_visible`] to promote them after the build
     /// completes.
-    pub fn batch_insert_candidate_edges(
-        &self,
-        edges: &[CandidateEdge],
-    ) -> anyhow::Result<usize> {
+    pub fn batch_insert_candidate_edges(&self, edges: &[CandidateEdge]) -> anyhow::Result<usize> {
         if edges.is_empty() {
             return Ok(0);
         }

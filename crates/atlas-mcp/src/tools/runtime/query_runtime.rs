@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
-use atlas_engine::focus::query::QueryIntent;
 use atlas_engine::Store;
+use atlas_engine::focus::query::QueryIntent;
+use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 
 use super::cache_state::CacheState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
@@ -65,7 +65,11 @@ impl QueryRuntime {
     ///
     /// Returns `(None, vec![])` when the project has a full index.
     /// Returns `(Some(FocusResult), warnings)` when focus analysis completes.
-    pub fn prepare(&self, intent: &QueryIntent, store: &Store) -> (Option<FocusResult>, Vec<String>) {
+    pub fn prepare(
+        &self,
+        intent: &QueryIntent,
+        store: &Store,
+    ) -> (Option<FocusResult>, Vec<String>) {
         // 1. Cache check: skip if manual full index exists
         if self.cache.has_manual_full_index(store) {
             return (None, vec![]);
@@ -94,22 +98,6 @@ impl QueryRuntime {
     /// Delegates to [`CacheState::has_manual_full_index`].
     pub fn has_full_index(&self, store: &Store) -> bool {
         self.cache.has_manual_full_index(store)
-    }
-
-    /// Check whether the project has a full index — cached-only path.
-    ///
-    /// Reads the last-known state from the session cache without
-    /// accessing the store.  Useful for tests that need to bypass
-    /// `&Store`.
-    #[cfg(test)]
-    pub fn has_full_index_cached(&self) -> bool {
-        self.cache
-            .cached_manual_full_index
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|(_, v)| *v)
-            .unwrap_or(false)
     }
 
     /// Prepare for a graph-backed query: resolve symbols, run focus if needed,
@@ -148,8 +136,8 @@ pub struct PreparedGraphQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::Store;
     use crate::tools::lazy_refresh::LazyRefreshQueue;
+    use atlas_engine::Store;
     use std::sync::Arc;
 
     fn create_test_query_runtime() -> QueryRuntime {
@@ -182,7 +170,7 @@ mod tests {
             depth: None,
         };
         // FocusRuntime is initialized — prepare should attempt focus analysis.
-        let (result, warnings) = qr.prepare(&intent, &store);
+        let (_result, warnings) = qr.prepare(&intent, &store);
         // In an empty store, focus preparation may return None with warnings
         // (seed not found) or Some with a result. Either way, it should not
         // return the "not initialized" error path.
@@ -201,8 +189,7 @@ mod tests {
         store.init_schema().unwrap();
         // Simulate a full index by pre-populating the cache
         let signature = store.index_signature().unwrap_or_default();
-        *qr.cache.cached_manual_full_index.write().unwrap() =
-            Some((signature.clone(), true));
+        *qr.cache.cached_manual_full_index.write().unwrap() = Some((signature.clone(), true));
         let intent = QueryIntent::Calls {
             symbol_name: "test".into(),
             file_id: None,

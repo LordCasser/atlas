@@ -1,8 +1,8 @@
 //! Tests for reference_resolutions store module.
 
 use super::*;
-use types::ids::{FileId, ReferenceId};
 use types::ReferenceKind;
+use types::ids::{FileId, ReferenceId};
 
 fn test_store() -> Store {
     let store = Store::open_in_memory().unwrap();
@@ -146,9 +146,27 @@ fn test_make_visible_batch() {
     let updated = store.make_resolutions_visible("cl_batch", 1).unwrap();
     assert_eq!(updated, 3);
 
-    assert_eq!(store.get_visible_resolution(&ref_a, "cl_batch").unwrap().len(), 1);
-    assert_eq!(store.get_visible_resolution(&ref_b, "cl_batch").unwrap().len(), 1);
-    assert_eq!(store.get_visible_resolution(&ref_c, "cl_batch").unwrap().len(), 1);
+    assert_eq!(
+        store
+            .get_visible_resolution(&ref_a, "cl_batch")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_visible_resolution(&ref_b, "cl_batch")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .get_visible_resolution(&ref_c, "cl_batch")
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 // ── A4: Same reference in different closures ────────────────────────────────
@@ -224,20 +242,41 @@ fn test_get_resolution_counts() {
     // 2x closure_reachable, 1x closure_imports
     store
         .insert_reference_resolution(
-            &r1, "cl_counts", 1, "closure_reachable", None,
-            "closure_complete", "high", "closure_reachable", None,
+            &r1,
+            "cl_counts",
+            1,
+            "closure_reachable",
+            None,
+            "closure_complete",
+            "high",
+            "closure_reachable",
+            None,
         )
         .unwrap();
     store
         .insert_reference_resolution(
-            &r2, "cl_counts", 1, "closure_reachable", None,
-            "closure_complete", "high", "closure_reachable", None,
+            &r2,
+            "cl_counts",
+            1,
+            "closure_reachable",
+            None,
+            "closure_complete",
+            "high",
+            "closure_reachable",
+            None,
         )
         .unwrap();
     store
         .insert_reference_resolution(
-            &r3, "cl_counts", 1, "closure_imports", None,
-            "boundary", "low", "closure_imports", None,
+            &r3,
+            "cl_counts",
+            1,
+            "closure_imports",
+            None,
+            "boundary",
+            "low",
+            "closure_imports",
+            None,
         )
         .unwrap();
 
@@ -278,20 +317,41 @@ fn test_resolution_different_strategies() {
 
     store
         .insert_reference_resolution(
-            &r1, "cl_strategies", 1, "closure_reachable", None,
-            "closure_complete", "high", "closure_reachable", None,
+            &r1,
+            "cl_strategies",
+            1,
+            "closure_reachable",
+            None,
+            "closure_complete",
+            "high",
+            "closure_reachable",
+            None,
         )
         .unwrap();
     store
         .insert_reference_resolution(
-            &r2, "cl_strategies", 1, "closure_imports", None,
-            "boundary", "medium", "closure_imports", None,
+            &r2,
+            "cl_strategies",
+            1,
+            "closure_imports",
+            None,
+            "boundary",
+            "medium",
+            "closure_imports",
+            None,
         )
         .unwrap();
     store
         .insert_reference_resolution(
-            &r3, "cl_strategies", 1, "project_wide", None,
-            "partial", "low", "project_wide", None,
+            &r3,
+            "cl_strategies",
+            1,
+            "project_wide",
+            None,
+            "partial",
+            "low",
+            "project_wide",
+            None,
         )
         .unwrap();
 
@@ -311,9 +371,7 @@ fn test_resolution_different_strategies() {
 #[test]
 fn test_resolution_semantic_confidence_levels() {
     let store = test_store();
-    let refs: Vec<Vec<u8>> = (0..4)
-        .map(|i| make_ref_id(&format!("conf_{i}")))
-        .collect();
+    let refs: Vec<Vec<u8>> = (0..4).map(|i| make_ref_id(&format!("conf_{i}"))).collect();
 
     store.insert_closure_generation("cl_confidence").unwrap();
 
@@ -353,9 +411,7 @@ fn test_resolution_semantic_confidence_levels() {
 #[test]
 fn test_resolution_coverage_tier_variants() {
     let store = test_store();
-    let refs: Vec<Vec<u8>> = (0..4)
-        .map(|i| make_ref_id(&format!("tier_{i}")))
-        .collect();
+    let refs: Vec<Vec<u8>> = (0..4).map(|i| make_ref_id(&format!("tier_{i}"))).collect();
 
     store.insert_closure_generation("cl_tiers").unwrap();
 
@@ -379,9 +435,7 @@ fn test_resolution_coverage_tier_variants() {
     store.make_resolutions_visible("cl_tiers", 1).unwrap();
 
     for (i, expected_tier) in tiers.iter().enumerate() {
-        let resolutions = store
-            .get_visible_resolution(&refs[i], "cl_tiers")
-            .unwrap();
+        let resolutions = store.get_visible_resolution(&refs[i], "cl_tiers").unwrap();
         assert_eq!(resolutions.len(), 1);
         assert_eq!(
             resolutions[0].coverage_tier, *expected_tier,

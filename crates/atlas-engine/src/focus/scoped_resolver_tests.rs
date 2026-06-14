@@ -6,9 +6,7 @@ use std::sync::Arc;
 
 use db::Store;
 use resolution::ReferenceResolver;
-use types::enums::{
-    Language, ParseStatus, ReferenceKind, SymbolKind, Visibility,
-};
+use types::enums::{Language, ParseStatus, ReferenceKind, SymbolKind, Visibility};
 use types::ids::{FileId, ReferenceId, SymbolId};
 use types::structs::{FileFacts, FileInfo, ReferenceUse, SymbolDef, TextRange};
 
@@ -129,8 +127,13 @@ fn test_resolve_for_closure_writes_to_reference_resolutions_not_references() {
         Language::TypeScript,
         None,
     );
-    let lib_facts =
-        make_file_facts(lib_id, "lib.ts", Language::TypeScript, vec![greet_sym.clone()], vec![]);
+    let lib_facts = make_file_facts(
+        lib_id,
+        "lib.ts",
+        Language::TypeScript,
+        vec![greet_sym.clone()],
+        vec![],
+    );
     store.insert_file_facts(&lib_facts).unwrap();
 
     let main_id = FileId::generate("main.ts");
@@ -160,16 +163,17 @@ fn test_resolve_for_closure_writes_to_reference_resolutions_not_references() {
         .expect("resolve_for_closure failed");
 
     // (a) Reference was resolved
-    assert!(!resolved.is_empty(), "expected at least one resolved reference");
+    assert!(
+        !resolved.is_empty(),
+        "expected at least one resolved reference"
+    );
 
     // (a) Rows exist in reference_resolutions table
     let count = store.count_reference_resolutions("cl_test1", 1).unwrap();
     assert!(count > 0, "expected rows in reference_resolutions table");
 
     // (b) references.resolved_symbol_id is still NULL
-    let refs_in_db = store
-        .find_references_by_file(&main_id)
-        .unwrap();
+    let refs_in_db = store.find_references_by_file(&main_id).unwrap();
     let greet_ref = refs_in_db
         .iter()
         .find(|r| r.name == "greet")
@@ -308,9 +312,7 @@ fn test_make_resolutions_visible() {
     );
 
     // Make visible
-    let updated = store
-        .make_resolutions_visible("cl_visible", 1)
-        .unwrap();
+    let updated = store.make_resolutions_visible("cl_visible", 1).unwrap();
     assert!(updated > 0, "expected rows to become visible");
 
     // Now visible
@@ -357,8 +359,12 @@ fn test_resolve_for_closure_multiple_files() {
         Language::TypeScript,
         None,
     );
-    let ref_b_helper =
-        make_reference(file_b_id, "helper", Some(worker_sym.id), ReferenceKind::Call);
+    let ref_b_helper = make_reference(
+        file_b_id,
+        "helper",
+        Some(worker_sym.id),
+        ReferenceKind::Call,
+    );
     store
         .insert_file_facts(&make_file_facts(
             file_b_id,
@@ -379,8 +385,7 @@ fn test_resolve_for_closure_multiple_files() {
         Language::TypeScript,
         None,
     );
-    let ref_c_worker =
-        make_reference(file_c_id, "worker", Some(main_sym.id), ReferenceKind::Call);
+    let ref_c_worker = make_reference(file_c_id, "worker", Some(main_sym.id), ReferenceKind::Call);
     store
         .insert_file_facts(&make_file_facts(
             file_c_id,
@@ -407,7 +412,8 @@ fn test_resolve_for_closure_multiple_files() {
 
     let count = store.count_reference_resolutions("cl_multi", 1).unwrap();
     assert_eq!(
-        count as usize, resolved.len(),
+        count as usize,
+        resolved.len(),
         "reference_resolutions row count should match resolved pairs"
     );
 }
@@ -424,7 +430,10 @@ fn test_resolve_for_closure_empty_closure() {
         .resolve_for_closure("cl_empty", 1, &[], None)
         .expect("resolve_for_closure failed");
 
-    assert!(resolved.is_empty(), "empty closure should produce no resolved pairs");
+    assert!(
+        resolved.is_empty(),
+        "empty closure should produce no resolved pairs"
+    );
 
     let count = store.count_reference_resolutions("cl_empty", 1).unwrap();
     assert_eq!(count, 0, "empty closure should insert 0 rows");
@@ -548,9 +557,18 @@ fn test_visibility_filter_c_static() {
         Language::C,
         None,
     );
-    let ref_static = make_reference(file_b_id, "do_stuff", Some(caller_sym.id), ReferenceKind::Call);
-    let ref_public =
-        make_reference(file_b_id, "public_api", Some(caller_sym.id), ReferenceKind::Call);
+    let ref_static = make_reference(
+        file_b_id,
+        "do_stuff",
+        Some(caller_sym.id),
+        ReferenceKind::Call,
+    );
+    let ref_public = make_reference(
+        file_b_id,
+        "public_api",
+        Some(caller_sym.id),
+        ReferenceKind::Call,
+    );
     store
         .insert_file_facts(&make_file_facts(
             file_b_id,
@@ -641,10 +659,18 @@ fn test_visibility_filter_rust_private() {
         Language::Rust,
         None,
     );
-    let ref_private =
-        make_reference(file_b_id, "internal_helper", Some(main_sym.id), ReferenceKind::Call);
-    let ref_public =
-        make_reference(file_b_id, "public_fn", Some(main_sym.id), ReferenceKind::Call);
+    let ref_private = make_reference(
+        file_b_id,
+        "internal_helper",
+        Some(main_sym.id),
+        ReferenceKind::Call,
+    );
+    let ref_public = make_reference(
+        file_b_id,
+        "public_fn",
+        Some(main_sym.id),
+        ReferenceKind::Call,
+    );
     store
         .insert_file_facts(&make_file_facts(
             file_b_id,
@@ -687,9 +713,7 @@ fn test_visibility_filter_rust_private() {
     );
 
     // internal_helper should NOT be resolved (private in different file)
-    let private_resolved = resolved
-        .iter()
-        .any(|(r, _)| r.name == "internal_helper");
+    let private_resolved = resolved.iter().any(|(r, _)| r.name == "internal_helper");
     assert!(
         !private_resolved,
         "internal_helper (private) should NOT be resolved from crate_b (visibility filter)"

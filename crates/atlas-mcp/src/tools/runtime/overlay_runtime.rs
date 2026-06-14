@@ -51,7 +51,10 @@ impl OverlayRuntime {
     /// `RuntimeInvalidation` for fine-grained ordering control.
     #[allow(dead_code)]
     pub fn increment_generation(&self) -> u64 {
-        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed) + 1
+        self.invalidation
+            .overlay_generation
+            .fetch_add(1, Ordering::Relaxed)
+            + 1
     }
 
     /// Get the current overlay generation (for cache comparison).
@@ -66,8 +69,12 @@ impl OverlayRuntime {
     /// graph topology).
     pub fn upsert_fp_annotation(&self, annotation: &FpAnnotation) -> anyhow::Result<()> {
         self.store.upsert_fp_annotation(annotation)?;
-        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
-        self.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
+        self.invalidation
+            .overlay_generation
+            .fetch_add(1, Ordering::Relaxed);
+        self.invalidation
+            .graph_generation
+            .fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -77,8 +84,12 @@ impl OverlayRuntime {
     pub fn delete_fp_annotation(&self, annotation_id: &str) -> anyhow::Result<bool> {
         let deleted = self.store.delete_fp_annotation(annotation_id)?;
         if deleted {
-            self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
-            self.invalidation.graph_generation.fetch_add(1, Ordering::Relaxed);
+            self.invalidation
+                .overlay_generation
+                .fetch_add(1, Ordering::Relaxed);
+            self.invalidation
+                .graph_generation
+                .fetch_add(1, Ordering::Relaxed);
         }
         Ok(deleted)
     }
@@ -98,10 +109,21 @@ impl OverlayRuntime {
         meta: Option<&str>,
     ) -> anyhow::Result<String> {
         let rule_id = self.store.upsert_domain_rule(
-            language, rule_kind, pattern, pattern_kind, source, status, confidence, meta,
+            language,
+            rule_kind,
+            pattern,
+            pattern_kind,
+            source,
+            status,
+            confidence,
+            meta,
         )?;
-        self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
-        self.invalidation.analysis_config_generation.fetch_add(1, Ordering::Relaxed);
+        self.invalidation
+            .overlay_generation
+            .fetch_add(1, Ordering::Relaxed);
+        self.invalidation
+            .analysis_config_generation
+            .fetch_add(1, Ordering::Relaxed);
         Ok(rule_id)
     }
 
@@ -111,8 +133,12 @@ impl OverlayRuntime {
     pub fn delete_domain_rule(&self, rule_id: &str) -> anyhow::Result<bool> {
         let deleted = self.store.delete_domain_rule(rule_id)?;
         if deleted {
-            self.invalidation.overlay_generation.fetch_add(1, Ordering::Relaxed);
-            self.invalidation.analysis_config_generation.fetch_add(1, Ordering::Relaxed);
+            self.invalidation
+                .overlay_generation
+                .fetch_add(1, Ordering::Relaxed);
+            self.invalidation
+                .analysis_config_generation
+                .fetch_add(1, Ordering::Relaxed);
         }
         Ok(deleted)
     }
@@ -122,9 +148,8 @@ impl OverlayRuntime {
 mod tests {
     use super::*;
     use atlas_engine::{
-        FpAnnotation, Confidence, SymbolId, FileId,
-        SymbolDef, SymbolKind, FileFacts, FileInfo, TextRange, Language, ParseStatus,
-        Store,
+        Confidence, FileFacts, FileId, FileInfo, FpAnnotation, Language, ParseStatus, Store,
+        SymbolDef, SymbolId, SymbolKind, TextRange,
     };
     use std::sync::Arc;
 
@@ -258,7 +283,14 @@ mod tests {
     fn upsert_domain_rule_increments_generation() {
         let or = create_test_overlay_runtime();
         let result = or.upsert_domain_rule(
-            "c", "free_fn", "test_free", "exact", "user", "enabled", 1.0, None,
+            "c",
+            "free_fn",
+            "test_free",
+            "exact",
+            "user",
+            "enabled",
+            1.0,
+            None,
         );
         assert!(result.is_ok());
         assert!(or.current_generation() > 1);

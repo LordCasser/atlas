@@ -198,12 +198,18 @@ fn test_ensure_minimum_ready_blocks() {
     // It must have returned
     assert!(mgr.is_minimum_ready());
     // Should have taken at least some time (it was blocking)
-    assert!(elapsed.as_millis() > 0, "ensure_minimum_ready returned too fast");
+    assert!(
+        elapsed.as_millis() > 0,
+        "ensure_minimum_ready returned too fast"
+    );
 
     // Calling again should return immediately
     let start2 = Instant::now();
     mgr.ensure_minimum_ready();
-    assert!(start2.elapsed().as_millis() < 500, "ensure_minimum_ready should return immediately when already ready");
+    assert!(
+        start2.elapsed().as_millis() < 500,
+        "ensure_minimum_ready should return immediately when already ready"
+    );
 }
 
 // ── Test 8: tier1 populates hints ──────────────────────────────────────────
@@ -226,11 +232,11 @@ fn test_bootstrap_tier1_populates_hints() {
     mgr.ensure_minimum_ready();
 
     // Poll for symbol hints to appear (tier1 completion)
-    let hints_found = wait_for(
-        || store.has_symbol_hints("hello").unwrap_or(false),
-        10000,
+    let hints_found = wait_for(|| store.has_symbol_hints("hello").unwrap_or(false), 10000);
+    assert!(
+        hints_found,
+        "symbol hints did not appear for 'hello' within 10s"
     );
-    assert!(hints_found, "symbol hints did not appear for 'hello' within 10s");
 
     // Verify the hint is correct
     let hints = store.query_symbol_hints("hello").unwrap();
@@ -273,7 +279,10 @@ fn test_bootstrap_non_existent_project() {
     mgr.start();
 
     let ready = wait_for(|| mgr.is_minimum_ready(), 5000);
-    assert!(ready, "tier0 did not complete within 5s (non-existent project)");
+    assert!(
+        ready,
+        "tier0 did not complete within 5s (non-existent project)"
+    );
 
     // discover_files should return 0 for non-existent directory
     assert_eq!(store.file_inventory_count().unwrap(), 0);
@@ -289,7 +298,11 @@ fn test_bootstrap_tier2_extracts_manifest() {
     let root = temp.path().to_path_buf();
 
     // Write a Rust file with top-level functions
-    write_file(&root, "hello.rs", "pub fn hello() -> i32 { 42 }\npub fn world() -> &'static str { \"earth\" }");
+    write_file(
+        &root,
+        "hello.rs",
+        "pub fn hello() -> i32 { 42 }\npub fn world() -> &'static str { \"earth\" }",
+    );
 
     let store = test_store();
 
@@ -298,14 +311,25 @@ fn test_bootstrap_tier2_extracts_manifest() {
     let abs_path = root.join(rel_path);
     let file_id = types::ids::FileId::generate(rel_path);
     let metadata = fs::metadata(&abs_path).unwrap();
-    let mtime = metadata.modified().unwrap()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mtime = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let language = types::Language::from_path(std::path::Path::new(rel_path)).unwrap();
 
-    store.insert_file_inventory(
-        &file_id, rel_path, language.as_str(),
-        mtime, metadata.len() as i64, 0, 0,
-    ).unwrap();
+    store
+        .insert_file_inventory(
+            &file_id,
+            rel_path,
+            language.as_str(),
+            mtime,
+            metadata.len() as i64,
+            0,
+            0,
+        )
+        .unwrap();
 
     let content = fs::read(&abs_path).unwrap();
     let hash = blake3::hash(&content).to_hex().to_string();
@@ -319,14 +343,28 @@ fn test_bootstrap_tier2_extracts_manifest() {
 
     // Verify symbols table has entries
     let symbols = store.find_symbols_by_file(&file_id).unwrap();
-    assert!(!symbols.is_empty(), "symbols table should have entries after tier2");
+    assert!(
+        !symbols.is_empty(),
+        "symbols table should have entries after tier2"
+    );
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"hello"), "should contain 'hello': {names:?}");
-    assert!(names.contains(&"world"), "should contain 'world': {names:?}");
+    assert!(
+        names.contains(&"hello"),
+        "should contain 'hello': {names:?}"
+    );
+    assert!(
+        names.contains(&"world"),
+        "should contain 'world': {names:?}"
+    );
 
     // Verify extraction_state records manifest as complete
-    let state = store.get_file_extraction_state(&file_id, "manifest").unwrap();
-    assert!(state.is_some(), "extraction_state should have manifest record");
+    let state = store
+        .get_file_extraction_state(&file_id, "manifest")
+        .unwrap();
+    assert!(
+        state.is_some(),
+        "extraction_state should have manifest record"
+    );
     let (status, recorded_hash) = state.unwrap();
     assert_eq!(status, "complete");
     assert_eq!(recorded_hash, hash);
@@ -349,14 +387,25 @@ fn test_bootstrap_tier2_skips_already_extracted() {
     let abs_path = root.join(rel_path);
     let file_id = types::ids::FileId::generate(rel_path);
     let metadata = fs::metadata(&abs_path).unwrap();
-    let mtime = metadata.modified().unwrap()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let mtime = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let language = types::Language::from_path(std::path::Path::new(rel_path)).unwrap();
 
-    store.insert_file_inventory(
-        &file_id, rel_path, language.as_str(),
-        mtime, metadata.len() as i64, 0, 0,
-    ).unwrap();
+    store
+        .insert_file_inventory(
+            &file_id,
+            rel_path,
+            language.as_str(),
+            mtime,
+            metadata.len() as i64,
+            0,
+            0,
+        )
+        .unwrap();
 
     let content = fs::read(&abs_path).unwrap();
     let hash = blake3::hash(&content).to_hex().to_string();
@@ -370,7 +419,10 @@ fn test_bootstrap_tier2_skips_already_extracted() {
     // Second run — should extract 0 (already done)
     let running = AtomicBool::new(true);
     let count2 = super::bootstrap::bootstrap_tier2(&store, &root, &running).unwrap();
-    assert_eq!(count2, 0, "second run should extract 0 files (already complete)");
+    assert_eq!(
+        count2, 0,
+        "second run should extract 0 files (already complete)"
+    );
 }
 
 // ── Test 13: tier2 respects cancellation ────────────────────────────────────
@@ -384,7 +436,11 @@ fn test_bootstrap_tier2_respects_cancellation() {
 
     // Create several files
     for i in 0..20 {
-        write_file(&root, &format!("file_{i}.rs"), &format!("pub fn f{i}() -> i32 {{ {i} }}"));
+        write_file(
+            &root,
+            &format!("file_{i}.rs"),
+            &format!("pub fn f{i}() -> i32 {{ {i} }}"),
+        );
     }
 
     let store = test_store();
@@ -394,14 +450,25 @@ fn test_bootstrap_tier2_respects_cancellation() {
         let abs_path = root.join(&rel_path);
         let file_id = types::ids::FileId::generate(&rel_path);
         let metadata = fs::metadata(&abs_path).unwrap();
-        let mtime = metadata.modified().unwrap()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let mtime = metadata
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let language = types::Language::from_path(std::path::Path::new(&rel_path)).unwrap();
 
-        store.insert_file_inventory(
-            &file_id, &rel_path, language.as_str(),
-            mtime, metadata.len() as i64, 0, 0,
-        ).unwrap();
+        store
+            .insert_file_inventory(
+                &file_id,
+                &rel_path,
+                language.as_str(),
+                mtime,
+                metadata.len() as i64,
+                0,
+                0,
+            )
+            .unwrap();
 
         let content = fs::read(&abs_path).unwrap();
         let hash = blake3::hash(&content).to_hex().to_string();
@@ -417,5 +484,8 @@ fn test_bootstrap_tier2_respects_cancellation() {
     // (but we don't assert a specific count since batch size may vary)
     let running = AtomicBool::new(true);
     let count = super::bootstrap::bootstrap_tier2(&store, &root, &running).unwrap();
-    assert!(count > 0, "with cancellation = true, should extract at least 1 file");
+    assert!(
+        count > 0,
+        "with cancellation = true, should extract at least 1 file"
+    );
 }

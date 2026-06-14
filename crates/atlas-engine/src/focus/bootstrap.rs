@@ -14,19 +14,19 @@
 //! Tier 0 is the minimum barrier for focus queries to work.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::{fs, time};
 
 use anyhow::Result;
 use db::Store;
-use extraction::{create_frontend, extract_file_with_mode, ExtractionMode};
-use filesync::discovery::{discover_files, DiscoveryConfig};
+use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
+use filesync::discovery::{DiscoveryConfig, discover_files};
 use types::CapabilityMask;
-use types::ids::FileId;
 use types::Language;
+use types::ids::FileId;
 
 use db::SymbolHint;
 
@@ -516,7 +516,10 @@ pub(crate) fn bootstrap_tier2(
     }
 
     if extracted > 0 {
-        tracing::info!(extracted, "Tier2: opportunistic manifest extraction complete");
+        tracing::info!(
+            extracted,
+            "Tier2: opportunistic manifest extraction complete"
+        );
     }
 
     Ok(extracted)

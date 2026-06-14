@@ -75,7 +75,9 @@ pub(crate) fn write_symbols(
     symbols: &[SymbolDef],
     layer: &str,
 ) -> anyhow::Result<usize> {
-    let _span = debug_span!(target: "atlas_db", "db.write_symbols", count = symbols.len(), layer = %layer).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_symbols", count = symbols.len(), layer = %layer)
+            .entered();
     if symbols.is_empty() {
         return Ok(0);
     }
@@ -96,9 +98,7 @@ pub(crate) fn write_symbols(
         symbols_to_write = symbols
             .iter()
             .enumerate()
-            .filter_map(|(idx, s)| {
-                (last_index_by_id.get(&s.id) == Some(&idx)).then_some(s)
-            })
+            .filter_map(|(idx, s)| (last_index_by_id.get(&s.id) == Some(&idx)).then_some(s))
             .collect();
         valid_symbol_ids = symbols_to_write.iter().map(|s| s.id).collect();
         symbols_to_write
@@ -252,9 +252,18 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
                 let o = i * PARAMS_PER_ROW;
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},?{o10},?{o11},?{o12})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
+                    o1 = o + 1,
+                    o2 = o + 2,
+                    o3 = o + 3,
+                    o4 = o + 4,
+                    o5 = o + 5,
+                    o6 = o + 6,
+                    o7 = o + 7,
+                    o8 = o + 8,
+                    o9 = o + 9,
+                    o10 = o + 10,
+                    o11 = o + 11,
+                    o12 = o + 12,
                 )
             })
             .collect();
@@ -296,7 +305,8 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
 }
 
 pub(crate) fn write_references(conn: &Connection, refs: &[ReferenceUse]) -> anyhow::Result<()> {
-    let _span = debug_span!(target: "atlas_db", "db.write_references", count = refs.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_references", count = refs.len()).entered();
     if refs.is_empty() {
         return Ok(());
     }
@@ -396,7 +406,8 @@ pub(crate) fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow:
     if imports.is_empty() {
         return Ok(());
     }
-    let _span = debug_span!(target: "atlas_db", "db.write_imports", count = imports.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_imports", count = imports.len()).entered();
 
     const PARAMS_PER_ROW: usize = 15;
     const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 60
@@ -415,10 +426,21 @@ pub(crate) fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow:
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
                       ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
-                    o13 = o + 13, o14 = o + 14, o15 = o + 15,
+                    o1 = o + 1,
+                    o2 = o + 2,
+                    o3 = o + 3,
+                    o4 = o + 4,
+                    o5 = o + 5,
+                    o6 = o + 6,
+                    o7 = o + 7,
+                    o8 = o + 8,
+                    o9 = o + 9,
+                    o10 = o + 10,
+                    o11 = o + 11,
+                    o12 = o + 12,
+                    o13 = o + 13,
+                    o14 = o + 14,
+                    o15 = o + 15,
                 )
             })
             .collect();
@@ -501,7 +523,8 @@ pub(crate) fn write_callsites(conn: &Connection, callsites: &[Callsite]) -> anyh
     if callsites.is_empty() {
         return Ok(());
     }
-    let _span = debug_span!(target: "atlas_db", "db.write_callsites", count = callsites.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_callsites", count = callsites.len()).entered();
     write_callsites_impl(conn, callsites, true)
 }
 
@@ -514,7 +537,6 @@ fn write_callsites_impl(
     callsites: &[Callsite],
     replace_on_conflict: bool,
 ) -> anyhow::Result<()> {
-
     const PARAMS_PER_ROW: usize = 17;
     const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 50
 
@@ -543,10 +565,22 @@ fn write_callsites_impl(
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
                       ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
-                    o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
+                    o1 = o + 1,
+                    o2 = o + 2,
+                    o3 = o + 3,
+                    o4 = o + 4,
+                    o5 = o + 5,
+                    o6 = o + 6,
+                    o7 = o + 7,
+                    o8 = o + 8,
+                    o9 = o + 9,
+                    o10 = o + 10,
+                    o11 = o + 11,
+                    o12 = o + 12,
+                    o13 = o + 13,
+                    o14 = o + 14,
+                    o15 = o + 15,
+                    o16 = o + 16,
                     o17 = o + 17,
                 )
             })
@@ -602,7 +636,8 @@ pub(crate) fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyh
     if bindings.is_empty() {
         return Ok(());
     }
-    let _span = debug_span!(target: "atlas_db", "db.write_bindings", count = bindings.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_bindings", count = bindings.len()).entered();
 
     const PARAMS_PER_ROW: usize = 13;
     const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 69
@@ -620,9 +655,18 @@ pub(crate) fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyh
                 format!(
                     "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
                       ?{o10},?{o11},?{o12},?{o13})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
+                    o1 = o + 1,
+                    o2 = o + 2,
+                    o3 = o + 3,
+                    o4 = o + 4,
+                    o5 = o + 5,
+                    o6 = o + 6,
+                    o7 = o + 7,
+                    o8 = o + 8,
+                    o9 = o + 9,
+                    o10 = o + 10,
+                    o11 = o + 11,
+                    o12 = o + 12,
                     o13 = o + 13,
                 )
             })
@@ -682,7 +726,8 @@ pub(crate) fn write_binding_uses(conn: &Connection, uses: &[BindingUse]) -> anyh
 }
 
 pub(crate) fn write_data_nodes(conn: &Connection, nodes: &[DataNode]) -> anyhow::Result<()> {
-    let _span = debug_span!(target: "atlas_db", "db.write_data_nodes", count = nodes.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_data_nodes", count = nodes.len()).entered();
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO data_nodes
            (data_node_id, file_id, function_id, kind, binding_id, callsite_id,
@@ -720,7 +765,8 @@ pub(crate) fn write_dataflow_edges(
     if edges.is_empty() {
         return Ok(());
     }
-    let _span = debug_span!(target: "atlas_db", "db.write_dataflow_edges", count = edges.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_dataflow_edges", count = edges.len()).entered();
 
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO dataflow_edges
@@ -749,7 +795,8 @@ pub(crate) fn write_dataflow_edges(
 }
 
 pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::Result<()> {
-    let _span = debug_span!(target: "atlas_db", "db.write_cfg_nodes", count = nodes.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_cfg_nodes", count = nodes.len()).entered();
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO cfg_nodes
            (cfg_node_id, function_id, kind,
@@ -788,7 +835,8 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
 }
 
 pub(crate) fn write_cfg_edges(conn: &Connection, edges: &[CfgEdge]) -> anyhow::Result<()> {
-    let _span = debug_span!(target: "atlas_db", "db.write_cfg_edges", count = edges.len()).entered();
+    let _span =
+        debug_span!(target: "atlas_db", "db.write_cfg_edges", count = edges.len()).entered();
     let mut stmt = conn.prepare(
         r#"INSERT OR REPLACE INTO cfg_edges
            (cfg_edge_id, source_node, target_node, kind)
@@ -874,12 +922,17 @@ fn write_file_facts_inner(
 
     // Defensive FK guard — edges + callsites
     if !facts.raw_edges.is_empty() || !facts.callsites.is_empty() {
-        let _fk_span = debug_span!(target: "atlas_db", "db.fk_guard", file = %facts.file.path).entered();
+        let _fk_span =
+            debug_span!(target: "atlas_db", "db.fk_guard", file = %facts.file.path).entered();
         let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
 
         if !facts.raw_edges.is_empty() {
             let t0 = Instant::now();
-            if facts.raw_edges.iter().all(|e| valid_sources.contains(&e.source)) {
+            if facts
+                .raw_edges
+                .iter()
+                .all(|e| valid_sources.contains(&e.source))
+            {
                 write_edges(conn, &facts.raw_edges)?;
             } else {
                 let valid_edges: Vec<_> = facts
@@ -896,7 +949,11 @@ fn write_file_facts_inner(
         }
         if !facts.callsites.is_empty() {
             let t0 = Instant::now();
-            if facts.callsites.iter().all(|cs| valid_sources.contains(&cs.caller)) {
+            if facts
+                .callsites
+                .iter()
+                .all(|cs| valid_sources.contains(&cs.caller))
+            {
                 if hot_tables_insert_only {
                     write_callsites_insert_only(conn, &facts.callsites)?;
                 } else {
@@ -961,7 +1018,8 @@ fn write_file_facts_inner(
         if !facts.binding_uses.is_empty() {
             let t0 = Instant::now();
             if facts.binding_uses.iter().all(|bu| {
-                bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
+                bu.binding_id
+                    .is_some_and(|bid| valid_binding_ids.contains(&bid))
                     && valid_scope_ids.contains(&bu.scope_id)
             }) {
                 write_binding_uses(conn, &facts.binding_uses)?;
@@ -970,7 +1028,8 @@ fn write_file_facts_inner(
                     .binding_uses
                     .iter()
                     .filter(|bu| {
-                        bu.binding_id.is_some_and(|bid| valid_binding_ids.contains(&bid))
+                        bu.binding_id
+                            .is_some_and(|bid| valid_binding_ids.contains(&bid))
                             && valid_scope_ids.contains(&bu.scope_id)
                     })
                     .cloned()
@@ -984,15 +1043,19 @@ fn write_file_facts_inner(
     }
 
     // Dataflow + CFG data — FK guarded
-    if !facts.data_nodes.is_empty() || !facts.dataflow_edges.is_empty()
-        || !facts.cfg_nodes.is_empty() || !facts.cfg_edges.is_empty()
+    if !facts.data_nodes.is_empty()
+        || !facts.dataflow_edges.is_empty()
+        || !facts.cfg_nodes.is_empty()
+        || !facts.cfg_edges.is_empty()
     {
         let valid_sources: HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
         let valid_scope_ids: HashSet<_> = facts.scopes.iter().map(|s| s.id).collect();
         let valid_binding_ids: HashSet<BindingId> = if facts.bindings.is_empty() {
             HashSet::new()
         } else {
-            facts.bindings.iter()
+            facts
+                .bindings
+                .iter()
                 .filter(|b| {
                     b.function_id.is_none_or(|fid| valid_sources.contains(&fid))
                         && valid_scope_ids.contains(&b.scope_id)
@@ -1005,8 +1068,11 @@ fn write_file_facts_inner(
         if !facts.data_nodes.is_empty() {
             let t0 = Instant::now();
             if facts.data_nodes.iter().all(|dn| {
-                dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                    && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+                dn.function_id
+                    .is_none_or(|fid| valid_sources.contains(&fid))
+                    && dn
+                        .binding_id
+                        .is_none_or(|bid| valid_binding_ids.contains(&bid))
             }) {
                 write_data_nodes(conn, &facts.data_nodes)?;
             } else {
@@ -1014,8 +1080,11 @@ fn write_file_facts_inner(
                     .data_nodes
                     .iter()
                     .filter(|dn| {
-                        dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                            && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+                        dn.function_id
+                            .is_none_or(|fid| valid_sources.contains(&fid))
+                            && dn
+                                .binding_id
+                                .is_none_or(|bid| valid_binding_ids.contains(&bid))
                     })
                     .cloned()
                     .collect();
@@ -1029,18 +1098,25 @@ fn write_file_facts_inner(
             let valid_node_ids: HashSet<_> = if facts.data_nodes.is_empty() {
                 HashSet::new()
             } else {
-                facts.data_nodes.iter()
+                facts
+                    .data_nodes
+                    .iter()
                     .filter(|dn| {
-                        dn.function_id.is_none_or(|fid| valid_sources.contains(&fid))
-                            && dn.binding_id.is_none_or(|bid| valid_binding_ids.contains(&bid))
+                        dn.function_id
+                            .is_none_or(|fid| valid_sources.contains(&fid))
+                            && dn
+                                .binding_id
+                                .is_none_or(|bid| valid_binding_ids.contains(&bid))
                     })
                     .map(|dn| dn.id)
                     .collect()
             };
             let t0 = Instant::now();
-            if facts.dataflow_edges.iter().all(|e| {
-                valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target)
-            }) {
+            if facts
+                .dataflow_edges
+                .iter()
+                .all(|e| valid_node_ids.contains(&e.source) && valid_node_ids.contains(&e.target))
+            {
                 write_dataflow_edges(conn, &facts.dataflow_edges)?;
             } else {
                 let safe_edges: Vec<_> = facts
@@ -1059,7 +1135,11 @@ fn write_file_facts_inner(
         }
         if !facts.cfg_nodes.is_empty() {
             let t0 = Instant::now();
-            if facts.cfg_nodes.iter().all(|cn| valid_sources.contains(&cn.function_id)) {
+            if facts
+                .cfg_nodes
+                .iter()
+                .all(|cn| valid_sources.contains(&cn.function_id))
+            {
                 write_cfg_nodes(conn, &facts.cfg_nodes)?;
             } else {
                 let safe_cfg: Vec<_> = facts
@@ -1082,9 +1162,11 @@ fn write_file_facts_inner(
                 .map(|cn| cn.id)
                 .collect();
             let t0 = Instant::now();
-            if facts.cfg_edges.iter().all(|e| {
-                valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target)
-            }) {
+            if facts
+                .cfg_edges
+                .iter()
+                .all(|e| valid_cfg_ids.contains(&e.source) && valid_cfg_ids.contains(&e.target))
+            {
                 write_cfg_edges(conn, &facts.cfg_edges)?;
             } else {
                 let safe_cfg_edges: Vec<_> = facts
@@ -1167,16 +1249,15 @@ mod tests {
                 location_0 INTEGER, location_1 INTEGER, location_2 INTEGER,
                 location_3 INTEGER, location_4 INTEGER, location_5 INTEGER,
                 confidence REAL
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
     #[test]
     fn tracing_spans_do_not_panic_write_symbols() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
         tracing::subscriber::with_default(subscriber, || {
             let conn = in_memory_conn();
             let result = write_symbols(&conn, &[], "structural");
@@ -1211,9 +1292,7 @@ mod tests {
 
     #[test]
     fn tracing_spans_do_not_panic_write_dataflow_edges() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
         tracing::subscriber::with_default(subscriber, || {
             let conn = in_memory_conn();
             let result = write_dataflow_edges(&conn, &[]);
@@ -1225,8 +1304,7 @@ mod tests {
 
     fn make_dataflow_edge(i: u32) -> DataFlowEdge {
         let file_id = FileId::generate(&format!("src/test_{i}.c"));
-        let func_id =
-            SymbolId::generate(&file_id, "c", "main", "function", None);
+        let func_id = SymbolId::generate(&file_id, "c", "main", "function", None);
         let src = DataNodeId::generate(
             &file_id,
             Some(&func_id),
@@ -1281,11 +1359,7 @@ mod tests {
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM dataflow_edges", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} edges"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} edges");
         }
     }
 
@@ -1333,17 +1407,16 @@ mod tests {
                 location_0 INTEGER, location_1 INTEGER, location_2 INTEGER,
                 location_3 INTEGER, location_4 INTEGER, location_5 INTEGER,
                 metadata TEXT, resolved_by TEXT
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
     fn make_raw_edge(i: u32, with_location: bool) -> RawEdge {
         let file_id = FileId::generate(&format!("src/test_e{i}.ts"));
-        let src =
-            SymbolId::generate(&file_id, "typescript", &format!("Src{i}"), "function", None);
-        let tgt =
-            SymbolId::generate(&file_id, "typescript", &format!("Tgt{i}"), "function", None);
+        let src = SymbolId::generate(&file_id, "typescript", &format!("Src{i}"), "function", None);
+        let tgt = SymbolId::generate(&file_id, "typescript", &format!("Tgt{i}"), "function", None);
         let edge_id = EdgeId::generate(&src, &tgt, "calls", None, "tree_sitter");
         RawEdge {
             id: edge_id,
@@ -1384,18 +1457,13 @@ mod tests {
         for count in [0usize, 1, 59, 60, 61, 120] {
             conn.execute("DELETE FROM symbol_edges", []).unwrap();
 
-            let edges: Vec<RawEdge> =
-                (0..count as u32).map(|i| make_raw_edge(i, true)).collect();
+            let edges: Vec<RawEdge> = (0..count as u32).map(|i| make_raw_edge(i, true)).collect();
             write_edges(&conn, &edges).unwrap();
 
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM symbol_edges", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} edges"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} edges");
         }
     }
 
@@ -1421,10 +1489,7 @@ mod tests {
         // Edge 1 has no location — all NULL
         let row = stmt
             .query_row(params![edges[1].id], |row| {
-                Ok((
-                    row.get::<_, Option<i64>>(0)?,
-                    row.get::<_, Option<i64>>(1)?,
-                ))
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?))
             })
             .unwrap();
         assert!(row.0.is_none(), "location_0 should be NULL");
@@ -1432,11 +1497,15 @@ mod tests {
 
         // Edge 0 has location — non-NULL
         let row = stmt
-            .query_row(params![edges[0].id], |row| {
-                Ok(row.get::<_, Option<i64>>(0)?)
-            })
+            .query_row(
+                params![edges[0].id],
+                |row| Ok(row.get::<_, Option<i64>>(0)?),
+            )
             .unwrap();
-        assert!(row.is_some(), "location_0 should be non-NULL for edge with location");
+        assert!(
+            row.is_some(),
+            "location_0 should be non-NULL for edge with location"
+        );
     }
 
     #[test]
@@ -1470,14 +1539,15 @@ mod tests {
         assert_eq!(row.2, edge.confidence.as_f32() as f64);
         assert_eq!(row.3, edge.provenance.as_str());
         assert_eq!(row.4.as_deref(), Some("meta_0"));
-        assert_eq!(row.5.as_deref(), Some(ResolutionStrategy::ExactMatch.as_str()));
+        assert_eq!(
+            row.5.as_deref(),
+            Some(ResolutionStrategy::ExactMatch.as_str())
+        );
     }
 
     #[test]
     fn tracing_spans_do_not_panic_write_cfg_nodes() {
-        let subscriber = tracing_subscriber::fmt()
-            .with_test_writer()
-            .finish();
+        let subscriber = tracing_subscriber::fmt().with_test_writer().finish();
         tracing::subscriber::with_default(subscriber, || {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(
@@ -1488,8 +1558,9 @@ mod tests {
                     range_start_line INTEGER NOT NULL, range_start_column INTEGER NOT NULL,
                     range_end_line INTEGER NOT NULL, range_end_column INTEGER NOT NULL,
                     semantic_effects_json TEXT, call_context TEXT
-                );"
-            ).unwrap();
+                );",
+            )
+            .unwrap();
             let result = write_cfg_nodes(&conn, &[]);
             assert!(result.is_ok());
         });
@@ -1506,8 +1577,9 @@ mod tests {
                 range_start_byte INTEGER, range_end_byte INTEGER,
                 range_start_line INTEGER, range_start_column INTEGER,
                 range_end_line INTEGER, range_end_column INTEGER
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
@@ -1547,7 +1619,14 @@ mod tests {
         const CHUNK_SIZE: usize = 75;
 
         // Various counts: 0, 1, chunk-1, chunk, chunk+1, 2*chunk+1
-        for count in [0usize, 1, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 2 + 1] {
+        for count in [
+            0usize,
+            1,
+            CHUNK_SIZE - 1,
+            CHUNK_SIZE,
+            CHUNK_SIZE + 1,
+            CHUNK_SIZE * 2 + 1,
+        ] {
             let conn = scopes_table_conn();
 
             let scopes: Vec<ScopeDef> = (0..count as u32).map(make_scope_def).collect();
@@ -1556,11 +1635,7 @@ mod tests {
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM scopes", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} scopes"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} scopes");
         }
     }
 
@@ -1608,15 +1683,21 @@ mod tests {
                 range_start_byte INTEGER, range_end_byte INTEGER,
                 range_start_line INTEGER, range_start_column INTEGER,
                 range_end_line INTEGER, range_end_column INTEGER
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
     fn make_import_def(i: u32) -> ImportDef {
         let file_id = FileId::generate(&format!("src/test_i{i}.ts"));
-        let import_id =
-            ImportId::generate(&file_id, "import", &format!("mod_{i}"), Some(&format!("name_{i}")), i * 20);
+        let import_id = ImportId::generate(
+            &file_id,
+            "import",
+            &format!("mod_{i}"),
+            Some(&format!("name_{i}")),
+            i * 20,
+        );
         ImportDef {
             id: import_id,
             file_id,
@@ -1652,7 +1733,14 @@ mod tests {
 
         const CHUNK_SIZE: usize = 60;
 
-        for count in [0usize, 1, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 2 + 1] {
+        for count in [
+            0usize,
+            1,
+            CHUNK_SIZE - 1,
+            CHUNK_SIZE,
+            CHUNK_SIZE + 1,
+            CHUNK_SIZE * 2 + 1,
+        ] {
             let conn = imports_table_conn();
 
             let imports: Vec<ImportDef> = (0..count as u32).map(make_import_def).collect();
@@ -1661,11 +1749,7 @@ mod tests {
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} imports"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} imports");
         }
     }
 
@@ -1717,8 +1801,9 @@ mod tests {
                 callee_start_line INTEGER, callee_start_column INTEGER,
                 callee_end_line INTEGER, callee_end_column INTEGER,
                 callee_start_byte INTEGER, callee_end_byte INTEGER
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
@@ -1779,7 +1864,14 @@ mod tests {
 
         const CHUNK_SIZE: usize = 50;
 
-        for count in [0usize, 1, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 2 + 1] {
+        for count in [
+            0usize,
+            1,
+            CHUNK_SIZE - 1,
+            CHUNK_SIZE,
+            CHUNK_SIZE + 1,
+            CHUNK_SIZE * 2 + 1,
+        ] {
             let conn = callsites_table_conn();
 
             let callsites: Vec<Callsite> = (0..count as u32).map(make_callsite).collect();
@@ -1788,11 +1880,7 @@ mod tests {
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM callsites", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} callsites"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} callsites");
         }
     }
 
@@ -1838,8 +1926,9 @@ mod tests {
                 range_start_byte INTEGER, range_end_byte INTEGER,
                 range_start_line INTEGER, range_start_column INTEGER,
                 range_end_line INTEGER, range_end_column INTEGER
-            );"
-        ).unwrap();
+            );",
+        )
+        .unwrap();
         conn
     }
 
@@ -1853,7 +1942,8 @@ mod tests {
             None,
         );
         let scope_id = ScopeId::generate(&file_id, None, "function", i * 100);
-        let binding_id = BindingId::generate(&file_id, &scope_id, "local", &format!("var_{i}"), i * 10);
+        let binding_id =
+            BindingId::generate(&file_id, &scope_id, "local", &format!("var_{i}"), i * 10);
         BindingDef {
             id: binding_id,
             file_id,
@@ -1887,7 +1977,14 @@ mod tests {
 
         const CHUNK_SIZE: usize = 69;
 
-        for count in [0usize, 1, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 2 + 1] {
+        for count in [
+            0usize,
+            1,
+            CHUNK_SIZE - 1,
+            CHUNK_SIZE,
+            CHUNK_SIZE + 1,
+            CHUNK_SIZE * 2 + 1,
+        ] {
             let conn = bindings_table_conn();
 
             let bindings: Vec<BindingDef> = (0..count as u32).map(make_binding_def).collect();
@@ -1896,11 +1993,7 @@ mod tests {
             let stored: i64 = conn
                 .query_row("SELECT COUNT(*) FROM bindings", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(
-                stored,
-                count as i64,
-                "count mismatch for {count} bindings"
-            );
+            assert_eq!(stored, count as i64, "count mismatch for {count} bindings");
         }
     }
 
@@ -2012,8 +2105,12 @@ mod tests {
 
     fn facts_help_cs(file_id: FileId, caller: SymbolId, _callee: SymbolId, idx: u32) -> Callsite {
         let ref_id = ReferenceId::generate(
-            &file_id, Some(&caller), idx * 100, idx * 100 + 20,
-            "target", ReferenceKind::Call,
+            &file_id,
+            Some(&caller),
+            idx * 100,
+            idx * 100 + 20,
+            "target",
+            ReferenceKind::Call,
         );
         let rng = facts_help_range(idx, 20);
         Callsite {
@@ -2027,8 +2124,13 @@ mod tests {
         }
     }
 
-    fn facts_help_binding(file_id: FileId, function_id: Option<SymbolId>,
-                           scope_id: ScopeId, symbol_id: Option<SymbolId>, idx: u32) -> BindingDef {
+    fn facts_help_binding(
+        file_id: FileId,
+        function_id: Option<SymbolId>,
+        scope_id: ScopeId,
+        symbol_id: Option<SymbolId>,
+        idx: u32,
+    ) -> BindingDef {
         BindingDef {
             id: BindingId::generate(&file_id, &scope_id, "local", &format!("v{idx}"), idx * 10),
             file_id,
@@ -2041,9 +2143,20 @@ mod tests {
         }
     }
 
-    fn facts_help_bu(file_id: FileId, binding_id: BindingId, scope_id: ScopeId, idx: u32) -> BindingUse {
+    fn facts_help_bu(
+        file_id: FileId,
+        binding_id: BindingId,
+        scope_id: ScopeId,
+        idx: u32,
+    ) -> BindingUse {
         BindingUse {
-            id: BindingUseId::generate(&file_id, Some(&binding_id), None, &format!("v{idx}"), idx * 20),
+            id: BindingUseId::generate(
+                &file_id,
+                Some(&binding_id),
+                None,
+                &format!("v{idx}"),
+                idx * 20,
+            ),
             file_id,
             scope_id,
             binding_id: Some(binding_id),
@@ -2053,10 +2166,21 @@ mod tests {
         }
     }
 
-    fn facts_help_dn(file_id: FileId, function_id: Option<SymbolId>,
-                      binding_id: Option<BindingId>, idx: u32) -> DataNode {
+    fn facts_help_dn(
+        file_id: FileId,
+        function_id: Option<SymbolId>,
+        binding_id: Option<BindingId>,
+        idx: u32,
+    ) -> DataNode {
         DataNode {
-            id: DataNodeId::generate(&file_id, function_id.as_ref(), "local", Some("x"), Some("x"), idx * 30),
+            id: DataNodeId::generate(
+                &file_id,
+                function_id.as_ref(),
+                "local",
+                Some("x"),
+                Some("x"),
+                idx * 30,
+            ),
             file_id,
             function_id,
             kind: DataNodeKind::Local,
@@ -2081,7 +2205,11 @@ mod tests {
     }
 
     fn facts_help_cn(_file_id: FileId, function_id: SymbolId, idx: u32) -> CfgNode {
-        CfgNode::new(&function_id, CfgNodeKind::Statement, facts_help_range(idx, 30))
+        CfgNode::new(
+            &function_id,
+            CfgNodeKind::Statement,
+            facts_help_range(idx, 30),
+        )
     }
 
     fn facts_help_ce(source: CfgNodeId, target: CfgNodeId) -> CfgEdge {
@@ -2089,7 +2217,8 @@ mod tests {
     }
 
     fn count_rows(conn: &Connection, table: &str) -> i64 {
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
@@ -2160,7 +2289,13 @@ mod tests {
 
         let sym0 = facts_help_sym(file_id, "func_a", 0);
         // An orphan symbol ID not present in facts.symbols
-        let orphan_id = SymbolId::generate(&FileId::generate("ghost.rs"), "rust", "ghost", "function", None);
+        let orphan_id = SymbolId::generate(
+            &FileId::generate("ghost.rs"),
+            "rust",
+            "ghost",
+            "function",
+            None,
+        );
         let valid_edge = facts_help_edge(file_id, sym0.id, sym0.id, 0);
         let invalid_edge = facts_help_edge(file_id, orphan_id, sym0.id, 1);
 
@@ -2352,29 +2487,77 @@ mod tests {
         let timing = write_file_facts(&conn, &facts).unwrap();
 
         // file insert always runs → should be non-zero
-        assert!(timing.files_ns > 0, "files_ns should be >0, got {}", timing.files_ns);
+        assert!(
+            timing.files_ns > 0,
+            "files_ns should be >0, got {}",
+            timing.files_ns
+        );
         // extraction_state write always runs
-        assert!(timing.extraction_state_ns > 0, "extraction_state_ns should be >0, got {}", timing.extraction_state_ns);
+        assert!(
+            timing.extraction_state_ns > 0,
+            "extraction_state_ns should be >0, got {}",
+            timing.extraction_state_ns
+        );
         // symbols were written
-        assert!(timing.symbols_ns > 0, "symbols_ns should be >0, got {}", timing.symbols_ns);
+        assert!(
+            timing.symbols_ns > 0,
+            "symbols_ns should be >0, got {}",
+            timing.symbols_ns
+        );
         // scopes were written
-        assert!(timing.scopes_ns > 0, "scopes_ns should be >0, got {}", timing.scopes_ns);
+        assert!(
+            timing.scopes_ns > 0,
+            "scopes_ns should be >0, got {}",
+            timing.scopes_ns
+        );
         // edges were written (included in references_ns)
-        assert!(timing.references_ns > 0, "references_ns should be >0, got {}", timing.references_ns);
+        assert!(
+            timing.references_ns > 0,
+            "references_ns should be >0, got {}",
+            timing.references_ns
+        );
         // callsites were written
-        assert!(timing.callsites_ns > 0, "callsites_ns should be >0, got {}", timing.callsites_ns);
+        assert!(
+            timing.callsites_ns > 0,
+            "callsites_ns should be >0, got {}",
+            timing.callsites_ns
+        );
         // bindings were written
-        assert!(timing.bindings_ns > 0, "bindings_ns should be >0, got {}", timing.bindings_ns);
+        assert!(
+            timing.bindings_ns > 0,
+            "bindings_ns should be >0, got {}",
+            timing.bindings_ns
+        );
         // binding_uses were written
-        assert!(timing.binding_uses_ns > 0, "binding_uses_ns should be >0, got {}", timing.binding_uses_ns);
+        assert!(
+            timing.binding_uses_ns > 0,
+            "binding_uses_ns should be >0, got {}",
+            timing.binding_uses_ns
+        );
         // data_nodes were written
-        assert!(timing.data_nodes_ns > 0, "data_nodes_ns should be >0, got {}", timing.data_nodes_ns);
+        assert!(
+            timing.data_nodes_ns > 0,
+            "data_nodes_ns should be >0, got {}",
+            timing.data_nodes_ns
+        );
         // dataflow_edges were written
-        assert!(timing.dataflow_edges_ns > 0, "dataflow_edges_ns should be >0, got {}", timing.dataflow_edges_ns);
+        assert!(
+            timing.dataflow_edges_ns > 0,
+            "dataflow_edges_ns should be >0, got {}",
+            timing.dataflow_edges_ns
+        );
         // cfg_nodes were written
-        assert!(timing.cfg_nodes_ns > 0, "cfg_nodes_ns should be >0, got {}", timing.cfg_nodes_ns);
+        assert!(
+            timing.cfg_nodes_ns > 0,
+            "cfg_nodes_ns should be >0, got {}",
+            timing.cfg_nodes_ns
+        );
         // cfg_edges were written
-        assert!(timing.cfg_edges_ns > 0, "cfg_edges_ns should be >0, got {}", timing.cfg_edges_ns);
+        assert!(
+            timing.cfg_edges_ns > 0,
+            "cfg_edges_ns should be >0, got {}",
+            timing.cfg_edges_ns
+        );
         // imports had nothing to write
         assert_eq!(timing.imports_ns, 0);
         // commit is not measured in write_file_facts

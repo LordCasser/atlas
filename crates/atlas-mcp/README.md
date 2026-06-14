@@ -1,93 +1,89 @@
 # atlas-mcp
 
-MCP (Model Context Protocol) server for Atlas. Exposes 18 tools over stdio JSON-RPC for AI coding assistants.
+MCP (Model Context Protocol) server for Atlas. The server starts without an
+active project; clients must call `project(action="open")` before code-analysis
+tools are available.
 
-## Architecture
+## Runtime Flow
 
 ```
-rmcp::transport::stdio()
-    │
-    ▼
-AtlasMcpService (ServerHandler)
-    ├── list_tools → make_all_tools()
-    └── call_tool
-        ├── ensure_graph_initialized (lazy, on first graph-backed call)
-        ├── maybe_refresh_graph (detect external index changes)
-        └── ToolRouter::call_tool() → dispatch to handlers
+rmcp stdio JSON-RPC
+    |
+    v
+AtlasMcpService
+    |-- list_tools -> make_all_tools()
+    `-- call_tool
+        |-- project(status/open/files) may run before an active project
+        |-- active project required for all code queries
+        |-- scoped query prepares FocusRuntime when no rich index exists
+        |-- graph cache refreshes after focus/lazy writes
+        `-- ToolRouter handler
 ```
+
+`project(action="open")` is synchronous and does not scan or index the whole
+tree. Storage controls whether focus-produced facts are durable:
+
+- `storage="auto"` reuses a compatible `project/.atlas/atlas.db`; otherwise it
+  opens a memory store.
+- `storage="memory"` ignores any `.atlas` directory and leaves no project
+  footprint.
+- `storage="persistent"` opens or creates `project/.atlas/atlas.db`.
+
+Explicit project-wide indexing is CLI-only: run `atlas index` outside MCP when
+you want a reusable full-project cache.
 
 ## Tools
 
-| Tool | Handler module | Requires graph? |
-|------|---------------|-----------------|
-| `project` | `open_project.rs` | No — switches active project |
-| `index` | `index.rs` | No — writes to store |
-| `tasks` | `mod.rs` task helpers | No — lists in-process tasks |
-| `task_status` | `mod.rs` task helpers | No — task registry |
-| `wait_for_task` | `wait_for.rs` | No — task completion polling |
-| `resume_task` | `resume.rs` | No — re-executes snapshotted query |
-| `search` | `search.rs` | No — scoped store query, optional bounded structural parsing |
-| `symbol` | `search.rs` | Yes |
-| `calls` | `mod.rs` / `graph.rs` | Yes |
-| `path` | `graph.rs` | Yes |
-| `explore` | `graph.rs` | Yes |
-| `impact` | `graph.rs` | Yes |
-| `file_dependencies` | `mod.rs` | No — store queries |
-| `trace` | `trace.rs` | No — `kind="variable"` uses the high-level `Engine` facade so lazy dataflow can be loaded before tracing; other trace kinds use store/graph facts as needed |
-| `lifecycle` | `lifecycle.rs` | No — consumes CFG+DataFlow from store |
-| `branch_diff` | `branch_diff.rs` | No — consumes CFG+DataFlow from store |
-| `fp_dispatches` | `mod.rs` | No — store queries/writes |
-| `domain_rules` | `mod.rs` | No — store queries/writes |
+| Tool | Purpose |
+|------|---------|
+| `project` | Open a project, inspect active status, or list known files. |
+| `search` | Search symbols inside a required project-relative `scope`; the scope is also the focus seed. |
+| `symbol` | Return symbol detail, context, or usages. |
+| `calls` | Incoming/outgoing call exploration. Outgoing results also expose unresolved call tokens such as external helpers/macros. |
+| `explore` | Symbol dossier with source, call evidence, and related context. |
+| `path` | Find graph paths between resolved local symbols. |
+| `impact` | Traverse impacted symbols/files from a resolved local symbol. |
+| `file_dependencies` | Store-backed file dependency facts. |
+| `trace` | `point`, `variable`, `forward`, and `callers` tracing. |
+| `lifecycle` | CFG/dataflow lifecycle analysis. |
+| `branch_diff` | CFG/dataflow comparison across branch-like variants. |
+| `fp_dispatches` | Add/list/delete manual function-pointer dispatch annotations. |
+| `domain_rules` | Add/list/delete manual domain rules. |
+| `tasks` | Inspect current focus/lazy extraction activity. |
+| `resume_query` | Rehydrate a recent query snapshot after lazy focus work has progressed. |
 
-## Tool schema reference
+Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
+`resume_task`. Removed MCP parameters: `project.background`,
+`project.scan_files`, `project.force_memory`, and `search.background`.
 
-The source of truth for MCP input schemas is `make_all_tools()` in
-`crates/atlas-mcp/src/tools/mod.rs`. Each tool's parameters (names, types,
-enums, defaults, and descriptions) are defined there. A schema validation test
-in `tests/schema_validation.rs` catches regressions (missing `analysis`
-parameter on `index`, empty tool descriptions, etc.).
+## Query Semantics
 
-Key notes that complement the code:
+- `search.scope` is mandatory even when a rich index exists. It bounds the
+  answer and tells the client whether results are complete for that scope or
+  only partially materialized.
+- A scoped query on an empty store triggers focus-driven extraction for the
+  relevant files. Larger scopes may initially return partial coverage with
+  diagnostics and follow-up actions.
+- `path` and `trace(kind="forward")` require both endpoints to resolve to local
+  symbols. For external/helper calls that appear only as unresolved call tokens,
+  use `calls(direction="outgoing")` and inspect `unresolved_callees`, or use
+  `trace(kind="point")` at the callsite.
+- `fp_dispatches` and `domain_rules` remain MCP mutation tools because they
+  model user-supplied analysis facts, not indexing.
 
-- `index` supports `analysis`: `"manifest"` (fast, default), `"structural"`
-  (imports/references/call graph), or `"full"` (also builds dataflow).
-- `trace` accepts a `kind` parameter: `"point"` (single location), `"variable"`
-  (dataflow trace with lazy dataflow orchestration), `"forward"` (path between
-  two symbols), or `"callers"` (caller chain). Each kind has different required
-  args.
-- `calls` with `direction="incoming"` or `"outgoing"` and `depth=1` replaces
-  old `callers`/`callees`. Multi-hop uses `direction="both"` and `depth>1`.
-- `fp_dispatches` with `action: "add"|"list"|"delete"` replaces old
-  `annotate_fp_dispatch`, `list_fp_annotations`, `delete_fp_annotation`.
-- `project` with `action: "open"|"status"|"files"` replaces old `open_project`,
-  `status`, `files`.
-- `lifecycle` and `branch_diff` are analysis tools consuming CFG+DataFlow.
-- `background: true` is supported by `search`, `index`, and `project`; use
-  `task_status` or `wait_for_task` with the returned `task_id`.
-- Clients without MCP progress tokens get auto-background protection: `index`
-  is auto-started as a background task; `project(scan_files=true)` is also
-  auto-backgrounded.
-- `project` only activates a project. It never indexes. After activation, call
-  `index`.
-- `search` requires a `query` string; `scope` is required for manifest-only
-  indexes.
-- `project` does not walk the project tree by default. Use `scan_files=true`
-  only when you need an approximate `file_count`.
+## Request-Scoped Include Roots
 
-### Request-scoped include roots
+For C/C++ projects, pass `include_roots` to help resolve `#include <...>` during
+lazy structural extraction. The roots are project-relative, request-scoped, and
+not persisted. Default auto-detection includes `project_root/include/`.
 
-For C/C++ projects, you can pass `include_roots` to help resolve `#include <...>` during lazy structural extraction. The roots are project-relative, request-scoped, and not persisted. Default auto-detection includes `project_root/include/`.
-
-Example:
 ```json
-{"query": "do_sched", "scope": "kernel/sched", "include_roots": ["include", "third_party/include"]}
+{"query": "do_sched", "scope": "kernel/sched", "include_roots": ["include"]}
 ```
 
-## Key design decisions
+## Source Of Truth
 
-- **Graph is lazily initialized**: `ToolRouter::ensure_graph_initialized()` is called by the MCP server layer before dispatching to graph-backed tools. Store-backed tools (`search`, `trace`, `project`, `file_dependencies`) skip graph construction entirely. The merged `symbol` tool is graph-backed at dispatch time because `detail` and `context` need the graph.
-- **Background tasks are the compatibility progress channel**: progress-aware MCP clients use protocol progress notifications; clients without that support use the background task API and poll `task_status`.
-- **Scope is mandatory for search**: `search` never performs global extraction. Scope size controls parsing depth: small scopes get bounded structural parsing; large scopes stay manifest-level with a narrowing warning.
-- **Active project switching**: `project(action="open")` can switch the active project at runtime. `activate_project()` atomically replaces the store, lazy service, and clears graph caches.
-- **Memory storage mode**: `project(action="open", storage="memory")` opens an in-memory SQLite store for zero-footprint temporary sessions.
-- **FileLock for persistent stores**: `index` acquires a cross-process exclusive lock before writing. `project(action="open", storage="persistent")` only opens and initializes the project database.
+The tool schemas live in `make_all_tools()` in
+`crates/atlas-mcp/src/tools/mod.rs`. Regression tests in
+`crates/atlas-mcp/tests/schema_validation.rs` assert that removed indexing and
+background-task parameters do not reappear.

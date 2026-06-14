@@ -21,8 +21,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
 use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime};
 
 use db::Store;
 use types::ids::FileId;
@@ -325,10 +325,7 @@ impl FocusScheduler {
     /// Converts [`crate::investigation::Investigation`] related files into
     /// Recent-priority focus windows with import-neighborhood and
     /// same-directory strategies.
-    pub fn prewarm_investigation(
-        &mut self,
-        investigation: &crate::investigation::Investigation,
-    ) {
+    pub fn prewarm_investigation(&mut self, investigation: &crate::investigation::Investigation) {
         for file_id in &investigation.related_files {
             let window = FocusWindow {
                 seed: FocusSeed::File {

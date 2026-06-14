@@ -125,7 +125,11 @@ impl WorkRegistry {
         } else {
             WorkStatus::Completed
         };
-        WorkView { relevant: false, status, items }
+        WorkView {
+            relevant: false,
+            status,
+            items,
+        }
     }
 
     /// Quick check: any work running?
@@ -209,8 +213,18 @@ mod tests {
     fn test_work_registry_single_source() {
         let registry = WorkRegistry::new();
         let items = vec![
-            make_item("task-00001", "lazy_extraction", "completed", "extracting deps"),
-            make_item("task-00002", "focus_refinement", "running", "building focus closure"),
+            make_item(
+                "task-00001",
+                "lazy_extraction",
+                "completed",
+                "extracting deps",
+            ),
+            make_item(
+                "task-00002",
+                "focus_refinement",
+                "running",
+                "building focus closure",
+            ),
         ];
         let mock = MockWorkSource::new("test-source", items.clone());
         registry.register(Box::new(mock));
@@ -258,7 +272,12 @@ mod tests {
         );
         let src2 = MockWorkSource::new(
             "b",
-            vec![make_item("task-00002", "lazy_extraction", "completed", "lazy")],
+            vec![make_item(
+                "task-00002",
+                "lazy_extraction",
+                "completed",
+                "lazy",
+            )],
         );
         registry.register(Box::new(src1));
         registry.register(Box::new(src2));

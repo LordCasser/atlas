@@ -246,16 +246,16 @@ CLI、MCP 和 context 输出都必须包含语言能力信息。最小字段：
 
 MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前缀的短名。核心工具：
 
-- project/index: `project`, `index`
+- project lifecycle: `project`
 - symbol/search: `search`, `symbol`
 - graph: `calls`, `impact`, `path`, `explore`
 - trace: `trace`
 - file dependencies: `file_dependencies`
 - semantic analysis: `lifecycle`, `branch_diff`, `domain_rules`
-- background tasks: `tasks`, `task_status`, `wait_for_task`, `resume_task`
+- focus/lazy state: `tasks`, `resume_query`
 - FP dispatch annotations: `fp_dispatches`
 
-耗时工具必须能避免 MCP 客户端普通 tool-call 超时：`search`、`index`、`project(action="open")` 支持 `background=true` 时应立即返回 `task_id`；客户端随后用 `task_status` 轮询或 `wait_for_task` 阻塞等待。`project(background=true)` 完成后由 `task_status`/`wait_for_task` 激活准备好的项目。
+MCP 入口必须先 `project(action="open")` 同步激活项目；open 不做全项目扫描或索引。`search(scope=...)` 和其他 scoped 查询负责触发 focus/lazy materialization。MCP 不再暴露 `index`、`task_status`、`wait_for_task`、`resume_task` 或 `background=true` 参数；显式全项目索引只能通过 CLI `atlas index` 执行。
 
 工具输出必须 bounded、结构化，并在涉及启发式关系时暴露 confidence/provenance。
 
@@ -272,7 +272,7 @@ MCP 使用 JSON-RPC over stdio。V1 核心公开工具名使用无 `atlas_` 前�
 
 - `atlas index` (auto-init schema) / `atlas sync` (incremental)
 - `atlas status` / `atlas doctor` / `atlas files`
-- `atlas mcp` (MCP server, 18 tools)
+- `atlas mcp` (MCP server, 15 open-first focus tools)
 - `atlas` (no subcommand: from the project root, create/recover a usable DB and run the default structural index first if no basic-or-better index exists, then launch the interactive TUI)
 
 CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structural`、`full`；未知值必须返回错误，不能静默降级为 Structural。

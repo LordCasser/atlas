@@ -33,7 +33,7 @@ crates/
     crates/filesync/   file discovery、change detection、file lock、watcher
     crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
     crates/dossier/    Symbol Dossier builder
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、18 tools
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、15 open-first focus tools
   atlas-cli/           CLI binary + commands + integration tests
 ```
 
@@ -509,7 +509,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
-**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`resume_task`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
+**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
 
 #### 10.1.7 Lazy 状态与任务边界
 
@@ -551,11 +551,11 @@ analysis_contract
 ```
 
 `analysis_contract` 只声明当前结果能证明什么、不能证明什么，以及是否存在
-可提升空间；它不承载后台任务列表。所有后台工作、重试和等待语义统一进入
-public `work` envelope，并由 `tasks` / `task_status` / `wait_for_task`
-观察或等待。
+可提升空间；它不承载后台任务列表。MCP 不再暴露可等待 task API：`tasks`
+只观测当前 session 的 focus/lazy 活动，查询恢复通过 `resume_query` 重放
+query snapshot。
 
-`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_task(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
+`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_query(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
@@ -684,22 +684,21 @@ discover files
 
 ### 10.4 长操作进度与取消
 
-跨 CLI/TUI/MCP 的长操作（index、sync、search、trace）使用统一模式：
+跨 CLI/TUI/MCP 的长操作（index、sync、focus extraction、trace）使用统一
+取消和降级原则：
 
 - `ProgressSink` trait：入口注入终端进度、MCP notification 或 no-op。
 - `CancelToken`：前台/后台均可中断执行，取消是正常降级路径。
-- `WorkRegistry`：所有异步或后台提升工作注册到统一 work registry，
-  包括 full index、lazy extraction、focus refinement、graph refresh、
-  project activation 和后续 atlas-corpus 版本/分支分析任务。
-- `task_id`：MCP `TaskManager` 是 `WorkRegistry` 的 public adapter。
-  可等待工作必须映射到 public `task_id`，通过 `tasks` / `task_status` /
-  `wait_for_task` 可观测。不可等待的后台预热仍可出现在响应 `work.items`
-  中，但必须标记 `waitable=false` 并提供 `retry_after_ms` 或 next action。
+- CLI/TUI 的显式 `index` / `sync` 可以是长操作；MCP 不暴露 `index`，也不
+  暴露 waitable task API。
+- MCP 的 `project(action="open")` 只同步激活项目，不扫描全树、不索引。
+- MCP scoped 查询触发 focus/lazy materialization；响应通过
+  `analysis_contract`、coverage/precision 字段和 diagnostics 表达当前结果
+  是否完整可用。
+- `tasks` 仅用于观测当前 session 的 focus/lazy 活动；`resume_query`
+  通过 `query_id` 重放最近查询，不能等待任意后台 task。
 
-Public `work` 是唯一的后台状态模型，但不是每个 MCP tool response 的必
-带字段。普通分析响应只解释本次结果；全局后台运行状态只能通过显式
-`project(status)`、`tasks`、`task_status`、`wait_for_task` 或后续
-`work_status` 查询获得。
+普通分析响应只解释本次结果；全局项目状态通过 `project(status)` 查询。
 
 分析类 tool response 只有在后台工作和本次结果直接相关时才携带 `work`：
 
@@ -721,7 +720,7 @@ analysis response
   coverage_counts   optional; include when coverage distribution explains result quality
   gaps              optional; include when non-empty or state is partial/blocked
   analysis_contract required for tools that make semantic claims
-  work              optional; include only when relevant to this response
+  work              optional; focus/lazy activity summary when relevant
 ```
 
 `work` 形态：
@@ -731,18 +730,17 @@ work
   relevant      true
   status        idle | queued | running | partial | blocked | complete | failed
   items[]       public work/task items relevant to the current response
-    id          public task/work id, never closure id or extraction row id
-    kind        indexing | analysis_refinement | graph_refresh | project_activation | corpus_sync
+    id          public work id, never closure id or extraction row id
+    kind        focus | lazy_structural | lazy_dataflow | graph_refresh
     state       queued | running | complete | failed | cancelled | blocked
-    scope       project | query | local | file | symbol | corpus
+    scope       query | local | file | symbol
     reason      user/agent-readable reason for the background work
     progress    optional percent or done/total
-    waitable    whether wait_for_task/task_status can observe this item
 ```
 
 不得再新增 `pending`、`pending_closures`、`pending_job_ids`、
 `refinement_jobs`、focus-specific queue depth 等平行字段。已有 public
-历史字段必须删除，语义并入同一个 `WorkRegistry` 和 public `work`
+历史字段必须删除，语义并入 public `work`
 envelope；但 `work` 只在与本次响应相关时出现。
 
 ### 10.5 v1.4.1 以来的架构收敛约束
@@ -830,26 +828,26 @@ pub fn resolve_symbol_input(
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
-- **18 个工具**：v1.3.1 将 33 个旧工具合并精简为 18 个。所有工具使用短名（无 `atlas_` 前缀）。Breaking change，不保留旧别名。
+- **15 个工具**：MCP 工具面使用 open-first focus 机制；所有工具使用短名（无 `atlas_` 前缀）。`index` 和旧 task/wait 工具已移出 MCP。
 
 | 组 | 工具 |
 |----|------|
-| Project | `project(action="open\|status\|files")`, `index` |
+| Project | `project(action="open\|status\|files")` |
 | Symbol | `search`, `symbol(view="detail\|context\|usages")` — 主参数 `symbol` |
 | Graph / Impact | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])`, `explore`, `path`, `impact` |
 | File Graph | `file_dependencies(file_path, direction="incoming\|outgoing\|both")` |
 | Source Trace | `trace(kind="point\|variable\|forward\|callers")` |
 | Semantic Analysis | `lifecycle`, `branch_diff` |
 | Annotations / Rules | `fp_dispatches(action="add\|list\|delete")`, `domain_rules(action="add\|list\|delete\|learn")` |
-| Tasks | `tasks`, `task_status`, `wait_for_task`, `resume_task` |
+| Focus state | `tasks`, `resume_query` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()` 检测外部索引变化（`ensure_structural_for_files` / `ensure_structural_for_symbol_name` 内部已调用，handler 无需重复）。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
-- `project(action="open")` 不索引，只激活项目；默认 `storage="auto"`，通过只读打开候选持久化库并复用 `project(status)` 的 index mode 判断，只有状态显示存在可复用索引时才复用 `.atlas/atlas.db`，否则使用内存库。没有持久化索引时调用后需单独 `index`。
-- `index` handler 调用共享 `IndexPipeline`，MCP 入口仍选择 manifest-only 策略以保护交互延迟。
-- `search` 的 `scope` 对 manifest-only 索引为强制参数；存在 manual full index 时为可选。
-- `background: true` 支持：`search`, `index`, `project(action="open")`。
+- `project(action="open")` 不索引，只同步激活项目；默认 `storage="auto"`，通过只读打开候选持久化库并复用 `project(status)` 的 index mode 判断，只有状态显示存在可复用索引时才复用 `.atlas/atlas.db`，否则使用内存库。
+- 显式全项目索引只通过 CLI `atlas index` 执行。
+- `search` 的 `scope` 永远强制参数；scope 同时是结果边界和 focus seed，即使存在 manual full index 也不省略。
+- MCP 不支持 `background=true`；耗时提升通过 scoped focus/lazy 结果的 partial/diagnostics 和 `resume_query` 表达。
 - 结果截断 25KB，额外 content block 标注截断信息。
 
 ### 11.4 CLI

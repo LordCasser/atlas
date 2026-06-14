@@ -20,7 +20,8 @@ fn make_symbol(
     visibility: Option<Visibility>,
     exported: bool,
 ) -> SymbolDef {
-    let id = types::ids::SymbolId::generate(&file_id, language.as_str(), qualified, kind.as_str(), None);
+    let id =
+        types::ids::SymbolId::generate(&file_id, language.as_str(), qualified, kind.as_str(), None);
     SymbolDef {
         id,
         kind,

@@ -36,9 +36,7 @@ pub struct FocusGraphBuilder {
 
 impl FocusGraphBuilder {
     pub fn new(store: Arc<Store>) -> Self {
-        Self {
-            store,
-        }
+        Self { store }
     }
 
     /// Build graph edges from focus closure resolutions.
@@ -62,9 +60,7 @@ impl FocusGraphBuilder {
         generation: i64,
     ) -> anyhow::Result<FocusBuildResult> {
         // 1. Load all visible resolutions for this closure
-        let resolutions = self
-            .store
-            .get_visible_resolutions_for_closure(closure_id)?;
+        let resolutions = self.store.get_visible_resolutions_for_closure(closure_id)?;
 
         if resolutions.is_empty() {
             return Ok(FocusBuildResult {
@@ -134,26 +130,21 @@ impl FocusGraphBuilder {
             };
 
             // 2d. Build Precision for the incoming edge
-            let incoming_precision = build_incoming_precision(
-                closure_id,
-                &res.coverage_tier,
-                &res.semantic_confidence,
-            );
+            let incoming_precision =
+                build_incoming_precision(closure_id, &res.coverage_tier, &res.semantic_confidence);
 
             // 2e. Check existing canonical edge
-            let existing = self
-                .store
-                .find_edge_by_source_target_kind(&source, &target_sym_id, &edge_kind)?;
+            let existing =
+                self.store
+                    .find_edge_by_source_target_kind(&source, &target_sym_id, &edge_kind)?;
 
-            let existing_precision: Option<Precision> =
-                existing.as_ref().map(|e| edge_to_precision(&e.provenance, e.confidence));
+            let existing_precision: Option<Precision> = existing
+                .as_ref()
+                .map(|e| edge_to_precision(&e.provenance, e.confidence));
 
             // 2f. Apply conflict policy
-            let resolution = EdgeConflictPolicy::resolve(
-                existing_precision.as_ref(),
-                &incoming_precision,
-                None,
-            );
+            let resolution =
+                EdgeConflictPolicy::resolve(existing_precision.as_ref(), &incoming_precision, None);
 
             // 2g. Route based on resolution
             match resolution {
@@ -181,8 +172,10 @@ impl FocusGraphBuilder {
                         provenance,
                     );
                     edge.ref_id = Some(reference.id);
-                    edge.resolved_by = Some(ResolutionStrategy::from_str(&res.resolution_strategy)
-                        .unwrap_or(ResolutionStrategy::ExactMatch));
+                    edge.resolved_by = Some(
+                        ResolutionStrategy::from_str(&res.resolution_strategy)
+                            .unwrap_or(ResolutionStrategy::ExactMatch),
+                    );
                     canonical_edges.push(edge);
                     edges_built += 1;
                 }
@@ -208,9 +201,7 @@ impl FocusGraphBuilder {
             match self.store.batch_insert_edges(&canonical_edges) {
                 Ok(()) => canonical_edges.len(),
                 Err(e) => {
-                    warnings.push(format!(
-                        "canonical edge batch insert failed: {e}"
-                    ));
+                    warnings.push(format!("canonical edge batch insert failed: {e}"));
                     0
                 }
             }
@@ -223,9 +214,7 @@ impl FocusGraphBuilder {
             match self.store.batch_insert_candidate_edges(&candidate_rows) {
                 Ok(n) => n,
                 Err(e) => {
-                    warnings.push(format!(
-                        "candidate edge batch insert failed: {e}"
-                    ));
+                    warnings.push(format!("candidate edge batch insert failed: {e}"));
                     0
                 }
             }

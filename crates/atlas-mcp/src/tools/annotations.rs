@@ -11,9 +11,7 @@
 use atlas_engine::{FpAnnotation, Language};
 
 use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
-use crate::tools::symbol_selector::{
-    SymbolInput, SymbolResolution, SymbolResolutionPolicy,
-};
+use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 
 use serde_json::json;
 
@@ -126,7 +124,12 @@ impl ToolRouter {
         // C and C++. Other languages use dynamic dispatch (virtual tables,
         // reflection, prototype chains) that the engine detects through
         // static analysis.
-        let field_sym = self.active().store.find_symbol_by_id(&field_id).ok().flatten();
+        let field_sym = self
+            .active()
+            .store
+            .find_symbol_by_id(&field_id)
+            .ok()
+            .flatten();
         if let Some(sym) = &field_sym {
             if !matches!(sym.language, Language::C | Language::Cpp) {
                 let lang_name = sym.language.as_str();
@@ -179,7 +182,12 @@ impl ToolRouter {
         }
 
         // ── Target must be a Function or Method ────────────────────
-        let target_sym = self.active().store.find_symbol_by_id(&target_id).ok().flatten();
+        let target_sym = self
+            .active()
+            .store
+            .find_symbol_by_id(&target_id)
+            .ok()
+            .flatten();
         if let Some(sym) = &target_sym {
             if !matches!(
                 sym.kind,
@@ -224,7 +232,11 @@ impl ToolRouter {
             confidence,
         };
 
-        match self.active().overlay_runtime.upsert_fp_annotation(&annotation) {
+        match self
+            .active()
+            .overlay_runtime
+            .upsert_fp_annotation(&annotation)
+        {
             Ok(()) => {
                 // Materialize the edge immediately
                 if let Err(e) = atlas_engine::materialize_annotations(&self.active().store) {
@@ -277,7 +289,8 @@ impl ToolRouter {
                     std::collections::HashMap::new();
                 for id in symbol_ids {
                     let qname = self
-                        .active().store
+                        .active()
+                        .store
                         .find_symbol_by_id(&id)
                         .ok()
                         .flatten()
@@ -326,7 +339,10 @@ impl ToolRouter {
     }
 
     /// Handle `delete_fp_annotation` — delete a dispatch annotation.
-    pub(crate) fn handle_delete_fp_annotation(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_delete_fp_annotation(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
         let annotation_id = get_str(args, "annotation_id");
         let field_qname = get_str(args, "field_qname");
 
@@ -375,7 +391,8 @@ impl ToolRouter {
                 .unwrap_or(field_qname);
             // Look up annotation to get its ID for the response
             let annotation_id = self
-                .active().store
+                .active()
+                .store
                 .find_fp_annotation_by_field(&field_id, field_name)
                 .map_err(|e| format!("Lookup error: {e}"));
             let ann_id = match annotation_id {
@@ -420,7 +437,8 @@ impl ToolRouter {
                     );
                 }
                 (
-                    json!({"status": "deleted", "annotation_id": deleted_annotation_id}).to_string(),
+                    json!({"status": "deleted", "annotation_id": deleted_annotation_id})
+                        .to_string(),
                     false,
                 )
             }
@@ -540,7 +558,10 @@ mod tests {
 
         // Verify annotation is gone
         let remaining = store.get_all_fp_annotations().unwrap();
-        assert!(remaining.is_empty(), "annotation should be deleted from store");
+        assert!(
+            remaining.is_empty(),
+            "annotation should be deleted from store"
+        );
 
         // Verify edges are cleaned up
         let edges_after = store.find_edges_by_source(&field).unwrap();

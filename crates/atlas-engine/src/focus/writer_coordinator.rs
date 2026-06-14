@@ -45,19 +45,19 @@ impl ProjectWriteCoordinator {
             FocusPriority::Sync => {
                 self.background_cancelled.store(true, Ordering::Release);
                 WriteGuard {
-                    guard: self.lock.lock().expect("write coordinator lock poisoned"),
+                    _guard: self.lock.lock().expect("write coordinator lock poisoned"),
                     priority,
                 }
             }
             FocusPriority::UserFocus => {
                 self.background_cancelled.store(true, Ordering::Release);
                 WriteGuard {
-                    guard: self.lock.lock().expect("write coordinator lock poisoned"),
+                    _guard: self.lock.lock().expect("write coordinator lock poisoned"),
                     priority,
                 }
             }
             _ => WriteGuard {
-                guard: self.lock.lock().expect("write coordinator lock poisoned"),
+                _guard: self.lock.lock().expect("write coordinator lock poisoned"),
                 priority,
             },
         }
@@ -80,18 +80,18 @@ impl ProjectWriteCoordinator {
     pub fn enter_exclusive(&self) -> ExclusiveGuard<'_> {
         self.background_cancelled.store(true, Ordering::Release);
         ExclusiveGuard {
-            guard: self.lock.lock().expect("write coordinator lock poisoned"),
+            _guard: self.lock.lock().expect("write coordinator lock poisoned"),
         }
     }
 }
 
 /// RAII guard for non-exclusive write access.
 pub struct WriteGuard<'a> {
-    guard: MutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
     pub priority: FocusPriority,
 }
 
 /// RAII guard for exclusive write access.
 pub struct ExclusiveGuard<'a> {
-    guard: MutexGuard<'a, ()>,
+    _guard: MutexGuard<'a, ()>,
 }

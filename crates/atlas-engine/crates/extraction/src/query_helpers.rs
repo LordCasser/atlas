@@ -7,8 +7,8 @@
 //! tree-sitter 0.25+ bundles its own `StreamingIterator` re-export instead of
 //! requiring the external `streaming_iterator` crate.
 
-use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 use tracing::debug_span;
+use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
 use crate::cancel::CancelCheck;
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
@@ -32,7 +32,8 @@ pub(crate) fn collect_captures<'a>(
     }
 
     let query = {
-        let _query_span = debug_span!(target: "atlas_extract", "extract.query_compile", slot = slot).entered();
+        let _query_span =
+            debug_span!(target: "atlas_extract", "extract.query_compile", slot = slot).entered();
         match Query::new(ts_lang, trimmed) {
             Ok(q) => q,
             Err(e) => {
