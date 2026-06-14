@@ -99,7 +99,7 @@ fn search_scope_filters() {
 #[test]
 fn search_nonexistent_returns_zero() {
     let mut router = python_example_router();
-    let (s, err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "ZZZNonExistentXYZZY", "analysis": "manifest"}));
+    let (s, err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "ZZZNonExistentXYZZY", "scope": ".", "analysis": "manifest"}));
     assert!(!err, "search error: {s}");
     assert_eq!(parse_json(&s)["total"].as_u64().unwrap_or(99), 0);
 }
@@ -107,7 +107,7 @@ fn search_nonexistent_returns_zero() {
 #[test]
 fn search_empty_query_is_error() {
     let mut router = python_example_router();
-    let (s, _err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "", "analysis": "manifest"}));
+    let (s, _err) = router.handle_search(&ToolCallContext::empty(), &json!({"query": "", "scope": ".", "analysis": "manifest"}));
     let r = parse_json(&s);
     let is_error = r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
     if is_error {
@@ -341,7 +341,7 @@ mod focus_tests {
 
         let ctx = ToolCallContext::empty();
         let (resp_str, is_error) =
-            router.handle_search(&ctx, &json!({"query": "Wikipedia"}));
+            router.handle_search(&ctx, &json!({"query": "Wikipedia", "scope": "."}));
         assert!(!is_error, "Search failed: {resp_str:.300}");
 
         let parsed = parse_json(&resp_str);
@@ -749,7 +749,7 @@ mod focus_tests {
         let ctx = ToolCallContext::empty();
 
         let queries: &[(&str, serde_json::Value)] = &[
-            ("search", json!({"query": "spider"})),
+            ("search", json!({"query": "spider", "scope": "."})),
             ("symbol", json!({"symbol": {"qualified_name": "WikipediaSpider"}})),
             ("explore", json!({"symbol": "WikipediaSpider"})),
         ];

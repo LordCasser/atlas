@@ -326,7 +326,7 @@ impl ToolRouter {
     }
 
     /// Handle `delete_fp_annotation` — delete a dispatch annotation.
-    pub(crate) fn handle_delete_fp_annotation(&self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_delete_fp_annotation(&mut self, args: &serde_json::Value) -> (String, bool) {
         let annotation_id = get_str(args, "annotation_id");
         let field_qname = get_str(args, "field_qname");
 
@@ -404,10 +404,26 @@ impl ToolRouter {
         };
 
         match deleted {
-            Ok(true) => (
-                json!({"status": "deleted", "annotation_id": deleted_annotation_id}).to_string(),
-                false,
-            ),
+            Ok(true) => {
+                // Clean up stale materialized edges
+                if let Err(e) = atlas_engine::materialize_annotations(&self.active().store) {
+                    return (
+                        json!({"error": format!("Annotation deleted but edge cleanup failed: {e}"), "annotation_id": deleted_annotation_id}).to_string(),
+                        true,
+                    );
+                }
+                // Force graph refresh so the in-memory snapshot reflects the removal
+                if let Err(e) = self.force_refresh_graph() {
+                    return (
+                        json!({"error": format!("Failed to rebuild graph after annotation removal: {e}"), "annotation_id": deleted_annotation_id}).to_string(),
+                        true,
+                    );
+                }
+                (
+                    json!({"status": "deleted", "annotation_id": deleted_annotation_id}).to_string(),
+                    false,
+                )
+            }
             Ok(false) => (
                 json!({"status": "not_found", "message": "No matching annotation found"})
                     .to_string(),
@@ -415,5 +431,123 @@ impl ToolRouter {
             ),
             Err(e) => (json!({"error": e}).to_string(), true),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atlas_engine::{
+        Confidence, FileFacts, FileId, FileInfo, FpAnnotation, Language, ParseStatus, Store,
+        SymbolDef, SymbolId, SymbolKind, TextRange,
+    };
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn test_store() -> Arc<Store> {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        Arc::new(store)
+    }
+
+    fn insert_sym(
+        store: &Store,
+        file_id: FileId,
+        name: &str,
+        qname: &str,
+        kind: SymbolKind,
+    ) -> SymbolId {
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 11,
+        };
+        let id = SymbolId::generate(&file_id, "c", qname, kind.as_str(), None);
+        let sym = SymbolDef {
+            id,
+            kind,
+            name: name.to_string(),
+            qualified_name: qname.to_string(),
+            symbol_path: vec![name.to_string()],
+            file_id,
+            language: Language::C,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".to_string(),
+        };
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: format!("src/{name}.c"),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            },
+            symbols: vec![sym],
+            ..Default::default()
+        };
+        store.insert_file_facts(&facts).unwrap();
+        id
+    }
+
+    fn annotation_id(source: &SymbolId, field_name: &str) -> String {
+        let hex = blake3::hash(source.as_bytes()).to_hex();
+        format!("fpa:{}:{}", &hex[..16], field_name)
+    }
+
+    #[test]
+    fn delete_fp_annotation_cleans_materialized_edges() {
+        let store = test_store();
+        let fa = FileId::generate("src/field.c");
+        let fb = FileId::generate("src/target.c");
+
+        let field = insert_sym(&store, fa, "do_it", "Curl_handler.do_it", SymbolKind::Field);
+        let target = insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
+
+        // Add annotation and materialize edges
+        let ann_id = annotation_id(&field, "do_it");
+        let ann = FpAnnotation {
+            annotation_id: ann_id.clone(),
+            source_symbol: field,
+            field_name: "do_it".into(),
+            target_symbol: target,
+            confidence: Confidence::new(1.0),
+        };
+        store.upsert_fp_annotation(&ann).unwrap();
+        let count = atlas_engine::materialize_annotations(&store).unwrap();
+        assert_eq!(count, 1, "materialize should create 1 edge");
+        let edges_before = store.find_edges_by_source(&field).unwrap();
+        assert!(!edges_before.is_empty(), "edge should exist before delete");
+
+        // Delete via ToolRouter's handle_delete_fp_annotation
+        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let args = json!({"annotation_id": ann_id});
+        let (result, is_error) = router.handle_delete_fp_annotation(&args);
+        assert!(!is_error, "delete should succeed: {result}");
+
+        // Verify annotation is gone
+        let remaining = store.get_all_fp_annotations().unwrap();
+        assert!(remaining.is_empty(), "annotation should be deleted from store");
+
+        // Verify edges are cleaned up
+        let edges_after = store.find_edges_by_source(&field).unwrap();
+        assert!(
+            edges_after.is_empty(),
+            "materialized edges should be cleaned up after delete, found {} edges",
+            edges_after.len()
+        );
     }
 }

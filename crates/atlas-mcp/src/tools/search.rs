@@ -14,7 +14,7 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::analysis_envelope::AnalysisEnvelope;
+use super::analysis_envelope::{AnalysisEnvelope, CapabilityStats};
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy, ScoredCandidate, parse_symbol_input};
 use super::{MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 
@@ -69,16 +69,13 @@ impl ToolRouter {
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // When a manual full structural index exists (built via CLI `atlas index`),
-        // scope restrictions are lifted and lazy structural is disabled — all
-        // files already have complete structural facts.
+        // the search analysis mode is set to Manifest (structural facts are already
+        // in the store) instead of Auto (lazy triggering).  Scope is still required
+        // — it defines the search boundary.
         let is_manual_full = self.active().query_runtime.has_full_index(&self.active().store);
 
         let scope = match scope {
             Some(s) => s.to_string(),
-            None if is_manual_full => {
-                // Manual full index: allow unscoped search on entire project.
-                ".".to_string()
-            }
             None => {
                 return (
                     serde_json::to_string_pretty(&json!({
@@ -209,13 +206,42 @@ impl ToolRouter {
             .map(Self::search_result_to_hit)
             .collect();
 
-        let response = json!({
+        let mut response = json!({
             "query": query,
             "scope": scope,
             "results": hits,
             "total": engine_resp.total,
             "scope_file_count": engine_resp.scope_file_count,
         });
+
+        // Inject coverage signals: tell the client whether results are
+        // complete, partial, or manifest-only.
+        if let Ok((df, st, mn, cfg)) = self.active().store.get_capability_counts() {
+            let best = if df > 0 {
+                "dataflow"
+            } else if st > 0 {
+                "structural"
+            } else if mn > 0 {
+                "manifest"
+            } else {
+                "none"
+            };
+            response["coverage"] = json!(best);
+
+            let caps = CapabilityStats {
+                files_with_dataflow: df,
+                files_structural_only: st,
+                files_manifest_only: mn,
+                files_with_cfg: cfg,
+            };
+            response["capability_mask"] = json!(format!("{:?}", caps));
+        }
+
+        if engine_resp.triggered_lazy {
+            response["triggered_lazy"] = json!(true);
+        }
+
+        response["precision_tier"] = json!(engine_resp.precision_tier);
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 

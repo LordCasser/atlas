@@ -246,20 +246,19 @@ int top_function(void) {
     let ctx = ToolCallContext::empty();
     let _ = router.call_tool(&ctx, "index", &json!({"analysis": "manifest"}));
 
-    // ── Unscoped search should find both functions ────────────────────
+    // ── Unscoped search must return an error ─────────────────────────
     let (resp, err) = call_tool(
         &mut router,
         "search",
         &json!({"query": "function", "analysis": "manifest"}),
     );
-    if err {
-        eprintln!("search (unscoped) error: {resp:.300}");
-    }
+    assert!(err, "unscoped search should return an error when scope is required");
+    assert!(
+        resp.get("error").and_then(|v| v.as_str()).map_or(false, |s| s.contains("scope")),
+        "error should mention scope: {resp:.300}"
+    );
 
     // ── Scoped search to "sub/" ───────────────────────────────────────
-    // The response structure varies; the key assertion is no panic and
-    // valid JSON.  Per-scope filtering may not apply in manifest mode
-    // (scope may be ignored) — that's acceptable.
     let (resp2, err2) = call_tool(
         &mut router,
         "search",
@@ -280,9 +279,26 @@ int top_function(void) {
                 }
             }
         }
+        // Response should include coverage signal.
+        assert!(
+            resp2.get("coverage").is_some(),
+            "scoped search response should include coverage signal: {resp2:.300}"
+        );
     } else {
         eprintln!("search (scoped) error (acceptable for manifest mode): {resp2:.300}");
     }
+
+    // ── Scoped search with root scope "." ─────────────────────────────
+    let (resp3, err3) = call_tool(
+        &mut router,
+        "search",
+        &json!({"query": "function", "scope": ".", "analysis": "manifest"}),
+    );
+    assert!(!err3, "search with scope='.' should succeed: {resp3:.300}");
+    assert!(
+        resp3.get("coverage").is_some(),
+        "search response should include coverage signal: {resp3:.300}"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

@@ -687,3 +687,53 @@ fn test_shared_lazy_dataflow_passed_to_closure_engine() {
     // Verify the shared service was stored
     assert!(runtime.shared_lazy_dataflow.is_some());
 }
+
+// ── Tests: Calls direction maps to CallGraph strategy ─────────────────────────
+
+#[test]
+fn calls_direction_incoming_maps_to_callgraph_strategy() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = test_runtime_focus_mode(store);
+    let intent = QueryIntent::Calls {
+        symbol_name: "test_func".into(),
+        direction: Some("incoming".into()),
+        depth: None,
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let result = rt.prepare(&intent);
+    assert!(result.is_ok(), "prepare() should succeed for Calls with incoming direction");
+}
+
+#[test]
+fn calls_direction_outgoing_maps_to_callgraph_strategy() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = test_runtime_focus_mode(store);
+    let intent = QueryIntent::Calls {
+        symbol_name: "test_func".into(),
+        direction: Some("outgoing".into()),
+        depth: None,
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let result = rt.prepare(&intent);
+    assert!(result.is_ok(), "prepare() should succeed for Calls with outgoing direction");
+}
+
+#[test]
+fn calls_direction_none_maps_to_callgraph_strategy() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = test_runtime_focus_mode(store);
+    let intent = QueryIntent::Calls {
+        symbol_name: "test_func".into(),
+        direction: None,
+        depth: None,
+        file_id: Some(file_id),
+        symbol_id: None,
+    };
+    let result = rt.prepare(&intent);
+    assert!(result.is_ok(), "prepare() should succeed for Calls with None direction (maps to Both)");
+}

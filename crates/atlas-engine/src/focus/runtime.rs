@@ -39,7 +39,7 @@ use super::engine::ClosureEngine;
 use super::query::QueryIntent;
 use super::scheduler::{self, FocusPriority, FocusScheduler};
 use super::types::{
-    ClosureStrategy, FocusSeed, FocusWindow, WindowBudget,
+    ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget,
 };
 
 // ── IndexMode ───────────────────────────────────────────────────────────────
@@ -196,10 +196,28 @@ impl FocusRuntime {
         let minimal_window = FocusWindow {
             seed: seed.clone(),
             strategies: match intent {
-                QueryIntent::Calls { .. } | QueryIntent::Explore { .. } => vec![
+                QueryIntent::Calls { direction, .. } => {
+                    let call_dir = match direction.as_deref() {
+                        Some("incoming") => Direction::Incoming,
+                        Some("outgoing") => Direction::Outgoing,
+                        _ => Direction::Both,
+                    };
+                    vec![
+                        ClosureStrategy::CallGraph { direction: call_dir, depth: 2 },
+                        ClosureStrategy::ImportNeighborhood { depth: 1 },
+                    ]
+                },
+                QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 2 },
+                    ClosureStrategy::TypeGraph { max_depth: 1 },
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
+                ],
+                QueryIntent::Explore { .. } => vec![
+                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 2 },
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
                 QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 3 },
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::Impact { .. } => vec![
@@ -208,9 +226,6 @@ impl FocusRuntime {
                 QueryIntent::Search { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::SameDirectory,
-                ],
-                QueryIntent::Context { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => vec![
                     ClosureStrategy::ImportNeighborhood { depth: 1 },
@@ -255,10 +270,24 @@ impl FocusRuntime {
         let bg_window = FocusWindow {
             seed,
             strategies: match intent {
-                QueryIntent::Calls { .. } | QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
+                QueryIntent::Calls { direction, .. } => {
+                    let call_dir = match direction.as_deref() {
+                        Some("incoming") => Direction::Incoming,
+                        Some("outgoing") => Direction::Outgoing,
+                        _ => Direction::Both,
+                    };
+                    vec![
+                        ClosureStrategy::CallGraph { direction: call_dir, depth: 3 },
+                        ClosureStrategy::ImportNeighborhood { depth: 2 },
+                    ]
+                },
+                QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 3 },
+                    ClosureStrategy::TypeGraph { max_depth: 2 },
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::CallGraph { direction: Direction::Both, depth: 4 },
                     ClosureStrategy::ImportNeighborhood { depth: 3 },
                 ],
                 QueryIntent::Impact { .. } => vec![
