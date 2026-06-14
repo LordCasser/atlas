@@ -6,6 +6,8 @@
 
 use super::Store;
 use rusqlite::params;
+use types::enums::ReferenceKind;
+use types::ids::FileId;
 
 /// A row from the reference_resolutions table.
 #[derive(Debug, Clone)]
@@ -272,6 +274,51 @@ impl Store {
             params![closure_id, target_symbol_id, reference_kind],
             |row| row.get(0),
         )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get resolved target symbol IDs for type-kind references from a file
+    /// within a closure scope.
+    ///
+    /// Joins `reference_resolutions` with `references` to find references
+    /// of the given kinds (`Usage`, `Inheritance`, `Implementation`) that
+    /// belong to `file_id` and have been resolved within `closure_id`.
+    ///
+    /// Queries ALL rows (staged or visible) so that pre-computed TypeGraph
+    /// expansion works before `make_resolutions_visible` is called.
+    ///
+    /// Returns a vector of `(target_symbol_id_blob, reference_kind_str)` pairs.
+    pub fn get_resolved_targets_for_file_and_kinds_in_closure(
+        &self,
+        closure_id: &str,
+        file_id: &FileId,
+        kinds: &[ReferenceKind],
+    ) -> anyhow::Result<Vec<(Vec<u8>, String)>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.lock_read();
+        let placeholders: Vec<String> = kinds.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT rr.target_symbol_id, r.kind
+             FROM reference_resolutions rr
+             JOIN \"references\" r ON rr.reference_id = r.reference_id
+             WHERE rr.closure_id = ?1 AND r.file_id = ?2
+               AND r.kind IN ({})
+               AND rr.target_symbol_id IS NOT NULL",
+            placeholders.join(",")
+        );
+        let kind_strs: Vec<String> = kinds.iter().map(|k| k.as_str().to_string()).collect();
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(2 + kinds.len());
+        params.push(&closure_id as &dyn rusqlite::types::ToSql);
+        params.push(file_id as &dyn rusqlite::types::ToSql);
+        for k in &kind_strs {
+            params.push(k as &dyn rusqlite::types::ToSql);
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }

@@ -80,6 +80,7 @@ impl FocusJob {
 
 /// Scheduler for background focus closure building.
 pub struct FocusScheduler {
+    #[allow(dead_code)] // reserved for future scheduler-initiated closure work
     store: Arc<Store>,
     engine: Option<ClosureEngine>,
     queues: Vec<VecDeque<FocusJob>>,

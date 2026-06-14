@@ -10,8 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Debug)]
 pub struct LazyBudget {
     budget_ms: u64,
+    #[allow(dead_code)] // reserved: budget-exhausted check via files_exhausted()
     max_files: usize,
     start: std::time::Instant,
+    #[allow(dead_code)] // reserved: tracking per-request file consumption
     files_consumed: usize,
     /// Set when budget is exhausted — consumed by CancelCheck impl.
     cancelled: AtomicBool,
@@ -37,6 +39,7 @@ impl LazyBudget {
 
     /// Background preparse budget: longer time window but still capped to
     /// avoid unbounded background work competing with foreground requests.
+    #[allow(dead_code)] // reserved: future background preparse in scheduler
     pub fn background_preparse() -> Self {
         Self {
             budget_ms: 60_000,
@@ -60,6 +63,7 @@ impl LazyBudget {
     }
 
     /// Whether extraction can continue (both time and file quotas remain).
+    #[allow(dead_code)] // reserved: caller-side budget check (future use)
     pub fn can_continue(&self) -> bool {
         if self.time_exceeded() {
             self.cancel();
@@ -69,11 +73,13 @@ impl LazyBudget {
     }
 
     /// Signal cancellation (called from budget check or externally).
+    #[allow(dead_code)] // reserved: external cancellation from coordinator
     pub(crate) fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
     }
 
     /// Record that one file has been extracted.
+    #[allow(dead_code)] // reserved: per-file budget tracking (future use)
     pub fn consume_file(&mut self) {
         self.files_consumed += 1;
     }
@@ -84,6 +90,7 @@ impl LazyBudget {
     }
 
     /// Files consumed so far.
+    #[allow(dead_code)] // reserved: progress reporting (future use)
     pub fn files_consumed(&self) -> usize {
         self.files_consumed
     }
@@ -94,6 +101,7 @@ impl LazyBudget {
     }
 
     /// Whether the file quota has been exhausted.
+    #[allow(dead_code)] // reserved: budget-exhausted guard (future use)
     pub fn files_exhausted(&self) -> bool {
         self.files_consumed >= self.max_files
     }

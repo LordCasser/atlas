@@ -115,6 +115,7 @@ impl QueryRuntime {
     /// Prepare for a graph-backed query: resolve symbols, run focus if needed,
     /// return readiness info. The graph provider is accessed separately via
     /// GraphRuntime::provider().
+    #[allow(dead_code)] // wired in handle_callers (P0-F2-A); future handlers coming
     pub fn prepare_graph_query(&self, intent: &QueryIntent) -> PreparedGraphQuery {
         let (focus_result, _warnings) = self.prepare(intent, &self.store);
         let closure_id = focus_result.as_ref().and_then(|r| r.closure_id.clone());
@@ -131,6 +132,7 @@ impl QueryRuntime {
 
 /// Lightweight result from prepare_graph_query — the caller accesses
 /// the graph provider separately.
+#[allow(dead_code)] // wired in handle_callers (P0-F2-A); future handlers coming
 pub struct PreparedGraphQuery {
     pub focus_triggered: bool,
     /// The closure_id if focus extraction built a closure for this query.

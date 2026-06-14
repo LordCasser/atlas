@@ -31,7 +31,9 @@ pub(crate) struct RuntimeInvalidation {
     pub(crate) graph_generation: AtomicU64,
     /// Bumped on overlay mutations: fp_dispatches add/delete.
     pub(crate) overlay_generation: AtomicU64,
-    /// Bumped on analysis-affecting mutations: domain_rules add/delete.
+    /// Bumped on domain_rules / fp_dispatches mutations.
+    /// Future consumer: BranchDiffEngine & FieldLifecycleEngine cache invalidation.
+    /// Currently write-only (no readers yet).
     pub(crate) analysis_config_generation: AtomicU64,
 }
 

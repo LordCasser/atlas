@@ -24,11 +24,6 @@ impl ProjectSlot {
             .ok_or_else(|| "No active project. Call project(action=\"open\") first.".to_string())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_some(&self) -> bool {
-        self.active.is_some()
-    }
-
     pub(crate) fn replace(&mut self, project: ActiveProject) {
         self.active = Some(project);
     }

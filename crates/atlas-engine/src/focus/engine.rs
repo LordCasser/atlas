@@ -173,7 +173,7 @@ impl ClosureEngine {
         let mut pre_additions = Vec::new();
         for strategy in &window.strategies {
             if let ClosureStrategy::TypeGraph { max_depth } = strategy {
-                let type_files = self.expand_types(&closure, *max_depth)?;
+                let type_files = self.expand_types(&closure, *max_depth, closure_id)?;
                 for f in type_files {
                     if !closure.visited.contains(&f) {
                         pre_additions.push(f);
@@ -594,15 +594,21 @@ impl ClosureEngine {
 
     /// Expand closure through type dependencies.
     ///
-    /// For each file in scope, find references whose resolved target is a
-    /// type definition (Struct/Class/Enum/Interface/Trait).  Add the file
-    /// containing that type definition to the closure.  When `max_depth > 1`,
-    /// repeat the process for the newly added files to discover transitive
-    /// type dependencies.
+    /// For each file in scope, find references whose resolved target (from
+    /// closure-scoped [`reference_resolutions`]) is a type definition
+    /// (Struct/Class/Enum/Interface/Trait).  Add the file containing that
+    /// type definition to the closure.  When `max_depth > 1`, repeat the
+    /// process for the newly added files to discover transitive type
+    /// dependencies.
+    ///
+    /// Uses closure-scoped resolution data (not the global `references`
+    /// table) so that resolutions produced by incremental closure resolution
+    /// are visible to TypeGraph expansion.
     fn expand_types(
         &self,
         closure: &FocusClosure,
         max_depth: u32,
+        closure_id: &str,
     ) -> Result<Vec<FileId>> {
         let type_ref_kinds = [
             ReferenceKind::Usage,
@@ -627,17 +633,42 @@ impl ClosureEngine {
             let mut depth_additions = Vec::new();
 
             for file_id in &current_scope {
-                let refs = self.store.find_references_by_file_and_kinds(
+                // Collect all resolved target symbol IDs from both closure-scoped
+                // and global sources.  Closure-scoped resolutions (from
+                // reference_resolutions) take priority; the global references
+                // table acts as a fallback for files that have not yet been
+                // resolved by the closure-scoped resolver (e.g., multi-depth
+                // TypeGraph where depth-1 files are not resolved until the
+                // fixed-point loop).
+                let mut resolved_target_ids: HashSet<SymbolId> = HashSet::new();
+
+                // 1. Closure-scoped resolutions (primary source)
+                let closure_targets =
+                    self.store.get_resolved_targets_for_file_and_kinds_in_closure(
+                        closure_id,
+                        file_id,
+                        &type_ref_kinds,
+                    )?;
+                for (target_blob, _ref_kind) in &closure_targets {
+                    if target_blob.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(target_blob);
+                        resolved_target_ids.insert(SymbolId::from_bytes(arr));
+                    }
+                }
+
+                // 2. Global references table (fallback)
+                let global_refs = self.store.find_references_by_file_and_kinds(
                     file_id,
                     &type_ref_kinds,
                 )?;
+                for r in &global_refs {
+                    if let Some(resolved) = &r.resolved {
+                        resolved_target_ids.insert(resolved.symbol_id);
+                    }
+                }
 
-                for r in &refs {
-                    let target_id = match &r.resolved {
-                        Some(resolved) => &resolved.symbol_id,
-                        None => continue,
-                    };
-
+                for target_id in &resolved_target_ids {
                     // Check if the resolved target is a type definition
                     let kind = match self.store.get_symbol_kind(target_id)? {
                         Some(k) => k,
