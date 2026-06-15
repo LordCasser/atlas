@@ -86,14 +86,14 @@ fn normalize_cangjie_import(
     source: &str,
     file_id: FileId,
 ) -> Option<ImportDef> {
-    let (kind, module, _imported_name) = cj_import_info(capture_name, node, source)?;
+    let (kind, module, imported_name) = cj_import_info(capture_name, node, source)?;
     let range = node_range(node);
 
     let import_id = ImportId::generate(
         &file_id,
         kind.as_str(),
         &module,
-        None::<&str>,
+        Some(imported_name.as_str()),
         range.start_byte,
     );
 
@@ -102,7 +102,7 @@ fn normalize_cangjie_import(
         file_id,
         kind,
         module,
-        imported_name: String::new(),
+        imported_name,
         local_name: None,
         is_wildcard: false,
         is_relative: false,
@@ -342,7 +342,8 @@ fn cj_import_info(
     match capture {
         "import.module" => {
             let module_path = node_text(node, source)?;
-            Some((ImportKind::Import, module_path.to_string(), String::new()))
+            let name = module_path.rsplit('.').next().unwrap_or(&module_path).to_string();
+            Some((ImportKind::Import, module_path, name))
         }
         _ => None,
     }
