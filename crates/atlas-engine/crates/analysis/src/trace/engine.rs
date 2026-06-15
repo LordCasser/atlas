@@ -812,16 +812,11 @@ impl TraceEngine {
         })
     }
 
-    /// Extract a multi-line context snippet around the given line.
+    /// Read file contents as lines of text.
     ///
-    /// Returns up to `context_lines` lines before and after the target line,
-    /// joined with newlines.  The target line is included.
-    fn extract_context_snippet(
-        &self,
-        file_path: &str,
-        line_0based: u32,
-        context_lines: usize,
-    ) -> Option<String> {
+    /// Shared boilerplate for snippet extraction: canonicalize root + file
+    /// path, sandbox guard, and file-content cache.
+    fn read_file_lines(&self, file_path: &str) -> Option<Vec<String>> {
         let root = self.project_root.as_ref()?;
         let canonical_root = self.canonical_root.as_ref()?;
         let full_path = root.join(file_path);
@@ -829,7 +824,6 @@ impl TraceEngine {
         if !canonical.starts_with(canonical_root) {
             return None;
         }
-        // Check file-content cache to avoid repeated disk reads.
         let content = {
             let mut cache = self.file_cache.borrow_mut();
             if let Some(cached) = cache.get(&canonical) {
@@ -840,7 +834,20 @@ impl TraceEngine {
                 text
             }
         };
-        let all_lines: Vec<&str> = content.lines().collect();
+        Some(content.lines().map(|l| l.to_string()).collect())
+    }
+
+    /// Extract a multi-line context snippet around the given line.
+    ///
+    /// Returns up to `context_lines` lines before and after the target line,
+    /// joined with newlines.  The target line is included.
+    fn extract_context_snippet(
+        &self,
+        file_path: &str,
+        line_0based: u32,
+        context_lines: usize,
+    ) -> Option<String> {
+        let all_lines = self.read_file_lines(file_path)?;
         let center = line_0based as usize;
         if center >= all_lines.len() {
             return None;
@@ -865,26 +872,9 @@ impl TraceEngine {
     /// trimmed.  Returns `None` if the project root is not set, the file
     /// cannot be read, or the line is out of bounds.
     fn extract_snippet(&self, file_path: &str, line_0based: u32) -> Option<String> {
-        let root = self.project_root.as_ref()?;
-        let canonical_root = self.canonical_root.as_ref()?;
-        let full_path = root.join(file_path);
-        let canonical = full_path.canonicalize().ok()?;
-        if !canonical.starts_with(canonical_root) {
-            return None;
-        }
-        // Check file-content cache to avoid repeated disk reads.
-        let content = {
-            let mut cache = self.file_cache.borrow_mut();
-            if let Some(cached) = cache.get(&canonical) {
-                cached.clone()
-            } else {
-                let text = std::fs::read_to_string(&canonical).ok()?;
-                cache.insert(canonical.clone(), text.clone());
-                text
-            }
-        };
+        let all_lines = self.read_file_lines(file_path)?;
         let line_idx = line_0based as usize;
-        content.lines().nth(line_idx).map(|l| l.trim().to_string())
+        all_lines.get(line_idx).map(|l| l.trim().to_string())
     }
 
     /// Check whether a file path belongs to the current project.
