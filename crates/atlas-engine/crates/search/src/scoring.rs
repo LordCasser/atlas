@@ -10,6 +10,7 @@
 //!
 //! Weights are configurable via [`ScoreWeights`] for long-term tuning.
 
+use graph::snapshot::is_likely_test_path;
 use types::SymbolKind;
 
 /// Configurable signal weights for hybrid ranking.
@@ -82,7 +83,7 @@ impl SearchScore {
         };
         let qualified_bonus = if qualified_match { 1.0 } else { 0.0 };
         let kind_bonus = kind_weight(kind);
-        let path_bonus = file_path.map_or(0.5, |p| if is_test_file(p) { 0.2 } else { 0.5 });
+        let path_bonus = file_path.map_or(0.5, |p| if is_likely_test_path(p) { 0.2 } else { 0.5 });
 
         let total = fts_score * weights.fts
             + graph_score * weights.graph
@@ -128,16 +129,6 @@ fn kind_weight(kind: SymbolKind) -> f64 {
         SymbolKind::Parameter | SymbolKind::Macro | SymbolKind::Decorator => 0.15,
         _ => 0.1,
     }
-}
-
-/// Check if a file path looks like a test file.
-fn is_test_file(path: &str) -> bool {
-    let p = path.to_lowercase();
-    p.contains("_test.")
-        || p.contains(".test.")
-        || p.contains("__test__")
-        || p.contains("/test/")
-        || p.contains("\\test\\")
 }
 
 /// BM25-inspired inverse document frequency.

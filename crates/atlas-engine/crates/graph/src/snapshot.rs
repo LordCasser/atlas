@@ -178,7 +178,7 @@ pub struct GraphSnapshot {
 ///
 /// This is intentionally broad — false positives only affect path quality
 /// scoring, not correctness.
-fn is_likely_test_path(path: &str) -> bool {
+pub fn is_likely_test_path(path: &str) -> bool {
     let lower = path.to_lowercase();
 
     // Directory-based: files inside test/spec directories
