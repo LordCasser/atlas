@@ -16,7 +16,7 @@
 //!
 //! # Request Flow
 //!
-//! ```
+//! ```text
 //!   MCP Client
 //!       │
 //!       ▼
