@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use types::Language;
+use crate::detector::is_supported_source_path;
 
 /// Configuration for file discovery.
 #[derive(Debug, Clone, Default)]
@@ -42,7 +42,7 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> anyhow::Result<V
     // Filter by language support + .atlasignore + include/exclude config
     let filtered: Vec<PathBuf> = raw_files
         .into_iter()
-        .filter(|p| matches_language(p))
+        .filter(|p| is_supported_source_path(p))
         .filter(|p| !matches_any_glob(p, &atlasignore_patterns))
         .filter(|p| !matches_any_glob(p, &config.exclude_patterns))
         .filter(|p| {
@@ -189,10 +189,6 @@ fn load_atlasignore(root: &Path) -> Vec<String> {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────
-
-fn matches_language(path: &Path) -> bool {
-    Language::from_path(path).is_some()
-}
 
 /// Simple glob matching (supports `*` wildcard and `**` for any depth).
 fn matches_any_glob(path: &Path, patterns: &[String]) -> bool {

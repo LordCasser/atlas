@@ -103,7 +103,7 @@ pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
     }
 }
 
-fn is_supported_source_path(path: &Path) -> bool {
+pub(crate) fn is_supported_source_path(path: &Path) -> bool {
     Language::from_path(path).is_some()
 }
 

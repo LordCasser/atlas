@@ -1151,7 +1151,6 @@ dependencies = [
  "extraction",
  "tracing",
  "types",
- "workspace",
 ]
 
 [[package]]

@@ -107,7 +107,6 @@ pub enum RuleStatus {
     Enabled,
     Disabled,
     Rejected,
-    Deprecated,
 }
 
 impl RuleStatus {
@@ -117,7 +116,6 @@ impl RuleStatus {
             Self::Enabled => "enabled",
             Self::Disabled => "disabled",
             Self::Rejected => "rejected",
-            Self::Deprecated => "deprecated",
         }
     }
 
@@ -128,7 +126,6 @@ impl RuleStatus {
             "enabled" => Some(Self::Enabled),
             "disabled" => Some(Self::Disabled),
             "rejected" => Some(Self::Rejected),
-            "deprecated" => Some(Self::Deprecated),
             _ => None,
         }
     }
