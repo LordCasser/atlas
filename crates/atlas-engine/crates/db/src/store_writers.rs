@@ -70,6 +70,48 @@ const EMPTY_JSON_ARRAY: &str = "[]";
 /// Max rows per multi-row INSERT (limited by SQLite variable binding limit).
 const BATCH_CHUNK_SIZE: usize = 50;
 
+/// Low-level: chunk items, build placeholder SQL, collect params, execute.
+///
+/// Does NOT handle business logic (dedup, post-updates, replace_on_conflict branching).
+/// Caller provides:
+/// - `base_sql`: the INSERT prefix (e.g. "INSERT OR REPLACE INTO symbols (...) VALUES ")
+/// - `params_per_row`: number of ? placeholders per row
+/// - `items`: the rows to insert
+/// - `push_params`: closure that pushes one row's params into the Vec
+/// - `chunk_size`: chunk size (typically BATCH_CHUNK_SIZE or a function-specific constant)
+fn batch_execute_chunked<T>(
+    conn: &Connection,
+    base_sql: &str,
+    params_per_row: usize,
+    items: &[T],
+    push_params: impl Fn(&T, &mut Vec<Box<dyn rusqlite::types::ToSql>>) -> anyhow::Result<()>,
+    chunk_size: usize,
+) -> anyhow::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    for chunk in items.chunks(chunk_size) {
+        let placeholders: Vec<String> = (0..chunk.len())
+            .map(|i| {
+                let o = i * params_per_row;
+                let nums: Vec<String> = (1..=params_per_row).map(|p| format!("?{}", o + p)).collect();
+                format!("({})", nums.join(","))
+            })
+            .collect();
+        let sql = format!("{}{}", base_sql, placeholders.join(","));
+
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            Vec::with_capacity(chunk.len() * params_per_row);
+        for item in chunk {
+            push_params(item, &mut all_params)?;
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
+        conn.execute(&sql, param_refs.as_slice())?;
+    }
+    Ok(())
+}
+
 pub(crate) fn write_symbols(
     conn: &Connection,
     symbols: &[SymbolDef],
@@ -119,54 +161,13 @@ pub(crate) fn write_symbols(
          layer)
      VALUES "#;
 
-    for chunk in symbol_rows.chunks(BATCH_CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * 29;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},\
-                      ?{o8},?{o9},?{o10},?{o11},?{o12},?{o13},\
-                      ?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},\
-                      ?{o20},?{o21},?{o22},?{o23},?{o24},\
-                      ?{o25},?{o26},?{o27},?{o28},?{o29})",
-                    o1 = o + 1,
-                    o2 = o + 2,
-                    o3 = o + 3,
-                    o4 = o + 4,
-                    o5 = o + 5,
-                    o6 = o + 6,
-                    o7 = o + 7,
-                    o8 = o + 8,
-                    o9 = o + 9,
-                    o10 = o + 10,
-                    o11 = o + 11,
-                    o12 = o + 12,
-                    o13 = o + 13,
-                    o14 = o + 14,
-                    o15 = o + 15,
-                    o16 = o + 16,
-                    o17 = o + 17,
-                    o18 = o + 18,
-                    o19 = o + 19,
-                    o20 = o + 20,
-                    o21 = o + 21,
-                    o22 = o + 22,
-                    o23 = o + 23,
-                    o24 = o + 24,
-                    o25 = o + 25,
-                    o26 = o + 26,
-                    o27 = o + 27,
-                    o28 = o + 28,
-                    o29 = o + 29,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        // Collect all params for this chunk
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * 29);
-        for s in chunk {
+    const SYMBOL_PARAMS: usize = 29;
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        SYMBOL_PARAMS,
+        &symbol_rows,
+        |s, params| {
             let path_json = if s.symbol_path.is_empty() {
                 EMPTY_JSON_ARRAY.to_string()
             } else {
@@ -178,44 +179,39 @@ pub(crate) fn write_symbols(
                 serde_json::to_string(&s.namespace_path)?
             };
             let visibility = s.visibility.map(|v| v.as_str().to_string());
-            let exported = s.exported as i32;
-            let static_ = s.static_ as i32;
-            let async_ = s.async_ as i32;
-
-            all_params.push(Box::new(s.id));
-            all_params.push(Box::new(s.file_id));
-            all_params.push(Box::new(s.kind.as_str().to_string()));
-            all_params.push(Box::new(s.name.clone()));
-            all_params.push(Box::new(s.qualified_name.clone()));
-            all_params.push(Box::new(path_json));
-            all_params.push(Box::new(s.language.as_str().to_string()));
-            all_params.push(Box::new(s.range.start_byte));
-            all_params.push(Box::new(s.range.end_byte));
-            all_params.push(Box::new(s.range.start_line));
-            all_params.push(Box::new(s.range.start_column));
-            all_params.push(Box::new(s.range.end_line));
-            all_params.push(Box::new(s.range.end_column));
-            all_params.push(Box::new(s.name_range.start_byte));
-            all_params.push(Box::new(s.name_range.end_byte));
-            all_params.push(Box::new(s.name_range.start_line));
-            all_params.push(Box::new(s.name_range.start_column));
-            all_params.push(Box::new(s.name_range.end_line));
-            all_params.push(Box::new(s.name_range.end_column));
-            all_params.push(Box::new(s.signature.clone()));
-            all_params.push(Box::new(visibility));
-            all_params.push(Box::new(exported));
-            all_params.push(Box::new(static_));
-            all_params.push(Box::new(async_));
-            all_params.push(Box::new(None::<SymbolId>));
-            all_params.push(Box::new(s.scope_id));
-            all_params.push(Box::new(s.package_name.clone()));
-            all_params.push(Box::new(ns_json));
-            all_params.push(Box::new(layer.to_string()));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+            params.push(Box::new(s.id));
+            params.push(Box::new(s.file_id));
+            params.push(Box::new(s.kind.as_str().to_string()));
+            params.push(Box::new(s.name.clone()));
+            params.push(Box::new(s.qualified_name.clone()));
+            params.push(Box::new(path_json));
+            params.push(Box::new(s.language.as_str().to_string()));
+            params.push(Box::new(s.range.start_byte));
+            params.push(Box::new(s.range.end_byte));
+            params.push(Box::new(s.range.start_line));
+            params.push(Box::new(s.range.start_column));
+            params.push(Box::new(s.range.end_line));
+            params.push(Box::new(s.range.end_column));
+            params.push(Box::new(s.name_range.start_byte));
+            params.push(Box::new(s.name_range.end_byte));
+            params.push(Box::new(s.name_range.start_line));
+            params.push(Box::new(s.name_range.start_column));
+            params.push(Box::new(s.name_range.end_line));
+            params.push(Box::new(s.name_range.end_column));
+            params.push(Box::new(s.signature.clone()));
+            params.push(Box::new(visibility));
+            params.push(Box::new(s.exported as i32));
+            params.push(Box::new(s.static_ as i32));
+            params.push(Box::new(s.async_ as i32));
+            params.push(Box::new(None::<SymbolId>));
+            params.push(Box::new(s.scope_id));
+            params.push(Box::new(s.package_name.clone()));
+            params.push(Box::new(ns_json));
+            params.push(Box::new(layer.to_string()));
+            Ok(())
+        },
+        BATCH_CHUNK_SIZE,
+    )?;
 
     let mut update_container = conn.prepare(
         r#"UPDATE symbols
@@ -246,49 +242,28 @@ pub(crate) fn write_scopes(conn: &Connection, scopes: &[ScopeDef]) -> anyhow::Re
          range_end_line, range_end_column)
      VALUES "#;
 
-    for chunk in scopes.chunks(CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * PARAMS_PER_ROW;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},?{o10},?{o11},?{o12})",
-                    o1 = o + 1,
-                    o2 = o + 2,
-                    o3 = o + 3,
-                    o4 = o + 4,
-                    o5 = o + 5,
-                    o6 = o + 6,
-                    o7 = o + 7,
-                    o8 = o + 8,
-                    o9 = o + 9,
-                    o10 = o + 10,
-                    o11 = o + 11,
-                    o12 = o + 12,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * PARAMS_PER_ROW);
-        for sc in chunk {
-            all_params.push(Box::new(sc.id));
-            all_params.push(Box::new(sc.file_id));
-            all_params.push(Box::new(sc.kind.as_str().to_string()));
-            all_params.push(Box::new(sc.name.clone()));
-            all_params.push(Box::new(sc.scope_path.clone()));
-            all_params.push(Box::new(None::<ScopeId>));
-            all_params.push(Box::new(sc.range.start_byte));
-            all_params.push(Box::new(sc.range.end_byte));
-            all_params.push(Box::new(sc.range.start_line));
-            all_params.push(Box::new(sc.range.start_column));
-            all_params.push(Box::new(sc.range.end_line));
-            all_params.push(Box::new(sc.range.end_column));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        PARAMS_PER_ROW,
+        scopes,
+        |sc, params| {
+            params.push(Box::new(sc.id));
+            params.push(Box::new(sc.file_id));
+            params.push(Box::new(sc.kind.as_str().to_string()));
+            params.push(Box::new(sc.name.clone()));
+            params.push(Box::new(sc.scope_path.clone()));
+            params.push(Box::new(None::<ScopeId>));
+            params.push(Box::new(sc.range.start_byte));
+            params.push(Box::new(sc.range.end_byte));
+            params.push(Box::new(sc.range.start_line));
+            params.push(Box::new(sc.range.start_column));
+            params.push(Box::new(sc.range.end_line));
+            params.push(Box::new(sc.range.end_column));
+            Ok(())
+        },
+        CHUNK_SIZE,
+    )?;
 
     let valid_scope_ids: HashSet<_> = scopes.iter().map(|s| s.id).collect();
     let mut update_parent = conn.prepare(
@@ -343,26 +318,12 @@ fn write_references_impl(
      VALUES "#
     };
 
-    for chunk in refs.chunks(BATCH_CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * REF_PARAMS;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
-                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17},?{o18},?{o19},?{o20})",
-                    o1 = o + 1, o2 = o + 2, o3 = o + 3, o4 = o + 4,
-                    o5 = o + 5, o6 = o + 6, o7 = o + 7, o8 = o + 8,
-                    o9 = o + 9, o10 = o + 10, o11 = o + 11, o12 = o + 12,
-                    o13 = o + 13, o14 = o + 14, o15 = o + 15, o16 = o + 16,
-                    o17 = o + 17, o18 = o + 18, o19 = o + 19, o20 = o + 20,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * REF_PARAMS);
-        for r in chunk {
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        REF_PARAMS,
+        refs,
+        |r, params| {
             let strategy = r
                 .resolved
                 .as_ref()
@@ -371,33 +332,32 @@ fn write_references_impl(
                 .resolved
                 .as_ref()
                 .map(|rt| rt.provenance.as_str().to_string());
-            all_params.push(Box::new(r.id));
-            all_params.push(Box::new(r.file_id));
-            all_params.push(Box::new(r.source_symbol));
-            all_params.push(Box::new(r.scope_id));
-            all_params.push(Box::new(r.kind.as_str().to_string()));
-            all_params.push(Box::new(r.text.clone()));
-            all_params.push(Box::new(r.name.clone()));
-            all_params.push(Box::new(r.receiver.clone()));
-            all_params.push(Box::new(r.arity));
-            all_params.push(Box::new(r.range.start_byte));
-            all_params.push(Box::new(r.range.end_byte));
-            all_params.push(Box::new(r.range.start_line));
-            all_params.push(Box::new(r.range.start_column));
-            all_params.push(Box::new(r.range.end_line));
-            all_params.push(Box::new(r.range.end_column));
-            all_params.push(Box::new(r.resolved.as_ref().map(|rt| rt.symbol_id)));
-            all_params.push(Box::new(
+            params.push(Box::new(r.id));
+            params.push(Box::new(r.file_id));
+            params.push(Box::new(r.source_symbol));
+            params.push(Box::new(r.scope_id));
+            params.push(Box::new(r.kind.as_str().to_string()));
+            params.push(Box::new(r.text.clone()));
+            params.push(Box::new(r.name.clone()));
+            params.push(Box::new(r.receiver.clone()));
+            params.push(Box::new(r.arity));
+            params.push(Box::new(r.range.start_byte));
+            params.push(Box::new(r.range.end_byte));
+            params.push(Box::new(r.range.start_line));
+            params.push(Box::new(r.range.start_column));
+            params.push(Box::new(r.range.end_line));
+            params.push(Box::new(r.range.end_column));
+            params.push(Box::new(r.resolved.as_ref().map(|rt| rt.symbol_id)));
+            params.push(Box::new(
                 r.resolved.as_ref().map(|rt| rt.confidence.as_f32()),
             ));
-            all_params.push(Box::new(strategy));
-            all_params.push(Box::new(provenance));
-            all_params.push(Box::new(r.binding_id));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+            params.push(Box::new(strategy));
+            params.push(Box::new(provenance));
+            params.push(Box::new(r.binding_id));
+            Ok(())
+        },
+        BATCH_CHUNK_SIZE,
+    )?;
 
     Ok(())
 }
@@ -419,56 +379,31 @@ pub(crate) fn write_imports(conn: &Connection, imports: &[ImportDef]) -> anyhow:
          range_end_line, range_end_column)
      VALUES "#;
 
-    for chunk in imports.chunks(CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * PARAMS_PER_ROW;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
-                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15})",
-                    o1 = o + 1,
-                    o2 = o + 2,
-                    o3 = o + 3,
-                    o4 = o + 4,
-                    o5 = o + 5,
-                    o6 = o + 6,
-                    o7 = o + 7,
-                    o8 = o + 8,
-                    o9 = o + 9,
-                    o10 = o + 10,
-                    o11 = o + 11,
-                    o12 = o + 12,
-                    o13 = o + 13,
-                    o14 = o + 14,
-                    o15 = o + 15,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * PARAMS_PER_ROW);
-        for imp in chunk {
-            all_params.push(Box::new(imp.id));
-            all_params.push(Box::new(imp.file_id));
-            all_params.push(Box::new(imp.kind.as_str().to_string()));
-            all_params.push(Box::new(imp.module.clone()));
-            all_params.push(Box::new(imp.imported_name.clone()));
-            all_params.push(Box::new(imp.local_name.clone()));
-            all_params.push(Box::new(imp.alias.clone()));
-            all_params.push(Box::new(imp.is_wildcard as i32));
-            all_params.push(Box::new(imp.is_relative as i32));
-            all_params.push(Box::new(imp.range.start_byte));
-            all_params.push(Box::new(imp.range.end_byte));
-            all_params.push(Box::new(imp.range.start_line));
-            all_params.push(Box::new(imp.range.start_column));
-            all_params.push(Box::new(imp.range.end_line));
-            all_params.push(Box::new(imp.range.end_column));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        PARAMS_PER_ROW,
+        imports,
+        |imp, params| {
+            params.push(Box::new(imp.id));
+            params.push(Box::new(imp.file_id));
+            params.push(Box::new(imp.kind.as_str().to_string()));
+            params.push(Box::new(imp.module.clone()));
+            params.push(Box::new(imp.imported_name.clone()));
+            params.push(Box::new(imp.local_name.clone()));
+            params.push(Box::new(imp.alias.clone()));
+            params.push(Box::new(imp.is_wildcard as i32));
+            params.push(Box::new(imp.is_relative as i32));
+            params.push(Box::new(imp.range.start_byte));
+            params.push(Box::new(imp.range.end_byte));
+            params.push(Box::new(imp.range.start_line));
+            params.push(Box::new(imp.range.start_column));
+            params.push(Box::new(imp.range.end_line));
+            params.push(Box::new(imp.range.end_column));
+            Ok(())
+        },
+        CHUNK_SIZE,
+    )?;
 
     Ok(())
 }
@@ -558,38 +493,12 @@ fn write_callsites_impl(
      VALUES "#
     };
 
-    for chunk in callsites.chunks(CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * PARAMS_PER_ROW;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
-                      ?{o10},?{o11},?{o12},?{o13},?{o14},?{o15},?{o16},?{o17})",
-                    o1 = o + 1,
-                    o2 = o + 2,
-                    o3 = o + 3,
-                    o4 = o + 4,
-                    o5 = o + 5,
-                    o6 = o + 6,
-                    o7 = o + 7,
-                    o8 = o + 8,
-                    o9 = o + 9,
-                    o10 = o + 10,
-                    o11 = o + 11,
-                    o12 = o + 12,
-                    o13 = o + 13,
-                    o14 = o + 14,
-                    o15 = o + 15,
-                    o16 = o + 16,
-                    o17 = o + 17,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * PARAMS_PER_ROW);
-        for cs in chunk {
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        PARAMS_PER_ROW,
+        callsites,
+        |cs, params| {
             let args_json = if cs.args.is_empty() {
                 EMPTY_JSON_ARRAY.to_string()
             } else {
@@ -606,28 +515,27 @@ fn write_callsites_impl(
                 ),
                 None => (None, None, None, None, None, None),
             };
-            all_params.push(Box::new(cs.id));
-            all_params.push(Box::new(cs.reference_id));
-            all_params.push(Box::new(cs.caller));
-            all_params.push(Box::new(cs.receiver.clone()));
-            all_params.push(Box::new(args_json));
-            all_params.push(Box::new(cs.range.start_byte));
-            all_params.push(Box::new(cs.range.end_byte));
-            all_params.push(Box::new(cs.range.start_line));
-            all_params.push(Box::new(cs.range.start_column));
-            all_params.push(Box::new(cs.range.end_line));
-            all_params.push(Box::new(cs.range.end_column));
-            all_params.push(Box::new(cs_sl));
-            all_params.push(Box::new(cs_sc));
-            all_params.push(Box::new(cs_el));
-            all_params.push(Box::new(cs_ec));
-            all_params.push(Box::new(cs_sb));
-            all_params.push(Box::new(cs_eb));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+            params.push(Box::new(cs.id));
+            params.push(Box::new(cs.reference_id));
+            params.push(Box::new(cs.caller));
+            params.push(Box::new(cs.receiver.clone()));
+            params.push(Box::new(args_json));
+            params.push(Box::new(cs.range.start_byte));
+            params.push(Box::new(cs.range.end_byte));
+            params.push(Box::new(cs.range.start_line));
+            params.push(Box::new(cs.range.start_column));
+            params.push(Box::new(cs.range.end_line));
+            params.push(Box::new(cs.range.end_column));
+            params.push(Box::new(cs_sl));
+            params.push(Box::new(cs_sc));
+            params.push(Box::new(cs_el));
+            params.push(Box::new(cs_ec));
+            params.push(Box::new(cs_sb));
+            params.push(Box::new(cs_eb));
+            Ok(())
+        },
+        CHUNK_SIZE,
+    )?;
 
     Ok(())
 }
@@ -648,52 +556,29 @@ pub(crate) fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyh
          range_end_line, range_end_column)
      VALUES "#;
 
-    for chunk in bindings.chunks(CHUNK_SIZE) {
-        let placeholders: Vec<String> = (0..chunk.len())
-            .map(|i| {
-                let o = i * PARAMS_PER_ROW;
-                format!(
-                    "(?{o1},?{o2},?{o3},?{o4},?{o5},?{o6},?{o7},?{o8},?{o9},\
-                      ?{o10},?{o11},?{o12},?{o13})",
-                    o1 = o + 1,
-                    o2 = o + 2,
-                    o3 = o + 3,
-                    o4 = o + 4,
-                    o5 = o + 5,
-                    o6 = o + 6,
-                    o7 = o + 7,
-                    o8 = o + 8,
-                    o9 = o + 9,
-                    o10 = o + 10,
-                    o11 = o + 11,
-                    o12 = o + 12,
-                    o13 = o + 13,
-                )
-            })
-            .collect();
-        let sql = format!("{}{}", base_sql, placeholders.join(","));
-
-        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> =
-            Vec::with_capacity(chunk.len() * PARAMS_PER_ROW);
-        for b in chunk {
-            all_params.push(Box::new(b.id));
-            all_params.push(Box::new(b.file_id));
-            all_params.push(Box::new(b.function_id));
-            all_params.push(Box::new(b.scope_id));
-            all_params.push(Box::new(b.kind.as_str().to_string()));
-            all_params.push(Box::new(b.name.clone()));
-            all_params.push(Box::new(b.symbol_id));
-            all_params.push(Box::new(b.range.start_byte));
-            all_params.push(Box::new(b.range.end_byte));
-            all_params.push(Box::new(b.range.start_line));
-            all_params.push(Box::new(b.range.start_column));
-            all_params.push(Box::new(b.range.end_line));
-            all_params.push(Box::new(b.range.end_column));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            all_params.iter().map(|p| p.as_ref()).collect();
-        conn.execute(&sql, param_refs.as_slice())?;
-    }
+    batch_execute_chunked(
+        conn,
+        base_sql,
+        PARAMS_PER_ROW,
+        bindings,
+        |b, params| {
+            params.push(Box::new(b.id));
+            params.push(Box::new(b.file_id));
+            params.push(Box::new(b.function_id));
+            params.push(Box::new(b.scope_id));
+            params.push(Box::new(b.kind.as_str().to_string()));
+            params.push(Box::new(b.name.clone()));
+            params.push(Box::new(b.symbol_id));
+            params.push(Box::new(b.range.start_byte));
+            params.push(Box::new(b.range.end_byte));
+            params.push(Box::new(b.range.start_line));
+            params.push(Box::new(b.range.start_column));
+            params.push(Box::new(b.range.end_line));
+            params.push(Box::new(b.range.end_column));
+            Ok(())
+        },
+        CHUNK_SIZE,
+    )?;
 
     Ok(())
 }
