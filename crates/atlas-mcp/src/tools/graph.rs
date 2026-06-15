@@ -9,7 +9,7 @@ use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, Tr
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
-    MAX_AMBIGUOUS_CANDIDATES, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str, get_str_opt, get_u64,
+    MAX_AMBIGUOUS_CANDIDATES, ToolRouter, get_str, get_str_opt, get_u64,
 };
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
@@ -427,11 +427,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         let qname = symbol_input_qname(&input);
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
@@ -532,11 +529,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         let qname = symbol_input_qname(&input);
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
@@ -660,11 +654,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         let qname = symbol_input_qname(&input);
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let limit = get_u64(args, "limit").unwrap_or(100) as usize;
@@ -902,17 +893,11 @@ impl ToolRouter {
         };
         let from_qname = symbol_input_qname(&from_input);
         let to_qname = symbol_input_qname(&to_input);
-        if from_qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("from exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(from_qname) {
+            return (e, true);
         }
-        if to_qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("to exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(to_qname) {
+            return (e, true);
         }
         let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
         let prefer_production = args
@@ -1480,11 +1465,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         let qname = symbol_input_qname(&input);
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let source_mode = parse_source_mode(args);
         let source_lines = args
@@ -1673,11 +1655,8 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
         let qname = symbol_input_qname(&input);
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let depth = get_u64(args, "depth").unwrap_or(3) as usize;
         let semantic = args

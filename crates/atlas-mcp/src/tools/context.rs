@@ -11,7 +11,7 @@ use super::symbol_selector::{
     MAX_AGGREGATION_CANDIDATES, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
     SymbolResolutionPolicy, SymbolSelector, parse_symbol_input,
 };
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
+use super::{ToolRouter};
 
 use atlas_engine::InvestigationFocus;
 use serde_json::json;
@@ -46,13 +46,8 @@ impl ToolRouter {
             SymbolInput::Name(name) => name.as_str(),
             SymbolInput::Selector(sel) => sel.qualified_name.as_str(),
         };
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!(
-                    "Symbol name exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"
-                ),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(qname) {
+            return (e, true);
         }
         let include_code = args
             .get("includeCode")

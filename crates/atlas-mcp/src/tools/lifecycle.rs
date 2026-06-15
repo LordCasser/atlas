@@ -5,7 +5,7 @@
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str};
+use super::{ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
@@ -21,11 +21,8 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.clone(),
             SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
-        if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(&symbol) {
+            return (e, true);
         }
         let field_raw = get_str(args, "field");
         let field = atlas_engine::canonicalize_field_path(field_raw);

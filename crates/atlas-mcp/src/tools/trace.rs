@@ -6,7 +6,7 @@ use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
-    MAX_FILE_PATH_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, get_str_opt, get_u64,
+    MAX_FILE_PATH_LENGTH, ToolRouter, get_str_opt, get_u64,
     resolve_file_id, warnings_to_trace_diagnostics,
 };
 use crate::tools::symbol_selector::{
@@ -278,15 +278,8 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.as_str(),
             SymbolInput::Selector(sel) => &sel.qualified_name,
         };
-        if symbol_str.len() > MAX_SYMBOL_NAME_LENGTH {
-            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                "trace_callers",
-                &format!("symbol exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
-            );
-            return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(symbol_str) {
+            return (e, true);
         }
 
         if symbol_str.is_empty() {
@@ -443,25 +436,11 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.as_str(),
             SymbolInput::Selector(sel) => &sel.qualified_name,
         };
-        if from_name.len() > MAX_SYMBOL_NAME_LENGTH {
-            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                "trace_forward",
-                &format!("from exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
-            );
-            return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(from_name) {
+            return (e, true);
         }
-        if to_name.len() > MAX_SYMBOL_NAME_LENGTH {
-            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                "trace_forward",
-                &format!("to exceeds maximum length of {MAX_SYMBOL_NAME_LENGTH} characters"),
-            );
-            return (
-                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(to_name) {
+            return (e, true);
         }
 
         if from_name.is_empty() || to_name.is_empty() {

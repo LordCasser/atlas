@@ -17,7 +17,7 @@ use atlas_engine::SymbolKind;
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
-    MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
+    MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
     get_u64,
 };
 use crate::tools::analysis_response::precision_to_view;
@@ -312,18 +312,8 @@ impl ToolRouter {
             let name = get_str(args, "qualified_name").to_string();
             (name.clone(), SymbolInput::Name(name))
         };
-        if qname.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                serde_json::to_string_pretty(&json!({
-                    "ok": false,
-                    "error": format!(
-                        "qualified_name exceeds maximum length of {} characters",
-                        MAX_SYMBOL_NAME_LENGTH
-                    ),
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(&qname) {
+            return (e, true);
         }
         let include_code = args
             .get("includeCode")

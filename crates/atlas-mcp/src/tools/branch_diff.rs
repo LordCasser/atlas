@@ -5,7 +5,7 @@
 //! a field while the other does not.
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{MAX_SYMBOL_NAME_LENGTH, ToolRouter};
+use super::{ToolRouter};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
@@ -21,11 +21,8 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.clone(),
             SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
-        if symbol.len() > MAX_SYMBOL_NAME_LENGTH {
-            return (
-                format!("symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"),
-                true,
-            );
+        if let Err(e) = super::validate_symbol_name_length(&symbol) {
+            return (e, true);
         }
 
         if symbol.is_empty() {
