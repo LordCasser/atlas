@@ -268,13 +268,11 @@ impl Store {
 /// recreating indexes, the next `init_schema()` run will detect missing
 /// objects via `ensure_required_schema_objects()`. This guard provides
 /// an additional safety net by attempting cleanup during normal shutdown.
-#[allow(dead_code)]
 pub struct FullRebuildGuard {
     store: Arc<Store>,
     active: bool,
 }
 
-#[allow(dead_code)]
 impl FullRebuildGuard {
     pub fn new(store: &Arc<Store>) -> Self {
         Self {

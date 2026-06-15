@@ -68,13 +68,10 @@ impl IndexMode {
 }
 
 /// Key for the resolution generation counter in project_metadata.
-#[allow(dead_code)]
 pub const KEY_RESOLUTION_GENERATION: &str = "resolution_generation_version";
 /// Key for the resolution config hash in project_metadata.
-#[allow(dead_code)]
 pub const KEY_RESOLUTION_CONFIG_HASH: &str = "resolution_config_hash";
 /// Key for the graph generation counter in project_metadata.
-#[allow(dead_code)]
 pub const KEY_GRAPH_GENERATION: &str = "graph_generation_version";
 
 // ── Lifecycle ───────────────────────────────────────────────────────────────
