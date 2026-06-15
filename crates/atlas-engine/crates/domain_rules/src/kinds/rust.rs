@@ -6,11 +6,9 @@
 //! - `rust/owned_pattern`: struct field patterns that indicate ownership
 //! - `rust/cleanup_fn`: functions that perform cleanup (e.g., std::mem::forget)
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Rust rule kind registry.
 #[derive(Debug)]
@@ -113,11 +111,6 @@ pub struct RustLearningStrategy;
 impl RuleLearningStrategy for RustLearningStrategy {
     fn language(&self) -> &'static str {
         "rust"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        // Stub: no auto-discovery for Rust yet.
-        Ok(Vec::new())
     }
 
 }

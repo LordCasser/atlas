@@ -6,11 +6,9 @@
 //! - `csharp/idisposable`: IDisposable patterns (using statement, Dispose method)
 //! - `csharp/cleanup_fn`: general cleanup functions
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// C# rule kind registry.
 #[derive(Debug)]
@@ -116,10 +114,6 @@ pub struct CSharpLearningStrategy;
 impl RuleLearningStrategy for CSharpLearningStrategy {
     fn language(&self) -> &'static str {
         "csharp"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        Ok(Vec::new())
     }
 
 }

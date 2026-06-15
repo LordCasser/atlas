@@ -6,11 +6,9 @@
 //! - `ruby/block_resource`: block-based resource patterns (File.open { |f| ... })
 //! - `ruby/cleanup_fn`: general cleanup functions
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Ruby rule kind registry.
 #[derive(Debug)]
@@ -117,10 +115,6 @@ pub struct RubyLearningStrategy;
 impl RuleLearningStrategy for RubyLearningStrategy {
     fn language(&self) -> &'static str {
         "ruby"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        Ok(Vec::new())
     }
 
 }

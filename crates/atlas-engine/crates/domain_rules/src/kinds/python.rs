@@ -6,11 +6,9 @@
 //! - `python/context_manager`: context manager entry/exit boundaries (with-statement)
 //! - `python/decorator_boundary`: decorator wrapping effects (@contextmanager, etc.)
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Python rule kind registry.
 #[derive(Debug)]
@@ -114,11 +112,6 @@ pub struct PythonLearningStrategy;
 impl RuleLearningStrategy for PythonLearningStrategy {
     fn language(&self) -> &'static str {
         "python"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        // Stub: no auto-discovery for Python yet.
-        Ok(Vec::new())
     }
 
 }

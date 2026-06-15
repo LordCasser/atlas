@@ -8,7 +8,10 @@ pub trait RuleLearningStrategy: std::fmt::Debug + Send + Sync {
     fn language(&self) -> &'static str;
 
     /// Discover candidate rules from the database.
-    fn discover_candidates(&self, store: &db::Store) -> anyhow::Result<Vec<LearnedRuleCandidate>>;
+    /// Default: returns empty vec (no auto-discovery).
+    fn discover_candidates(&self, _store: &db::Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
+        Ok(Vec::new())
+    }
 
     /// Human-readable explanation for a candidate.
     fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {

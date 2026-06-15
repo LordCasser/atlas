@@ -6,11 +6,9 @@
 //! - `kotlin/coroutine`: coroutine-scoped resources (launch, async, withContext, coroutineScope)
 //! - `kotlin/cleanup_fn`: general cleanup functions
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Kotlin rule kind registry.
 #[derive(Debug)]
@@ -118,10 +116,6 @@ pub struct KotlinLearningStrategy;
 impl RuleLearningStrategy for KotlinLearningStrategy {
     fn language(&self) -> &'static str {
         "kotlin"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        Ok(Vec::new())
     }
 
 }

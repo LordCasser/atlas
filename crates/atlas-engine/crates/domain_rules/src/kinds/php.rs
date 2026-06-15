@@ -6,11 +6,9 @@
 //! - `php/procedural_resource`: procedural resource management patterns
 //! - `php/cleanup_fn`: general cleanup functions
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// PHP rule kind registry.
 #[derive(Debug)]
@@ -115,10 +113,6 @@ pub struct PhpLearningStrategy;
 impl RuleLearningStrategy for PhpLearningStrategy {
     fn language(&self) -> &'static str {
         "php"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        Ok(Vec::new())
     }
 
 }

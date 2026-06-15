@@ -6,11 +6,9 @@
 //! - `ts/react_hook`: React hook boundaries (useEffect, useMemo, useCallback)
 //! - `ts/cleanup_return`: return function from useEffect for cleanup (not yet implemented)
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// TypeScript / JavaScript rule kind registry.
 #[derive(Debug)]
@@ -120,11 +118,6 @@ pub struct TypeScriptLearningStrategy;
 impl RuleLearningStrategy for TypeScriptLearningStrategy {
     fn language(&self) -> &'static str {
         "typescript"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        // Stub: no auto-discovery for TypeScript yet.
-        Ok(Vec::new())
     }
 
 }

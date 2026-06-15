@@ -6,11 +6,9 @@
 //! - `go/escape_fn`: patterns where resources escape the current scope (goroutines)
 //! - `go/cleanup_fn`: functions that perform cleanup beyond simple close
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Go rule kind registry.
 #[derive(Debug)]
@@ -111,11 +109,6 @@ pub struct GoLearningStrategy;
 impl RuleLearningStrategy for GoLearningStrategy {
     fn language(&self) -> &'static str {
         "go"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        // Stub: no auto-discovery for Go yet.
-        Ok(Vec::new())
     }
 
 }

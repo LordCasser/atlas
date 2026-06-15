@@ -6,11 +6,9 @@
 //! - `java/try_resource`: try-with-resources managed resources (scope-level analysis)
 //! - `java/cleanup_fn`: general cleanup functions
 
-use super::super::learning::{LearnedRuleCandidate, RuleLearningStrategy};
+use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
-
-use db::Store;
 
 /// Java rule kind registry.
 #[derive(Debug)]
@@ -116,11 +114,6 @@ pub struct JavaLearningStrategy;
 impl RuleLearningStrategy for JavaLearningStrategy {
     fn language(&self) -> &'static str {
         "java"
-    }
-
-    fn discover_candidates(&self, _store: &Store) -> anyhow::Result<Vec<LearnedRuleCandidate>> {
-        // Stub: no auto-discovery for Java yet.
-        Ok(Vec::new())
     }
 
 }
