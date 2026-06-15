@@ -7,7 +7,7 @@
 use crate::ids::{FileId, ReferenceId, SymbolId};
 use crate::structs::CapabilityMask;
 use crate::structs::TextRange;
-use crate::structs::precision::PrecisionTier;
+use crate::structs::Precision;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -96,10 +96,10 @@ pub struct LazyWindow {
     /// Active job ids for pending units, useful for MCP retry/status hints.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_job_ids: Vec<String>,
-    /// Dataflow precision tier (set by LazyDataflowService after loading).
+    /// Dataflow precision (set by LazyDataflowService after loading).
     /// None if dataflow was not loaded via lazy path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub precision_tier: Option<PrecisionTier>,
+    pub precision: Option<Precision>,
     /// Capability mask for this window's units (summarized from extraction_state layers).
     #[serde(default, skip_serializing_if = "CapabilityMask::is_zero")]
     pub capability_mask: CapabilityMask,

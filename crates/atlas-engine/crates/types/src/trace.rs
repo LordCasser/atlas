@@ -29,7 +29,7 @@ use super::capability::LanguageCapabilityProfile;
 use super::dataflow::DataNode;
 use super::enums::DataFlowKind;
 use super::ids::{DataNodeId, FileId};
-use super::structs::precision::PrecisionTier;
+use super::structs::Precision;
 use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
 
 // ---------------------------------------------------------------------------
@@ -250,10 +250,10 @@ pub struct LazySummary {
     pub truncated: bool,
     /// Wall-clock time spent on lazy dataflow loading (milliseconds).
     pub duration_ms: u64,
-    /// Precision tier of the dataflow result (set by lazy dataflow service).
-    /// None means no lazy dataflow was triggered or tier is irrelevant.
+    /// Precision of the dataflow result (set by lazy dataflow service).
+    /// None means no lazy dataflow was triggered or precision is irrelevant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub precision_tier: Option<PrecisionTier>,
+    pub precision: Option<Precision>,
 }
 
 /// A single step in a trace path — connects two data nodes via a dataflow edge.

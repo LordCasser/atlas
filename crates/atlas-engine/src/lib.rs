@@ -36,7 +36,7 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
-/// Precision migration adapter: new Precision model → legacy PrecisionTier.
+/// Precision method tests: validations for best(), worst(), is_exact(), is_unavailable().
 pub mod compat;
 /// Focus-driven incremental analysis types: FocusSeed, FocusWindow, FocusClosure.
 pub mod focus;
@@ -46,7 +46,6 @@ pub mod investigation;
 /// Unified job context: shared cancellation and progress for long-running operations.
 pub mod job_context;
 mod lazy_budget;
-mod lazy_outcome;
 mod lazy_structural;
 mod linux_augment;
 /// Precision tier computation for lazy extraction transparency.
@@ -104,9 +103,6 @@ pub use search::{SearchEngine, SearchResult};
 pub use scoped_search::{
     ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis, SearchCoverage,
 };
-
-/// Unified lazy extraction outcome: consumed by MCP response builders.
-pub use lazy_outcome::LazyOutcome;
 
 /// Lazy structural service: on-demand full structural extraction.
 pub use lazy_structural::LazyStructuralService;
@@ -487,7 +483,7 @@ impl Engine {
                     pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: window.precision_tier,
+                    precision: window.precision.clone(),
                 });
                 if window.truncated {
                     partial = true;
@@ -517,7 +513,7 @@ impl Engine {
                     pending_job_ids: Vec::new(),
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision_tier: None,
+                    precision: None,
                 });
                 lazy_diagnostics.push(
                     TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))

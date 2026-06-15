@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use types::enums::{Language, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::KnownGap;
-use types::structs::precision::PrecisionTier;
+use types::structs::Precision;
 
 // ---------------------------------------------------------------------------
 // Direction — expansion direction for graph-based strategies
@@ -181,7 +181,7 @@ impl FocusClosure {
         }
     }
 
-    pub fn mark_extracted(&mut self, file_id: FileId, _tier: PrecisionTier) {
+    pub fn mark_extracted(&mut self, file_id: FileId, _precision: &Precision) {
         self.files.insert(file_id);
         self.visited.insert(file_id);
     }

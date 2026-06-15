@@ -4,7 +4,7 @@ use super::types::*;
 use types::enums::{Language, SymbolKind};
 use types::ids::FileId;
 use types::structs::KnownGap;
-use types::structs::precision::PrecisionTier;
+use types::structs::Precision;
 
 #[test]
 fn test_default_window_budget() {
@@ -70,7 +70,7 @@ fn test_focus_closure_mark_extracted() {
     };
     let mut closure = FocusClosure::new(&seed);
     let fid = FileId::generate("extracted.rs");
-    closure.mark_extracted(fid, PrecisionTier::Exact);
+    closure.mark_extracted(fid, &Precision::best());
     assert!(closure.files.contains(&fid));
     assert!(closure.visited.contains(&fid));
     assert_eq!(closure.files.len(), 1);
@@ -93,24 +93,17 @@ fn test_focus_closure_record_gap() {
 }
 
 #[test]
-fn test_precision_tier_adapter_exact() {
-    // Tested via compat.rs — here we just verify the From impl is callable
-    let p = types::structs::Precision {
-        coverage: types::structs::CoverageTier::RepoComplete,
-        confidence: types::structs::SemanticConfidence::Certain,
-    };
-    let tier: PrecisionTier = p.into();
-    assert_eq!(tier, PrecisionTier::Exact);
+fn test_precision_best_method() {
+    let p = Precision::best();
+    assert!(matches!(p.coverage, types::structs::CoverageTier::RepoComplete));
+    assert_eq!(p.confidence, types::structs::SemanticConfidence::Certain);
 }
 
 #[test]
-fn test_precision_tier_adapter_manifest() {
-    let p = types::structs::Precision {
-        coverage: types::structs::CoverageTier::Manifest,
-        confidence: types::structs::SemanticConfidence::Low,
-    };
-    let tier: PrecisionTier = p.into();
-    assert_eq!(tier, PrecisionTier::ManifestOnly);
+fn test_precision_worst_method() {
+    let p = Precision::worst();
+    assert!(matches!(p.coverage, types::structs::CoverageTier::Manifest));
+    assert_eq!(p.confidence, types::structs::SemanticConfidence::Low);
 }
 
 #[test]

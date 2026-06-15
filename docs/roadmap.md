@@ -241,3 +241,40 @@ Corpus: git blob + version/tag/path mappings
 3. **Phase 3 (v2.0)**: 剩余语言随 CFG 实现一同交付
 
 **不纳入范围**：SAST 级别的跨函数污点分析、完整 pointer provenance、编译器级 lifetime 验证。
+
+## 9. Focus Runtime — 查询时控制平面演进
+
+### 9.1 目标
+
+Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；Focus 负责围绕用户意图
+决定构建哪些 facts、按什么顺序、在哪个 closure scope 中可见。
+
+核心原则：
+- Focus 是内部基础设施，零用户可见表面。无 CLI 命令、无手动预热、无可视化面板。
+- 项目无 full index 时静默自动激活。
+- MCP 查询经 `QueryIntent → FocusRuntime::prepare` 统一入口，不再直接组合 lazy
+  structural/dataflow、resolver 或 graph builder。
+
+### 9.2 已完成阶段
+
+| 阶段 | 内容 | 实现 |
+|------|------|------|
+| Phase 0 | Precision 替换 | MCP 响应已迁移到 `Precision { coverage, confidence }`；内部 `PrecisionTier` 在 MCP 边界转换 |
+| Phase 1 | Bootstrap 冷启动 | `BootstrapManager`（Tier0 文件清单/Tier0.5 指纹/Tier1 SymbolHints/Tier2 机会性 manifest） |
+| Phase 2 | FocusRuntime + QueryIntent | `QueryIntent → FocusRuntime::prepare` 统一入口；`QueryRuntime` 封装 MCP 集成 |
+| Phase 3 | ClosureEngine | 策略驱动的有限不动点闭包扩展（ImportNeighborhood/CallGraph/TypeGraph），含预算控制 |
+| Phase 4 | ScopedResolver + FocusGraphBuilder | 闭包作用域引用解析和 scoped graph overlay |
+| Phase 5 | MCP Response Envelope 统一 | `analysis`/`precision`/`coverage_counts`/`gaps`/`work` 统一 envelope |
+| Phase 6 | 旧控制平面清理 | `LazyOrchestrator`/`LazyCoordinator` 已从模块系统移除，MCP 不再使用 `ensure_structural_*` |
+
+### 9.3 剩余工作
+
+- 长期：将内部 `PrecisionTier` 统一迁移为 `PrecisionView`，消除 MCP 边界转换函数
+
+### 9.4 不变边界
+
+`LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、`extraction_state` 和
+`extraction_jobs` 保留为事实构建、缓存、freshness、in-flight dedup 边界。Focus 只替换
+查询时的调度和决策层，不重写 extraction 管线。
+
+详见 [`architecture.md` §10.1.10-10.1.11](./architecture.md) 中的 Focus-Lazy 架构约束。

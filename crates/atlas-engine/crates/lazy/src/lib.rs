@@ -19,7 +19,7 @@ use anyhow::Result;
 use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
-use types::structs::{CapabilityMask, precision};
+use types::structs::{CapabilityMask, dataflow_precision};
 
 /// Public entry point for the `atlas-engine` facade.
 ///
@@ -89,13 +89,13 @@ impl LazyDataflowService {
         window.units_pending = result.units_pending;
         window.pending_job_ids = result.pending_job_ids;
 
-        // Compute dataflow precision tier
+        // Compute dataflow precision
         {
             let planned = window.units.len();
             let available = result.units_built + result.units_cached;
             let incomplete = result.budget_exceeded || result.units_pending > 0;
-            let tier = precision::dataflow_precision(available, planned, incomplete);
-            window.precision_tier = Some(tier);
+            let precision = dataflow_precision(available, planned, incomplete);
+            window.precision = Some(precision);
         }
 
         // Compute capability mask from ensure result.

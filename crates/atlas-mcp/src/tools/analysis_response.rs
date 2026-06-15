@@ -5,7 +5,7 @@
 //! that wraps any tool-specific result body under a stable user/agent-facing envelope.
 //!
 //! # Architecture invariant
-//! - Internal focus/lazy concepts (closure_id, PrecisionTier enum values,
+//! - Internal focus/lazy concepts (closure_id, Precision enum variants,
 //!   lazy_diagnostics internals, pending_closures, focus scheduler priorities)
 //!   MUST NOT appear in MCP responses.
 //! - Public coverage labels: `repo_complete`, `local_complete`, `boundary`,

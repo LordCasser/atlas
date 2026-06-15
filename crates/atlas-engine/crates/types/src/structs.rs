@@ -158,57 +158,7 @@ pub mod status {
     pub const SUPERSEDED: &str = "superseded";
 }
 
-/// Precision tier for lazy analysis results.
-///
-/// Six tiers from Unavailable (no data) to Exact (complete analysis).
-/// The tier reflects the quality of data available for a file/symbol
-/// after lazy extraction, combining both structural and dataflow layers.
-pub mod precision {
-    use serde::{Deserialize, Serialize};
 
-    /// Graded precision level of lazy analysis data.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-    pub enum PrecisionTier {
-        /// No data available at all (extraction failed or not attempted).
-        Unavailable = 0,
-        /// Only top-level symbols from manifest (function/struct/enum/typedef names).
-        /// No body analysis, no references, no scopes.
-        ManifestOnly = 1,
-        /// Dataflow within individual function bodies, but no cross-file resolution.
-        /// Body-level CFG, data nodes, bindings exist; cross-file references not resolved.
-        LocalDataflowOnly = 2,
-        /// Structural extraction was started but budget exceeded mid-build.
-        /// Some files have complete structural, others may have only manifest or nothing.
-        /// Cross-file reference resolution is incomplete.
-        DegradedStructural = 3,
-        /// Structural is complete, but dataflow was truncated (budget exceeded).
-        /// All cross-file references are resolved, but dataflow is partial.
-        PartialExact = 4,
-        /// Full structural + dataflow, all resolution complete.
-        Exact = 5,
-    }
-
-    /// Compute precision tier for lazy dataflow extraction.
-    pub fn dataflow_precision(
-        available: usize,
-        planned: usize,
-        budget_exceeded: bool,
-    ) -> PrecisionTier {
-        if planned == 0 {
-            PrecisionTier::Unavailable
-        } else if available == 0 {
-            if budget_exceeded {
-                PrecisionTier::ManifestOnly
-            } else {
-                PrecisionTier::Unavailable
-            }
-        } else if budget_exceeded || available < planned {
-            PrecisionTier::PartialExact
-        } else {
-            PrecisionTier::Exact
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Focus-driven incremental analysis: precision model
@@ -300,27 +250,74 @@ pub struct Precision {
     pub confidence: SemanticConfidence,
 }
 
-// ---------------------------------------------------------------------------
-// Precision migration: new Precision → legacy PrecisionTier
-// ---------------------------------------------------------------------------
-
-impl From<Precision> for precision::PrecisionTier {
-    fn from(p: Precision) -> precision::PrecisionTier {
-        use precision::PrecisionTier;
-        match (p.coverage, p.confidence) {
-            (
-                CoverageTier::RepoComplete | CoverageTier::ClosureComplete { .. },
-                SemanticConfidence::Certain,
-            ) => PrecisionTier::Exact,
-            (CoverageTier::ClosureComplete { .. }, _) => PrecisionTier::PartialExact,
-            (CoverageTier::Boundary { .. }, SemanticConfidence::High) => {
-                PrecisionTier::PartialExact
-            }
-            (CoverageTier::Boundary { .. }, _) => PrecisionTier::DegradedStructural,
-            (CoverageTier::Partial { .. }, _) => PrecisionTier::LocalDataflowOnly,
-            (CoverageTier::Manifest, _) => PrecisionTier::ManifestOnly,
-            _ => PrecisionTier::Unavailable,
+impl Precision {
+    /// Best possible state — full repo, all certain.
+    pub fn best() -> Self {
+        Self {
+            coverage: CoverageTier::RepoComplete,
+            confidence: SemanticConfidence::Certain,
         }
+    }
+
+    /// Worst state — manifest only, low confidence.
+    pub fn worst() -> Self {
+        Self {
+            coverage: CoverageTier::Manifest,
+            confidence: SemanticConfidence::Low,
+        }
+    }
+
+    /// Manifest coverage with given confidence.
+    pub fn manifest(confidence: SemanticConfidence) -> Self {
+        Self {
+            coverage: CoverageTier::Manifest,
+            confidence,
+        }
+    }
+
+    /// Partial coverage (known gaps).
+    pub fn partial(gaps: Vec<KnownGap>, confidence: SemanticConfidence) -> Self {
+        Self {
+            coverage: CoverageTier::Partial { gaps },
+            confidence,
+        }
+    }
+
+    /// Check if this represents "no useful information" (coverage is Manifest AND confidence is Low).
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self.coverage, CoverageTier::Manifest) && self.confidence == SemanticConfidence::Low
+    }
+
+    /// Check if this represents full repo certainty.
+    pub fn is_exact(&self) -> bool {
+        matches!(self.coverage, CoverageTier::RepoComplete)
+            && self.confidence == SemanticConfidence::Certain
+    }
+}
+
+/// Compute precision for lazy dataflow extraction.
+pub fn dataflow_precision(
+    available: usize,
+    planned: usize,
+    budget_exceeded: bool,
+) -> Precision {
+    if planned == 0 {
+        Precision::worst()
+    } else if available == 0 {
+        if budget_exceeded {
+            Precision::worst()
+        } else {
+            Precision::worst()
+        }
+    } else if budget_exceeded || available < planned {
+        Precision {
+            coverage: CoverageTier::Boundary {
+                target_tier: SymbolTier::Full,
+            },
+            confidence: SemanticConfidence::High,
+        }
+    } else {
+        Precision::best()
     }
 }
 

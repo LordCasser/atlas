@@ -101,7 +101,7 @@ impl ClosureEngine {
         let generation: i64 = 0; // generation 0 = seed extraction
         for file_id in &seed_files {
             let result = self.extract_file(file_id)?;
-            closure.mark_extracted(*file_id, result.precision_tier);
+            closure.mark_extracted(*file_id, &result.precision);
 
             // Populate closure symbols from the extracted file so graph-based
             // strategies (CallGraph, TypeGraph) can query edges by source symbol.
@@ -222,7 +222,7 @@ impl ClosureEngine {
             last_generation = generation;
             for file_id in &new_files {
                 let result = self.extract_file(file_id)?;
-                closure.mark_extracted(*file_id, result.precision_tier);
+                closure.mark_extracted(*file_id, &result.precision);
 
                 // Populate closure symbols from the extracted file
                 if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {

@@ -4,7 +4,7 @@
 //!   - Types + Engine (FocusSeed, FocusWindow, FocusClosure)
 //!   - Visibility + Edge Policy
 //!   - Scheduler lifecycle
-//!   - Precision migration (new Precision → legacy PrecisionTier)
+//!   - Precision model (best, worst, is_exact, is_unavailable)
 //!   - Known gap creation and matching
 
 #[cfg(test)]
@@ -81,17 +81,17 @@ mod tests {
         assert!(scheduler.has_pending());
     }
 
-    // ── End-to-End: Precision Migration ─────────────────────────────────────
+    // ── End-to-End: Precision Model ─────────────────────────────────────────
 
     #[test]
-    fn test_e2e_precision_migration() {
+    fn test_e2e_precision_model() {
         let precision = Precision {
             coverage: CoverageTier::RepoComplete,
             confidence: SemanticConfidence::Certain,
         };
 
-        let tier: types::structs::precision::PrecisionTier = precision.into();
-        assert_eq!(tier, types::structs::precision::PrecisionTier::Exact);
+        assert!(precision.is_exact());
+        assert!(!precision.is_unavailable());
     }
 
     // ── End-to-End: Known Gap Creation ──────────────────────────────────────

@@ -35,7 +35,7 @@ use extraction::{
     extract_file_with_mode_cancellable,
 };
 use types::ids::FileId;
-use types::structs::precision::PrecisionTier;
+use types::structs::Precision;
 use types::{FileInfo, Language, ParseStatus, layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
@@ -214,8 +214,8 @@ pub struct EnsureStructuralResult {
     pub built_file_ids: Vec<FileId>,
     /// FileIds that were found to already have up-to-date extraction (cached).
     pub cached_file_ids: Vec<FileId>,
-    /// Precision tier reflecting data quality after this lazy operation.
-    pub precision_tier: PrecisionTier,
+    /// Precision reflecting data quality after this lazy operation.
+    pub precision: Precision,
     /// Files that are being built by another job (ClaimResult::AlreadyBuilding).
     pub files_pending: usize,
     /// IDs of extraction jobs that are currently in-flight (AlreadyBuilding).
@@ -267,7 +267,7 @@ impl LazyStructuralService {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 cached_file_ids: vec![],
-                precision_tier: PrecisionTier::Unavailable,
+                precision: Precision::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
             });
@@ -293,7 +293,7 @@ impl LazyStructuralService {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 cached_file_ids: vec![],
-                precision_tier: PrecisionTier::Unavailable,
+                precision: Precision::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
             });
@@ -376,7 +376,7 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             cached_file_ids: vec![],
-            precision_tier: PrecisionTier::Unavailable,
+            precision: Precision::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
         };
@@ -406,7 +406,7 @@ impl LazyStructuralService {
             self.incremental_resolve_and_build(&result.built_file_ids)?;
         }
 
-        result.precision_tier = crate::precision::structural_precision(
+        result.precision = crate::precision::structural_precision(
             result.files_built,
             result.files_cached,
             result.budget_exceeded,
@@ -494,7 +494,7 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             cached_file_ids: vec![],
-            precision_tier: PrecisionTier::Unavailable,
+            precision: Precision::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
         };
@@ -529,7 +529,7 @@ impl LazyStructuralService {
         }
 
         // Compute precision tier from build results
-        result.precision_tier = crate::precision::structural_precision(
+        result.precision = crate::precision::structural_precision(
             result.files_built,
             result.files_cached,
             result.budget_exceeded,
