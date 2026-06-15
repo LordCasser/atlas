@@ -32,7 +32,7 @@ impl ToolRouter {
             return ("Missing required parameter: symbol".to_string(), true);
         }
 
-        let lr = AnalysisEnvelope::new("branch_diff", args);
+        let mut lr = AnalysisEnvelope::new("branch_diff", args);
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId. When a structured selector includes a
@@ -70,7 +70,7 @@ impl ToolRouter {
 
         // Ensure structural data is available
         if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
-            let (_, focus_warnings) =
+            let (focus_result, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
@@ -78,8 +78,11 @@ impl ToolRouter {
                     direction: None,
                     depth: None,
                 }));
-            for w in focus_warnings {
-                tracing::warn!("Focus pre-warm warning (branch_diff): {w}");
+            if let Some(ref result) = focus_result {
+                lr = crate::tools::apply_focus_result_to_lr(lr, result);
+            }
+            if !focus_warnings.is_empty() {
+                lr = lr.with_lazy_warnings(focus_warnings);
             }
         }
 

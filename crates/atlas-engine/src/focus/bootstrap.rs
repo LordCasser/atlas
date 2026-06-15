@@ -474,7 +474,7 @@ pub(crate) fn bootstrap_tier2(
             let facts = match extract_file_with_mode(
                 &frontend,
                 file_id,
-                &abs_path,
+                std::path::Path::new(rel_path),
                 &source,
                 &content_hash,
                 ExtractionMode::Manifest,

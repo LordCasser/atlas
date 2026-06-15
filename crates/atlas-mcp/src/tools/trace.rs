@@ -2,7 +2,7 @@
 //! traversal.  Includes transparent lazy structural extraction with progress
 //! notifications to prevent MCP timeout during on-demand extraction.
 
-use atlas_engine::{InvestigationFocus, TraceQueryResponse};
+use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
@@ -402,7 +402,9 @@ impl ToolRouter {
             }
         }
 
-        lr.with_is_error(is_error).build(resp_value, self)
+        lr.with_partial_result(resp.partial_result)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -586,6 +588,10 @@ impl ToolRouter {
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
+        let has_full_index = {
+            let active = self.active_mut();
+            active.query_runtime.has_full_index(&active.store)
+        };
 
         let mut resp = self
             .active_mut()
@@ -604,6 +610,19 @@ impl ToolRouter {
             "lazy_structural_warning",
         ));
         resp.partial_result = resp.partial_result || lazy_partial;
+        let has_no_path = resp
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("no_path_found"));
+        if has_no_path && !has_full_index {
+            resp.partial_result = true;
+            resp.diagnostics.push(
+                TraceDiagnostic::warning(
+                    "No forward path was found in the current focus closure; this does not prove that no repo-wide path exists until full indexing or further refinement completes.",
+                )
+                .with_code("focus_no_path_partial"),
+            );
+        }
 
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
         if let Some(ref resolved) = resolved_from {
@@ -623,7 +642,9 @@ impl ToolRouter {
             }
         }
 
-        lr.with_is_error(is_error).build(resp_value, self)
+        lr.with_partial_result(resp.partial_result)
+            .with_is_error(is_error)
+            .build(resp_value, self)
     }
 }
 

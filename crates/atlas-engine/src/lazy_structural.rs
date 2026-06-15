@@ -660,15 +660,55 @@ impl LazyStructuralService {
     }
 
     fn resolve_file_path(&self, relative: &str) -> PathBuf {
+        let path = PathBuf::from(relative);
+        if path.is_absolute() {
+            return path;
+        }
         match &self.project_root {
             Some(root) => root.join(relative),
-            None => PathBuf::from(relative),
+            None => path,
         }
+    }
+
+    fn project_relative_path(&self, raw_path: &str) -> Result<String> {
+        let normalized = raw_path.replace('\\', "/");
+        let path = std::path::Path::new(&normalized);
+        if !path.is_absolute() {
+            return Ok(normalized
+                .trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string());
+        }
+
+        let Some(root) = &self.project_root else {
+            return Ok(normalized);
+        };
+        if let Ok(rel) = path.strip_prefix(root) {
+            return Ok(rel.to_string_lossy().replace('\\', "/"));
+        }
+
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize project root {}", root.display()))?;
+        let canonical_path = path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", path.display()))?;
+        let rel = canonical_path
+            .strip_prefix(&canonical_root)
+            .with_context(|| {
+                format!(
+                    "lazy candidate path {} is outside project root {}",
+                    path.display(),
+                    root.display()
+                )
+            })?;
+        Ok(rel.to_string_lossy().replace('\\', "/"))
     }
 
     fn file_info_for_lazy(&self, file_id: &FileId) -> Result<FileInfo> {
         if let Some(file_info) = self.store.get_file(file_id)? {
-            return Ok(file_info);
+            let path = self.project_relative_path(&file_info.path)?;
+            return Ok(FileInfo { path, ..file_info });
         }
 
         let row = self
@@ -678,9 +718,10 @@ impl LazyStructuralService {
         let language = Language::from_str(&row.language)
             .or_else(|| Language::from_path(std::path::Path::new(&row.path)))
             .unwrap_or_default();
+        let path = self.project_relative_path(&row.path)?;
         Ok(FileInfo {
             file_id: *file_id,
-            path: row.path,
+            path,
             language,
             content_hash: row.content_hash.unwrap_or_default(),
             status: ParseStatus::Success,

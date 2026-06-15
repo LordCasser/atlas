@@ -368,6 +368,12 @@ fn test_bootstrap_tier2_extracts_manifest() {
     let (status, recorded_hash) = state.unwrap();
     assert_eq!(status, "complete");
     assert_eq!(recorded_hash, hash);
+
+    let file = store.get_file(&file_id).unwrap().expect("file row");
+    assert_eq!(
+        file.path, rel_path,
+        "tier2 must persist project-relative file paths so later full indexing can clean stale paths"
+    );
 }
 
 // ── Test 12: tier2 skips already extracted files ────────────────────────────

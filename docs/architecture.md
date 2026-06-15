@@ -818,7 +818,7 @@ pub fn resolve_symbol_input(
 ### 11.1 Search
 - FTS5 + LIKE fallback + fuzzy matching。
 - `SearchQueryParser` 支持 `kind:`、`lang:`、`path:`、`name:` 前缀。
-- MCP `search` 要求 `scope` 参数（manifest-only 索引时），small scope 触发 bounded structural parsing，large scope 返回 manifest-level 结果 + narrowing warning。
+- MCP `search` 始终要求 `scope` 参数；scope 同时是搜索边界和 focus 热点。返回值必须声明该 scope 内结果是 complete 还是 partial，并通过既有 `work`/`tasks` 暴露后台 refinement。
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。

@@ -462,7 +462,11 @@ impl ToolRouter {
             direction: Some("incoming".to_string()),
             depth: None,
         });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+        let has_full_index = {
+            let active = self.active_mut();
+            active.query_runtime.has_full_index(&active.store)
+        };
 
         let cb = match self.active_mut().graph_runtime.provider().context_builder() {
             Some(cb) => cb,
@@ -500,17 +504,20 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        {
-            let active = self.active_mut();
-            if !active.query_runtime.has_full_index(&active.store) {
-                resp["note"] = json!(
-                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-                );
-            }
+        if !has_full_index {
+            resp["note"] = json!(
+                "Incoming calls are complete only within the current focus closure. Background refinement may discover additional callers outside this closure."
+            );
+            focus_warnings.push(
+                "Incoming call results are scoped to the current focus closure; absence of additional callers is not a repo-wide proof until full indexing completes."
+                    .to_string(),
+            );
         }
 
         // Lazy structural response with focus-aware envelope
-        let lr = lr.with_lazy_warnings(focus_warnings);
+        let lr = lr
+            .with_lazy_warnings(focus_warnings)
+            .with_partial_result(!has_full_index);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
         } else {
@@ -573,7 +580,11 @@ impl ToolRouter {
             direction: Some("outgoing".to_string()),
             depth: None,
         });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+        let has_full_index = {
+            let active = self.active_mut();
+            active.query_runtime.has_full_index(&active.store)
+        };
 
         let cb = match self.active_mut().graph_runtime.provider().context_builder() {
             Some(cb) => cb,
@@ -614,23 +625,27 @@ impl ToolRouter {
             resp["unresolved_callee_note"] = json!(
                 "These call tokens were extracted from the function body but did not resolve to local symbols. They may be macros, builtins, external helpers, or code outside the current focus/full index."
             );
+            if !has_full_index {
+                focus_warnings.push(format!(
+                    "{total_unresolved_callees} outgoing call token(s) are unresolved in the current focus closure; background refinement may resolve some of them."
+                ));
+            }
         }
         if let Some(rm) = resolution_meta_opt {
             if symbol_ids.len() > 1 {
                 resp["resolution"] = rm;
             }
         }
-        {
-            let active = self.active_mut();
-            if !active.query_runtime.has_full_index(&active.store) {
-                resp["note"] = json!(
-                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
-                );
-            }
+        if !has_full_index {
+            resp["note"] = json!(
+                "Outgoing calls are complete only within the current focus closure. Unresolved callees mark the refinement frontier."
+            );
         }
 
         // Lazy structural response with focus-aware envelope
-        let lr = lr.with_lazy_warnings(focus_warnings);
+        let lr = lr
+            .with_lazy_warnings(focus_warnings)
+            .with_partial_result(!has_full_index && total_unresolved_callees > 0);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
         } else {
@@ -861,7 +876,7 @@ impl ToolRouter {
             let active = self.active_mut();
             if !active.query_runtime.has_full_index(&active.store) {
                 resp["note"] = json!(
-                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                    "Graph expansion is complete only within the current focus closure. Background refinement may discover additional edges outside this closure; use CLI `atlas index --analysis full` only when you want an explicit project-wide cache."
                 );
             }
         }
@@ -952,9 +967,8 @@ impl ToolRouter {
         let lr = AnalysisEnvelope::new("path", args);
 
         // Transparent lazy structural: ensure both endpoint files have full
-        // structural data before path finding.  A manifest-only index (MCP
-        // default) may lack the intra-file call edges that BFS needs to
-        // discover a path.
+        // structural data before path finding. A cold focus project may lack
+        // the intra-file call edges that BFS needs to discover a path.
         let (_roots, root_warnings) = self.include_roots_from_args(args);
         for w in &root_warnings {
             tracing::warn!("include_roots: {}", w);
@@ -1287,6 +1301,7 @@ impl ToolRouter {
         } else {
             // No path found — diagnostic frontier.
             let total_pairs = from_ids.len() * to_ids.len();
+            let mut no_path_warnings = lazy_warnings;
             let mut message = format!(
                 "No path found within max_depth={} (tried {} SymbolId pair{})",
                 max_depth.min(10),
@@ -1305,11 +1320,17 @@ impl ToolRouter {
                 }
             }
             if !is_manual_full && max_depth < 10 {
-                message.push_str(". Tip: try a higher max_depth (up to 10), or run a full structural index (CLI: 'atlas index' without --analysis manifest) for deeper call-graph edges.");
+                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: try a higher max_depth (up to 10), resume the query after refinement, or run a full structural index (CLI: 'atlas index --analysis full') for deeper call-graph edges.");
             } else if !is_manual_full {
-                message.push_str(". Tip: the path may involve function pointers or dynamic dispatch not yet resolved. Try running a full structural index (CLI: 'atlas index').");
+                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: the path may involve function pointers or dynamic dispatch not yet resolved; resume the query after refinement or run a full structural index (CLI: 'atlas index --analysis full').");
             } else {
                 message.push_str(". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.");
+            }
+            if !is_manual_full {
+                no_path_warnings.push(
+                    "No path was found in the current focus closure; this does not prove that no repo-wide path exists until full indexing or further refinement completes."
+                        .to_string(),
+                );
             }
 
             // Resolve endpoint symbol kinds for type-aware diagnostics.
@@ -1397,8 +1418,8 @@ impl ToolRouter {
 
             let lr = lr
                 .with_root_warnings(root_warnings)
-                .with_lazy_warnings(lazy_warnings)
-                .with_partial_result(false);
+                .with_lazy_warnings(no_path_warnings)
+                .with_partial_result(!is_manual_full);
             let lr = if let Some(ref result) = focus_result {
                 crate::tools::apply_focus_result_to_lr(lr, result)
             } else {
@@ -2000,10 +2021,10 @@ impl ToolRouter {
             let active = self.active_mut();
             if !active.query_runtime.has_full_index(&active.store) {
                 resp["capability_note"] = json!(
-                    "manifest-only: structural data incomplete. Run 'atlas index' for full results."
+                    "focus mode: impact is bounded by the current focus closure; background refinement may discover additional affected symbols."
                 );
                 resp["note"] = json!(
-                    "Structural data may be incomplete for manifest-only indexes. Run 'atlas index' or use 'symbol' (view='context') first for full results."
+                    "Impact is complete only within the current focus closure. Use CLI `atlas index --analysis full` only when you want an explicit project-wide cache."
                 );
             }
         }

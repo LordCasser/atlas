@@ -137,7 +137,7 @@ pub struct PreparedGraphQuery {
 mod tests {
     use super::*;
     use crate::tools::lazy_refresh::LazyRefreshQueue;
-    use atlas_engine::Store;
+    use atlas_engine::{CapabilityMask, FileId, FileInfo, Language, ParseStatus, Store};
     use std::sync::Arc;
 
     fn create_test_query_runtime() -> QueryRuntime {
@@ -219,6 +219,44 @@ mod tests {
         let sig = store.index_signature().unwrap_or_default();
         *qr.cache.cached_manual_full_index.write().unwrap() = Some((sig, true));
         assert!(qr.has_full_index(&store));
+    }
+
+    #[test]
+    fn has_full_index_requires_finalized_rich_index() {
+        let qr = create_test_query_runtime();
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let file_id = FileId::generate("src/main.c");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/main.c".into(),
+                language: Language::C,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "hash",
+                "complete",
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        assert!(
+            !qr.has_full_index(&store),
+            "unfinalized focus-written rich layers must not disable focus"
+        );
+
+        store.set_metadata("last_index_time", "1").unwrap();
+        assert!(
+            qr.has_full_index(&store),
+            "CLI-finalized rich index should disable focus"
+        );
     }
 
     #[test]

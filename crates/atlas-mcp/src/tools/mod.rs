@@ -153,13 +153,21 @@ pub(crate) fn apply_focus_result_to_lr(
             } else {
                 "building"
             };
+            let next_action = if precision.confidence == SemanticConfidence::Certain {
+                "use_result"
+            } else {
+                "use_result_or_wait_for_refinement"
+            };
             lr = lr.with_analysis_state(state.to_string());
             lr = lr.with_analysis_scope("local".to_string());
             lr = lr.with_analysis_summary(format!(
                 "scoped analysis: {} coverage, {} confidence",
                 view.coverage, view.confidence
             ));
-            lr = lr.with_analysis_next_action("use_result".to_string());
+            lr = lr.with_analysis_next_action(next_action.to_string());
+            if precision.confidence != SemanticConfidence::Certain {
+                lr = lr.with_partial_result(true);
+            }
         } else if let Some(ref counts) = result.coverage_counts {
             lr = lr.with_analysis_state("building".to_string());
             lr = lr.with_analysis_scope("local".to_string());
@@ -182,7 +190,7 @@ pub(crate) fn apply_focus_result_to_lr(
                 kind: "extraction".to_string(),
                 state: "building".to_string(),
                 scope: "local".to_string(),
-                reason: "background_build".to_string(),
+                reason: "background_refinement".to_string(),
                 progress: Some(WorkProgress { percent: 0 }),
                 waitable: false,
                 retry_after_ms: Some(2000),
@@ -1606,6 +1614,7 @@ impl ToolRouter {
         // ── structural mode ─────────────────────────────────────────────
         let mut lazy_warnings = Vec::new();
         let mut built_file_count = 0usize;
+        let mut focus_result = None;
         let mut _capability_mask = atlas_engine::structs::CapabilityMask::default();
         let mut _coverage = "full";
         let mut _reason: Option<&str> = None;
@@ -1628,12 +1637,10 @@ impl ToolRouter {
                 direction: None,
                 depth: None,
             });
-            let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+            let (prepared, focus_warnings) = self.prepare_focus_query(intent);
             lazy_warnings = focus_warnings;
-            built_file_count = focus_result
-                .as_ref()
-                .map(|r| r.built_files.len())
-                .unwrap_or(0);
+            built_file_count = prepared.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
+            focus_result = prepared;
         } else {
             _capability_mask = self
                 .active_mut()
@@ -1658,14 +1665,18 @@ impl ToolRouter {
                 } else {
                     "Full index available".into()
                 };
-                AnalysisEnvelope::new("file_dependencies", args)
+                let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
-                    .with_is_error(err)
-                    .with_analysis_state("ready".into())
-                    .with_analysis_scope("structural".into())
-                    .with_analysis_summary(summary)
-                    .with_analysis_next_action("use_result".into())
-                    .build(body, self)
+                    .with_is_error(err);
+                let lr = if let Some(ref result) = focus_result {
+                    crate::tools::apply_focus_result_to_lr(lr, result)
+                } else {
+                    lr.with_analysis_state("ready".into())
+                        .with_analysis_scope("structural".into())
+                        .with_analysis_summary(summary)
+                        .with_analysis_next_action("use_result".into())
+                };
+                lr.build(body, self)
             }
             "outgoing" | "" => {
                 let (out, err) = self.handle_dependencies(&mapped_args);
@@ -1675,14 +1686,18 @@ impl ToolRouter {
                 } else {
                     "Full index available".into()
                 };
-                AnalysisEnvelope::new("file_dependencies", args)
+                let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
-                    .with_is_error(err)
-                    .with_analysis_state("ready".into())
-                    .with_analysis_scope("structural".into())
-                    .with_analysis_summary(summary)
-                    .with_analysis_next_action("use_result".into())
-                    .build(body, self)
+                    .with_is_error(err);
+                let lr = if let Some(ref result) = focus_result {
+                    crate::tools::apply_focus_result_to_lr(lr, result)
+                } else {
+                    lr.with_analysis_state("ready".into())
+                        .with_analysis_scope("structural".into())
+                        .with_analysis_summary(summary)
+                        .with_analysis_next_action("use_result".into())
+                };
+                lr.build(body, self)
             }
             "both" => {
                 let (out_str, out_err) = self.handle_dependencies(&mapped_args);
@@ -1697,14 +1712,18 @@ impl ToolRouter {
                     "Full index available".into()
                 };
                 let err = out_err || in_err;
-                AnalysisEnvelope::new("file_dependencies", args)
+                let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
-                    .with_is_error(err)
-                    .with_analysis_state("ready".into())
-                    .with_analysis_scope("structural".into())
-                    .with_analysis_summary(summary)
-                    .with_analysis_next_action("use_result".into())
-                    .build(body, self)
+                    .with_is_error(err);
+                let lr = if let Some(ref result) = focus_result {
+                    crate::tools::apply_focus_result_to_lr(lr, result)
+                } else {
+                    lr.with_analysis_state("ready".into())
+                        .with_analysis_scope("structural".into())
+                        .with_analysis_summary(summary)
+                        .with_analysis_next_action("use_result".into())
+                };
+                lr.build(body, self)
             }
             _ => unreachable!("direction was validated above"),
         }
@@ -2908,8 +2927,14 @@ mod tests {
             analysis.get("state").is_some(),
             "analysis block missing state field: {resp_str}"
         );
-        assert_eq!(analysis["state"], "ready");
-        assert_eq!(analysis["scope"], "structural");
+        let state = analysis["state"].as_str().unwrap_or_default();
+        assert!(
+            matches!(state, "ready" | "usable_partial" | "building"),
+            "unexpected analysis state: {resp_str}"
+        );
+        if state != "ready" {
+            assert_eq!(analysis["next_action"], "use_result_or_wait_for_refinement");
+        }
         assert!(
             analysis.get("summary").is_some(),
             "analysis block missing summary field: {resp_str}"
@@ -4202,8 +4227,14 @@ mod tests {
                 !reason.starts_with("focus"),
                 "reason should not leak internal 'focus' prefix, got: {reason:?}"
             );
-            assert_eq!(reason, "background_build");
+            assert_eq!(reason, "background_refinement");
         }
+
+        assert_eq!(
+            resp["analysis"]["next_action"],
+            "use_result_or_wait_for_refinement"
+        );
+        assert_eq!(resp["partial_result"].as_bool(), Some(true));
 
         // 5. Assert analysis summary doesn't leak "focus" term.
         let summary = resp["analysis"]["summary"].as_str().unwrap();

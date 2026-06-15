@@ -124,16 +124,33 @@ fn test_detect_focus_when_no_metadata() {
 }
 
 #[test]
-fn test_detect_full_index_with_structural_extraction() {
-    // A file with fresh complete structural extraction should make
-    // read_index_mode() return a rich mode, triggering FullIndex.
+fn test_detect_full_index_with_finalized_structural_extraction() {
+    // A file with fresh complete structural extraction plus CLI finalization
+    // metadata should make read_index_mode() return a reusable rich mode,
+    // triggering FullIndex.
+    let store = test_store();
+    insert_file_structural_complete(&store, "src/main.c");
+    store.set_metadata("last_index_time", "1").unwrap();
+    let rt = FocusRuntime::new(store, None);
+    assert_eq!(
+        rt.detect_index_mode(),
+        IndexMode::FullIndex,
+        "finalized structural extraction should be detected as FullIndex"
+    );
+}
+
+#[test]
+fn test_detect_focus_with_unfinalized_structural_extraction() {
+    // Focus can materialize a small rich closure. Without index-finalization
+    // metadata, those rows must remain Focus mode rather than masquerading as
+    // project-wide full coverage.
     let store = test_store();
     insert_file_structural_complete(&store, "src/main.c");
     let rt = FocusRuntime::new(store, None);
     assert_eq!(
         rt.detect_index_mode(),
-        IndexMode::FullIndex,
-        "fresh structural extraction should be detected as FullIndex"
+        IndexMode::Focus,
+        "unfinalized structural extraction is a focus cache, not a full index"
     );
 }
 

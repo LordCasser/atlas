@@ -1,7 +1,7 @@
 //! Cache state — index signature and manual-full-index detection cache.
 //!
 //! Owned by QueryRuntime. Provides:
-//! - `has_manual_full_index(store)`: cached check for full index existence
+//! - `has_manual_full_index(store)`: cached check for CLI-finalized rich index existence
 //! - `cached_signature`: current index signature for change detection
 //! - `last_signature_check`: timestamp of last signature comparison
 
@@ -23,10 +23,13 @@ pub(crate) struct CacheState {
 }
 
 impl CacheState {
-    /// Detect whether the current database already has a reusable rich index.
+    /// Detect whether the current database already has a reusable rich index
+    /// finalized by an explicit CLI/TUI indexing run.
     ///
-    /// This lets MCP avoid lazy preparse work when the active store is already
-    /// structural/full, regardless of whether that index was built by CLI or TUI.
+    /// Focus writes can produce rich per-file layers in a small local closure.
+    /// Those layers must not make later MCP queries believe the whole project
+    /// is fully indexed, so this check requires both rich extraction state and
+    /// index-finalization metadata.
     ///
     /// The result is cached by store signature; signature changes force
     /// re-detection.
@@ -43,7 +46,12 @@ impl CacheState {
         let index_mode = store
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
-        let result = is_rich_index_mode(&index_mode);
+        let finalized = store
+            .get_metadata("last_index_time")
+            .ok()
+            .flatten()
+            .is_some();
+        let result = finalized && is_rich_index_mode(&index_mode);
         *self
             .cached_manual_full_index
             .write()

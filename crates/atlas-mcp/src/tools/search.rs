@@ -131,12 +131,14 @@ impl ToolRouter {
     ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
 
+        let mut focus_result = None;
         if !is_manual_full {
-            let (_focus_result, focus_warnings) =
+            let (prepared, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Search {
                     query: query.to_string(),
                     scope: Some(scope.to_string()),
                 }));
+            focus_result = prepared;
             root_warnings.extend(focus_warnings);
         }
 
@@ -194,6 +196,7 @@ impl ToolRouter {
             "scope_file_count": engine_resp.scope_file_count,
         });
 
+        let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
         response["coverage"] = match &engine_resp.coverage {
             SearchCoverage::Full => json!({"state": "complete"}),
             SearchCoverage::Partial { reason } => {
@@ -206,11 +209,33 @@ impl ToolRouter {
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
-        let lr = AnalysisEnvelope::new("search", args);
-        lr.with_root_warnings(root_warnings)
+        let mut lr = AnalysisEnvelope::new("search", args)
+            .with_root_warnings(root_warnings)
             .with_lazy_warnings(engine_resp.warnings)
-            .with_is_error(false)
-            .build(response, self)
+            .with_is_error(false);
+        if search_is_partial {
+            lr = lr
+                .with_partial_result(true)
+                .with_analysis_state("usable_partial".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_summary(
+                    "scoped search coverage is partial; results are bounded by the current focus scope"
+                        .into(),
+                )
+                .with_analysis_next_action("use_result_or_wait_for_refinement".into());
+        }
+        if let Some(ref result) = focus_result {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+        }
+        if !search_is_partial {
+            lr = lr
+                .with_partial_result(false)
+                .with_analysis_state("ready".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_summary("scoped search coverage is complete".into())
+                .with_analysis_next_action("use_result".into());
+        }
+        lr.build(response, self)
     }
 
     // ── symbol detail ─────────────────────────────────────────────────────

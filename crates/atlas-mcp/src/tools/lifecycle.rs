@@ -37,7 +37,7 @@ impl ToolRouter {
             );
         }
 
-        let lr = AnalysisEnvelope::new("lifecycle", args);
+        let mut lr = AnalysisEnvelope::new("lifecycle", args);
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
@@ -70,7 +70,7 @@ impl ToolRouter {
 
         // Ensure structural data is available (may trigger lazy extraction)
         if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
-            let (_, focus_warnings) =
+            let (focus_result, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
@@ -78,8 +78,11 @@ impl ToolRouter {
                     direction: None,
                     depth: None,
                 }));
-            for w in focus_warnings {
-                tracing::warn!("Focus pre-warm warning (lifecycle): {w}");
+            if let Some(ref result) = focus_result {
+                lr = crate::tools::apply_focus_result_to_lr(lr, result);
+            }
+            if !focus_warnings.is_empty() {
+                lr = lr.with_lazy_warnings(focus_warnings);
             }
         }
 
@@ -242,6 +245,9 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
+        if result.partial {
+            lr = lr.with_partial_result(true);
+        }
         lr.with_is_error(false).build(resp, self)
     }
 }

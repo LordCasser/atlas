@@ -38,7 +38,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
 - **Interactive TUI**: keyboard-driven terminal UI with symbol search, detail view (Overview / Callers / Callees / Source tabs), caller trace, and visible index-mode status — launched via bare `atlas`. If no usable database exists, `atlas` creates one, runs the same default structural index used by `atlas index`, then starts the TUI.
-- **Agent-native MCP**: stdio MCP server exposing 18 bounded tools for search, graph, dependencies, trace, semantic analysis, background tasks, and project management.
+- **Agent-native MCP**: stdio MCP server exposing 15 bounded tools for open-first scoped search, graph, dependencies, trace, semantic analysis, background work visibility, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -100,17 +100,20 @@ project root. The MCP server uses the client's current working directory.
 
 ## MCP server
 
-The MCP server auto-creates `.atlas/atlas.db` when starting from a fresh
-project, but an empty database still has no indexed facts. Use `atlas index` or
-the MCP `index` tool before relying on search, graph, or trace results:
+The MCP server is open-first: call `project(action="open")` to activate a
+project, then use scoped tools to trigger focus-driven extraction for the code
+needed by the current investigation. Explicit project-wide indexing is CLI-only:
 
 ```bash
 # From your project root:
-atlas index    # (first time) OR atlas sync (incremental)
-atlas mcp      # auto-creates .atlas/ if missing, but does not index files
+atlas mcp
+# optional, outside MCP, when you want a project-wide cache:
+atlas index --analysis full
 ```
 
-> MCP reads an existing `.atlas/atlas.db`. Re-run `atlas sync` or `atlas index` after code changes.
+> MCP reuses an existing compatible `.atlas/atlas.db` when available. Without a
+> full CLI-built index, scoped queries return complete/partial coverage metadata
+> and expose background refinement through `work` and `tasks`.
 
 ### Client configuration
 
@@ -178,16 +181,21 @@ enabled = true
 
 | Group | MCP tools |
 | --- | --- |
-| Project management | `project`, `index` |
+| Project management | `project` |
 | Symbol search/detail | `search`, `symbol` |
 | Graph navigation | `calls`, `path`, `explore`, `impact` |
 | Trace | `trace` |
 | File dependencies | `file_dependencies` |
 | Semantic analysis | `lifecycle`, `branch_diff`, `domain_rules` |
-| Background tasks | `tasks`, `task_status`, `wait_for_task`, `resume_task` |
+| Background work | `tasks`, `resume_query` |
 | FP dispatch (C/C++) | `fp_dispatches` |
 
-> `project(action="open")` supports switching the active project at runtime. It defaults to `storage: "auto"` and `scan_files: false`: Atlas reads the candidate persistent project status and reuses `.atlas/atlas.db` only when it reports a reusable index, otherwise it opens an in-memory zero-footprint project. Use `background: true` for large trees; then call `task_status` or `wait_for_task` with the returned `task_id`. `project` activates a project but does not index it; call `index` afterwards when no persistent index exists.
+> `project(action="open")` supports switching the active project at runtime.
+> `storage: "auto"` reuses an existing compatible `.atlas/atlas.db` when
+> available, otherwise Atlas opens a zero-footprint in-memory project.
+> `storage: "memory"` keeps focus/cache/overlay writes session-local;
+> `storage: "persistent"` writes them under `project/.atlas/atlas.db`.
+> `project` activates a project but never scans or indexes the whole tree.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 
@@ -340,7 +348,7 @@ Conventions:
 - Python dynamic runtime constructs and generated symbols are outside the static extraction model.
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
 - Dataflow and trace precision varies by language; inspect `atlas doctor` or trace capability metadata before relying on a trace result.
-- MCP serves a local SQLite index; run `atlas sync` or `atlas index` after source changes.
+- MCP uses scoped focus extraction for local investigations; run `atlas sync` or `atlas index` outside MCP only when you want a refreshed project-wide cache.
 - Call edges (`Calls`, `Instantiates`, `Implements`) are only created when both the caller and callee are indexed project symbols. External library calls (e.g., `useState` from `react`, `printf` from `stdio.h`) do not produce edges. See [Edge visibility](#edge-visibility-project-internal-symbols-only) for details.
 
 ## How tree-sitter powers dataflow extraction

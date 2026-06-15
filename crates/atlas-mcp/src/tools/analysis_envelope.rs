@@ -484,6 +484,10 @@ impl AnalysisEnvelope {
             });
         }
 
+        if self.partial_result {
+            body["partial_result"] = json!(true);
+        }
+
         // 5. Inject focus-aware precision (new type system)
         if let Some(ref p) = self.precision {
             let view = precision_to_view(p);
@@ -501,7 +505,11 @@ impl AnalysisEnvelope {
         }
 
         // 8. Store snapshot
-        let status = self.status.unwrap_or(QueryStatus::Partial);
+        let status = self.status.unwrap_or(if self.partial_result {
+            QueryStatus::Partial
+        } else {
+            QueryStatus::Ready
+        });
         store.store_query_snapshot(QuerySnapshot {
             query_id: self.query_id,
             tool_name: self.tool_name,

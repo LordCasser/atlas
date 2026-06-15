@@ -136,19 +136,31 @@ impl FocusRuntime {
 
     // ── Index mode detection ─────────────────────────────────────────────
 
-    /// Detect whether the project has a full structural/full index
-    /// or operates in incremental Focus mode.
+    /// Detect whether the project has a CLI-finalized rich index or operates
+    /// in incremental Focus mode.
     ///
-    /// Uses `Store::read_index_mode()` which counts **fresh** extraction
-    /// state rows — this correctly handles degraded/downgraded DBs where
-    /// metadata keys may exist but extraction data is stale.
+    /// Focus can write rich layers for a small closure. Those rows are useful
+    /// cache entries, but they are not proof that the repository is fully
+    /// indexed. A full-index decision therefore requires both fresh rich
+    /// extraction state and index-finalization metadata.
     pub fn detect_index_mode(&self) -> IndexMode {
         if let Some(mode) = self.detect_index_mode_override {
             return mode;
         }
-        match self.store.read_index_mode() {
-            Ok(mode) if crate::is_rich_index_mode(&mode) => IndexMode::FullIndex,
-            _ => IndexMode::Focus,
+        let rich = self
+            .store
+            .read_index_mode()
+            .is_ok_and(|mode| crate::is_rich_index_mode(&mode));
+        let finalized = self
+            .store
+            .get_metadata("last_index_time")
+            .ok()
+            .flatten()
+            .is_some();
+        if rich && finalized {
+            IndexMode::FullIndex
+        } else {
+            IndexMode::Focus
         }
     }
 
