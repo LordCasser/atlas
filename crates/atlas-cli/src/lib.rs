@@ -7,13 +7,6 @@ pub mod tui;
 
 use clap::Parser;
 
-/// Log output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogFormatArg {
-    Compact,
-    Json,
-}
-
 /// Atlas -- Local-first semantic knowledge graph builder.
 #[derive(Parser, Debug)]
 #[command(name = "atlas", version, about)]
@@ -27,8 +20,8 @@ pub struct Cli {
     pub debug: bool,
 
     /// Log format: "json" for structured JSON, default is compact.
-    #[arg(long, global = true, default_value = "compact", value_parser = ["compact", "json"])]
-    pub log_format: String,
+    #[arg(long, global = true, default_value = "compact")]
+    pub log_format: logging::LogFormat,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -57,11 +50,8 @@ impl Cli {
     }
 
     /// Derive the effective log format.
-    pub fn log_format(&self) -> LogFormatArg {
-        match self.log_format.as_str() {
-            "json" => LogFormatArg::Json,
-            _ => LogFormatArg::Compact,
-        }
+    pub fn log_format(&self) -> logging::LogFormat {
+        self.log_format
     }
 }
 

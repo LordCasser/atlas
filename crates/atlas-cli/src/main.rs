@@ -1,5 +1,4 @@
-use atlas_cli::logging::LogFormat;
-use atlas_cli::{Cli, Commands, LogFormatArg};
+use atlas_cli::{Cli, Commands};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -15,10 +14,7 @@ fn main() -> anyhow::Result<()> {
     // Initialise structured tracing → stderr.  This must happen BEFORE any
     // command dispatch so that spans and events are captured.
     let verbosity = cli.verbosity(is_mcp);
-    let format = match cli.log_format() {
-        LogFormatArg::Compact => LogFormat::Compact,
-        LogFormatArg::Json => LogFormat::Json,
-    };
+    let format = cli.log_format();
     atlas_cli::logging::init(verbosity, format);
 
     // No subcommand → launch TUI immediately.

@@ -208,11 +208,4 @@ mod tests {
     fn scope_to_glob_already_glob() {
         assert_eq!(scope_to_glob("src/**/*.rs"), "src/**/*.rs");
     }
-
-    #[test]
-    fn test_worker_thread_stack_size_constant() {
-        // Verify the hardcoded stack size matches our target of 8 MiB
-        const EXPECTED: usize = 8 * 1024 * 1024;
-        assert_eq!(EXPECTED, 8_388_608); // 8 MiB
-    }
 }

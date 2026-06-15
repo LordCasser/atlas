@@ -13,6 +13,7 @@
 //!   should always emit minimal operational diagnostics).
 //! - **`--log-format json`**: structured JSON lines (machine-readable).
 
+use clap::ValueEnum;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -28,11 +29,13 @@ pub enum Verbosity {
 }
 
 /// Log output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum LogFormat {
     /// Human-readable compact single-line output.
+    #[value(name = "compact")]
     Compact,
     /// Machine-readable JSON lines.
+    #[value(name = "json")]
     Json,
 }
 

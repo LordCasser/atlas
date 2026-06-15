@@ -103,23 +103,4 @@ pub fn render(
     frame.render_widget(list, area);
 }
 
-/// Compute the visible range for the results list so the selected row is
-/// always on screen.
-pub fn visible_range(
-    total: usize,
-    selected: usize,
-    scroll: usize,
-    list_height: usize,
-) -> (usize, usize) {
-    if total == 0 {
-        return (0, 0);
-    }
-    let mut first = scroll;
-    if selected < first {
-        first = selected;
-    } else if selected >= first + list_height {
-        first = selected.saturating_sub(list_height - 1);
-    }
-    let last = (first + list_height).min(total);
-    (first, last)
-}
+

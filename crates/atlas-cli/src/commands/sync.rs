@@ -20,10 +20,6 @@ impl Drop for DoneGuard {
     }
 }
 
-pub fn run(project: &str, analysis: &str) -> Result<()> {
-    run_with_options(project, analysis, false)
-}
-
 pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> Result<()> {
     let mode = atlas_engine::parse_analysis_mode(analysis)?;
     let has_dataflow = mode.produces_dataflow();

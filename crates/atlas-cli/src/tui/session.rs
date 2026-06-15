@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::Context;
-use atlas_engine::{ContextBuilder, Engine, GraphEngine, SearchEngine, SourceExtractor, Store};
+use atlas_engine::{ContextBuilder, GraphEngine, SearchEngine, SourceExtractor, Store};
 
 /// Manages the in-memory graph snapshot and derived engines for a single
 /// project session.  The graph is loaded lazily on first use and refreshed
@@ -22,8 +22,6 @@ use atlas_engine::{ContextBuilder, Engine, GraphEngine, SearchEngine, SourceExtr
 /// snippet extraction.
 pub struct GraphSession {
     store: Arc<Store>,
-    /// High-level Atlas engine (trace, lazy dataflow, structural extraction).
-    atlas_engine: Engine,
     graph: Option<Arc<GraphEngine>>,
     search: Option<SearchEngine>,
     context: Option<ContextBuilder>,
@@ -40,10 +38,8 @@ impl GraphSession {
     /// Constructs a high-level [`Engine`] from the store so that trace
     /// queries go through the unified API (and may trigger lazy dataflow).
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        let atlas_engine = Engine::from_store(store.clone(), Some(&project_root));
         Self {
             store,
-            atlas_engine,
             graph: None,
             search: None,
             context: None,
@@ -59,8 +55,8 @@ impl GraphSession {
 
     /// Build the graph on first use (idempotent).
     ///
-    /// Subsequent calls are a no-op.  Use [`maybe_refresh`] or
-    /// [`force_refresh`] to pick up database changes after initialisation.
+    /// Subsequent calls are a no-op.  Use [`maybe_refresh`]
+    /// to pick up database changes after initialisation.
     pub fn ensure_initialized(&mut self) -> anyhow::Result<()> {
         if self.initialized {
             return Ok(());
@@ -104,15 +100,6 @@ impl GraphSession {
         Ok(())
     }
 
-    /// Rebuild the graph unconditionally, regardless of signature.
-    ///
-    /// Called after an external index write so the fresh database is loaded
-    /// immediately.
-    pub fn force_refresh(&mut self) -> anyhow::Result<()> {
-        self.rebuild()
-            .context("Failed to force-refresh graph snapshot")
-    }
-
     /// Notify the session that the database has been written to externally
     /// (e.g. by lazy structural extraction), so the next `maybe_refresh`
     /// should skip its cooldown.
@@ -124,14 +111,6 @@ impl GraphSession {
 
     pub fn is_initialized(&self) -> bool {
         self.initialized
-    }
-
-    /// Access the high-level Atlas [`Engine`] (always available).
-    ///
-    /// This is the unified API for trace queries — it may trigger lazy
-    /// dataflow/structural extraction when needed.
-    pub fn atlas_engine(&self) -> &Engine {
-        &self.atlas_engine
     }
 
     pub fn search_engine(&self) -> &SearchEngine {
