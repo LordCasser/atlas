@@ -955,9 +955,6 @@ impl ToolRouter {
         // structural data before path finding. A cold focus project may lack
         // the intra-file call edges that BFS needs to discover a path.
         let (_roots, root_warnings) = self.include_roots_from_args(args);
-        for w in &root_warnings {
-            tracing::warn!("include_roots: {}", w);
-        }
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for id in from_ids.iter().chain(to_ids.iter()) {
             if let Some(sym) = self.active_mut().store.find_symbol_by_id(id).ok().flatten() {

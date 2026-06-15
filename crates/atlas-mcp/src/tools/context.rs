@@ -60,9 +60,6 @@ impl ToolRouter {
         ctx.send_progress(0.2, &format!("Building context for '{qname}'..."));
 
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
-        for w in &root_warnings {
-            tracing::warn!("include_roots: {}", w);
-        }
 
         let lr = AnalysisEnvelope::new("symbol", args);
         let query_id = lr.query_id().to_string();

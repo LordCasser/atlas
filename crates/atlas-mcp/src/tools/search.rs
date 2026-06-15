@@ -320,9 +320,6 @@ impl ToolRouter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let (_, root_warnings) = self.include_roots_from_args(args);
-        for w in &root_warnings {
-            tracing::warn!("include_roots: {}", w);
-        }
 
         let mut lr = AnalysisEnvelope::new("symbol", args);
         let resolution =

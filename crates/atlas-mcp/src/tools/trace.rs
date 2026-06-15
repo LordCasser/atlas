@@ -293,9 +293,6 @@ impl ToolRouter {
             );
         }
 
-        for w in &root_warnings {
-            tracing::warn!("include_roots: {}", w);
-        }
         let mut lazy_warnings = Vec::new();
 
         let mut lr = AnalysisEnvelope::new("trace", args);
@@ -452,10 +449,6 @@ impl ToolRouter {
                 serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
                 true,
             );
-        }
-
-        for w in &root_warnings {
-            tracing::warn!("include_roots: {}", w);
         }
 
         let mut lr = AnalysisEnvelope::new("trace", args);

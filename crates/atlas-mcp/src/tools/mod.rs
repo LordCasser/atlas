@@ -740,9 +740,13 @@ impl ToolRouter {
             Some(serde_json::Value::Array(a)) => a,
             Some(_) => {
                 warnings.push("include_roots must be an array of strings".into());
+                log_include_roots_warnings(&warnings);
                 return (roots, warnings);
             }
-            None => return (roots, warnings),
+            None => {
+                log_include_roots_warnings(&warnings);
+                return (roots, warnings);
+            }
         };
 
         const MAX_ROOTS: usize = 16;
@@ -807,6 +811,7 @@ impl ToolRouter {
             }
         }
 
+        log_include_roots_warnings(&warnings);
         (roots, warnings)
     }
 
@@ -891,6 +896,16 @@ pub(crate) fn format_ambiguous_error(
         ),
         true,
     )
+}
+
+/// Log include_roots warnings through the tracing infrastructure.
+///
+/// Called by [`ToolRouter::include_roots_from_args`] at every return point
+/// so callers never need to manually iterate and log warnings.
+fn log_include_roots_warnings(warnings: &[String]) {
+    for w in warnings {
+        tracing::warn!("include_roots: {}", w);
+    }
 }
 
 /// Render a graph node as a JSON object.
