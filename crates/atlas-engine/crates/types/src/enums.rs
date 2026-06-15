@@ -471,10 +471,6 @@ impl CallContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EffectKind — CFG node side-effect annotation
-// ---------------------------------------------------------------------------
-
 /// 12 reference kinds describing how a symbol is referenced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

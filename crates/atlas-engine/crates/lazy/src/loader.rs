@@ -251,8 +251,8 @@ impl LazyDataflowLoader {
                     //   result for an empty function is a success).
                     // CFG: only set if the language supports it AND actual CFG
                     //   nodes were produced for this unit.
-                    let mut mask_bits = CapabilityMask::MANIFEST_BIT
-                        | CapabilityMask::STRUCTURAL_BIT
+                    let mut mask_bits = CapabilityMask::MANIFEST
+                        | CapabilityMask::STRUCTURAL
                         | CapabilityMask::CALL_EDGES
                         | CapabilityMask::DATAFLOW;
                     if cfg_supported && !unit_payload.cfg_nodes.is_empty() {
@@ -331,8 +331,8 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 .map(|f| f.cfg.is_supported())
                 .unwrap_or(false);
 
-            let mut mask_bits = CapabilityMask::MANIFEST_BIT
-                | CapabilityMask::STRUCTURAL_BIT
+            let mut mask_bits = CapabilityMask::MANIFEST
+                | CapabilityMask::STRUCTURAL
                 | CapabilityMask::CALL_EDGES
                 | CapabilityMask::DATAFLOW;
             let unit_has_cfg = cfg_supported
@@ -622,8 +622,8 @@ mod tests {
     // (lines 206–212).  Extracted here to make the regression test self-
     // checking without requiring a full DB + extraction pipeline.
     fn compute_unit_mask(cfg_supported: bool, has_cfg_nodes: bool) -> CapabilityMask {
-        let mut bits = CapabilityMask::MANIFEST_BIT
-            | CapabilityMask::STRUCTURAL_BIT
+        let mut bits = CapabilityMask::MANIFEST
+            | CapabilityMask::STRUCTURAL
             | CapabilityMask::CALL_EDGES
             | CapabilityMask::DATAFLOW;
         if cfg_supported && has_cfg_nodes {
@@ -732,8 +732,8 @@ mod tests {
         let mask = compute_unit_mask(
             /* cfg_supported */ false, /* has_cfg_nodes */ false,
         );
-        assert!(mask.has(CapabilityMask::MANIFEST_BIT));
-        assert!(mask.has(CapabilityMask::STRUCTURAL_BIT));
+        assert!(mask.has(CapabilityMask::MANIFEST));
+        assert!(mask.has(CapabilityMask::STRUCTURAL));
         assert!(mask.has(CapabilityMask::CALL_EDGES));
         assert!(mask.has(CapabilityMask::DATAFLOW));
     }

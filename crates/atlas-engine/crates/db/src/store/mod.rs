@@ -871,7 +871,7 @@ impl Store {
                 params![
                     file_id,
                     facts.file.content_hash,
-                    CapabilityMask::MANIFEST_BIT as i64
+                    CapabilityMask::MANIFEST as i64
                 ],
             )?;
             Ok(())

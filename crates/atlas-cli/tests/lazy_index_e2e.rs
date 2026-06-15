@@ -406,11 +406,11 @@ fn p3_capability_mask_cfg_gated_by_language() {
         "TS must have DATAFLOW bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::MANIFEST_BIT),
+        ts_mask.has(CapabilityMask::MANIFEST),
         "TS must have MANIFEST bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::STRUCTURAL_BIT),
+        ts_mask.has(CapabilityMask::STRUCTURAL),
         "TS must have STRUCTURAL bit"
     );
     assert!(
@@ -449,11 +449,11 @@ fn p3_capability_mask_cfg_gated_by_language() {
         "PHP must have DATAFLOW bit"
     );
     assert!(
-        php_mask.has(CapabilityMask::MANIFEST_BIT),
+        php_mask.has(CapabilityMask::MANIFEST),
         "PHP must have MANIFEST bit"
     );
     assert!(
-        php_mask.has(CapabilityMask::STRUCTURAL_BIT),
+        php_mask.has(CapabilityMask::STRUCTURAL),
         "PHP must have STRUCTURAL bit"
     );
     assert!(
