@@ -81,7 +81,13 @@ impl QueryRuntime {
             return (None, vec![]);
         }
 
-        // 3. Lock FocusRuntime and prepare
+        // 3. Lock FocusRuntime and prepare.
+        //
+        // NOTE: the Mutex is held across the synchronous closure build, which
+        // may take hundreds of ms.  This is safe because the MCP server
+        // processes requests serially (Mutex<ToolRouter> + stdio transport).
+        // If concurrent request handling is introduced, replace with async
+        // coordination (e.g. tokio::sync::Mutex or an owning guard pattern).
         let mut runtime = self.focus_runtime.lock().unwrap();
         match runtime.prepare(intent) {
             Ok(result) => (Some(result), vec![]),

@@ -30,6 +30,10 @@ pub(crate) struct ClosureGraphProvider {
     /// The pointed-to `GraphState` lives inside a `Box` that is dropped
     /// together with `GraphRuntime`.  Since `ClosureGraphProvider` is a
     /// field of `GraphRuntime`, the pointer is always valid when accessed.
+    ///
+    /// SAFETY: `GraphRuntime` must **never** derive `Clone` or `mem::replace`
+    /// the `Box<GraphState>`.  The raw pointer points to the stable heap
+    /// allocation; it is valid for the entire lifetime of `GraphRuntime`.
     state: *const GraphState,
 }
 

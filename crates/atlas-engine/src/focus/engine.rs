@@ -642,6 +642,11 @@ impl ClosureEngine {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(target_blob);
                         resolved_target_ids.insert(SymbolId::from_bytes(arr));
+                    } else {
+                        tracing::warn!(
+                            "expand_types: closure target_blob has unexpected length {} (expected 32), skipping",
+                            target_blob.len()
+                        );
                     }
                 }
 

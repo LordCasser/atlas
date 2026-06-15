@@ -203,6 +203,11 @@ impl FocusRuntime {
         self.ensure_closure_engine()?;
 
         // 4. Build minimal closure synchronously
+        //
+        // TODO: the strategies match below is duplicated with bg_window (L296).
+        // The two blocks differ only in numeric parameters (depth, budget,
+        // iterations).  Extract strategies_for(intent, WindowKind) when the
+        // third intent variant is added.
         let minimal_window = FocusWindow {
             seed: seed.clone(),
             strategies: match intent {

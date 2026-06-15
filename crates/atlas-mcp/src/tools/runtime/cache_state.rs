@@ -33,6 +33,10 @@ impl CacheState {
     ///
     /// The result is cached by store signature; signature changes force
     /// re-detection.
+    //
+    // ⚠️ Mirrors the core check in FocusRuntime::detect_index_mode()
+    //    (crates/atlas-engine/src/focus/runtime.rs).  Both require
+    //    `is_rich_index_mode() && last_index_time.is_some()`.  Keep in sync.
     pub(crate) fn has_manual_full_index(&self, store: &Store) -> bool {
         let signature = store.index_signature().unwrap_or_default();
         if let Some((cached_signature, cached)) = &*self

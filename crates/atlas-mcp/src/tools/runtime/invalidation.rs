@@ -38,6 +38,12 @@ pub(crate) struct RuntimeInvalidation {
 }
 
 impl RuntimeInvalidation {
+    /// All counters start at 1, not 0.
+    ///
+    /// This ensures a consumer whose cached generation is 0 (uninitialized)
+    /// will always be treated as stale by `>` comparisons (e.g.
+    /// `current_gen > cached_gen`).  A 0-start would require consumers to
+    /// special-case "never loaded" vs "loaded gen 0".
     pub(crate) fn new() -> Self {
         Self {
             graph_generation: AtomicU64::new(1),
