@@ -198,7 +198,7 @@ impl FocusGraphBuilder {
 
         // 3. Write canonical edges
         let edges_written = if !canonical_edges.is_empty() {
-            match self.store.batch_insert_edges(&canonical_edges) {
+            match self.store.insert_edges(&canonical_edges) {
                 Ok(()) => canonical_edges.len(),
                 Err(e) => {
                     warnings.push(format!("canonical edge batch insert failed: {e}"));

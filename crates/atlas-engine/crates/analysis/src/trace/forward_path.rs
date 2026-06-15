@@ -221,7 +221,7 @@ mod tests {
 
         fn connect(&self, caller: &SymbolDef, callee: &SymbolDef, kind: EdgeKind) {
             self.store
-                .batch_insert_edges(&[RawEdge::new(
+                .insert_edges(&[RawEdge::new(
                     EdgeId::generate(&caller.id, &callee.id, kind.as_str(), None, "test"),
                     caller.id,
                     callee.id,

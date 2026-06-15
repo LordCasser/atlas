@@ -92,7 +92,7 @@ pub fn materialize_annotations(store: &Store) -> anyhow::Result<usize> {
         }
     }
 
-    store.batch_insert_edges(&edges)?;
+    store.insert_edges(&edges)?;
     Ok(edges.len())
 }
 

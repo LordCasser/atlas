@@ -125,7 +125,7 @@ impl GraphBuilder {
 
         // Write edges to store, tracking actual success
         let edges_written = if !edges.is_empty() {
-            match self.store.batch_insert_edges(&edges) {
+            match self.store.insert_edges(&edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
@@ -218,7 +218,7 @@ impl GraphBuilder {
         let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
         let edges_written = if !all_edges.is_empty() {
-            match self.store.batch_insert_edges(&all_edges) {
+            match self.store.insert_edges(&all_edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
@@ -799,7 +799,7 @@ main();
         );
     }
 
-    /// Verify that when `batch_insert_edges` fails (e.g. FK violation),
+    /// Verify that when `insert_edges` fails (e.g. FK violation),
     /// `edges_written` is 0 while `edges_built` reflects the number of
     /// edges constructed.
     #[test]

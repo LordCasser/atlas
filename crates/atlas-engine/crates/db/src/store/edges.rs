@@ -345,14 +345,6 @@ impl Store {
         self.with_transaction(|tx| write_edges(tx, edges))
     }
 
-    /// Batch-insert edges inside a transaction (re-export with explicit name).
-    ///
-    /// This is the same as `insert_edges` but named for clarity in the
-    /// resolution pipeline where we accumulate edges and flush them in batches.
-    pub fn batch_insert_edges(&self, edges: &[RawEdge]) -> anyhow::Result<()> {
-        self.insert_edges(edges)
-    }
-
     /// Find edges originating from a symbol.
     pub fn find_edges_by_source(&self, source: &SymbolId) -> anyhow::Result<Vec<RawEdge>> {
         let conn = self.lock_read();
