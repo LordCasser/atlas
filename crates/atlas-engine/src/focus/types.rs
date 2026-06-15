@@ -186,28 +186,8 @@ impl FocusClosure {
 // FocusJobState — lifecycle tracking
 // ---------------------------------------------------------------------------
 
-/// State of a focus job.
+/// State of a focus job (currently always Planned — lifecycle tracking TBD).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FocusJobState {
     Planned,
-    Extracting {
-        phase: String,
-        files_done: usize,
-        files_total: usize,
-    },
-    Resolving {
-        resolved: usize,
-        total: usize,
-    },
-    GraphBuilding {
-        edges_built: usize,
-    },
-    Committed {
-        generation: u64,
-    },
-    Stale {
-        since: u64,
-    },
-    Cancelled,
-    Failed(String),
 }

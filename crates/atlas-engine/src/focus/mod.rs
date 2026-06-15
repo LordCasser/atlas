@@ -4,10 +4,8 @@
 //! - [`FocusSeed`] — what the user is looking at
 //! - [`FocusWindow`] — seed + strategies + budget
 //! - [`FocusClosure`] — the built closure with files/symbols/gaps
-//! - [`FocusJobState`] — lifecycle of a focus extraction job
-//!
 //! Sub-modules:
-//! - [`types`] — core types: `FocusSeed`, `FocusWindow`, `FocusClosure`, `FocusJobState`
+//! - [`types`] — core types: `FocusSeed`, `FocusWindow`, `FocusClosure`
 //! - [`query`] — `QueryIntent`: maps MCP tool calls to focus strategies
 //! - [`runtime`] — `FocusRuntime`: focus lifecycle, index-mode detection, `prepare()`
 //! - [`engine`] — closure ingestion, graph extraction, dataflow orchestration

@@ -28,7 +28,7 @@ use db::Store;
 use types::ids::FileId;
 
 use super::engine::ClosureEngine;
-use super::types::{ClosureStrategy, FocusJobState, FocusSeed, FocusWindow, WindowBudget};
+use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
 use super::writer_coordinator::ProjectWriteCoordinator;
 
 /// Global counter for focus job IDs.
@@ -62,7 +62,6 @@ pub struct FocusJob {
     pub id: String,
     pub window: FocusWindow,
     pub priority: FocusPriority,
-    pub state: FocusJobState,
     pub closure_id: Option<String>,
 }
 
@@ -72,7 +71,6 @@ impl FocusJob {
             id: next_job_id(),
             window,
             priority,
-            state: FocusJobState::Planned,
             closure_id: None,
         }
     }

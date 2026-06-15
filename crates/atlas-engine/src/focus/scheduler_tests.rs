@@ -213,7 +213,6 @@ fn test_focus_job_creation() {
 
     assert!(!job.id.is_empty());
     assert_eq!(job.priority, FocusPriority::UserFocus);
-    assert_eq!(job.state, super::types::FocusJobState::Planned);
     assert!(job.closure_id.is_none());
 }
 
