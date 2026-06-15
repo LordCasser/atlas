@@ -14,13 +14,11 @@ pub mod branch_diff;
 pub mod branch_diff_semantic;
 pub mod cfg_graph;
 pub mod cross_function;
-pub mod domain_rules;
 pub mod effect_composer;
 pub mod lifecycle;
 pub mod lifecycle_proof;
 pub mod ownership_rules;
 pub mod resource_ops;
-pub mod rule_learning;
 pub mod scope_exit;
 pub mod summary;
 pub mod trace;
@@ -41,4 +39,12 @@ pub use lifecycle_proof::{
     EvidenceLevel, LifecycleProof, LifecycleVerdict, PathProof, evaluate_proof,
 };
 pub use ownership_rules::CppOwnershipRules;
+// Re-export external domain-rules crate (previously domain_rules.rs)
+pub use domain_rules;
 pub use resource_ops::{CalleeMatcher, ResourceOpConfig, ResourceOpKind, ResourceOpPattern};
+
+/// Rule learning — delegates to language-specific RuleLearningStrategy.
+/// Inline module replaces `rule_learning.rs`.
+pub mod rule_learning {
+    pub use domain_rules::learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
+}
