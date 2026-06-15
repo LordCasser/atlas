@@ -436,6 +436,52 @@ pub fn make_df_assign_field_target(
     (Some(dn), None)
 }
 
+/// Build a DataNode for `df.receiver` or `df.literal` captures.
+///
+/// Creates a `Receiver` or `Literal` DataNode (no callsite, no access_path).
+/// Used by 9 language adapters where the `"df.receiver" | "df.literal"` arm
+/// is identical. TypeScript and Python are excluded because they split the
+/// two capture names into separate arms; Cangjie is excluded because it
+/// merges receiver with field_name.
+pub fn make_df_receiver_or_literal(
+    file_id: FileId,
+    capture_name: &str,
+    node: tree_sitter::Node,
+    source: &str,
+    range: TextRange,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    let text = super::node_text(node, source).unwrap_or_default();
+    let node_id = DataNodeId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        if capture_name == "df.literal" {
+            "literal"
+        } else {
+            "receiver"
+        },
+        Some(&text),
+        None,
+        range.start_byte,
+    );
+    let dn = DataNode {
+        id: node_id,
+        file_id,
+        function_id: None,
+        kind: if capture_name == "df.literal" {
+            DataNodeKind::Literal
+        } else {
+            DataNodeKind::Receiver
+        },
+        binding_id: None,
+        callsite_id: None,
+        name: Some(text),
+        access_path: None,
+        arg_index: None,
+        range,
+    };
+    (Some(dn), None)
+}
+
 // ── Shared call-expression ancestor walk ───────────────────────────────
 
 /// Walk up the AST parent chain from `node` to find the first ancestor

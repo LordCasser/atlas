@@ -18,8 +18,8 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
-    make_df_assign_target, make_df_parameter, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    make_df_assign_target, make_df_parameter, make_df_receiver_or_literal,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use std::collections::HashMap;
 use types::bindings::BindingDef;
@@ -629,38 +629,7 @@ fn normalize_kotlin_dataflow_builder(
             })
             .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                if capture_name == "df.literal" {
-                    "literal"
-                } else {
-                    "receiver"
-                },
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: if capture_name == "df.literal" {
-                        DataNodeKind::Literal
-                    } else {
-                        DataNodeKind::Receiver
-                    },
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    arg_index: None,
-                    range,
-                }),
-                None,
-            )
+            make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
             if crate::languages::shared::is_identifier_decl_or_property(

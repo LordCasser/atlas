@@ -16,7 +16,8 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_return_value,
+    SymbolDefBuilder, make_binding_def, make_df_assign_field_target,
+    make_df_receiver_or_literal, make_df_return_value,
     make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
@@ -575,38 +576,7 @@ fn normalize_php_dataflow_builder(
             })
             .unwrap_or((None, None)),
         "df.receiver" | "df.literal" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                if capture_name == "df.literal" {
-                    "literal"
-                } else {
-                    "receiver"
-                },
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: if capture_name == "df.literal" {
-                        DataNodeKind::Literal
-                    } else {
-                        DataNodeKind::Receiver
-                    },
-                    binding_id: None,
-                    callsite_id: None,
-                    name: Some(text),
-                    access_path: None,
-                    arg_index: None,
-                    range,
-                }),
-                None,
-            )
+            make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         // ── PHP dataflow additions (§2.11) ────────────────────────
         "df.index" => {
