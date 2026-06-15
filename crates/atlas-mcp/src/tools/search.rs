@@ -16,10 +16,10 @@ use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{add_json_warnings, get_str, get_str_opt, get_u64, ToolRouter, MAX_QUERY_LENGTH};
+use super::{MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 use crate::tools::analysis_response::precision_to_view;
 use crate::tools::symbol_selector::{
-    parse_symbol_input, ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 
 use serde_json::json;

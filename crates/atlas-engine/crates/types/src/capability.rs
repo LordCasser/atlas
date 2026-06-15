@@ -463,9 +463,7 @@ mod profiles {
         let mut overrides: HashMap<FeatureField, FeatureSupport> = HashMap::new();
         for (field, ov) in spec.feature_overrides {
             let fs = match ov {
-                FeatureOverride::Confidence(c) => {
-                    FeatureSupport::supported_with_confidence(*c)
-                }
+                FeatureOverride::Confidence(c) => FeatureSupport::supported_with_confidence(*c),
                 FeatureOverride::WithLimitations(c, lims) => {
                     FeatureSupport::supported_with_limitations(*c, lims.to_vec())
                 }
@@ -734,7 +732,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
+                    &[
+                        "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
+                    ],
                 ),
             ),
             (
@@ -1907,10 +1907,7 @@ mod tests {
         let fm = p.features.as_ref().unwrap();
 
         // Default features (confidence_floor = 0.78, no limitations)
-        assert_eq!(
-            fm.symbols,
-            FeatureSupport::supported_with_confidence(0.78)
-        );
+        assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.78));
         assert_eq!(
             fm.references,
             FeatureSupport::supported_with_confidence(0.78)
@@ -2020,10 +2017,7 @@ mod tests {
         let fm = p.features.as_ref().unwrap();
 
         // Default features (confidence_floor = 0.72, no limitations)
-        assert_eq!(
-            fm.symbols,
-            FeatureSupport::supported_with_confidence(0.72)
-        );
+        assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.72));
         assert_eq!(
             fm.references,
             FeatureSupport::supported_with_confidence(0.72)
@@ -2059,7 +2053,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
+                vec![
+                    "AST-driven local dataflow; destructuring and control-flow not yet path-verified"
+                ],
             )
         );
         assert_eq!(

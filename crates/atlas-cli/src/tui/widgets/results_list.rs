@@ -102,5 +102,3 @@ pub fn render(
 
     frame.render_widget(list, area);
 }
-
-

@@ -127,7 +127,6 @@ impl SymbolRegistry {
             true
         });
     }
-
 }
 
 fn source_symbol_priority(kind: SymbolKind) -> Option<u8> {

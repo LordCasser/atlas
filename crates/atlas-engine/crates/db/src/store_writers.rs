@@ -94,7 +94,9 @@ fn batch_execute_chunked<T>(
         let placeholders: Vec<String> = (0..chunk.len())
             .map(|i| {
                 let o = i * params_per_row;
-                let nums: Vec<String> = (1..=params_per_row).map(|p| format!("?{}", o + p)).collect();
+                let nums: Vec<String> = (1..=params_per_row)
+                    .map(|p| format!("?{}", o + p))
+                    .collect();
                 format!("({})", nums.join(","))
             })
             .collect();

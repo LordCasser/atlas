@@ -986,9 +986,7 @@ fn add_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, step_count: usize, me
     if step_count == 0 {
         return;
     }
-    diagnostics.push(
-        TraceDiagnostic::info(&message).with_code("next_steps"),
-    );
+    diagnostics.push(TraceDiagnostic::info(&message).with_code("next_steps"));
 }
 
 /// Append actionable next-step diagnostics to a caller-chain response.
@@ -996,12 +994,14 @@ fn add_caller_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Caller
     let root_name = &chain.root.name;
     let target_name = &chain.target.qualified_name;
     let hop_count = chain.steps.len();
-    add_chain_trail(diagnostics, hop_count, format!(
-        "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
-        root_name, target_name,
-        chain.root.qualified_name,
-        root_name,
-    ));
+    add_chain_trail(
+        diagnostics,
+        hop_count,
+        format!(
+            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
+            root_name, target_name, chain.root.qualified_name, root_name,
+        ),
+    );
 }
 
 /// Append actionable next-step diagnostics to a forward-chain response.
@@ -1009,11 +1009,14 @@ fn add_forward_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Forwa
     let source_name = &chain.source.name;
     let target_name = &chain.target.qualified_name;
     let hop_count = chain.steps.len();
-    add_chain_trail(diagnostics, hop_count, format!(
-        "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full target source; `callgraph` from target to see its callees.",
-        source_name, target_name,
-        chain.target.qualified_name,
-    ));
+    add_chain_trail(
+        diagnostics,
+        hop_count,
+        format!(
+            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full target source; `callgraph` from target to see its callees.",
+            source_name, target_name, chain.target.qualified_name,
+        ),
+    );
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────

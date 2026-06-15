@@ -266,10 +266,7 @@ pub fn compact_signature(text: &str) -> Option<String> {
 ///
 /// Returns the declaration text up to (but not including) the brace or semicolon.
 /// Used by C and C++ adapters to extract function signatures.
-pub fn find_c_like_declaration_header(
-    node: tree_sitter::Node,
-    source: &str,
-) -> Option<String> {
+pub fn find_c_like_declaration_header(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = Some(node);
     while let Some(n) = current {
         match n.kind() {

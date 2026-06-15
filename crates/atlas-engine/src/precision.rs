@@ -87,7 +87,8 @@ mod tests {
 
     #[test]
     fn next_action_manifest_medium() {
-        let hint = next_action_structural(&Precision::manifest(SemanticConfidence::Medium)).unwrap();
+        let hint =
+            next_action_structural(&Precision::manifest(SemanticConfidence::Medium)).unwrap();
         assert!(hint.contains("manifest-only"));
     }
 

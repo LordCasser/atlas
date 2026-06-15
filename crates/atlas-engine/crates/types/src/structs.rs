@@ -158,8 +158,6 @@ pub mod status {
     pub const SUPERSEDED: &str = "superseded";
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Focus-driven incremental analysis: precision model
 // ---------------------------------------------------------------------------
@@ -285,7 +283,8 @@ impl Precision {
 
     /// Check if this represents "no useful information" (coverage is Manifest AND confidence is Low).
     pub fn is_unavailable(&self) -> bool {
-        matches!(self.coverage, CoverageTier::Manifest) && self.confidence == SemanticConfidence::Low
+        matches!(self.coverage, CoverageTier::Manifest)
+            && self.confidence == SemanticConfidence::Low
     }
 
     /// Check if this represents full repo certainty.
@@ -296,11 +295,7 @@ impl Precision {
 }
 
 /// Compute precision for lazy dataflow extraction.
-pub fn dataflow_precision(
-    available: usize,
-    planned: usize,
-    budget_exceeded: bool,
-) -> Precision {
+pub fn dataflow_precision(available: usize, planned: usize, budget_exceeded: bool) -> Precision {
     if planned == 0 {
         Precision::worst()
     } else if available == 0 {

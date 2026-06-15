@@ -10,9 +10,9 @@
 //!   (CrossFunctionBridge) with runtime fallback
 
 pub mod alias_table;
-pub(crate) mod builtins;
 pub mod branch_diff;
 pub mod branch_diff_semantic;
+pub(crate) mod builtins;
 pub mod cfg_graph;
 pub mod cross_function;
 pub mod effect_composer;
@@ -47,5 +47,7 @@ pub use resource_ops::{CalleeMatcher, ResourceOpConfig, ResourceOpKind, Resource
 /// Rule learning — delegates to language-specific RuleLearningStrategy.
 /// Inline module replaces `rule_learning.rs`.
 pub mod rule_learning {
-    pub use domain_rules::learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
+    pub use domain_rules::learning::{
+        LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy,
+    };
 }

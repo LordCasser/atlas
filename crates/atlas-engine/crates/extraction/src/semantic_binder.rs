@@ -60,7 +60,8 @@ impl SemanticBinder {
     /// generation, so no ID regeneration is needed here.
     pub fn bind_scope(&self, references: &mut [ReferenceUse]) {
         for reference in references {
-            reference.scope_id = crate::languages::shared::innermost_scope(&self.scopes, reference.range);
+            reference.scope_id =
+                crate::languages::shared::innermost_scope(&self.scopes, reference.range);
         }
     }
 

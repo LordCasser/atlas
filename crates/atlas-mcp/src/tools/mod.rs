@@ -6,30 +6,30 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, lifecycle, branch_diff.
 
-use atlas_engine::structs::SemanticConfidence;
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
+use atlas_engine::structs::SemanticConfidence;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
 use crate::tools::analysis_response::precision_to_view;
 use crate::tools::query_snapshot::QuerySnapshot;
 use crate::tools::runtime::graph_runtime::GraphMode;
-use symbol_selector::{parse_symbol_input, ScoredCandidate, SymbolInput};
+use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::project_slot::ProjectSlot;
-use crate::tools::tool_contract::{contract_for, ToolContract};
+use crate::tools::tool_contract::{ToolContract, contract_for};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);

@@ -6,8 +6,8 @@
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
 use crate::structs::CapabilityMask;
-use crate::structs::TextRange;
 use crate::structs::Precision;
+use crate::structs::TextRange;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

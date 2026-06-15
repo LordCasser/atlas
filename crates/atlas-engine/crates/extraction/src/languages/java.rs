@@ -410,7 +410,13 @@ fn normalize_java_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["method_invocation", "object_creation_expression"]),
+        "df.assign_value" => make_df_assign_value(
+            file_id,
+            node,
+            source,
+            range,
+            &["method_invocation", "object_creation_expression"],
+        ),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|name| {
@@ -440,7 +446,13 @@ fn normalize_java_dataflow_builder(
                 (Some(dn), None)
             })
             .unwrap_or((None, None)),
-        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["method_invocation", "object_creation_expression"]),
+        "df.call_arg" => make_df_call_arg(
+            file_id,
+            node,
+            source,
+            range,
+            &["method_invocation", "object_creation_expression"],
+        ),
         "df.field_name" => node_text(node, source)
             .map(|name| {
                 let access_path = node

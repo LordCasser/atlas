@@ -111,7 +111,8 @@ impl LexicalBinder {
         // Resolve scope containment for each binding:
         // Replace placeholder scope_id with the actual innermost scope.
         for binding in &mut bindings {
-            binding.scope_id = crate::languages::shared::innermost_scope(scopes, binding.range).unwrap_or(binding.scope_id);
+            binding.scope_id = crate::languages::shared::innermost_scope(scopes, binding.range)
+                .unwrap_or(binding.scope_id);
             // Re-generate BindingId now that scope_id is correct
             binding.id = BindingId::generate(
                 &ctx.file_id,

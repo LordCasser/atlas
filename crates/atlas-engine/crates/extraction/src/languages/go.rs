@@ -16,9 +16,8 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_assign_value, make_df_call_arg, make_df_parameter,
-    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    make_df_assign_value, make_df_call_arg, make_df_parameter, make_df_receiver_or_literal,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use std::collections::HashMap;
 use types::bindings::BindingDef;
@@ -530,7 +529,9 @@ fn normalize_go_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call_expression"]),
+        "df.assign_value" => {
+            make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => {
             // The captured node is field_identifier (e.g., "Open") inside a

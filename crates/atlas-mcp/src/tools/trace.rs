@@ -6,8 +6,8 @@ use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
-    MAX_FILE_PATH_LENGTH, ToolRouter, get_str_opt, get_u64,
-    resolve_file_id, warnings_to_trace_diagnostics,
+    MAX_FILE_PATH_LENGTH, ToolRouter, get_str_opt, get_u64, resolve_file_id,
+    warnings_to_trace_diagnostics,
 };
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,

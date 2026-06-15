@@ -342,7 +342,11 @@ fn cj_import_info(
     match capture {
         "import.module" => {
             let module_path = node_text(node, source)?;
-            let name = module_path.rsplit('.').next().unwrap_or(&module_path).to_string();
+            let name = module_path
+                .rsplit('.')
+                .next()
+                .unwrap_or(&module_path)
+                .to_string();
             Some((ImportKind::Import, module_path, name))
         }
         _ => None,
@@ -610,18 +614,18 @@ fn normalize_cangjie_dataflow(
                     let pk = parent.kind();
                     let is_cj_decl = matches!(
                         pk,
-                        "variableDeclaration" | "functionDefinition" | "classDefinition"
-                        | "interfaceDefinition" | "enumDefinition" | "parameter"
+                        "variableDeclaration"
+                            | "functionDefinition"
+                            | "classDefinition"
+                            | "interfaceDefinition"
+                            | "enumDefinition"
+                            | "parameter"
                     );
                     if is_cj_decl {
                         // Check this node is the "name" child of the declaration
-                        if parent
-                            .child_by_field_name("name")
-                            .is_some_and(|n| {
-                                cur.start_byte() >= n.start_byte()
-                                    && cur.end_byte() <= n.end_byte()
-                            })
-                        {
+                        if parent.child_by_field_name("name").is_some_and(|n| {
+                            cur.start_byte() >= n.start_byte() && cur.end_byte() <= n.end_byte()
+                        }) {
                             return (None, None);
                         }
                     }

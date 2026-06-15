@@ -17,12 +17,8 @@ pub(crate) const C_ALLOC_FUNCTIONS: &[&str] = &[
 ];
 
 /// C/C++ deallocation/free functions that consume resources.
-pub(crate) const C_FREE_FUNCTIONS: &[&str] = &[
-    "free",
-    "operator delete",
-    "operator delete[]",
-    "std::free",
-];
+pub(crate) const C_FREE_FUNCTIONS: &[&str] =
+    &["free", "operator delete", "operator delete[]", "std::free"];
 
 /// Functions that may or may not transfer ownership (e.g., realloc).
 pub(crate) const C_MAYBE_OWNED: &[&str] = &["realloc"];

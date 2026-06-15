@@ -292,7 +292,6 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Helper — convert TraceEdge → DataFlowEdge for slicer compatibility
 // ---------------------------------------------------------------------------

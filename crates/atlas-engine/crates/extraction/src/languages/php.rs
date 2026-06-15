@@ -16,9 +16,9 @@ use crate::frontend::{
     ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target,
-    make_df_assign_value, make_df_receiver_or_literal, make_df_return_value,
-    make_reference_use, make_scope_def_auto_name,
+    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_value,
+    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
+    make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -440,7 +440,17 @@ fn normalize_php_dataflow_builder(
                 )
             })
             .unwrap_or((None, None)),
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["function_call_expression", "member_call_expression", "object_creation_expression"]),
+        "df.assign_value" => make_df_assign_value(
+            file_id,
+            node,
+            source,
+            range,
+            &[
+                "function_call_expression",
+                "member_call_expression",
+                "object_creation_expression",
+            ],
+        ),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|raw_name| {

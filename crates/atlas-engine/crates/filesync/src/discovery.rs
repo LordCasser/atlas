@@ -6,9 +6,9 @@
 //!
 //! Both paths filter by language support and optional `.atlasignore` patterns.
 
+use crate::detector::is_supported_source_path;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::detector::is_supported_source_path;
 
 /// Configuration for file discovery.
 #[derive(Debug, Clone, Default)]

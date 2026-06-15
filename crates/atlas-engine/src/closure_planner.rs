@@ -726,8 +726,6 @@ mod tests {
         );
     }
 
-
-
     // ── Include root resolution tests ─────────────────────────────────
 
     #[test]

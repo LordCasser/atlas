@@ -94,7 +94,9 @@ pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, Phase
 pub use lazy::{AnalysisUnit, LazyWindow, VariableFocus};
 
 // --- Progress types ---
-pub use progress::{CompletedPhase, PhaseEntry, PhaseState, ProgressPhase, ProgressSnapshot, ProgressState};
+pub use progress::{
+    CompletedPhase, PhaseEntry, PhaseState, ProgressPhase, ProgressSnapshot, ProgressState,
+};
 
 // --- Utilities ---
 

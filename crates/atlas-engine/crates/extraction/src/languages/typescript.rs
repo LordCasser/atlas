@@ -315,9 +315,21 @@ pub(crate) fn normalize_ts_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call_expression", "new_expression"]),
+        "df.assign_value" => make_df_assign_value(
+            file_id,
+            node,
+            source,
+            range,
+            &["call_expression", "new_expression"],
+        ),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
-        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["call_expression", "new_expression"]),
+        "df.call_arg" => make_df_call_arg(
+            file_id,
+            node,
+            source,
+            range,
+            &["call_expression", "new_expression"],
+        ),
         "df.call_target" => node_text(node, source)
             .map(|terminal_name| {
                 // For member_expression captures (e.g., "conn.close"), walk up to the

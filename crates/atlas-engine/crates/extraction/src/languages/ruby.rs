@@ -24,8 +24,8 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_value,
-    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal,
-    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal, make_df_return_value,
+    make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;

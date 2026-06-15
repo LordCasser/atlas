@@ -5,9 +5,9 @@
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{get_str, ToolRouter};
+use super::{ToolRouter, get_str};
 use crate::tools::symbol_selector::{
-    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 use serde_json::json;
 

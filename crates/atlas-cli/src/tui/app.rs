@@ -216,7 +216,8 @@ impl App {
             }
             KeyCode::Backspace if self.focus == Focus::SearchBar => {
                 if self.search_cursor > 0 {
-                    let bp = crate::tui::byte_index_at_char(&self.search_input, self.search_cursor - 1);
+                    let bp =
+                        crate::tui::byte_index_at_char(&self.search_input, self.search_cursor - 1);
                     self.search_input.remove(bp);
                     self.search_cursor -= 1;
                 }

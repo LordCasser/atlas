@@ -8,9 +8,7 @@ use atlas_engine::dossier::SourceRepository;
 use atlas_engine::{EdgeKind, InvestigationFocus, Store, SymbolId, SymbolKind, TraversalDirection};
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{
-    MAX_AMBIGUOUS_CANDIDATES, ToolRouter, get_str, get_str_opt, get_u64,
-};
+use super::{MAX_AMBIGUOUS_CANDIDATES, ToolRouter, get_str, get_str_opt, get_u64};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };

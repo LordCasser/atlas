@@ -4,13 +4,13 @@
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
 
-use super::analysis_envelope::AnalysisEnvelope;
 use super::ToolRouter;
+use super::analysis_envelope::AnalysisEnvelope;
 use crate::tools::symbol_selector::{
-    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
+    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
-use atlas_engine::structs::{CapabilityMask, CoverageTier};
 use atlas_engine::LazyWindow;
+use atlas_engine::structs::{CapabilityMask, CoverageTier};
 use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

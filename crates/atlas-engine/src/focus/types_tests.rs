@@ -89,7 +89,10 @@ fn test_focus_closure_record_gap() {
 #[test]
 fn test_precision_best_method() {
     let p = Precision::best();
-    assert!(matches!(p.coverage, types::structs::CoverageTier::RepoComplete));
+    assert!(matches!(
+        p.coverage,
+        types::structs::CoverageTier::RepoComplete
+    ));
     assert_eq!(p.confidence, types::structs::SemanticConfidence::Certain);
 }
 

@@ -6,12 +6,12 @@
 //! newly parsed edges — closing the MCP call-flow gap where graph init
 //! happened before the handler's own structural extraction.
 
+use super::ToolRouter;
 use super::analysis_envelope::AnalysisEnvelope;
 use super::symbol_selector::{
     MAX_AGGREGATION_CANDIDATES, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
     SymbolResolutionPolicy, SymbolSelector, parse_symbol_input,
 };
-use super::{ToolRouter};
 
 use atlas_engine::InvestigationFocus;
 use serde_json::json;

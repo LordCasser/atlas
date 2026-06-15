@@ -72,7 +72,6 @@ impl StoreQueryRuntime {
             ""
         }
     }
-
 }
 
 #[cfg(test)]

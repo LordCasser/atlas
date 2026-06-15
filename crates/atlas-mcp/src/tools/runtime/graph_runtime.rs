@@ -31,9 +31,9 @@ use std::sync::atomic::Ordering;
 use atlas_engine::{SearchEngine, SourceExtractor, Store};
 
 use super::closure_graph_provider::ClosureGraphProvider;
+use super::graph_provider::GraphProvider;
 use super::graph_state::GraphState;
 use super::invalidation::RuntimeInvalidation;
-use super::graph_provider::GraphProvider;
 
 // ── Precision types ─────────────────────────────────────────────────────
 

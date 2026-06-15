@@ -514,7 +514,9 @@ fn normalize_kotlin_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call_expression"]),
+        "df.assign_value" => {
+            make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|name| {
