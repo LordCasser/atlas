@@ -71,7 +71,7 @@ impl IndexPipelineOptions {
 ///
 /// All fields default to 0 — phases are filled in as the pipeline executes.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct PhaseTiming {
+pub struct PipelinePhaseTiming {
     pub discovery_ms: u64,
     pub hash_check_ms: u64,
     pub cleanup_ms: u64,
@@ -84,7 +84,7 @@ pub struct PhaseTiming {
     pub finalize_ms: u64,
 }
 
-impl PhaseTiming {
+impl PipelinePhaseTiming {
     /// Total wall-clock time across all phases, in ms.
     pub fn total_ms(&self) -> u64 {
         self.discovery_ms
@@ -112,7 +112,7 @@ pub struct IndexPipelineStats {
     /// [`Store::ensure_required_schema_objects`] during finalization.
     pub schema_repaired: usize,
     /// Per-phase wall-clock timing breakdown.
-    pub phases: PhaseTiming,
+    pub phases: PipelinePhaseTiming,
 }
 
 /// Run the shared index pipeline against `project_root`.
