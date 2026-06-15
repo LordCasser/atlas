@@ -32,13 +32,6 @@ use types::ids::SymbolId;
 
 use super::call_chain;
 
-/// Default maximum depth for caller-chain traversal.
-///
-/// Re-exported for public API completeness; see [call_chain::DEFAULT_MAX_DEPTH]
-/// for usage notes.
-#[allow(unused_imports)]
-pub use call_chain::DEFAULT_MAX_DEPTH;
-
 /// Explores reverse call chains from a target symbol.
 pub struct CallerPathExplorer;
 
@@ -53,7 +46,7 @@ impl CallerPathExplorer {
     ///
     /// * `store` — the Atlas database.
     /// * `target_id` — the function to trace callers for.
-    /// * `max_depth` — maximum number of backward steps (default: [`DEFAULT_MAX_DEPTH`]).
+    /// * `max_depth` — maximum number of backward steps.
     pub fn explore(
         store: &(impl SymbolReader + CallGraphReader),
         target_id: &SymbolId,

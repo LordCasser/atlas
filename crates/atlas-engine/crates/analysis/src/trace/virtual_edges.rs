@@ -295,36 +295,6 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Composite provider — chain multiple providers
-// ---------------------------------------------------------------------------
-
-/// Chains multiple [`TraceEdgeProvider`]s together, merging results.
-pub struct CompositeProvider {
-    providers: Vec<Box<dyn TraceEdgeProvider>>,
-}
-
-impl CompositeProvider {
-    /// Create a composite provider from one or more providers.
-    pub fn new(providers: Vec<Box<dyn TraceEdgeProvider>>) -> Self {
-        Self { providers }
-    }
-}
-
-impl TraceEdgeProvider for CompositeProvider {
-    fn virtual_incoming(
-        &self,
-        target_id: &DataNodeId,
-        store: &dyn TraceStore,
-    ) -> anyhow::Result<Vec<TraceEdge>> {
-        let mut all_edges: Vec<TraceEdge> = Vec::new();
-        for p in &self.providers {
-            let edges = p.virtual_incoming(target_id, store)?;
-            all_edges.extend(edges);
-        }
-        Ok(all_edges)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Helper — convert TraceEdge → DataFlowEdge for slicer compatibility

@@ -18,13 +18,6 @@ use types::ids::SymbolId;
 
 use super::call_chain;
 
-/// Default maximum depth for forward-chain traversal.
-///
-/// Re-exported for public API completeness; see [call_chain::DEFAULT_MAX_DEPTH]
-/// for usage notes.
-#[allow(unused_imports)]
-pub use call_chain::DEFAULT_MAX_DEPTH;
-
 /// Explores forward call chains from a source symbol to a target.
 pub struct ForwardPathExplorer;
 

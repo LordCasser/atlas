@@ -106,8 +106,6 @@ impl BranchDiffEngine {
                 merged
             };
 
-            let common_prefix = String::new();
-
             let suspicious = if !true_path.frees.is_empty() && false_path.frees.is_empty() {
                 Some(format!(
                     "Branch asymmetry: field(s) freed in true path ({}) but not in false path",
@@ -134,11 +132,7 @@ impl BranchDiffEngine {
 
             diffs.push(BranchDiff {
                 branch_node_line: node.stmt_range.start_line,
-                common_prefix: if common_prefix.is_empty() {
-                    "?".to_string()
-                } else {
-                    common_prefix
-                },
+                common_prefix: "?".to_string(),
                 path_true: true_path,
                 path_false: false_path,
                 suspicious_asymmetry: suspicious,

@@ -29,13 +29,6 @@ use types::trace::{TraceDiagnostic, TracePath, TracePathStep, TracePoint};
 
 use super::virtual_edges::TraceEdgeProvider;
 
-/// Default maximum depth for backward dataflow slicing.
-///
-/// Reserved; all current callers pass depth explicitly.  Remains public
-/// for documentation and potential future default-parameter usage.
-#[allow(dead_code)]
-pub const DEFAULT_MAX_DEPTH: usize = 30;
-
 /// Produces a backward dataflow trace from a [`TracePoint`].
 pub struct Slicer;
 
@@ -49,7 +42,7 @@ impl Slicer {
     ///
     /// * `store` — the Atlas database for querying dataflow edges and nodes.
     /// * `sink_point` — the user-chosen position to trace from.
-    /// * `max_depth` — maximum number of backward steps (default: [`DEFAULT_MAX_DEPTH`]).
+    /// * `max_depth` — maximum number of backward steps.
     pub fn slice(
         store: &Store,
         sink_point: &TracePoint,
@@ -452,7 +445,7 @@ mod tests {
         assert!((compute_confidence(0, false) - 1.0).abs() < 0.01);
         assert!(compute_confidence(5, false) < 1.0);
         assert!(compute_confidence(5, false) > compute_confidence(15, false));
-        assert!((compute_confidence(DEFAULT_MAX_DEPTH, false) - 0.3).abs() < 0.01);
+        assert!((compute_confidence(30, false) - 0.3).abs() < 0.01);
     }
 
     #[test]
@@ -464,7 +457,7 @@ mod tests {
         );
         // Truncated at max depth — should not go below floor 0.1
         assert!(
-            compute_confidence(DEFAULT_MAX_DEPTH, true) >= 0.1,
+            compute_confidence(30, true) >= 0.1,
             "confidence floor is 0.1"
         );
     }

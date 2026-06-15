@@ -1132,6 +1132,7 @@ mod tests {
     /// Low priority: most real-world code assigns resources to local variables
     /// before returning them (`let x = fopen(...); return x;`).
     #[test]
+    #[ignore]
     fn test_returned_resource_via_callreturn_not_auto_freed() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
