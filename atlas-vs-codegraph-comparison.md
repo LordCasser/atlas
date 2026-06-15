@@ -84,7 +84,7 @@
     {"name": "Session", "kind": "class", "file": "packages/sdk/js/src/v2/gen/sdk.gen.ts", "line": 787, "score": 1.0},
     {"name": "Session", "kind": "type_alias", "file": "packages/sdk/js/src/v2/gen/types.gen.ts", "line": 734, "score": 1.0}
   ],
-  "precision_tier": "Exact",
+  "precision": {"coverage": "repo_complete", "confidence": "certain"},
   "scope_file_count": 1931
 }
 ```
@@ -106,7 +106,7 @@
 |------|-------|-----------|
 | 返回数量 | 5 | 10 |
 | 精确过滤 | ✅ kind/scope 过滤 | ❌ 仅名称匹配 |
-| 评分排序 | ✅ score + precision_tier | ❌ 无排序 |
+| 评分排序 | ✅ score + precision | ❌ 无排序 |
 | 签名信息 | ❌ 无 | ✅ 有 |
 | 大小写 | 精确匹配 | 模糊匹配 (Session/session) |
 
@@ -124,7 +124,7 @@
   "file": "packages/app/src/utils/server-errors.ts",
   "kind": "function",
   "signature": "(error: unknown, translate?: Translator, fallback?: string)",
-  "precision_tier": "Exact",
+  "precision": {"coverage": "repo_complete", "confidence": "certain"},
   "callee_count": 6,
   "caller_count": 5,
   "callees": [
@@ -173,7 +173,7 @@ Called by ← createPromptSubmit, loadSessions, showErrors, bootstrapDirectory, 
 | 源码 | 需 `includeCode: true` | 默认包含 |
 | 调用链 | 内联返回 (callers/callees) | Trail 格式 |
 | 签名 | ✅ | ✅ |
-| 精度标注 | ✅ precision_tier | ❌ |
+| 精度标注 | ✅ precision | ❌ |
 
 ---
 
@@ -200,7 +200,7 @@ Called by ← createPromptSubmit, loadSessions, showErrors, bootstrapDirectory, 
   "name": "Session",
   "file": "packages/sdk/js/src/gen/sdk.gen.ts",
   "kind": "class",
-  "precision_tier": "Exact",
+  "precision": {"coverage": "repo_complete", "confidence": "certain"},
   "source": "class Session extends _HeyApiClient { ... }"  // 完整源码 ~300 行
 }
 ```
@@ -320,7 +320,7 @@ Callees (7): unwrapNamedError, isConfigInvalidErrorLike, parseReadableConfigInva
 |------|-------|-----------|
 | 结果数量 | 8 symbols | 29 symbols |
 | 文件分组 | ✅ 按文件分组 | ✅ 按文件分组 |
-| 精度标注 | ✅ precision_tier | ❌ |
+| 精度标注 | ✅ precision | ❌ |
 | 遍历方向 | outgoing only | outgoing only |
 
 ---
@@ -542,7 +542,7 @@ Atlas 可以自动追踪到根调用者，包含：
 - 完整调用链 (4 跳)
 - 调用参数 (args)
 - 源码片段 (caller_snippet + callee_snippet)
-- 精度标注 (precision_tier)
+- 精度标注 (precision)
 
 CodeGraph 需要手动逐级调用 `codegraph_callers`，无法自动追踪。
 

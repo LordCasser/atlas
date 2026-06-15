@@ -65,7 +65,7 @@ so consumers parse one shape regardless of which query was made.
 3. `ok=false` → **system error**; only possible result is `diagnostics[0].level = "error"`.
 4. `capability` is present even in partial/error cases (may be `null` for errors).
 
-MCP wrappers may add top-level fields such as `query_id`, `structural_precision_tier`, `lazy_diagnostics`, and `analysis_contract`. If a trace request triggered lazy structural or lazy dataflow, `lazy_diagnostics` and `analysis_contract` must be present even when `result` is empty or no path is found.
+MCP wrappers may add top-level fields such as `query_id`, `precision`, `lazy_diagnostics`, and `analysis_contract`. If a trace request triggered lazy structural or lazy dataflow, `lazy_diagnostics` and `analysis_contract` must be present even when `result` is empty or no path is found.
 
 ---
 

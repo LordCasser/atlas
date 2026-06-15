@@ -14,12 +14,14 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
+use atlas_engine::structs::precision::PrecisionTier;
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
     MAX_QUERY_LENGTH, MAX_SYMBOL_NAME_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt,
     get_u64,
 };
+use crate::tools::analysis_response::PrecisionView;
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
@@ -181,6 +183,28 @@ impl ToolRouter {
             }
         };
 
+        // Unavailable means no data at all — not even manifest extraction.
+        // Convert to a clear error instead of returning empty results.
+        if engine_resp.precision_tier == PrecisionTier::Unavailable {
+            let guidance = self.active().store_query_runtime.not_indexed_guidance();
+            let mut msg = format!(
+                "scope \"{scope}\" has no indexed data and cannot return any results"
+            );
+            if !guidance.is_empty() {
+                msg.push_str(&format!("\n\n{guidance}"));
+            }
+            let error_body = json!({
+                "ok": false,
+                "error": msg,
+                "query": query,
+                "scope": scope,
+                "hint": "Run 'atlas index' to build a full index, or narrow the scope to a directory with indexed files.",
+            });
+            let lr = AnalysisEnvelope::new("search", args)
+                .with_is_error(true);
+            return lr.build(error_body, self);
+        }
+
         // Build the MCP JSON response from the engine response.
         let hits: Vec<SearchHit> = engine_resp
             .results
@@ -205,7 +229,11 @@ impl ToolRouter {
         };
         response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
         response["capability_mask"] = json!(engine_resp.capability_mask.bits());
-        response["precision_tier"] = json!(engine_resp.precision_tier);
+        // Map legacy PrecisionTier → public precision contract.
+        // Unavailable means no data at all → omit the field entirely.
+        if let Some(precision) = precision_tier_to_view(engine_resp.precision_tier) {
+            response["precision"] = serde_json::to_value(precision).unwrap_or(json!(null));
+        }
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
@@ -546,5 +574,37 @@ impl ToolRouter {
             "error": hint,
             "candidates": candidates_json,
         })
+    }
+}
+
+// ── Precision migration helper ──────────────────────────────────────────────
+
+/// Map legacy [`PrecisionTier`] (engine-internal 6-tier enum) to the public
+/// [`PrecisionView`] contract.  Returns `None` for [`PrecisionTier::Unavailable`]
+/// — when no data exists at all, the `precision` field should be absent rather
+/// than fabricating a misleading "basic" label.
+fn precision_tier_to_view(tier: PrecisionTier) -> Option<PrecisionView> {
+    match tier {
+        PrecisionTier::Exact => Some(PrecisionView {
+            coverage: "repo_complete".into(),
+            confidence: "certain".into(),
+        }),
+        PrecisionTier::PartialExact => Some(PrecisionView {
+            coverage: "local_complete".into(),
+            confidence: "high".into(),
+        }),
+        PrecisionTier::DegradedStructural => Some(PrecisionView {
+            coverage: "boundary".into(),
+            confidence: "medium".into(),
+        }),
+        PrecisionTier::LocalDataflowOnly => Some(PrecisionView {
+            coverage: "partial".into(),
+            confidence: "medium".into(),
+        }),
+        PrecisionTier::ManifestOnly => Some(PrecisionView {
+            coverage: "basic".into(),
+            confidence: "low".into(),
+        }),
+        PrecisionTier::Unavailable => None,
     }
 }

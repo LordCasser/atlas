@@ -153,7 +153,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 最低要求：
 - 删除代码前必须确认零生产调用点、零测试支撑用途，或明确替代路径；测试 helper 不得按死代码处理。
 - 抽取 helper 或 builder 时，必须至少覆盖一个最简单调用点和一个有分支/merge 的调用点，防止共享抽象只适用于 happy path。
-- MCP lazy response 迁移必须断言 `precision_tier`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `resume_query` snapshot 语义没有丢失；`ok=false` 路径也不能丢 lazy diagnostics。
+- MCP lazy response 迁移必须断言 `precision`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `resume_query` snapshot 语义没有丢失；`ok=false` 路径也不能丢 lazy diagnostics。
 - stable facade API 重构必须有编译级兼容验证。若旧 API 接受闭包、函数指针或常见 wrapper，新 trait/API 必须保留等价调用方式，或在文档中声明 breaking change。
 - 每个清理批次至少运行 `cargo fmt --check`、`cargo check` 和受影响 crate 的测试；如果全量 `cargo test` 存在已知失败，PR/review 必须列出具体失败测试、原因和是否与本次变更相关。
 

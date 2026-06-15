@@ -159,6 +159,12 @@ from default tool responses when the analysis envelope is introduced. If a
 local conversion helper is still needed internally, it must stay private and
 must not appear in MCP JSON.
 
+> **✅ Done (2026-06-15):** `search.rs` removed `precision_tier` → replaced with
+> `precision` field using `PrecisionView { coverage, confidence }` public labels.
+> Internal engine still uses `PrecisionTier`; conversion happens at MCP boundary
+> via private `precision_tier_to_view()` in `search.rs`. `Unavailable` maps to
+> field absence (no data → no precision claim).
+
 ---
 
 ## 2. Phase 1: Bootstrap — Cold Start Tiers (2 weeks)
