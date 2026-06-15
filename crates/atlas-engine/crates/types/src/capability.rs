@@ -27,7 +27,7 @@ use crate::enums::Language;
 /// `supported_features`/`unsupported_features` string lists.
 /// Consumers can distinguish "not supported" from "supported but no matches"
 /// and surface the `reason` / `limitations` to AI agents.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum FeatureSupport {
     /// The feature is available for this language.
@@ -106,7 +106,7 @@ impl FeatureSupport {
 ///     // run dataflow trace
 /// }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FeatureMatrix {
     /// Symbol definitions (functions, classes, variables, etc.).
     pub symbols: FeatureSupport,
@@ -406,7 +406,143 @@ impl LanguageCapabilityProfile {
 // ---------------------------------------------------------------------------
 
 mod profiles {
+    use std::collections::HashMap;
+
     use super::*;
+
+    // ── ProfileSpec data-declaration prototype ───────────────────────────
+
+    /// Per-feature field identifier, maps 1:1 to [`FeatureMatrix`] fields.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+    enum FeatureField {
+        Symbols,
+        References,
+        Imports,
+        Scopes,
+        CallGraph,
+        LexicalBindings,
+        LocalDataflow,
+        UseDef,
+        FieldAccess,
+        CallArguments,
+        ReturnsFlow,
+        Cfg,
+        InterproceduralSummaries,
+    }
+
+    /// How a single feature's [`FeatureSupport`] differs from the default
+    /// `supported_with_confidence(confidence_floor)`.
+    #[allow(dead_code)] // Confidence and Unsupported not yet used in prototype specs
+    enum FeatureOverride {
+        /// Override the confidence floor for this feature.
+        Confidence(f64),
+        /// Supported with specific limitations.
+        WithLimitations(f64, &'static [&'static str]),
+        /// Feature is unsupported with one or more reasons (joined).
+        Unsupported(&'static [&'static str]),
+    }
+
+    /// Compact per-language spec — expanded into [`LanguageCapabilityProfile`]
+    /// by [`build_profile`].
+    struct ProfileSpec {
+        language: &'static str,
+        confidence_floor: f64,
+        /// Supported feature names (e.g. "symbol_extraction").
+        supported: &'static [&'static str],
+        /// Unsupported feature names.
+        unsupported: &'static [&'static str],
+        /// Known accuracy / completeness caveats.
+        limitations: &'static [&'static str],
+        /// Per-feature [`FeatureSupport`] overrides. Missing entries use the
+        /// [`confidence_floor`] default.
+        feature_overrides: &'static [(FeatureField, FeatureOverride)],
+    }
+
+    /// Build a full [`LanguageCapabilityProfile`] from a compact [`ProfileSpec`].
+    fn build_profile(spec: &ProfileSpec) -> LanguageCapabilityProfile {
+        let mut overrides: HashMap<FeatureField, FeatureSupport> = HashMap::new();
+        for (field, ov) in spec.feature_overrides {
+            let fs = match ov {
+                FeatureOverride::Confidence(c) => {
+                    FeatureSupport::supported_with_confidence(*c)
+                }
+                FeatureOverride::WithLimitations(c, lims) => {
+                    FeatureSupport::supported_with_limitations(*c, lims.to_vec())
+                }
+                FeatureOverride::Unsupported(reasons) => {
+                    FeatureSupport::unsupported(&reasons.join("; "))
+                }
+            };
+            overrides.insert(*field, fs);
+        }
+
+        let default = || FeatureSupport::supported_with_confidence(spec.confidence_floor);
+
+        let fm = FeatureMatrix {
+            symbols: overrides
+                .get(&FeatureField::Symbols)
+                .cloned()
+                .unwrap_or_else(&default),
+            references: overrides
+                .get(&FeatureField::References)
+                .cloned()
+                .unwrap_or_else(&default),
+            imports: overrides
+                .get(&FeatureField::Imports)
+                .cloned()
+                .unwrap_or_else(&default),
+            scopes: overrides
+                .get(&FeatureField::Scopes)
+                .cloned()
+                .unwrap_or_else(&default),
+            call_graph: overrides
+                .get(&FeatureField::CallGraph)
+                .cloned()
+                .unwrap_or_else(&default),
+            lexical_bindings: overrides
+                .get(&FeatureField::LexicalBindings)
+                .cloned()
+                .unwrap_or_else(&default),
+            local_dataflow: overrides
+                .get(&FeatureField::LocalDataflow)
+                .cloned()
+                .unwrap_or_else(&default),
+            use_def: overrides
+                .get(&FeatureField::UseDef)
+                .cloned()
+                .unwrap_or_else(&default),
+            field_access: overrides
+                .get(&FeatureField::FieldAccess)
+                .cloned()
+                .unwrap_or_else(&default),
+            call_arguments: overrides
+                .get(&FeatureField::CallArguments)
+                .cloned()
+                .unwrap_or_else(&default),
+            returns_flow: overrides
+                .get(&FeatureField::ReturnsFlow)
+                .cloned()
+                .unwrap_or_else(&default),
+            cfg: overrides
+                .get(&FeatureField::Cfg)
+                .cloned()
+                .unwrap_or_else(&default),
+            interprocedural_summaries: overrides
+                .get(&FeatureField::InterproceduralSummaries)
+                .cloned()
+                .unwrap_or_else(&default),
+        };
+
+        LanguageCapabilityProfile {
+            language: spec.language.into(),
+            capability_level: fm.derive_capability_level(),
+            supported_features: spec.supported.iter().map(|s| s.to_string()).collect(),
+            unsupported_features: spec.unsupported.iter().map(|s| s.to_string()).collect(),
+            limitations: spec.limitations.iter().map(|s| s.to_string()).collect(),
+            confidence_floor: spec.confidence_floor,
+            features: Some(fm),
+        }
+    }
 
     pub fn make(lang: Language) -> LanguageCapabilityProfile {
         match lang {
@@ -563,66 +699,74 @@ mod profiles {
     //       resolution (resolve_bindings_to_nodes) correctly handles Python
     //       shadowing as verified by fx_py_shadow.  CFG support added (P7).
 
-    fn py_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "python".into(),
-            capability_level: CapabilityLevel::DataflowFull,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-                "cfg".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-            ],
-            limitations: vec![
-                "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes".into(),
-                "AST-driven local dataflow; destructuring and control-flow not yet path-verified".into(),
-                "assignment LHS binding with scope-chain resolution".into(),
-            ],
-            confidence_floor: 0.72,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.72),
-                references: FeatureSupport::supported_with_confidence(0.72),
-                imports: FeatureSupport::supported_with_confidence(0.72),
-                scopes: FeatureSupport::supported_with_confidence(0.72),
-                call_graph: FeatureSupport::supported_with_confidence(0.72),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
+    const PY_PROFILE_SPEC: ProfileSpec = ProfileSpec {
+        language: "python",
+        confidence_floor: 0.72,
+        supported: &[
+            "symbol_extraction",
+            "reference_extraction",
+            "import_resolution",
+            "call_graph",
+            "lexical_bindings",
+            "intra_statement_dataflow",
+            "use_def_heuristic",
+            "access_path",
+            "call_arguments",
+            "return_flow",
+            "cfg",
+            "interprocedural_dataflow",
+        ],
+        unsupported: &["scope_aware_binding"],
+        limitations: &[
+            "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
+            "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
+            "assignment LHS binding with scope-chain resolution",
+        ],
+        feature_overrides: &[
+            (
+                FeatureField::LexicalBindings,
+                FeatureOverride::WithLimitations(
                     0.72,
-                    vec!["assignment LHS binding with scope-chain resolution"],
+                    &["assignment LHS binding with scope-chain resolution"],
                 ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::LocalDataflow,
+                FeatureOverride::WithLimitations(
                     0.72,
-                    vec!["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
+                    &["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
                 ),
-                use_def: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::UseDef,
+                FeatureOverride::WithLimitations(
                     0.72,
-                    vec!["scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes"],
+                    &[
+                        "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
+                    ],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.72),
-                call_arguments: FeatureSupport::supported_with_confidence(0.72),
-                returns_flow: FeatureSupport::supported_with_confidence(0.72),
-                cfg: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::Cfg,
+                FeatureOverride::WithLimitations(
                     0.70,
-                    vec!["Control-flow graph with branch/loop body traversal implemented"],
+                    &["Control-flow graph with branch/loop body traversal implemented"],
                 ),
-                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::InterproceduralSummaries,
+                FeatureOverride::WithLimitations(
                     0.72,
-                    vec![
+                    &[
                         "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
-            }),
-        }
+            ),
+        ],
+    };
+
+    fn py_profile() -> LanguageCapabilityProfile {
+        build_profile(&PY_PROFILE_SPEC)
     }
 
     // ---- Java (DataflowFull) -------------------------------------------------
@@ -972,66 +1116,76 @@ mod profiles {
 
     // ---- Go (DataflowFull) --------------------------------------------------
 
-    fn go_profile() -> LanguageCapabilityProfile {
-        LanguageCapabilityProfile {
-            language: "go".into(),
-            capability_level: CapabilityLevel::DataflowFull,
-            supported_features: vec![
-                "symbol_extraction".into(),
-                "reference_extraction".into(),
-                "import_resolution".into(),
-                "call_graph".into(),
-                "lexical_bindings".into(),
-                "intra_statement_dataflow".into(),
-                "use_def_heuristic".into(),
-                "access_path".into(),
-                "call_arguments".into(),
-                "return_flow".into(),
-                "cfg".into(),
-                "interprocedural_dataflow".into(),
-            ],
-            unsupported_features: vec![
-                "scope_aware_binding".into(),
-            ],
-            limitations: vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested expressions".into(),
-                "AST-driven local dataflow with language-specific gaps".into(),
-                "generic type parameters not captured in dataflow layer".into(),
-            ],
-            confidence_floor: 0.78,
-            features: Some(FeatureMatrix {
-                symbols: FeatureSupport::supported_with_confidence(0.78),
-                references: FeatureSupport::supported_with_confidence(0.78),
-                imports: FeatureSupport::supported_with_confidence(0.78),
-                scopes: FeatureSupport::supported_with_confidence(0.78),
-                call_graph: FeatureSupport::supported_with_confidence(0.78),
-                lexical_bindings: FeatureSupport::supported_with_limitations(
+    const GO_PROFILE_SPEC: ProfileSpec = ProfileSpec {
+        language: "go",
+        confidence_floor: 0.78,
+        supported: &[
+            "symbol_extraction",
+            "reference_extraction",
+            "import_resolution",
+            "call_graph",
+            "lexical_bindings",
+            "intra_statement_dataflow",
+            "use_def_heuristic",
+            "access_path",
+            "call_arguments",
+            "return_flow",
+            "cfg",
+            "interprocedural_dataflow",
+        ],
+        unsupported: &["scope_aware_binding"],
+        limitations: &[
+            "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+            "AST-driven local dataflow with language-specific gaps",
+            "generic type parameters not captured in dataflow layer",
+        ],
+        feature_overrides: &[
+            (
+                FeatureField::LexicalBindings,
+                FeatureOverride::WithLimitations(
                     0.78,
-                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
-                local_dataflow: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::LocalDataflow,
+                FeatureOverride::WithLimitations(
                     0.78,
-                    vec!["AST-driven local dataflow with language-specific gaps"],
+                    &["AST-driven local dataflow with language-specific gaps"],
                 ),
-                use_def: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::UseDef,
+                FeatureOverride::WithLimitations(
                     0.78,
-                    vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
-                field_access: FeatureSupport::supported_with_confidence(0.78),
-                call_arguments: FeatureSupport::supported_with_confidence(0.78),
-                returns_flow: FeatureSupport::supported_with_confidence(0.78),
-                cfg: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::Cfg,
+                FeatureOverride::WithLimitations(
                     0.78,
-                    vec!["Control-flow graph with branch/loop body traversal implemented"],
+                    &["Control-flow graph with branch/loop body traversal implemented"],
                 ),
-                interprocedural_summaries: FeatureSupport::supported_with_limitations(
+            ),
+            (
+                FeatureField::InterproceduralSummaries,
+                FeatureOverride::WithLimitations(
                     0.78,
-                    vec![
+                    &[
                         "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
                     ],
                 ),
-            }),
-        }
+            ),
+        ],
+    };
+
+    fn go_profile() -> LanguageCapabilityProfile {
+        build_profile(&GO_PROFILE_SPEC)
     }
 
     // ---- C# (DataflowFull) ---------------------------------------------------
@@ -1707,5 +1861,232 @@ mod tests {
                 profile.language, matrix_says_cfg, string_list_says_cfg,
             );
         }
+    }
+
+    // ── ProfileSpec identity tests ───────────────────────────────────────
+
+    /// Verify the Go profile produced by `go_profile()` matches the expected
+    /// values — ensuring the ProfileSpec data-declaration is correct.
+    #[test]
+    fn test_go_profile_identity() {
+        let p = LanguageCapabilityProfile::for_language(Language::Go);
+        assert_eq!(p.language, "go");
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.confidence_floor, 0.78);
+
+        // supported_features
+        let expected_supported: Vec<&str> = vec![
+            "symbol_extraction",
+            "reference_extraction",
+            "import_resolution",
+            "call_graph",
+            "lexical_bindings",
+            "intra_statement_dataflow",
+            "use_def_heuristic",
+            "access_path",
+            "call_arguments",
+            "return_flow",
+            "cfg",
+            "interprocedural_dataflow",
+        ];
+        assert_eq!(p.supported_features, expected_supported);
+
+        // unsupported_features
+        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+
+        // limitations
+        assert_eq!(
+            p.limitations,
+            vec![
+                "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                "AST-driven local dataflow with language-specific gaps",
+                "generic type parameters not captured in dataflow layer",
+            ]
+        );
+
+        let fm = p.features.as_ref().unwrap();
+
+        // Default features (confidence_floor = 0.78, no limitations)
+        assert_eq!(
+            fm.symbols,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+        assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.78));
+        assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.78));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.78)
+        );
+
+        // Overridden features
+        assert_eq!(
+            fm.lexical_bindings,
+            FeatureSupport::supported_with_limitations(
+                0.78,
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
+            )
+        );
+        assert_eq!(
+            fm.local_dataflow,
+            FeatureSupport::supported_with_limitations(
+                0.78,
+                vec!["AST-driven local dataflow with language-specific gaps"],
+            )
+        );
+        assert_eq!(
+            fm.use_def,
+            FeatureSupport::supported_with_limitations(
+                0.78,
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
+            )
+        );
+        assert_eq!(
+            fm.cfg,
+            FeatureSupport::supported_with_limitations(
+                0.78,
+                vec!["Control-flow graph with branch/loop body traversal implemented"],
+            )
+        );
+        assert_eq!(
+            fm.interprocedural_summaries,
+            FeatureSupport::supported_with_limitations(
+                0.78,
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                ],
+            )
+        );
+    }
+
+    /// Verify the Python profile produced by `py_profile()` matches the expected
+    /// values — including the CFG confidence override (0.70 vs 0.72 default).
+    #[test]
+    fn test_python_profile_identity() {
+        let p = LanguageCapabilityProfile::for_language(Language::Python);
+        assert_eq!(p.language, "python");
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.confidence_floor, 0.72);
+
+        // supported_features
+        let expected_supported: Vec<&str> = vec![
+            "symbol_extraction",
+            "reference_extraction",
+            "import_resolution",
+            "call_graph",
+            "lexical_bindings",
+            "intra_statement_dataflow",
+            "use_def_heuristic",
+            "access_path",
+            "call_arguments",
+            "return_flow",
+            "cfg",
+            "interprocedural_dataflow",
+        ];
+        assert_eq!(p.supported_features, expected_supported);
+
+        // unsupported_features
+        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+
+        // limitations
+        assert_eq!(
+            p.limitations,
+            vec![
+                "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
+                "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
+                "assignment LHS binding with scope-chain resolution",
+            ]
+        );
+
+        let fm = p.features.as_ref().unwrap();
+
+        // Default features (confidence_floor = 0.72, no limitations)
+        assert_eq!(
+            fm.symbols,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.72));
+        assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.72));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+
+        // Overridden features
+        assert_eq!(
+            fm.lexical_bindings,
+            FeatureSupport::supported_with_limitations(
+                0.72,
+                vec!["assignment LHS binding with scope-chain resolution"],
+            )
+        );
+        assert_eq!(
+            fm.local_dataflow,
+            FeatureSupport::supported_with_limitations(
+                0.72,
+                vec!["AST-driven local dataflow; destructuring and control-flow not yet path-verified"],
+            )
+        );
+        assert_eq!(
+            fm.use_def,
+            FeatureSupport::supported_with_limitations(
+                0.72,
+                vec![
+                    "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes"
+                ],
+            )
+        );
+        // CFG has confidence override (0.70, not 0.72)
+        assert_eq!(
+            fm.cfg,
+            FeatureSupport::supported_with_limitations(
+                0.70,
+                vec!["Control-flow graph with branch/loop body traversal implemented"],
+            )
+        );
+        assert_eq!(
+            fm.interprocedural_summaries,
+            FeatureSupport::supported_with_limitations(
+                0.72,
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                ],
+            )
+        );
     }
 }
