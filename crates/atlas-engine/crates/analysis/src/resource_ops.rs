@@ -3,6 +3,7 @@
 //! These patterns replace the hardcoded C/C++ alloc/free lists in the CFG builder
 //! and extend branch_diff to work with any language via DataFlow-based enrichment.
 
+use crate::builtins;
 use types::enums::Language;
 
 // ---------------------------------------------------------------------------
@@ -121,13 +122,14 @@ impl ResourceOpConfig {
     /// C — no implicit scope cleanup (manual free/fclose required).
     fn default_c() -> Self {
         use CalleeMatcher::{Exact, Prefix, Suffix};
-        let producers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("malloc".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("calloc".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("realloc".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strdup".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strndup".into()), 0),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("fopen".into()), 0),
+        let mut producers: Vec<ResourceOpPattern> = builtins::C_ALLOC_FUNCTIONS
+            .iter()
+            .chain(builtins::C_MAYBE_OWNED.iter())
+            .map(|&name| {
+                ResourceOpPattern::new(ResourceOpKind::Produce, Exact(name.to_string()), 0)
+            })
+            .collect();
+        producers.extend(vec![
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("asprintf".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("aprintf".into()), 0),
             ResourceOpPattern::new(
@@ -136,15 +138,20 @@ impl ResourceOpConfig {
                 0,
             ),
             ResourceOpPattern::new(ResourceOpKind::Produce, Prefix("curl_copy_".into()), 0),
-        ];
-        let consumers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("free".into()), 0),
+        ]);
+        let mut consumers: Vec<ResourceOpPattern> = builtins::C_FREE_FUNCTIONS
+            .iter()
+            .map(|&name| {
+                ResourceOpPattern::new(ResourceOpKind::Consume, Exact(name.to_string()), 0)
+            })
+            .collect();
+        consumers.extend(vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("fclose".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("closedir".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("safefree".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("Curl_safefree".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix("_free".into()), 0),
-        ];
+        ]);
         Self {
             language: Some(Language::C),
             producers,
@@ -159,19 +166,15 @@ impl ResourceOpConfig {
     fn default_cpp() -> Self {
         use CalleeMatcher::{Exact, Prefix, Suffix};
         // C API producers — NOT eligible for implicit cleanup (require explicit free)
-        let producers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("malloc".into()), 0)
-                .with_implicit_cleanup(false),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("calloc".into()), 0)
-                .with_implicit_cleanup(false),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("realloc".into()), 0)
-                .with_implicit_cleanup(false),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strdup".into()), 0)
-                .with_implicit_cleanup(false),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("strndup".into()), 0)
-                .with_implicit_cleanup(false),
-            ResourceOpPattern::new(ResourceOpKind::Produce, Exact("fopen".into()), 0)
-                .with_implicit_cleanup(false),
+        let mut producers: Vec<ResourceOpPattern> = builtins::C_ALLOC_FUNCTIONS
+            .iter()
+            .chain(builtins::C_MAYBE_OWNED.iter())
+            .map(|&name| {
+                ResourceOpPattern::new(ResourceOpKind::Produce, Exact(name.to_string()), 0)
+                    .with_implicit_cleanup(false)
+            })
+            .collect();
+        producers.extend(vec![
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("asprintf".into()), 0)
                 .with_implicit_cleanup(false),
             ResourceOpPattern::new(ResourceOpKind::Produce, Exact("aprintf".into()), 0)
@@ -184,15 +187,20 @@ impl ResourceOpConfig {
             .with_implicit_cleanup(false),
             ResourceOpPattern::new(ResourceOpKind::Produce, Prefix("curl_copy_".into()), 0)
                 .with_implicit_cleanup(false),
-        ];
-        let consumers = vec![
-            ResourceOpPattern::new(ResourceOpKind::Consume, Exact("free".into()), 0),
+        ]);
+        let mut consumers: Vec<ResourceOpPattern> = builtins::C_FREE_FUNCTIONS
+            .iter()
+            .map(|&name| {
+                ResourceOpPattern::new(ResourceOpKind::Consume, Exact(name.to_string()), 0)
+            })
+            .collect();
+        consumers.extend(vec![
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("fclose".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("closedir".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("safefree".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Exact("Curl_safefree".into()), 0),
             ResourceOpPattern::new(ResourceOpKind::Consume, Suffix("_free".into()), 0),
-        ];
+        ]);
         Self {
             language: Some(Language::Cpp),
             producers,

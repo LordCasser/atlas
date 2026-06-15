@@ -10,6 +10,7 @@
 //!   (CrossFunctionBridge) with runtime fallback
 
 pub mod alias_table;
+pub(crate) mod builtins;
 pub mod branch_diff;
 pub mod branch_diff_semantic;
 pub mod cfg_graph;

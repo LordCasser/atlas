@@ -4,6 +4,7 @@
 //! ownership semantics (free functions, allocation functions, owned field
 //! patterns, cleanup functions).
 
+use crate::builtins;
 use db::Store;
 use domain_rules::{RuleMatch, RuleSource};
 use types::enums::Language;
@@ -175,19 +176,10 @@ impl OwnershipContract for CppOwnershipRules {
             }
         }
         // 2. 内置默认
-        if matches!(
-            callee,
-            "malloc"
-                | "calloc"
-                | "strdup"
-                | "strndup"
-                | "fopen"
-                | "operator new"
-                | "operator new[]"
-        ) {
+        if builtins::C_ALLOC_FUNCTIONS.contains(&callee) {
             return Some(ReturnContract::NewOwned);
         }
-        if callee == "realloc" {
+        if builtins::C_MAYBE_OWNED.contains(&callee) {
             return Some(ReturnContract::MaybeOwned);
         }
         None
@@ -205,10 +197,7 @@ impl OwnershipContract for CppOwnershipRules {
             }
         }
         // 2. 内置默认
-        if matches!(
-            callee,
-            "free" | "operator delete" | "operator delete[]" | "std::free"
-        ) {
+        if builtins::C_FREE_FUNCTIONS.contains(&callee) {
             return Some(ConsumptionContract {
                 resource: ResourceLocator::Argument { index: 0 },
                 style: ConsumptionStyle::ExplicitCall,
