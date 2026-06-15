@@ -2,7 +2,6 @@
 
 use crate::commands::progress::CliProgressSink;
 use crate::runtime::{CommandContext, DbMode};
-use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Result;
 use atlas_engine::guard_against_precision_downgrade;
 use atlas_engine::progress::ProgressState;
@@ -86,22 +85,7 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
     });
 
     // Start TUI (or text fallback if non-TTY), same progress contract as index.
-    let mut tui = TuiProgress::try_init(progress_state.clone());
-    let has_tty = tui.is_some();
-
-    if has_tty {
-        let _ = tui.as_mut().unwrap().draw_loop(&done, &stop_flag);
-    } else {
-        let mut fb = TextFallback::new(progress_state.clone());
-        loop {
-            fb.tick();
-            if done.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        fb.finish();
-    }
+    let _ = crate::tui::progress::run_progress_loop(progress_state.clone(), &done, &stop_flag);
 
     let worker_result = match handle.join() {
         Ok(Ok(stats)) => Ok(stats),
@@ -115,10 +99,6 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
             Err(anyhow::anyhow!("Sync worker panicked: {msg}"))
         }
     };
-
-    if has_tty {
-        tui.take().unwrap().clear();
-    }
 
     let stats = worker_result?;
 

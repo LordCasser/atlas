@@ -10,7 +10,6 @@
 
 use crate::commands::progress::CliProgressSink;
 use crate::runtime::{CommandContext, DbMode};
-use crate::tui::{TextFallback, TuiProgress};
 use anyhow::Context;
 use atlas_engine::FileLock;
 use atlas_engine::guard_against_precision_downgrade;
@@ -73,10 +72,6 @@ pub fn run_with_options(
         eprintln!("warning: could not install Ctrl+C handler: {e}");
     }
 
-    // ── Start TUI (or text fallback if non-TTY) ──
-    let mut tui = TuiProgress::try_init(progress_state.clone());
-    let has_tty = tui.is_some();
-
     // ── Clone state for worker ──
     let ps_worker = progress_state.clone();
     let done_w = done_flag.clone();
@@ -110,22 +105,8 @@ pub fn run_with_options(
         .expect("failed to spawn index worker thread");
 
     // ── Main thread: render loop ──
-    let was_interrupted = if has_tty {
-        tui.as_mut().unwrap().draw_loop(&done_flag, &stop_flag)
-    } else {
-        let mut fb = TextFallback::new(progress_state.clone());
-        loop {
-            fb.tick();
-            if stop_flag.load(Ordering::SeqCst) {
-                break;
-            }
-            if done_flag.load(Ordering::SeqCst) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        stop_flag.load(Ordering::SeqCst) // was_interrupted = stop_flag is set
-    };
+    let was_interrupted =
+        crate::tui::progress::run_progress_loop(progress_state.clone(), &done_flag, &stop_flag);
 
     // ── Join worker unconditionally ──
     // The worker checks stop_flag via the `interrupted` closure and will exit
@@ -146,14 +127,7 @@ pub fn run_with_options(
     }
 
     if was_interrupted {
-        if has_tty {
-            tui.take()
-                .unwrap()
-                .interrupt(&progress_state.lock().unwrap());
-        } else {
-            eprintln!();
-            crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
-        }
+        crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
         return Err(anyhow::anyhow!("Interrupted"));
     }
 
@@ -161,23 +135,11 @@ pub fn run_with_options(
     worker_result?;
 
     let db_stats = store_for_main.get_stats()?;
-
-    if has_tty {
-        // Restore the inline TUI, then print the final summary as normal
-        // command output so the shell prompt follows it immediately.
-        tui.take().unwrap().finish(
-            db_stats.total_files as u64,
-            db_stats.total_symbols as u64,
-            db_stats.total_edges as u64,
-        );
-    } else {
-        // Text fallback (non-TTY): print summary to stdout.
-        println!("Database status:");
-        println!("  Files:    {}", db_stats.total_files);
-        println!("  Symbols:  {}", db_stats.total_symbols);
-        println!("  Edges:    {}", db_stats.total_edges);
-        println!("\nIndex complete.");
-    }
+    crate::tui::progress::print_summary(
+        db_stats.total_files as u64,
+        db_stats.total_symbols as u64,
+        db_stats.total_edges as u64,
+    );
 
     Ok(())
 }

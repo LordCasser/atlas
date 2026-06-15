@@ -13,6 +13,8 @@ use std::time::Duration;
 use atlas_engine::progress::{PhaseState, ProgressPhase, ProgressSnapshot, ProgressState};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
+use super::TextFallback;
+
 const TICK_MS: u64 = 200;
 
 /// Owns the terminal progress bar and drives periodic updates.
@@ -123,6 +125,38 @@ impl TuiProgress {
     }
 }
 
+/// Shared progress loop used by `atlas index` and `atlas sync`.
+///
+/// On TTY stdout: creates a `TuiProgress`, runs the draw loop, then clears
+/// the bar.  On non-TTY: runs a `TextFallback` tick loop.
+///
+/// Returns `true` if the loop was interrupted (Ctrl+C / stop_flag set).
+pub(crate) fn run_progress_loop(
+    progress_state: Arc<Mutex<ProgressState>>,
+    done_flag: &AtomicBool,
+    stop_flag: &AtomicBool,
+) -> bool {
+    if let Some(mut tui) = TuiProgress::try_init(progress_state.clone()) {
+        let was_interrupted = tui.draw_loop(done_flag, stop_flag);
+        tui.clear();
+        was_interrupted
+    } else {
+        let mut fb = TextFallback::new(progress_state);
+        loop {
+            fb.tick();
+            if stop_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            if done_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(TICK_MS));
+        }
+        fb.finish();
+        stop_flag.load(Ordering::SeqCst)
+    }
+}
+
 /// Print a brief interrupt message after Ctrl+C.
 pub fn print_interrupted(state: &ProgressState) {
     let mut stderr = std::io::stderr();
@@ -152,7 +186,7 @@ fn progress_message(snap: &ProgressSnapshot) -> String {
     parts.join(" | ")
 }
 
-fn print_summary(files: u64, symbols: u64, edges: u64) {
+pub(crate) fn print_summary(files: u64, symbols: u64, edges: u64) {
     println!(" ◆ Index complete");
     println!("   Files:   {files}");
     println!("   Symbols: {symbols}");
