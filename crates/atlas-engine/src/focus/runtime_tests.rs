@@ -247,8 +247,11 @@ fn test_is_ready_true_after_bootstrap() {
 #[test]
 fn test_prepare_full_index_returns_immediately() {
     let store = test_store();
-    // Fresh structural extraction triggers FullIndex via read_index_mode()
+    // FullIndex requires both rich extraction state (structural layer) AND
+    // index-finalization metadata (last_index_time).  Focus-written rich layers
+    // alone must NOT trigger FullIndex (detect_index_mode hardening).
     insert_file_structural_complete(&store, "src/main.c");
+    store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -468,8 +471,11 @@ fn test_bootstrap_manager_ensure_minimum_ready() {
 #[test]
 fn test_prepare_full_index_returns_no_coverage_counts() {
     let store = test_store();
-    // Fresh structural extraction triggers FullIndex via read_index_mode()
+    // FullIndex requires both rich extraction state (structural layer) AND
+    // index-finalization metadata (last_index_time).  Focus-written rich layers
+    // alone must NOT trigger FullIndex (detect_index_mode hardening).
     insert_file_structural_complete(&store, "src/main.c");
+    store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -683,8 +689,11 @@ fn test_prepare_search_intent() {
 #[test]
 fn test_prepare_full_index_all_intents() {
     let store = test_store();
-    // Fresh structural extraction triggers FullIndex via read_index_mode()
+    // FullIndex requires both rich extraction state (structural layer) AND
+    // index-finalization metadata (last_index_time).  Focus-written rich layers
+    // alone must NOT trigger FullIndex (detect_index_mode hardening).
     let file_id = insert_file_structural_complete(&store, "src/main.c");
+    store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
 
     // Test all 8 variants return FullIndex when structural extraction exists

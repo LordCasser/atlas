@@ -7,10 +7,17 @@
 //! - [`FocusJobState`] — lifecycle of a focus extraction job
 //!
 //! Sub-modules:
+//! - [`types`] — core types: `FocusSeed`, `FocusWindow`, `FocusClosure`, `FocusJobState`
+//! - [`query`] — `QueryIntent`: maps MCP tool calls to focus strategies
+//! - [`runtime`] — `FocusRuntime`: focus lifecycle, index-mode detection, `prepare()`
+//! - [`engine`] — closure ingestion, graph extraction, dataflow orchestration
+//! - [`bootstrap`] — initial workspace bootstrap (tiered file discovery)
+//! - [`focus_graph_builder`] — builds the focus closure graph from seeds + strategies
 //! - [`visibility_filter`] — language-specific visibility rules for closure symbols
 //! - [`edge_policy`] — edge conflict resolution when building focus graphs
 //! - [`scheduler`] — priority-queue scheduling for background focus jobs
 //! - [`writer_coordinator`] — serialized DB write access
+//! - [`work_registry`] — work item tracking: `WorkRegistry`, `WorkItem`, `WorkSource`
 
 pub mod bootstrap;
 pub mod edge_policy;
