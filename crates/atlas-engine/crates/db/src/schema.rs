@@ -30,7 +30,6 @@
 //! - `closure_coverage`       — closure-to-file coverage with per-generation visibility
 //! - `reference_resolutions`  — scoped reference resolutions for focus closures
 //! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
-//! - `known_gaps`             — known analysis gaps for focus closures
 
 /// Current schema version.
 pub const CURRENT_SCHEMA_VERSION: i64 = 2;
@@ -507,15 +506,6 @@ CREATE TABLE IF NOT EXISTS symbol_edge_candidates (
     created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Known gaps in analysis completeness for focus closures.
-CREATE TABLE IF NOT EXISTS known_gaps (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    closure_id  TEXT NOT NULL REFERENCES closure_generations(closure_id),
-    gap_kind    TEXT NOT NULL,
-    details     TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 -- File inventory for lightweight first-time discovery (Tier 0 bootstrap).
 -- Populated on first `atlas open` with cheap stat() data.
 -- No content_hash until fingerprinting (Tier 0.5).
@@ -723,7 +713,6 @@ mod tests {
         assert!(tables.contains(&"closure_coverage".to_string()));
         assert!(tables.contains(&"reference_resolutions".to_string()));
         assert!(tables.contains(&"symbol_edge_candidates".to_string()));
-        assert!(tables.contains(&"known_gaps".to_string()));
         // Bootstrap tables (Tier 0 + Tier 1)
         assert!(tables.contains(&"file_inventory".to_string()));
         assert!(tables.contains(&"symbol_hints".to_string()));
