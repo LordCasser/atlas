@@ -77,7 +77,7 @@ pub fn handle_key(input: &mut String, cursor: &mut usize, c: char) -> bool {
         '\u{08}' | '\u{7f}' => {
             // Backspace.
             if *cursor > 0 {
-                let byte_pos = byte_index_at_char(input, *cursor - 1);
+                let byte_pos = crate::tui::byte_index_at_char(input, *cursor - 1);
                 input.remove(byte_pos);
                 *cursor -= 1;
             }
@@ -89,7 +89,7 @@ pub fn handle_key(input: &mut String, cursor: &mut usize, c: char) -> bool {
             false
         }
         c => {
-            let byte_pos = byte_index_at_char(input, *cursor);
+            let byte_pos = crate::tui::byte_index_at_char(input, *cursor);
             input.insert(byte_pos, c);
             *cursor += 1;
             true
@@ -97,18 +97,10 @@ pub fn handle_key(input: &mut String, cursor: &mut usize, c: char) -> bool {
     }
 }
 
-/// Map a character index to the byte position in `s`.
-fn byte_index_at_char(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len())
-}
-
 /// Split `s` into (before_cursor, char_at_cursor, after_cursor) as owned strings.
 /// `cursor` is a character index (0 = before first char).
 fn split_at_cursor(s: &str, cursor: usize) -> (String, String, String) {
-    let byte_pos = byte_index_at_char(s, cursor);
+    let byte_pos = crate::tui::byte_index_at_char(s, cursor);
     let before = s[..byte_pos].to_string();
     let mut chars = s[byte_pos..].chars();
     let at = chars.next().unwrap_or(' ').to_string();

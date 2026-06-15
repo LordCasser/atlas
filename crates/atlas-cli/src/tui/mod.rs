@@ -32,6 +32,14 @@ use ratatui::crossterm::terminal::{
 pub use fallback::TextFallback;
 pub use progress::TuiProgress;
 
+/// Map a character index to the byte position in `s`.
+pub(crate) fn byte_index_at_char(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
+}
+
 /// Launch the interactive TUI session.
 ///
 /// Opens the Atlas database at `project_root/.atlas/atlas.db`, initialises a

@@ -216,7 +216,7 @@ impl App {
             }
             KeyCode::Backspace if self.focus == Focus::SearchBar => {
                 if self.search_cursor > 0 {
-                    let bp = byte_index_at_char(&self.search_input, self.search_cursor - 1);
+                    let bp = crate::tui::byte_index_at_char(&self.search_input, self.search_cursor - 1);
                     self.search_input.remove(bp);
                     self.search_cursor -= 1;
                 }
@@ -735,13 +735,6 @@ fn render_exit_confirmation(frame: &mut Frame, area: Rect) {
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center);
     frame.render_widget(prompt, popup);
-}
-
-fn byte_index_at_char(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len())
 }
 
 fn centered_in(area: Rect, width: u16, height: u16) -> Rect {
