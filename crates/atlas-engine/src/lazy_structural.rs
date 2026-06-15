@@ -46,7 +46,7 @@ const MAX_CANDIDATE_FILES: usize = 10;
 /// ⚠ Loop-continuation guard only — does NOT interrupt in-flight extraction.
 ///    True hard timeout requires extraction worker isolation (future work).
 ///    The request-level budget in `LazyBudget` provides the real constraint.
-pub(crate) const LAZY_STRUCTURAL_BUDGET_MS: u64 = 5_000;
+pub(crate) const LAZY_STRUCTURAL_LOOP_GUARD_MS: u64 = 5_000;
 
 /// Maximum file size (bytes) for lazy structural extraction.
 ///
@@ -382,7 +382,7 @@ impl LazyStructuralService {
         };
 
         for file_id in file_ids {
-            if start.elapsed().as_millis() > LAZY_STRUCTURAL_BUDGET_MS as u128 {
+            if start.elapsed().as_millis() > LAZY_STRUCTURAL_LOOP_GUARD_MS as u128 {
                 result.budget_exceeded = true;
                 break;
             }
@@ -500,7 +500,7 @@ impl LazyStructuralService {
         };
 
         for file_id in file_ids {
-            if start.elapsed().as_millis() > LAZY_STRUCTURAL_BUDGET_MS as u128 {
+            if start.elapsed().as_millis() > LAZY_STRUCTURAL_LOOP_GUARD_MS as u128 {
                 result.budget_exceeded = true;
                 break;
             }
