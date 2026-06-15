@@ -177,40 +177,6 @@ fn parse_language(s: &str) -> Option<Language> {
     }
 }
 
-/// Languages that the search query parser recognizes in `lang:` filters.
-///
-/// This is a superset of [`Language::enabled_languages`] because the query
-/// parser accepts language names whose frontends may not be compiled in
-/// (e.g. `java`, `c`, `cpp`, `arkts` are always recognized).  Callers that
-/// need to gate on actual extraction support should use
-/// [`available_languages()`](atlas_engine::available_languages) (or
-/// [`Language::enabled_languages()`]) instead.
-pub fn searchable_languages() -> Vec<Language> {
-    #[allow(unused_mut)]
-    let mut langs = vec![
-        Language::TypeScript,
-        Language::JavaScript,
-        Language::Python,
-        Language::Java,
-        Language::C,
-        Language::Cpp,
-        Language::ArkTS,
-    ];
-    #[cfg(feature = "cangjie")]
-    {
-        langs.push(Language::Cangjie);
-    }
-    langs.extend([
-        Language::Go,
-        Language::CSharp,
-        Language::Rust,
-        Language::Php,
-        Language::Ruby,
-        Language::Kotlin,
-    ]);
-    langs
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

@@ -1567,7 +1567,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "types",
- "workspace",
 ]
 
 [[package]]

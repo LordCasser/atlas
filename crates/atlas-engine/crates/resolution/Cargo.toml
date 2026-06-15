@@ -8,7 +8,6 @@ license = "MIT"
 [dependencies]
 types = { path = "../types" }
 db = { path = "../db" }
-workspace = { path = "../workspace" }
 anyhow = "1"
 blake3 = "1"
 rayon = "1"

@@ -7,8 +7,6 @@
 //!
 //! Plus multi-signal scoring: BM25/IDF + graph degree + name similarity + kind bonus + path relevance
 
-pub mod fts;
-pub mod fuzzy;
 pub mod query_parser;
 pub mod scoring;
 
@@ -174,8 +172,8 @@ impl SearchEngine {
                 let name_lower = sym.name.to_lowercase();
                 let name_snake = to_snake_case(&normalize_name_for_search(&sym.name));
                 // Check both original and snake_case normalized forms
-                let dist1 = fuzzy::levenshtein(&query_lower, &name_lower);
-                let dist2 = fuzzy::levenshtein(&query_norm_snake, &name_snake);
+                let dist1 = types::levenshtein(&query_lower, &name_lower);
+                let dist2 = types::levenshtein(&query_norm_snake, &name_snake);
                 let min_dist = dist1.min(dist2);
                 if min_dist <= max_dist {
                     candidates.push((sym.clone(), min_dist));
@@ -497,7 +495,7 @@ fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f6
     }
 
     // Levenshtein fallback on snake_case forms
-    let dist = crate::fuzzy::levenshtein(&query_snake, &name_snake);
+    let dist = types::levenshtein(&query_snake, &name_snake);
     let max_len = query_snake.len().max(name_snake.len()).max(1);
     let ratio = 1.0 - (dist as f64 / max_len as f64);
     ratio * 0.7

@@ -67,16 +67,13 @@ impl Drop for StrategyTimer {
     }
 }
 pub mod context;
-pub mod frameworks;
 pub mod import_resolver;
-pub mod include_graph;
 pub mod name_matcher;
 pub mod path_alias;
 
 pub use config::{
     PATH_ALIAS_CONFIG_FILES, PathAliasConfig, commit_config_hashes, detect_config_change,
 };
-pub use include_graph::IncludeGraph;
 pub use path_alias::PathAliasResolver;
 
 // ── Shared resolution core ─────────────────────────────────────────────────

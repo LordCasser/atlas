@@ -216,7 +216,7 @@ pub use resolution::{
 
 pub use search::SearchOptions;
 /// Search internals: query parser and options.
-pub use search::query_parser::{ParsedQuery, parse_query, searchable_languages};
+pub use search::query_parser::{ParsedQuery, parse_query};
 
 /// Workspace internals: project root and source path types.
 pub use workspace::{ProjectRoot, SourcePath};
