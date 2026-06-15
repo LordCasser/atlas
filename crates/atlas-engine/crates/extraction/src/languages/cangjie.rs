@@ -593,6 +593,40 @@ fn normalize_cangjie_dataflow(
             (Some(dn), None)
         }
         "df.identifier_use" => {
+            // Part A: standard declaration/property filter (checks immediate parent)
+            if crate::languages::shared::is_identifier_decl_or_property(
+                node,
+                &["variableDeclaration"],
+            ) {
+                return (None, None);
+            }
+            // Part B: Cangjie wraps all identifiers in atomicVariable, so
+            // declaration contexts are at the grandparent level. Walk up to
+            // find them.
+            {
+                let mut cur = node;
+                while let Some(parent) = cur.parent() {
+                    let pk = parent.kind();
+                    let is_cj_decl = matches!(
+                        pk,
+                        "variableDeclaration" | "functionDefinition" | "classDefinition"
+                        | "interfaceDefinition" | "enumDefinition" | "parameter"
+                    );
+                    if is_cj_decl {
+                        // Check this node is the "name" child of the declaration
+                        if parent
+                            .child_by_field_name("name")
+                            .is_some_and(|n| {
+                                cur.start_byte() >= n.start_byte()
+                                    && cur.end_byte() <= n.end_byte()
+                            })
+                        {
+                            return (None, None);
+                        }
+                    }
+                    cur = parent;
+                }
+            }
             let text = node_text(node, source).unwrap_or_default();
             if text.is_empty() {
                 return (None, None);
