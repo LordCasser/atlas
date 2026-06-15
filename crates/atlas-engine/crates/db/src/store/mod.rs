@@ -15,7 +15,7 @@
 //! | `summary`   | Function summaries (persistence + query) |
 //! | `stats`     | Metadata, stats, path resolution |
 //! | `annotations` | Function-pointer dispatch annotations |
-//! | `file_extraction_state` / `unit_extraction_state` | Extraction state tracking |
+//! | `extraction_state` | Extraction state tracking |
 //! | `extraction_jobs` | Extraction job tracking (queued/building/complete/failed) |
 //!
 //! ## Reader / Writer trait split
@@ -43,7 +43,7 @@ mod dataflow;
 pub(crate) mod domain_rules;
 mod edges;
 pub(crate) mod extraction_jobs;
-mod file_extraction_state;
+mod extraction_state;
 pub mod file_inventory;
 mod files;
 mod fk_guards;
@@ -59,7 +59,6 @@ mod stats;
 pub mod summary;
 pub mod symbol_hints;
 mod symbols;
-mod unit_extraction_state;
 
 // ---------------------------------------------------------------------------
 // WalCheckpointStats — WAL checkpoint result statistics
