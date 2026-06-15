@@ -6,30 +6,30 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, lifecycle, branch_diff.
 
+use atlas_engine::structs::SemanticConfidence;
 use atlas_engine::ContextBuilder;
 use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::TraceDiagnostic;
-use atlas_engine::structs::SemanticConfidence;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
-use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
+use crate::tools::analysis_response::precision_to_view;
 use crate::tools::query_snapshot::QuerySnapshot;
 use crate::tools::runtime::graph_runtime::GraphMode;
-use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
+use symbol_selector::{parse_symbol_input, ScoredCandidate, SymbolInput};
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::project_slot::ProjectSlot;
-use crate::tools::tool_contract::{ToolContract, contract_for};
+use crate::tools::tool_contract::{contract_for, ToolContract};
 
 /// Progress report tuple: (progress, total, message)
 pub(crate) type ProgressReport = (f64, Option<f64>, Option<String>);
@@ -124,7 +124,7 @@ pub(crate) mod usages;
 /// Apply focus-aware envelope fields from a [`FocusResult`] to the AnalysisEnvelope.
 ///
 /// Takes `&FocusResult` directly and merges precision, coverage, gaps,
-/// and pending work items into the builder.
+/// and retry guidance into the builder.
 pub(crate) fn apply_focus_result_to_lr(
     lr: analysis_envelope::AnalysisEnvelope,
     result: &atlas_engine::focus::runtime::FocusResult,
@@ -155,8 +155,10 @@ pub(crate) fn apply_focus_result_to_lr(
             };
             let next_action = if precision.confidence == SemanticConfidence::Certain {
                 "use_result"
+            } else if !result.pending_closure_ids.is_empty() {
+                "wait_then_resume"
             } else {
-                "use_result_or_wait_for_refinement"
+                "resume_query"
             };
             lr = lr.with_analysis_state(state.to_string());
             lr = lr.with_analysis_scope("local".to_string());
@@ -165,8 +167,13 @@ pub(crate) fn apply_focus_result_to_lr(
                 view.coverage, view.confidence
             ));
             lr = lr.with_analysis_next_action(next_action.to_string());
+            lr = lr.with_analysis_basis(vec!["manifest".into(), "structural".into()]);
             if precision.confidence != SemanticConfidence::Certain {
+                lr = lr.with_analysis_missing(vec!["repo_complete".into()]);
                 lr = lr.with_partial_result(true);
+                if !result.pending_closure_ids.is_empty() {
+                    lr = lr.with_analysis_retry_after_ms(2000);
+                }
             }
         } else if let Some(ref counts) = result.coverage_counts {
             lr = lr.with_analysis_state("building".to_string());
@@ -176,27 +183,13 @@ pub(crate) fn apply_focus_result_to_lr(
                 "partial results: {total} items across {} tiers",
                 counts.len()
             ));
-            lr = lr.with_analysis_next_action("use_result_or_wait_for_refinement".to_string());
+            lr = lr.with_analysis_next_action("wait_then_resume".to_string());
+            lr = lr.with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+            lr = lr.with_analysis_missing(vec!["repo_complete".into()]);
+            if !result.pending_closure_ids.is_empty() {
+                lr = lr.with_analysis_retry_after_ms(2000);
+            }
         }
-    }
-
-    // ── Work items from pending closures ──
-    if !result.pending_closure_ids.is_empty() {
-        let items: Vec<WorkItem> = result
-            .pending_closure_ids
-            .iter()
-            .map(|id| WorkItem {
-                id: id.clone(),
-                kind: "extraction".to_string(),
-                state: "building".to_string(),
-                scope: "local".to_string(),
-                reason: "background_refinement".to_string(),
-                progress: Some(WorkProgress { percent: 0 }),
-                waitable: false,
-                retry_after_ms: Some(2000),
-            })
-            .collect();
-        lr = lr.with_work_items(items);
     }
 
     lr
@@ -1802,9 +1795,8 @@ impl ToolRouter {
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
                 merge_edge_deps(&mut value, &edge_deps, "dependents", "total_dependents");
-                let resp = add_analysis_contract_manifest(
-                    serde_json::to_string_pretty(&value).unwrap_or_default(),
-                );
+                let resp =
+                    add_manifest_analysis(serde_json::to_string_pretty(&value).unwrap_or_default());
                 (resp, err)
             }
             "outgoing" | "" => {
@@ -1827,9 +1819,8 @@ impl ToolRouter {
                 let mut value =
                     serde_json::from_str::<Value>(&out_str).unwrap_or_else(|_| json!({}));
                 merge_edge_deps(&mut value, &edge_deps, "dependencies", "total_dependencies");
-                let resp = add_analysis_contract_manifest(
-                    serde_json::to_string_pretty(&value).unwrap_or_default(),
-                );
+                let resp =
+                    add_manifest_analysis(serde_json::to_string_pretty(&value).unwrap_or_default());
                 (resp, err)
             }
             "both" => {
@@ -1859,10 +1850,7 @@ impl ToolRouter {
                 let result = json!({
                     "outgoing": outgoing,
                     "incoming": incoming,
-                    "analysis_contract": {
-                        "coverage": "full",
-                        "reason": Value::Null,
-                    },
+                    "analysis": manifest_analysis_value(),
                 });
                 (
                     serde_json::to_string_pretty(&result).unwrap_or_default(),
@@ -2054,19 +2042,24 @@ impl ToolRouter {
 // Shared arg-parsing helpers
 // -------------------------------------------------------------------
 
-/// Add a minimal analysis_contract for manifest-mode responses.
-fn add_analysis_contract_manifest(response: String) -> String {
+/// Add the unified analysis block for manifest-mode responses.
+fn add_manifest_analysis(response: String) -> String {
     let mut value = serde_json::from_str::<Value>(&response).unwrap_or_else(|_| json!({}));
     if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "analysis_contract".into(),
-            json!({
-                "coverage": "full",
-                "reason": Value::Null,
-            }),
-        );
+        obj.insert("analysis".into(), manifest_analysis_value());
     }
     serde_json::to_string_pretty(&value).unwrap_or(response)
+}
+
+fn manifest_analysis_value() -> Value {
+    json!({
+        "state": "ready",
+        "scope": "local",
+        "basis": ["manifest"],
+        "missing": [],
+        "summary": "Manifest file dependency facts are available for this file.",
+        "next_action": "use_result",
+    })
 }
 
 /// Resolve a file_id from either a hex string or a file_path string.
@@ -2820,6 +2813,18 @@ mod tests {
         store.insert_imports(&[import]).unwrap();
     }
 
+    fn assert_manifest_analysis(resp: &serde_json::Value, resp_str: &str) {
+        assert!(
+            resp.get("analysis_contract").is_none(),
+            "legacy contract field must not be public: {resp_str}"
+        );
+        assert_eq!(resp["analysis"]["state"].as_str(), Some("ready"));
+        assert_eq!(resp["analysis"]["scope"].as_str(), Some("local"));
+        assert_eq!(resp["analysis"]["basis"], serde_json::json!(["manifest"]));
+        assert_eq!(resp["analysis"]["missing"], serde_json::json!([]));
+        assert_eq!(resp["analysis"]["next_action"].as_str(), Some("use_result"));
+    }
+
     #[test]
     fn manifest_incoming_returns_correct_deps() {
         let store = test_store();
@@ -2850,10 +2855,7 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        // Should have the analysis_contract with coverage=full
-        let contract = &resp["analysis_contract"];
-        assert_eq!(contract["coverage"].as_str(), Some("full"));
-        assert!(contract["reason"].is_null());
+        assert_manifest_analysis(&resp, &resp_str);
 
         // Should have at least the import-based dependent (b.ts)
         let deps = resp["dependents"].as_array().unwrap();
@@ -2900,9 +2902,7 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        let contract = &resp["analysis_contract"];
-        assert_eq!(contract["coverage"].as_str(), Some("full"));
-        assert!(contract["reason"].is_null());
+        assert_manifest_analysis(&resp, &resp_str);
 
         let deps = resp["dependencies"].as_array().unwrap();
         let dep_modules: Vec<&str> = deps.iter().filter_map(|d| d["module"].as_str()).collect();
@@ -2913,7 +2913,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_both_returns_analysis_contract() {
+    fn manifest_both_returns_analysis() {
         let store = test_store();
         let file_a = register_test_file(&store, "a.ts");
         let file_b = register_test_file(&store, "b.ts");
@@ -2940,13 +2940,11 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        let contract = &resp["analysis_contract"];
-        assert_eq!(contract["coverage"].as_str(), Some("full"));
-        assert!(contract["reason"].is_null());
+        assert_manifest_analysis(&resp, &resp_str);
     }
 
     #[test]
-    fn structural_returns_analysis_contract() {
+    fn structural_returns_analysis() {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
@@ -2974,7 +2972,10 @@ mod tests {
             "unexpected analysis state: {resp_str}"
         );
         if state != "ready" {
-            assert_eq!(analysis["next_action"], "use_result_or_wait_for_refinement");
+            assert!(matches!(
+                analysis["next_action"].as_str(),
+                Some("wait_then_resume" | "resume_query")
+            ));
         }
         assert!(
             analysis.get("summary").is_some(),
@@ -2983,7 +2984,7 @@ mod tests {
     }
 
     #[test]
-    fn analysis_contract_manifest_full_coverage() {
+    fn manifest_analysis_reports_ready() {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
@@ -2999,16 +3000,7 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        let contract = &resp["analysis_contract"];
-        assert_eq!(
-            contract["coverage"].as_str(),
-            Some("full"),
-            "manifest mode must have full coverage: {resp_str}"
-        );
-        assert!(
-            contract["reason"].is_null(),
-            "manifest mode reason must be null: {resp_str}"
-        );
+        assert_manifest_analysis(&resp, &resp_str);
     }
 
     #[test]
@@ -3028,12 +3020,7 @@ mod tests {
         assert!(!is_error, "Expected success, got: {resp_str}");
 
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        let contract = &resp["analysis_contract"];
-        assert_eq!(
-            contract["coverage"].as_str(),
-            Some("full"),
-            "default mode (manifest) must have full coverage: {resp_str}"
-        );
+        assert_manifest_analysis(&resp, &resp_str);
     }
 
     #[test]
@@ -3426,10 +3413,10 @@ mod tests {
         );
     }
 
-    // ── C. trace_variable analysis_contract ────────────────────────────
+    // ── C. trace_variable envelope metadata ────────────────────────────
 
     #[test]
-    fn trace_variable_has_analysis_contract() {
+    fn trace_variable_has_analysis_or_query_id() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol_with_qname(
@@ -4201,7 +4188,7 @@ mod tests {
         );
     }
 
-    // ── apply_focus_result_to_lr work items tests ────────────────────
+    // ── apply_focus_result_to_lr analysis guidance tests ─────────────
 
     /// Mock SnapshotStore that captures stored snapshots in a Vec.
     struct MockSnapshotStore {
@@ -4215,7 +4202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_focus_result_work_items_not_waitable() {
+    fn test_focus_result_refinement_guidance_lives_in_analysis_not_work() {
         use atlas_engine::structs::{CoverageTier, Precision, SemanticConfidence};
 
         // 1. Build a FocusResult with pending_closure_ids and Focus mode.
@@ -4238,42 +4225,28 @@ mod tests {
         let lr = AnalysisEnvelope::new("test_tool", &serde_json::json!({}));
         let lr = apply_focus_result_to_lr(lr, &result);
 
-        // 3. Build to JSON via a mock store so we can inspect work items.
+        // 3. Build to JSON via a mock store so we can inspect public guidance.
         let mut mock = MockSnapshotStore {
             snapshots: Vec::new(),
         };
         let (json_str, _is_error) = lr.build(serde_json::json!({"result": "ok"}), &mut mock);
         let resp: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-        // 4. Assert work items are present and correctly configured.
-        let items = resp["work"]["items"].as_array().unwrap();
-        assert_eq!(items.len(), 2);
+        // 4. Public response should not expose internal closure work items.
+        assert!(
+            resp.get("work").is_none(),
+            "work must not be public: {resp}"
+        );
 
-        for item in items {
-            // waitable must be false — closure IDs are NOT task-manager tasks
-            assert_eq!(
-                item["waitable"].as_bool(),
-                Some(false),
-                "work item waitable should be false, got: {item}"
-            );
-            // retry_after_ms must be Some(2000) — poll-friendly interval
-            assert_eq!(
-                item["retry_after_ms"].as_u64(),
-                Some(2000),
-                "work item retry_after_ms should be 2000, got: {item}"
-            );
-            // reason must NOT leak internal "focus" terms
-            let reason = item["reason"].as_str().unwrap();
-            assert!(
-                !reason.starts_with("focus"),
-                "reason should not leak internal 'focus' prefix, got: {reason:?}"
-            );
-            assert_eq!(reason, "background_refinement");
-        }
-
+        assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+        assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
         assert_eq!(
-            resp["analysis"]["next_action"],
-            "use_result_or_wait_for_refinement"
+            resp["analysis"]["basis"],
+            serde_json::json!(["manifest", "structural"])
+        );
+        assert_eq!(
+            resp["analysis"]["missing"],
+            serde_json::json!(["repo_complete"])
         );
         assert_eq!(resp["partial_result"].as_bool(), Some(true));
 
@@ -4579,10 +4552,10 @@ mod tests {
         );
     }
 
-    // ── Test 6: SemanticAnalysis contract — "lifecycle" / "branch_diff" ──
+    // ── Test 6: SemanticAnalysis routing — "lifecycle" / "branch_diff" ──
 
     #[test]
-    fn e2e_analysis_contract_routes_correctly() {
+    fn e2e_semantic_analysis_routes_correctly() {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();

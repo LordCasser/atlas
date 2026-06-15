@@ -1,4 +1,4 @@
-//! Response envelope and analysis contract for MCP tool responses.
+//! Response envelope for MCP tool responses.
 //!
 //! Provides [`AnalysisEnvelope`] — a builder that centralizes the common
 //! response envelope pattern shared by "full envelope" tool handlers:
@@ -8,46 +8,15 @@
 use std::collections::HashMap;
 
 #[cfg(test)]
-use atlas_engine::structs::CapabilityMask;
-#[cfg(test)]
 use atlas_engine::structs::CoverageTier;
 use atlas_engine::structs::KnownGap;
 use atlas_engine::structs::Precision;
 #[cfg(test)]
 use atlas_engine::structs::SemanticConfidence;
-#[cfg(test)]
-use serde::Serialize;
 use serde_json::json;
 
-#[cfg(test)]
-use super::analysis_response::WorkProgress;
-use super::analysis_response::{WorkItem, precision_to_view};
+use super::analysis_response::precision_to_view;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
-
-// ── Analysis Contract ───────────────────────────────────────────────────
-
-/// Analysis contract: what conclusions are safe/unsafe given current extraction state.
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct AnalysisContract {
-    pub safe_conclusions: Vec<String>,
-    pub unsafe_conclusions: Vec<String>,
-    pub capability_summary: CapabilitySummary,
-    pub refinement_jobs: Vec<RefinementJob>,
-}
-
-/// Summary of capability masks available across the project.
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct CapabilitySummary {
-    pub mask_bits: u16,
-    pub best_capability: String,
-    pub total_files: usize,
-    pub files_with_dataflow: usize,
-    pub files_with_cfg: usize,
-    pub files_structural_only: usize,
-    pub files_manifest_only: usize,
-}
 
 /// Optional project-wide capability statistics populated from the DB.
 /// When `None`, all counts default to 0 (the caller hasn't queried yet).
@@ -56,7 +25,7 @@ pub(crate) struct CapabilityStats {
     pub files_with_dataflow: usize,
     pub files_structural_only: usize,
     pub files_manifest_only: usize,
-    /// Number of files with CFG analysis (reserved for future analysis contract).
+    /// Number of files with CFG analysis.
     #[allow(dead_code)]
     pub files_with_cfg: usize,
 }
@@ -70,153 +39,6 @@ pub(crate) struct ProjectStats {
     pub total_files: usize,
     pub total_symbols: usize,
     pub total_edges: usize,
-}
-
-/// Derive an actual capability mask from DB-sourced file counts.
-/// Only sets bits that have at least one verified file.
-#[cfg(test)]
-fn capability_mask_from_counts(stats: &CapabilityStats) -> CapabilityMask {
-    let mut mask = CapabilityMask::default();
-    // Manifest: any file that's been indexed at all
-    let total = stats.files_with_dataflow
-        + stats.files_structural_only
-        + stats.files_manifest_only
-        + stats.files_with_cfg;
-    if total > 0 {
-        mask = CapabilityMask::new(mask.bits() | CapabilityMask::MANIFEST);
-    }
-    // Structural + Call edges: at least structural tier
-    if stats.files_structural_only + stats.files_with_dataflow + stats.files_with_cfg > 0 {
-        mask = CapabilityMask::new(
-            mask.bits() | CapabilityMask::STRUCTURAL | CapabilityMask::CALL_EDGES,
-        );
-    }
-    // Dataflow
-    if stats.files_with_dataflow > 0 {
-        mask = CapabilityMask::new(mask.bits() | CapabilityMask::DATAFLOW);
-    }
-    // CFG
-    if stats.files_with_cfg > 0 {
-        mask = CapabilityMask::new(mask.bits() | CapabilityMask::CFG);
-    }
-    // SUMMARIES: implied by dataflow (verified through dataflow count)
-    if stats.files_with_dataflow > 0 {
-        mask = CapabilityMask::new(mask.bits() | CapabilityMask::SUMMARIES);
-    }
-    mask
-}
-
-/// A background job that would improve the analysis contract.
-#[cfg(test)]
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct RefinementJob {
-    pub description: String,
-    pub capability_needed: String,
-}
-
-#[cfg(test)]
-impl AnalysisContract {
-    /// Build an AnalysisContract from a capability mask.
-    /// `capability_stats` populates file-count breakdowns; pass `None` for zero defaults.
-    ///
-    /// When `capability_stats` is provided, the theoretical `mask` is AND‑reconciled
-    /// with the actual DB file counts so that a bit is only claimed if at least one
-    /// file has been verified at that tier.
-    pub(crate) fn from_capability(
-        mask: CapabilityMask,
-        capability_stats: Option<CapabilityStats>,
-    ) -> Self {
-        // Reconcile theoretical mask with actual DB state.
-        // Without stats we retain the mask as-is (backward compatible).
-        let effective_mask = if let Some(ref stats) = capability_stats {
-            let actual_mask = capability_mask_from_counts(stats);
-            CapabilityMask::new(mask.bits() & actual_mask.bits())
-        } else {
-            mask
-        };
-
-        let mut safe = Vec::new();
-        let mut unsafe_conc = Vec::new();
-
-        if effective_mask.has(CapabilityMask::MANIFEST) {
-            safe.push("can resolve symbol names and top-level declarations".into());
-        } else {
-            unsafe_conc.push("no symbol index available — cannot confirm any symbol exists".into());
-        }
-
-        if effective_mask.has(CapabilityMask::STRUCTURAL) {
-            safe.push("can confirm all AST-level references and scope relationships".into());
-        }
-
-        if effective_mask.has(CapabilityMask::CALL_EDGES) {
-            safe.push("can trace direct caller/callee relationships".into());
-        } else {
-            unsafe_conc
-                .push("cannot confirm complete call graph — some calls may be missing".into());
-        }
-
-        if effective_mask.has(CapabilityMask::CFG) {
-            safe.push("can analyze branch-level control flow".into());
-        } else {
-            unsafe_conc.push(
-                "cannot analyze branch-level control flow — path-sensitive questions are speculative"
-                    .into(),
-            );
-        }
-
-        if effective_mask.has(CapabilityMask::DATAFLOW) {
-            safe.push("can trace intra-procedural dataflow (def-use chains)".into());
-        } else {
-            unsafe_conc.push(
-                "cannot confirm dataflow completeness — variable provenance may be incomplete"
-                    .into(),
-            );
-        }
-
-        if effective_mask.has(CapabilityMask::SUMMARIES) {
-            safe.push("can trace inter-procedural dataflow via function summaries".into());
-        } else {
-            unsafe_conc.push(
-                "cannot trace dataflow across function boundaries — argument/return flows are not verified"
-                    .into(),
-            );
-        }
-
-        let stats = capability_stats.unwrap_or_default();
-        let summary = CapabilitySummary {
-            mask_bits: effective_mask.bits(),
-            best_capability: effective_mask.best_capability_name().into(),
-            total_files: stats.files_with_dataflow
-                + stats.files_with_cfg
-                + stats.files_structural_only
-                + stats.files_manifest_only,
-            files_with_dataflow: stats.files_with_dataflow,
-            files_with_cfg: stats.files_with_cfg,
-            files_structural_only: stats.files_structural_only,
-            files_manifest_only: stats.files_manifest_only,
-        };
-
-        let mut jobs = Vec::new();
-        if !effective_mask.has(CapabilityMask::CFG) {
-            jobs.push(RefinementJob {
-                description: "build CFG for functions in scope".into(),
-                capability_needed: "cfg".into(),
-            });
-        }
-        if !effective_mask.has(CapabilityMask::DATAFLOW) {
-            jobs.push(RefinementJob {
-                description: "build intra-procedural dataflow for functions in scope".into(),
-                capability_needed: "dataflow".into(),
-            });
-        }
-
-        Self {
-            safe_conclusions: safe,
-            unsafe_conclusions: unsafe_conc,
-            capability_summary: summary,
-            refinement_jobs: jobs,
-        }
-    }
 }
 
 // ── SnapshotStore trait ─────────────────────────────────────────────────
@@ -259,8 +81,16 @@ pub(crate) struct AnalysisEnvelope {
     analysis_summary: Option<String>,
     /// Explicitly set analysis next action (from focus path).
     analysis_next_action: Option<String>,
-    /// Explicitly set work items (from focus path).
-    work_items: Option<Vec<WorkItem>>,
+    /// Local analysis unit this response covers, e.g. "function".
+    analysis_unit: Option<String>,
+    /// Public coverage label for the analysis unit.
+    analysis_coverage: Option<String>,
+    /// Capabilities or facts this response actually used.
+    analysis_basis: Option<Vec<String>>,
+    /// Capabilities or facts missing from a stronger answer.
+    analysis_missing: Option<Vec<String>>,
+    /// Suggested delay before retrying/resuming this query.
+    analysis_retry_after_ms: Option<u64>,
     /// Project-level index statistics for non-focus full-index responses.
     capability_stats: Option<CapabilityStats>,
     /// Project-level index snapshot (file/symbol/edge counts, index mode).
@@ -289,7 +119,11 @@ impl AnalysisEnvelope {
             analysis_scope: None,
             analysis_summary: None,
             analysis_next_action: None,
-            work_items: None,
+            analysis_unit: None,
+            analysis_coverage: None,
+            analysis_basis: None,
+            analysis_missing: None,
+            analysis_retry_after_ms: None,
             capability_stats: None,
             project_stats: None,
         }
@@ -368,9 +202,33 @@ impl AnalysisEnvelope {
         self
     }
 
-    /// Set work items (from focus path).
-    pub fn with_work_items(mut self, items: Vec<WorkItem>) -> Self {
-        self.work_items = Some(items);
+    /// Set the local unit this analysis response covers.
+    pub fn with_analysis_unit(mut self, unit: String) -> Self {
+        self.analysis_unit = Some(unit);
+        self
+    }
+
+    /// Set the coverage label for the analysis unit.
+    pub fn with_analysis_coverage(mut self, coverage: String) -> Self {
+        self.analysis_coverage = Some(coverage);
+        self
+    }
+
+    /// Set the facts/capabilities used for this response.
+    pub fn with_analysis_basis(mut self, basis: Vec<String>) -> Self {
+        self.analysis_basis = Some(basis);
+        self
+    }
+
+    /// Set the facts/capabilities missing from a stronger response.
+    pub fn with_analysis_missing(mut self, missing: Vec<String>) -> Self {
+        self.analysis_missing = Some(missing);
+        self
+    }
+
+    /// Set a suggested delay before retrying/resuming this query.
+    pub fn with_analysis_retry_after_ms(mut self, retry_after_ms: u64) -> Self {
+        self.analysis_retry_after_ms = Some(retry_after_ms);
         self
     }
 
@@ -396,8 +254,7 @@ impl AnalysisEnvelope {
     /// - `warnings` (merged root + lazy, only when non-empty)
     /// - `query_id`
     /// - `analysis` block
-    /// - `work` block (when work_items is Some)
-    /// - `precision`, `coverage_counts`, `known_gaps` (when set)
+    /// - `precision`, `coverage_counts`, `gaps` (when set)
     pub fn build(self, body: serde_json::Value, store: &mut impl SnapshotStore) -> (String, bool) {
         let args = self.tool_args.clone();
         self.build_with_args(body, &args, store)
@@ -437,12 +294,28 @@ impl AnalysisEnvelope {
             let analysis_summary = self.analysis_summary.clone().unwrap_or_default();
             let analysis_next_action = self.analysis_next_action.clone().unwrap_or_default();
 
-            body["analysis"] = json!({
+            let mut analysis = json!({
                 "state": analysis_state,
                 "scope": analysis_scope,
                 "summary": analysis_summary,
                 "next_action": analysis_next_action,
             });
+            if let Some(ref basis) = self.analysis_basis {
+                analysis["basis"] = serde_json::to_value(basis).unwrap_or(json!([]));
+            }
+            if let Some(ref unit) = self.analysis_unit {
+                analysis["unit"] = json!(unit);
+            }
+            if let Some(ref coverage) = self.analysis_coverage {
+                analysis["coverage"] = json!(coverage);
+            }
+            if let Some(ref missing) = self.analysis_missing {
+                analysis["missing"] = serde_json::to_value(missing).unwrap_or(json!([]));
+            }
+            if let Some(retry_after_ms) = self.analysis_retry_after_ms {
+                analysis["retry_after_ms"] = json!(retry_after_ms);
+            }
+            body["analysis"] = analysis;
         } else {
             // Non-focus: compute analysis block from project / capability stats.
             let ps = self.project_stats.as_ref();
@@ -472,16 +345,6 @@ impl AnalysisEnvelope {
                     "next_action": "use_result",
                 });
             }
-        }
-
-        // 4. Work block (only when relevant to this response)
-        if let Some(ref items) = self.work_items {
-            let status = if items.is_empty() { "idle" } else { "running" };
-            body["work"] = json!({
-                "relevant": true,
-                "status": status,
-                "items": items,
-            });
         }
 
         if self.partial_result {
@@ -538,223 +401,6 @@ impl AnalysisEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::structs::CapabilityMask;
-
-    #[test]
-    fn test_analysis_contract_from_manifest_only() {
-        let mask = CapabilityMask::new(CapabilityMask::MANIFEST);
-        let contract = AnalysisContract::from_capability(mask, None);
-
-        // With manifest only, should report limited capabilities
-        assert!(!contract.safe_conclusions.is_empty());
-        // Should have refinement suggestions for structural
-        assert!(!contract.refinement_jobs.is_empty());
-    }
-
-    #[test]
-    fn test_analysis_contract_from_full_dataflow() {
-        let mask = CapabilityMask::new(
-            CapabilityMask::MANIFEST
-                | CapabilityMask::STRUCTURAL
-                | CapabilityMask::CALL_EDGES
-                | CapabilityMask::CFG
-                | CapabilityMask::DATAFLOW,
-        );
-        let contract = AnalysisContract::from_capability(mask, None);
-
-        // Should report full analysis
-        assert!(!contract.safe_conclusions.is_empty());
-        // Should acknowledge dataflow capability
-        let has_dataflow_conclusion = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("dataflow") || c.contains("Dataflow"));
-        assert!(
-            has_dataflow_conclusion,
-            "Should mention dataflow in safe conclusions"
-        );
-    }
-
-    #[test]
-    fn test_analysis_contract_serialization() {
-        let mask = CapabilityMask::new(CapabilityMask::STRUCTURAL);
-        let contract = AnalysisContract::from_capability(mask, None);
-        let json = serde_json::to_string(&contract).unwrap();
-        assert!(json.contains("safe_conclusions"));
-        assert!(json.contains("unsafe_conclusions"));
-        assert!(json.contains("refinement_jobs"));
-    }
-
-    #[test]
-    fn test_capability_summary_serialization() {
-        let summary = CapabilitySummary {
-            mask_bits: CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL,
-            best_capability: "structural".into(),
-            total_files: 10,
-            files_with_dataflow: 0,
-            files_with_cfg: 0,
-            files_structural_only: 8,
-            files_manifest_only: 2,
-        };
-        let json = serde_json::to_string(&summary).unwrap();
-        assert!(json.contains("structural"));
-        assert!(json.contains("mask_bits"));
-        assert!(json.contains("total_files"));
-    }
-
-    // ── AnalysisContract AND-reconciliation tests ─────────────────────
-
-    #[test]
-    fn contract_and_reconcile_dataflow_declared_but_no_files() {
-        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
-        let stats = CapabilityStats {
-            files_with_dataflow: 0,
-            ..Default::default()
-        };
-        let contract = AnalysisContract::from_capability(mask, Some(stats));
-        let has_dataflow = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("dataflow"));
-        assert!(
-            !has_dataflow,
-            "dataflow should be AND-reconciled AWAY when no files have dataflow"
-        );
-    }
-
-    #[test]
-    fn contract_and_reconcile_dataflow_declared_with_files() {
-        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
-        let stats = CapabilityStats {
-            files_with_dataflow: 1,
-            ..Default::default()
-        };
-        let contract = AnalysisContract::from_capability(mask, Some(stats));
-        let has_dataflow = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("dataflow"));
-        assert!(
-            has_dataflow,
-            "dataflow should be present in safe_conclusions when files have dataflow"
-        );
-    }
-
-    #[test]
-    fn contract_no_reconciliation_without_stats() {
-        let mask = CapabilityMask::new(CapabilityMask::DATAFLOW);
-        let contract = AnalysisContract::from_capability(mask, None);
-        let has_dataflow = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("dataflow"));
-        assert!(
-            has_dataflow,
-            "dataflow should be present when no stats are provided (backward compatible)"
-        );
-    }
-
-    #[test]
-    fn contract_and_reconcile_cfg() {
-        let mask = CapabilityMask::new(CapabilityMask::CFG | CapabilityMask::STRUCTURAL);
-        let stats = CapabilityStats {
-            files_with_cfg: 0,
-            files_structural_only: 1,
-            ..Default::default()
-        };
-        let contract = AnalysisContract::from_capability(mask, Some(stats));
-
-        // CFG should NOT be in safe_conclusions
-        let has_cfg = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("branch-level control flow"));
-        assert!(
-            !has_cfg,
-            "CFG should be reconciled AWAY when no files have CFG"
-        );
-
-        // Structural SHOULD be in safe_conclusions
-        let has_structural = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("AST-level references"));
-        assert!(
-            has_structural,
-            "structural should remain when files have structural extraction"
-        );
-    }
-
-    #[test]
-    fn contract_and_reconcile_manifest_only_structural_zero() {
-        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL);
-        let stats = CapabilityStats {
-            files_manifest_only: 1,
-            files_structural_only: 0,
-            ..Default::default()
-        };
-        let contract = AnalysisContract::from_capability(mask, Some(stats));
-
-        // Manifest should be present (total > 0)
-        let has_manifest = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("resolve symbol names"));
-        assert!(has_manifest, "manifest should survive reconciliation");
-
-        // Structural should be absent (files_structural_only=0, AND-reconciled away)
-        let has_structural = contract
-            .safe_conclusions
-            .iter()
-            .any(|c| c.contains("AST-level references"));
-        assert!(
-            !has_structural,
-            "structural should be downgraded when files_structural_only is 0"
-        );
-    }
-
-    // ── CapabilityStats / capability_mask_from_counts tests ───────────
-
-    #[test]
-    fn capability_mask_from_counts_all_zero() {
-        let stats = CapabilityStats::default();
-        let mask = capability_mask_from_counts(&stats);
-        assert!(mask.is_zero(), "all-zero stats should produce a zero mask");
-    }
-
-    #[test]
-    fn capability_mask_from_counts_dataflow_present() {
-        let stats = CapabilityStats {
-            files_with_dataflow: 5,
-            ..Default::default()
-        };
-        let mask = capability_mask_from_counts(&stats);
-        assert!(
-            mask.has(CapabilityMask::DATAFLOW),
-            "non-zero files_with_dataflow should set the DATAFLOW bit"
-        );
-        assert!(
-            mask.has(CapabilityMask::SUMMARIES),
-            "DATAFLOW should imply SUMMARIES"
-        );
-    }
-
-    #[test]
-    fn capability_mask_from_counts_cfg_present() {
-        let stats = CapabilityStats {
-            files_with_cfg: 3,
-            ..Default::default()
-        };
-        let mask = capability_mask_from_counts(&stats);
-        assert!(
-            mask.has(CapabilityMask::CFG),
-            "non-zero files_with_cfg should set the CFG bit"
-        );
-        assert!(
-            mask.has(CapabilityMask::MANIFEST),
-            "any file should set MANIFEST"
-        );
-    }
 
     // ── Shared test infrastructure ─────────────────────────────────────
 
@@ -920,13 +566,15 @@ mod tests {
     }
 
     #[test]
-    fn test_lazy_response_no_work_block_without_explicit_work_items() {
+    fn test_lazy_response_never_emits_work_block() {
         let mut store = MockStore::new();
         let args = json!({"symbol": "test"});
-        let lr = AnalysisEnvelope::new("explore", &args);
+        let lr = AnalysisEnvelope::new("explore", &args)
+            .with_analysis_state("building".into())
+            .with_analysis_next_action("wait_then_resume".into())
+            .with_analysis_retry_after_ms(2000);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &mut store);
-        // Work block should NOT be emitted when no work_items are explicitly set
         assert!(!json_str.contains("\"work\""));
     }
 
@@ -939,34 +587,23 @@ mod tests {
             .with_analysis_scope("local".into())
             .with_analysis_summary("custom summary".into())
             .with_analysis_next_action("use_result".into())
+            .with_analysis_unit("function".into())
+            .with_analysis_coverage("function_complete".into())
+            .with_analysis_basis(vec!["cfg".into()])
+            .with_analysis_missing(vec!["dataflow".into()])
+            .with_analysis_retry_after_ms(2000)
             .with_is_error(false);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &mut store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(v["analysis"]["state"], "ready");
         assert_eq!(v["analysis"]["summary"], "custom summary");
-    }
-
-    #[test]
-    fn test_lazy_response_explicit_work_items() {
-        let mut store = MockStore::new();
-        let args = json!({"symbol": "test"});
-        let lr = AnalysisEnvelope::new("explore", &args).with_work_items(vec![WorkItem {
-            id: "job-focus".into(),
-            kind: "extraction".into(),
-            state: "building".into(),
-            scope: "local".into(),
-            reason: "focus".into(),
-            progress: Some(WorkProgress { percent: 75 }),
-            waitable: true,
-            retry_after_ms: Some(1000),
-        }]);
-        let body = json!({"ok": true});
-        let (json_str, _) = lr.build(body, &mut store);
-        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(v["work"]["relevant"], true);
-        assert_eq!(v["work"]["status"], "running");
-        assert_eq!(v["work"]["items"][0]["id"], "job-focus");
+        assert_eq!(v["analysis"]["unit"], "function");
+        assert_eq!(v["analysis"]["coverage"], "function_complete");
+        assert_eq!(v["analysis"]["basis"], json!(["cfg"]));
+        assert_eq!(v["analysis"]["missing"], json!(["dataflow"]));
+        assert_eq!(v["analysis"]["retry_after_ms"], 2000);
+        assert!(v.get("work").is_none());
     }
 
     #[test]

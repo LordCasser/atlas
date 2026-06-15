@@ -6,7 +6,7 @@
 //!
 //! # Usage pattern
 //! ```ignore
-//! self.active.analysis_runtime.ensure_dataflow_for_function(&symbol_id, Some(&query_id))?;
+//! let window = self.active.analysis_runtime.ensure_dataflow_for_function(&symbol_id, Some(&query_id))?;
 //! ```
 //!
 //! # Dependencies
@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use atlas_engine::{CfgEdge, CfgNode, LazyDataflowService, Store, SymbolId};
+use atlas_engine::{CfgEdge, CfgNode, LazyDataflowService, LazyWindow, Store, SymbolId};
 
 /// Provides CFG and dataflow facts for branch_diff and lifecycle analysis.
 ///
@@ -29,22 +29,19 @@ pub struct AnalysisRuntime {
 impl AnalysisRuntime {
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
         let lazy_service = LazyDataflowService::new(store, project_root);
-        Self {
-            lazy_service,
-        }
+        Self { lazy_service }
     }
 
     /// Trigger lazy dataflow extraction for a function symbol.
     ///
-    /// If CFG nodes already exist for this function, returns `Ok(())` immediately.
-    /// Otherwise, triggers on-demand CFG + dataflow build.
+    /// Triggers on-demand CFG + dataflow build and returns the lazy window
+    /// that describes the local analysis boundary.
     pub fn ensure_dataflow_for_function(
         &self,
         symbol_id: &SymbolId,
         query_id: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let _ = self.lazy_service.ensure_for_function(symbol_id, query_id)?;
-        Ok(())
+    ) -> anyhow::Result<LazyWindow> {
+        self.lazy_service.ensure_for_function(symbol_id, query_id)
     }
 
     /// Ensure CFG nodes and edges are available for a function, with lazy fallback.
@@ -66,9 +63,7 @@ impl AnalysisRuntime {
         if cfg_nodes.is_empty() {
             // Trigger lazy CFG extraction
             self.ensure_dataflow_for_function(sid, Some(query_id))
-                .map_err(|e| {
-                    format!("CFG not available for analysis of '{fn_name}': {e:#}")
-                })?;
+                .map_err(|e| format!("CFG not available for analysis of '{fn_name}': {e:#}"))?;
             // Re-query after lazy extraction
             cfg_nodes = store
                 .find_cfg_nodes_by_function(sid)
@@ -81,9 +76,7 @@ impl AnalysisRuntime {
             ));
         }
 
-        let cfg_edges = store
-            .find_cfg_edges_by_function(sid)
-            .unwrap_or_default();
+        let cfg_edges = store.find_cfg_edges_by_function(sid).unwrap_or_default();
 
         Ok((cfg_nodes, cfg_edges))
     }

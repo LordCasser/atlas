@@ -5,9 +5,9 @@
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{ToolRouter, get_str};
+use super::{get_str, ToolRouter};
 use crate::tools::symbol_selector::{
-    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
+    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
 use serde_json::json;
 
@@ -190,7 +190,30 @@ impl ToolRouter {
         });
 
         if result.partial {
-            lr = lr.with_partial_result(true);
+            lr = lr
+                .with_analysis_state("boundary".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_unit("function".into())
+                .with_analysis_coverage("boundary_partial".into())
+                .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
+                .with_analysis_missing(vec!["complete_lifecycle_path".into()])
+                .with_analysis_summary(
+                    "Lifecycle analysis used CFG and domain rules, but the lifecycle path is incomplete."
+                        .into(),
+                )
+                .with_analysis_next_action("wait_then_resume".into())
+                .with_analysis_retry_after_ms(2000)
+                .with_partial_result(true);
+        } else {
+            lr = lr
+                .with_analysis_state("ready".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_unit("function".into())
+                .with_analysis_coverage("function_complete".into())
+                .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
+                .with_analysis_missing(vec![])
+                .with_analysis_summary("Lifecycle analysis used CFG and domain rules.".into())
+                .with_analysis_next_action("use_result".into());
         }
         lr.with_is_error(false).build(resp, self)
     }

@@ -23,30 +23,6 @@ pub struct PrecisionView {
 }
 
 // ---------------------------------------------------------------------------
-// Work items (shared with AnalysisEnvelope)
-// ---------------------------------------------------------------------------
-
-/// A single background work item.
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkItem {
-    pub id: String,
-    pub kind: String,
-    pub state: String,
-    pub scope: String,
-    pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<WorkProgress>,
-    pub waitable: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub retry_after_ms: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct WorkProgress {
-    pub percent: u8,
-}
-
-// ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
 

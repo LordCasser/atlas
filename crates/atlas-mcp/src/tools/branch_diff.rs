@@ -5,11 +5,127 @@
 //! a field while the other does not.
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{ToolRouter};
+use super::ToolRouter;
 use crate::tools::symbol_selector::{
-    SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
+    parse_symbol_input, SymbolInput, SymbolResolution, SymbolResolutionPolicy,
 };
+use atlas_engine::structs::{CapabilityMask, CoverageTier};
+use atlas_engine::LazyWindow;
 use serde_json::json;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchDiffAnalysisMode {
+    CfgOnly,
+    SemanticReady,
+    SemanticBoundary { has_dataflow: bool },
+    SemanticUnavailable,
+}
+
+fn lazy_window_has_boundary(window: &LazyWindow) -> bool {
+    window.truncated
+        || window.units_pending > 0
+        || !window.pending_job_ids.is_empty()
+        || window.precision.as_ref().is_some_and(|precision| {
+            matches!(
+                precision.coverage,
+                CoverageTier::Boundary { .. }
+                    | CoverageTier::Partial { .. }
+                    | CoverageTier::Manifest
+            )
+        })
+}
+
+fn classify_branch_diff_analysis(
+    use_semantic: bool,
+    semantic_window: Option<&LazyWindow>,
+    dataflow_refinement_failed: bool,
+) -> BranchDiffAnalysisMode {
+    if !use_semantic {
+        return BranchDiffAnalysisMode::CfgOnly;
+    }
+
+    if dataflow_refinement_failed {
+        return BranchDiffAnalysisMode::SemanticUnavailable;
+    }
+
+    let Some(window) = semantic_window else {
+        return BranchDiffAnalysisMode::SemanticBoundary {
+            has_dataflow: false,
+        };
+    };
+
+    let has_dataflow = window.capability_mask.has(CapabilityMask::DATAFLOW);
+    if has_dataflow && !lazy_window_has_boundary(window) {
+        BranchDiffAnalysisMode::SemanticReady
+    } else {
+        BranchDiffAnalysisMode::SemanticBoundary { has_dataflow }
+    }
+}
+
+fn apply_branch_diff_analysis(
+    lr: AnalysisEnvelope,
+    mode: BranchDiffAnalysisMode,
+) -> AnalysisEnvelope {
+    match mode {
+        BranchDiffAnalysisMode::SemanticBoundary { has_dataflow } => {
+            let mut basis = vec!["cfg".into()];
+            let missing = if has_dataflow {
+                basis.extend(["dataflow".into(), "effects".into()]);
+                vec!["closure_refinement".into()]
+            } else {
+                vec!["dataflow".into()]
+            };
+
+            lr.with_analysis_state("boundary".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_unit("function".into())
+                .with_analysis_coverage("boundary_partial".into())
+                .with_analysis_basis(basis)
+                .with_analysis_missing(missing)
+                .with_analysis_summary(
+                    "Branch diff used the focused function context; nearby semantic facts are still being expanded."
+                        .into(),
+                )
+                .with_analysis_next_action("wait_then_resume".into())
+                .with_analysis_retry_after_ms(2000)
+                .with_partial_result(true)
+        }
+        BranchDiffAnalysisMode::SemanticUnavailable => {
+            lr.with_analysis_state("degraded".into())
+                .with_analysis_scope("local".into())
+                .with_analysis_unit("function".into())
+                .with_analysis_coverage("function_complete".into())
+                .with_analysis_basis(vec!["cfg".into()])
+                .with_analysis_missing(vec!["dataflow".into()])
+                .with_analysis_summary(
+                    "Semantic branch diff fell back to CFG-only effects because dataflow facts are unavailable."
+                    .into(),
+                )
+                .with_analysis_next_action("run_full_index".into())
+                .with_partial_result(true)
+        }
+        BranchDiffAnalysisMode::SemanticReady => lr
+            .with_analysis_state("ready".into())
+            .with_analysis_scope("local".into())
+            .with_analysis_unit("function".into())
+            .with_analysis_coverage("function_complete".into())
+            .with_analysis_basis(vec!["cfg".into(), "dataflow".into(), "effects".into()])
+            .with_analysis_missing(vec![])
+            .with_analysis_summary(
+                "Semantic branch diff used complete focused function CFG and dataflow effects.".into(),
+            )
+            .with_analysis_next_action("use_result".into()),
+        BranchDiffAnalysisMode::CfgOnly => lr
+            .with_analysis_state("ready".into())
+            .with_analysis_scope("local".into())
+            .with_analysis_unit("function".into())
+            .with_analysis_coverage("function_complete".into())
+            .with_analysis_basis(vec!["cfg".into()])
+            .with_analysis_missing(vec![])
+            .with_analysis_summary("Branch diff used complete focused function CFG effects.".into())
+            .with_analysis_next_action("use_result".into()),
+    }
+}
 
 impl ToolRouter {
     pub(crate) fn handle_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
@@ -105,6 +221,8 @@ impl ToolRouter {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        let mut dataflow_refinement_failed = false;
+        let mut semantic_window = None;
         let diffs = if use_semantic {
             // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
             let lang = self
@@ -116,6 +234,20 @@ impl ToolRouter {
                 .map(|s| s.language)
                 .unwrap_or(atlas_engine::Language::C);
             let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
+
+            match self
+                .active_mut()
+                .analysis_runtime
+                .ensure_dataflow_for_function(&sid, Some(&query_id))
+            {
+                Ok(window) => semantic_window = Some(window),
+                Err(e) => {
+                    dataflow_refinement_failed = true;
+                    lr = lr.with_root_warnings(vec![format!(
+                        "Semantic dataflow refinement failed for '{symbol}': {e:#}"
+                    )]);
+                }
+            }
 
             // Load DataFlow nodes and edges
             let data_nodes = self
@@ -180,6 +312,144 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
+        let analysis_mode = classify_branch_diff_analysis(
+            use_semantic,
+            semantic_window.as_ref(),
+            dataflow_refinement_failed,
+        );
+        lr = apply_branch_diff_analysis(lr, analysis_mode);
         lr.with_is_error(false).build(resp, self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::analysis_envelope::SnapshotStore;
+    use crate::tools::query_snapshot::QuerySnapshot;
+    use atlas_engine::structs::{Precision, SemanticConfidence, SymbolTier};
+    use atlas_engine::{AnalysisUnit, FileId, SymbolId, TextRange};
+    use serde_json::json;
+
+    struct MockStore {
+        snapshots: Vec<QuerySnapshot>,
+    }
+
+    impl SnapshotStore for MockStore {
+        fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
+            self.snapshots.push(snapshot);
+        }
+    }
+
+    fn analysis_json_for(mode: BranchDiffAnalysisMode) -> serde_json::Value {
+        let lr = AnalysisEnvelope::new("branch_diff", &json!({"symbol": "f"}));
+        let lr = apply_branch_diff_analysis(lr, mode).with_is_error(false);
+        let (text, err) = lr.build(json!({"ok": true}), &mut MockStore { snapshots: vec![] });
+        assert!(!err);
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn lazy_window(capability_mask: CapabilityMask, pending: bool) -> LazyWindow {
+        let seed_unit = AnalysisUnit::from_function(
+            FileId::default(),
+            SymbolId::default(),
+            TextRange::default(),
+        );
+        LazyWindow {
+            seed_unit: seed_unit.clone(),
+            units: vec![seed_unit],
+            variable_focus: None,
+            truncated: false,
+            units_built: 1,
+            units_cached: 0,
+            units_pending: usize::from(pending),
+            pending_job_ids: vec![],
+            precision: Some(if pending {
+                Precision {
+                    coverage: CoverageTier::Boundary {
+                        target_tier: SymbolTier::Full,
+                    },
+                    confidence: SemanticConfidence::High,
+                }
+            } else {
+                Precision::best()
+            }),
+            capability_mask,
+        }
+    }
+
+    #[test]
+    fn cfg_only_branch_diff_is_function_complete() {
+        let value = analysis_json_for(BranchDiffAnalysisMode::CfgOnly);
+        assert_eq!(value["analysis"]["state"], "ready");
+        assert_eq!(value["analysis"]["unit"], "function");
+        assert_eq!(value["analysis"]["coverage"], "function_complete");
+        assert_eq!(value["analysis"]["basis"], json!(["cfg"]));
+        assert_eq!(value["analysis"]["missing"], json!([]));
+        assert_eq!(value["analysis"]["next_action"], "use_result");
+        assert!(value.get("work").is_none(), "work must not be public");
+    }
+
+    #[test]
+    fn semantic_branch_diff_empty_dataflow_but_capability_ready_is_function_complete() {
+        let mut mask = CapabilityMask::default();
+        mask.set(CapabilityMask::DATAFLOW);
+        let window = lazy_window(mask, false);
+        let mode = classify_branch_diff_analysis(true, Some(&window), false);
+        assert_eq!(mode, BranchDiffAnalysisMode::SemanticReady);
+
+        let value = analysis_json_for(mode);
+        assert_eq!(value["analysis"]["state"], "ready");
+        assert_eq!(value["analysis"]["unit"], "function");
+        assert_eq!(value["analysis"]["coverage"], "function_complete");
+        assert_eq!(
+            value["analysis"]["basis"],
+            json!(["cfg", "dataflow", "effects"])
+        );
+        assert_eq!(value["analysis"]["missing"], json!([]));
+        assert_eq!(value["analysis"]["next_action"], "use_result");
+        assert!(value["analysis"].get("retry_after_ms").is_none());
+        assert!(value.get("work").is_none(), "work must not be public");
+    }
+
+    #[test]
+    fn semantic_branch_diff_boundary_with_dataflow_is_waitable() {
+        let mut mask = CapabilityMask::default();
+        mask.set(CapabilityMask::DATAFLOW);
+        let window = lazy_window(mask, true);
+        let mode = classify_branch_diff_analysis(true, Some(&window), false);
+        assert_eq!(
+            mode,
+            BranchDiffAnalysisMode::SemanticBoundary { has_dataflow: true }
+        );
+
+        let value = analysis_json_for(mode);
+        assert_eq!(value["analysis"]["state"], "boundary");
+        assert_eq!(value["analysis"]["unit"], "function");
+        assert_eq!(value["analysis"]["coverage"], "boundary_partial");
+        assert_eq!(
+            value["analysis"]["basis"],
+            json!(["cfg", "dataflow", "effects"])
+        );
+        assert_eq!(value["analysis"]["missing"], json!(["closure_refinement"]));
+        assert_eq!(value["analysis"]["next_action"], "wait_then_resume");
+        assert_eq!(value["analysis"]["retry_after_ms"], 2000);
+        assert!(value["partial_result"].as_bool().unwrap());
+        assert!(value.get("work").is_none(), "work must not be public");
+    }
+
+    #[test]
+    fn semantic_branch_diff_failed_dataflow_refinement_does_not_suggest_waiting() {
+        let mode = classify_branch_diff_analysis(true, None, true);
+        assert_eq!(mode, BranchDiffAnalysisMode::SemanticUnavailable);
+
+        let value = analysis_json_for(mode);
+        assert_eq!(value["analysis"]["state"], "degraded");
+        assert_eq!(value["analysis"]["unit"], "function");
+        assert_eq!(value["analysis"]["coverage"], "function_complete");
+        assert_eq!(value["analysis"]["missing"], json!(["dataflow"]));
+        assert_eq!(value["analysis"]["next_action"], "run_full_index");
+        assert!(value["analysis"].get("retry_after_ms").is_none());
+        assert!(value.get("work").is_none(), "work must not be public");
     }
 }
