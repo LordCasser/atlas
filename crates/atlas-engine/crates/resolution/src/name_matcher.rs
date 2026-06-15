@@ -58,19 +58,14 @@ impl NameMatcher {
     }
 
     /// Calculate name similarity [0.0, 1.0].
+    ///
+    /// Delegates to `search::compute_name_similarity` for a richer matching
+    /// strategy: exact → case-insensitive → prefix → camelCase/snake_case
+    /// normalization → word overlap → Levenshtein fallback.
     pub fn name_similarity(&self, a: &str, b: &str) -> Confidence {
-        if a == b {
-            return Confidence::certain();
-        }
-        // Case-insensitive match
-        if a.eq_ignore_ascii_case(b) {
-            return Confidence::new(0.9);
-        }
-        // Edit-distance based: Levenshtein ratio
-        let dist = types::levenshtein(a, b);
-        let max_len = a.len().max(b.len()).max(1) as f64;
-        let similarity = 1.0 - (dist as f64 / max_len);
-        Confidence::new((similarity * 0.7) as f32) // 0.7 × ratio
+        let query_norm = search::normalize_name_for_search(a);
+        let sim = search::compute_name_similarity(a, b, &query_norm);
+        Confidence::new(sim as f32)
     }
 }
 

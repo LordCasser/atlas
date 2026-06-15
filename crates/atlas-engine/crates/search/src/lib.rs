@@ -436,7 +436,7 @@ fn split_camel_case(s: &str) -> Vec<String> {
 }
 
 /// Normalize a name for search matching: convert to snake_case word list.
-fn normalize_name_for_search(name: &str) -> Vec<String> {
+pub fn normalize_name_for_search(name: &str) -> Vec<String> {
     split_camel_case(name)
 }
 
@@ -456,7 +456,7 @@ fn to_snake_case(words: &[String]) -> String {
 ///   2. Case-insensitive match → 0.9
 ///   3. CamelCase/snake_case normalization match → 0.85
 ///   4. Levenshtein on normalized forms → 0.0..0.7
-fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f64 {
+pub fn compute_name_similarity(query: &str, name: &str, query_norm: &[String]) -> f64 {
     if query == name {
         return 1.0;
     }
