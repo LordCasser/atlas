@@ -242,6 +242,61 @@ pub fn compact_signature(text: &str) -> Option<String> {
     }
 }
 
+// ── Shared C/C++ declaration helpers ───────────────────────────────────
+
+/// Walk up from a node to find the enclosing function/declaration header.
+///
+/// Returns the declaration text up to (but not including) the brace or semicolon.
+/// Used by C and C++ adapters to extract function signatures.
+pub fn find_c_like_declaration_header(
+    node: tree_sitter::Node,
+    source: &str,
+) -> Option<String> {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        match n.kind() {
+            "function_definition" | "declaration" | "field_declaration" => {
+                let text = super::node_text(n, source)?;
+                let header = text
+                    .split_once('{')
+                    .map(|(head, _)| head)
+                    .unwrap_or(text.as_str())
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim();
+                return Some(header.to_string());
+            }
+            _ => current = n.parent(),
+        }
+    }
+    None
+}
+
+/// Extract the leading parenthesized group from the start of `text`.
+///
+/// Returns the substring from the opening `(` through the matching `)`.
+/// Used by C and C++ adapters to parse parameter lists from function headers.
+pub fn leading_parenthesized(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.first().copied()? != b'(' {
+        return None;
+    }
+    let mut depth = 0u32;
+    for (idx, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&text[..=idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 // ── Shared dataflow dispatch helpers ────────────────────────────────────
 
 /// Construct a parameter DataNode and return it as `(Some(dn), None)`.

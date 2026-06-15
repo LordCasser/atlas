@@ -408,7 +408,7 @@ fn normalize_ruby_dataflow_builder(
             // instance_variable (@x) → Field, class_variable (@@x) → Field,
             // global_variable ($x) → Global
             let text = node_text(node, source).unwrap_or_default();
-            let (kind_str, dn) = match node.kind() {
+            let dn = match node.kind() {
                 "instance_variable" | "class_variable" => {
                     let node_id = DataNodeId::generate(
                         &file_id,
@@ -418,10 +418,7 @@ fn normalize_ruby_dataflow_builder(
                         Some(&text),
                         range.start_byte,
                     );
-                    (
-                        "field",
-                        DataNode::field(node_id, file_id, None, &text, &text, range),
-                    )
+                    DataNode::field(node_id, file_id, None, &text, &text, range)
                 }
                 "global_variable" => {
                     let node_id = DataNodeId::generate(
@@ -432,21 +429,18 @@ fn normalize_ruby_dataflow_builder(
                         Some(&text),
                         range.start_byte,
                     );
-                    (
-                        "global",
-                        DataNode {
-                            id: node_id,
-                            file_id,
-                            function_id: None,
-                            kind: DataNodeKind::Global,
-                            binding_id: None,
-                            callsite_id: None,
-                            name: Some(text.clone()),
-                            access_path: Some(text),
-                            arg_index: None,
-                            range,
-                        },
-                    )
+                    DataNode {
+                        id: node_id,
+                        file_id,
+                        function_id: None,
+                        kind: DataNodeKind::Global,
+                        binding_id: None,
+                        callsite_id: None,
+                        name: Some(text.clone()),
+                        access_path: Some(text),
+                        arg_index: None,
+                        range,
+                    }
                 }
                 _ => {
                     let node_id = DataNodeId::generate(
@@ -457,13 +451,9 @@ fn normalize_ruby_dataflow_builder(
                         Some(&text),
                         range.start_byte,
                     );
-                    (
-                        "local",
-                        DataNode::local(node_id, file_id, None, None, &text, range),
-                    )
+                    DataNode::local(node_id, file_id, None, None, &text, range)
                 }
             };
-            let _ = kind_str;
             (Some(dn), None)
         }
         "df.assign_value" => {
