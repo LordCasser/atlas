@@ -155,7 +155,7 @@ impl Store {
                 conn.query_row("SELECT COUNT(*) FROM file_inventory", [], |r| r.get(0))?;
             return Ok(count as usize);
         }
-        let (lower, upper) = inventory_scope_child_bounds(&normalized);
+        let (lower, upper) = super::files::scope_child_bounds(&normalized);
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM file_inventory
              WHERE path = ?1 OR (path >= ?2 AND path < ?3)",
@@ -183,7 +183,7 @@ impl Store {
             let rows = stmt.query_map([], |row| row.get(0))?;
             return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
         }
-        let (lower, upper) = inventory_scope_child_bounds(&normalized);
+        let (lower, upper) = super::files::scope_child_bounds(&normalized);
         let mut stmt = conn.prepare(&format!(
             "SELECT file_id FROM file_inventory
              WHERE path = ?1 OR (path >= ?2 AND path < ?3)
@@ -249,12 +249,6 @@ fn normalize_inventory_scope(scope: &str) -> String {
     } else {
         trimmed.trim_end_matches('/').to_string()
     }
-}
-
-fn inventory_scope_child_bounds(scope: &str) -> (String, String) {
-    let lower = format!("{scope}/");
-    let upper = format!("{scope}0");
-    (lower, upper)
 }
 
 /// A row from the file_inventory table.
