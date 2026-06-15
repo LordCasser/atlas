@@ -73,7 +73,7 @@ impl SymbolRegistry {
 
     /// Resolve the source/owner symbol for an arbitrary source range.
     pub fn source_for_range(&self, range: TextRange) -> Option<SymbolId> {
-        let mut current = self.innermost_scope(range);
+        let mut current = crate::languages::shared::innermost_scope(&self.scopes, range);
         while let Some(scope_id) = current {
             if let Some(owner) = self.owner_by_scope.get(&scope_id) {
                 return Some(*owner);
@@ -128,17 +128,6 @@ impl SymbolRegistry {
         });
     }
 
-    fn innermost_scope(&self, range: TextRange) -> Option<ScopeId> {
-        self.scopes
-            .iter()
-            .filter(|scope| contains_range(scope.range, range))
-            .min_by_key(|scope| scope.range.byte_len())
-            .map(|scope| scope.id)
-    }
-}
-
-fn contains_range(outer: TextRange, inner: TextRange) -> bool {
-    outer.start_byte <= inner.start_byte && outer.end_byte >= inner.end_byte
 }
 
 fn source_symbol_priority(kind: SymbolKind) -> Option<u8> {

@@ -14,7 +14,7 @@
 //! `normalize_reference()`; the binder is the single authority for these
 //! fields.
 
-use types::ids::{FileId, ScopeId};
+use types::ids::FileId;
 use types::{RawEdge, ReferenceUse, ScopeDef, SymbolDef};
 
 use super::symbol_registry::SymbolRegistry;
@@ -60,7 +60,7 @@ impl SemanticBinder {
     /// generation, so no ID regeneration is needed here.
     pub fn bind_scope(&self, references: &mut [ReferenceUse]) {
         for reference in references {
-            reference.scope_id = self.innermost_scope(reference.range);
+            reference.scope_id = crate::languages::shared::innermost_scope(&self.scopes, reference.range);
         }
     }
 
@@ -86,15 +86,6 @@ impl SemanticBinder {
         self.bind_edge_sources(edges);
     }
 
-    /// Find the innermost scope containing the given range.
-    fn innermost_scope(&self, range: types::TextRange) -> Option<ScopeId> {
-        self.scopes
-            .iter()
-            .filter(|scope| contains_range(scope.range, range))
-            .min_by_key(|scope| scope.range.byte_len())
-            .map(|scope| scope.id)
-    }
-
     /// Delegate: check if a symbol is known.
     pub fn contains_symbol(&self, id: &types::ids::SymbolId) -> bool {
         self.registry.contains_symbol(id)
@@ -104,10 +95,6 @@ impl SemanticBinder {
     pub fn source_for_range(&self, range: types::TextRange) -> Option<types::ids::SymbolId> {
         self.registry.source_for_range(range)
     }
-}
-
-fn contains_range(outer: types::TextRange, inner: types::TextRange) -> bool {
-    outer.start_byte <= inner.start_byte && outer.end_byte >= inner.end_byte
 }
 
 #[cfg(test)]

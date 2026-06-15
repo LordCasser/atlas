@@ -70,6 +70,24 @@ pub fn make_scope_def_auto_name(file_id: FileId, kind: ScopeKind, range: TextRan
     make_scope_def(file_id, kind, name.clone(), name, range)
 }
 
+// ── Shared range helpers ───────────────────────────────────────────────
+
+/// Check if `outer` fully contains `inner` by byte range.
+pub(crate) fn contains_range(outer: TextRange, inner: TextRange) -> bool {
+    outer.start_byte <= inner.start_byte && outer.end_byte >= inner.end_byte
+}
+
+/// Find the innermost scope that fully contains the given byte range.
+pub(crate) fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
+    scopes
+        .iter()
+        .filter(|scope| contains_range(scope.range, range))
+        .min_by_key(|scope| scope.range.byte_len())
+        .map(|scope| scope.id)
+}
+
+// ── Shared binding helpers ──────────────────────────────────────────────
+
 /// Construct a `BindingDef` with default fields, reducing boilerplate in
 /// language adapters' dataflow normalize functions.
 ///

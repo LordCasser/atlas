@@ -28,8 +28,7 @@
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{Capture, LexicalBindingSpec};
 use types::bindings::{BindingDef, BindingUse};
-use types::ids::{BindingId, BindingUseId, ScopeId};
-use types::structs::TextRange;
+use types::ids::{BindingId, BindingUseId};
 use types::{ScopeDef, SymbolDef};
 
 use super::query_helpers::collect_captures;
@@ -112,7 +111,7 @@ impl LexicalBinder {
         // Resolve scope containment for each binding:
         // Replace placeholder scope_id with the actual innermost scope.
         for binding in &mut bindings {
-            binding.scope_id = innermost_scope(scopes, binding.range).unwrap_or(binding.scope_id);
+            binding.scope_id = crate::languages::shared::innermost_scope(scopes, binding.range).unwrap_or(binding.scope_id);
             // Re-generate BindingId now that scope_id is correct
             binding.id = BindingId::generate(
                 &ctx.file_id,
@@ -150,24 +149,13 @@ impl LexicalBinder {
     }
 }
 
-/// Find the innermost scope that fully contains the given byte range.
-fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<ScopeId> {
-    scopes
-        .iter()
-        .filter(|scope| {
-            scope.range.start_byte <= range.start_byte && scope.range.end_byte >= range.end_byte
-        })
-        .min_by_key(|scope| scope.range.byte_len())
-        .map(|scope| scope.id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
     use types::Language;
     use types::enums::BindingKind;
-    use types::ids::FileId;
+    use types::ids::{FileId, ScopeId};
     use types::{ScopeKind, TextRange};
 
     #[test]
@@ -215,7 +203,7 @@ mod tests {
             end_line: 3,
             end_column: 10,
         };
-        let result = innermost_scope(&scopes, target);
+        let result = crate::languages::shared::innermost_scope(&scopes, target);
         assert_eq!(result, Some(inner.id));
     }
 
