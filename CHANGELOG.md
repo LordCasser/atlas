@@ -4,6 +4,168 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.5.0] — 2026-06-15
+
+### Focus Runtime — Query-Time Incremental Analysis (v5.0 → v7.1)
+
+The largest architectural change since v1.0: a new query-time control plane that decides
+_what_ facts to build, _in what order_, and _at what scope_ — replacing the old per-handler
+ad-hoc lazy extraction with a unified, intent-driven pipeline.
+
+- **`FocusRuntime` + `QueryIntent`** — single MCP entry point: handlers no longer directly
+  orchestrate lazy structural/dataflow, resolver, or graph builder. Each MCP tool declares
+  a `QueryIntent` (Calls, Path, Impact, etc.) and receives a prepared `FocusClosure`
+  with scoped graph overlay, visibility filter, and capability contract.
+- **`ClosureEngine`** — strategy-driven fixed-point closure expansion
+  (`ImportNeighborhood` → `CallGraph` → `TypeGraph`) with `WindowBudget`-controlled
+  iteration limits and per-step coverage tracking.
+- **`BootstrapManager`** — cold-start tiered bootstrapping: Tier0 file inventory →
+  Tier0.5 content fingerprints → Tier1 `SymbolHints` → Tier2 opportunistic manifest.
+- **`ScopedResolver` + `FocusGraphBuilder`** — closure-scoped reference resolution
+  and scoped graph overlay with per-generation staging (staged → visible transition).
+- **`ProjectSlot`** — `Option<ActiveProject>` constrained to outermost MCP router layer;
+  runtime structs receive `&ActiveProject` by reference only.
+- **`RuntimeInvalidation`** — generation-based invalidation replaces signature comparison
+  for graph snapshot freshness.
+- **`GraphProvider` trait** — abstraction layer for graph queries, enabling a future
+  closure-scoped `GraphState` that owns subset snapshots.
+- **`AnalysisEnvelope`** — unified MCP response envelope replacing the legacy
+  `LazyResponse` with structured `analysis` (state/scope/contract), `precision`
+  (coverage tier + semantic confidence), and `work` (progress/items) sections.
+- **Focus is transparent**: no CLI command, no manual warm-up, no user-visible surface.
+  Activates silently when the project has no full index.
+
+### Precision Model Migration
+
+- **`PrecisionTier` → `Precision { coverage_tier, semantic_confidence }`**: the old
+  6-variant enum replaced by a two-axis model (`CoverageTier` × `SemanticConfidence`)
+  across the entire MCP contract. This is a **one-time public API break** — all MCP
+  tool responses now carry the new `precision` field shape.
+- Legacy `precision_tier` column removed from `closure_coverage` table (was always
+  written as empty string, never read).
+- `CapabilityMask` extended with `DATAFLOW`, `SUMMARIES` bits; lazy extraction state
+  queries now gate on actual persisted facts, not just language capability profiles.
+
+### Performance Optimizations
+
+- **Resolution pipeline**: S1-S6 strategy counters and timers for observability;
+  thread-local import resolution caches; per-file resolution fingerprints skip
+  unchanged files; batch callsite callee backfill in Phase 2; project-level
+  generation tracking for no-op index skip.
+- **DB writes**: insert-only hot table writes in bulk batches; deferred index
+  creation and FTS rebuild; WAL checkpoint observation; symbol dedup before write;
+  per-phase wall-clock timing in `IndexPipelineStats`.
+- **Search/context**: `levenshtein_bounded` with early termination; context banding
+  for large result sets; proximity fuzzy search in S6.
+- **Callsite denormalization eliminated**: `callsite.callee` column removed;
+  callee resolution now derived from `ReferenceResolution` + graph edges at query
+  time, eliminating a long-standing write-path denormalization.
+
+### Extraction & Language Support
+
+- **Cangjie adapter fixes**: added missing `is_identifier_decl_or_property` filter
+  for `df.identifier_use` (was producing false-positive VariableUse DataNodes for
+  declaration names); `imported_name` now correctly extracted from scoped identifier
+  (was always empty string).
+- **Extraction pool**: per-file thread isolation with 8 MiB stack for deep nesting
+  (rayon-based custom extraction pool); later reverted in favor of CLI-level stack
+  configuration.
+- Tree-sitter-cangjie pinned to specific git rev for reproducible builds.
+
+### Dead Code Subtraction (~4,000 lines)
+
+A comprehensive 16-crate audit identified and removed dead code, duplicated logic,
+unused dependencies, and unnecessary abstractions:
+
+- **Dead code removed**: `AnalysisResponse` hierarchy (~300 lines, atlas-mcp);
+  `ClosureGraphProvider` (93-line no-op pass-through); `FullRebuildGuard` struct;
+  `CompositeProvider` (analysis); `IncludeGraph` module (resolution); `FrameworkResolver`
+  + `ReactResolver` (resolution); `search::fts` + `search::fuzzy` modules; `LazyOutcome`
+  type (engine facade); `WeightBudget` struct (filesync); `RuleStatus::Deprecated`
+  variant (domain_rules); 30+ `#[allow(dead_code)]` methods and fields across all crates.
+- **Dead schema removed**: `known_gaps` table (DDL only, zero read/write code);
+  `precision_tier` column from `closure_coverage`.
+- **Unused dependencies removed**: `hex` (atlas-mcp), `serde`+`derive` from 4 crates
+  (resolution, search, filesync, graph), `workspace` from `lazy` crate.
+- **`FocusJobState`** reduced to `Planned` only — 7 dead variants removed.
+- **`LazyBudget`**: 8 dead methods/fields removed.
+
+### Duplication Elimination (~2,500 lines)
+
+- **Extraction adapters**: 3 new `make_df_*` helpers in `shared.rs` —
+  `make_df_receiver_or_literal`, `make_df_assign_value`, `make_df_call_arg` —
+  eliminating ~660 lines of near-identical dataflow arm code across 9-11 adapters each.
+  `innermost_scope` + `contains_range` extracted from 3 independent implementations.
+  `find_c_like_declaration_header` + `leading_parenthesized` deduplicated between
+  C and C++ adapters.
+- **DB store**: `batch_execute_chunked` low-level helper consolidates the repeated
+  chunk/placeholder/param/execute pattern from 6 chunked INSERT functions (~115 lines).
+  `batch_insert_edges` thin alias removed (migrated to `insert_edges`).
+  `file_extraction_state` + `unit_extraction_state` merged into single module.
+- **MCP handlers**: `ensure_cfg_for_function` on `AnalysisRuntime` (2 duplicated
+  CFG lazy-loading blocks → 1). `format_ambiguous_error` helper (5 duplicated
+  error-formatting blocks → 1). `validate_symbol_name_length` (14 duplicated validation
+  blocks → 1). `include_roots` logging moved inside `include_roots_from_args`.
+- **Analysis**: `read_file_lines` helper deduplicated snippet extraction boilerplate
+  in trace engine. `add_chain_trail` for diagnostics. `domain_rules`/`rule_learning`
+  thin re-export modules inlined into `lib.rs`.
+- **Domain rules**: `display_name()` dead trait default removed. `explain_candidate()`
+  and `discover_candidates()` added as trait defaults (removed 9 duplicate overrides
+  + 9 empty stubs). 20 `test_validate_*` tests consolidated into single parameterized
+  file. `builtin_rules()` construction pattern deduplicated across 10 language registries
+  (`rules_from_static` helper).
+- **Resolution/search**: `NameMatcher::name_similarity` now delegates to
+  `search::compute_name_similarity` (gains prefix/CamelCase matching).
+  `is_test_file` unified to use graph's comprehensive `is_likely_test_path`.
+  `resolve_strategies_1_through_5` extracted as shared function (S1-S5 deduplicated
+  between `resolve_one_core` and `resolve_one_scoped`).
+- **Cross-function bridge**: shared param/callreturn traversal helpers extracted
+  (`find_param_index`, `resolve_callsite_to_callee`) from `CrossFunctionBridge`
+  and `SummaryEdgeProvider` fallback.
+- **C/C++ resource rules**: builtin function name constants (`C_ALLOC_FUNCTIONS`,
+  `C_FREE_FUNCTIONS`, `C_MAYBE_OWNED`) extracted as shared data source consumed
+  by both `CppOwnershipRules` and `ResourceOpConfig`.
+
+### Types & API Consistency
+
+- **Missing root re-exports added**: `EffectKind`, `BoundaryMarker`, `BoundaryKind`,
+  `ForwardChain`, `ForwardChainStep`, and all progress types (`ProgressPhase`,
+  `ProgressState`, etc.) now available from `types::*` flat namespace.
+- **`MANIFEST_BIT`/`STRUCTURAL_BIT`** duplicate constant aliases removed (13 callers
+  migrated to canonical `MANIFEST`/`STRUCTURAL`).
+- **`PhaseTiming`** renamed to `PipelinePhaseTiming` in filesync crate to avoid
+  collision with `types::timing::PhaseTiming`.
+- **`CapabilityProfile` data-declaration prototype**: Go and Python profiles migrated
+  to `ProfileSpec` + `build_profile()` pattern; remaining 12 languages queued in roadmap.
+
+### Bug Fixes
+
+- `inventory_scope_child_bounds` fragile `"0"` upper bound replaced with canonical
+  `char::MAX` (no data loss in practice, but wrong in principle).
+- MCP runtime switched from `current_thread` to `multi_thread` so progress-forwarder
+  runs during synchronous tool dispatch.
+- Lock poison recovery unified: all `.unwrap()`/`.expect()` → `.unwrap_or_else(|e| e.into_inner())`.
+- `PathAliasConfig::has_changed` check added before skip-resolution decision.
+- Stale file cleanup now clears resolution fingerprints to prevent cross-file
+  reference staleness.
+- `detect_index_mode` hardened with focus-aware messaging and `partial_result` propagation.
+- ASCII art doc block missing language tag fixed (was breaking doctest).
+- `expand_types` silent skip hardened with `warn!` logging.
+
+### Documentation
+
+- **Focus architecture**: v5.0 architecture document (`docs/atlas-focus-architecture-v5.0.md`)
+  covering Focus Runtime design, closure engine, bootstrap tiers, and Focus-Lazy
+  boundary constraints.
+- **Roadmap**: §10 added for code quality technical debt (ProfileSpec migration,
+  FeatureMatrix mirror method merge).
+- Deep-dive technical blog (`atlas-deep-dive.md`) covering index pipeline, MCP tools,
+  lazy indexing, and semantic analysis.
+- Performance optimization journey documented with methodology and verified results.
+- Architecture diagram added to README.
+
+---
+
 ## [1.4.2] — 2026-06-09
 
 ### SymbolSelector — Closed-Loop Symbol Resolution
