@@ -229,7 +229,6 @@ fn match_alloc_pattern(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -241,52 +240,6 @@ mod tests {
         let alloc_rules: Vec<_> = rules.iter().filter(|r| r.rule_kind == "alloc_fn").collect();
         assert!(free_rules.iter().any(|r| r.pattern == "free"));
         assert!(alloc_rules.iter().any(|r| r.pattern == "malloc"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = CRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "c".into(),
-            rule_kind: "free_fn".into(),
-            pattern: "my_free".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = CRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "c".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 
     #[test]

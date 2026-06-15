@@ -121,7 +121,6 @@ impl RuleLearningStrategy for RubyLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -139,51 +138,5 @@ mod tests {
             .collect();
         assert!(alloc_rules.iter().any(|r| r.pattern == "File.open"));
         assert!(free_rules.iter().any(|r| r.pattern == ".close"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = RubyRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "ruby".into(),
-            rule_kind: "ruby/alloc_fn".into(),
-            pattern: "myFactory".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = RubyRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "ruby".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }

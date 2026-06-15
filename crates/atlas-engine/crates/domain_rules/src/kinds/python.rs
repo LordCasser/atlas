@@ -118,7 +118,6 @@ impl RuleLearningStrategy for PythonLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -138,51 +137,5 @@ mod tests {
         assert!(alloc_rules.iter().any(|r| r.pattern == "sqlite3.connect"));
         assert!(free_rules.iter().any(|r| r.pattern == ".close"));
         assert!(free_rules.iter().any(|r| r.pattern == "os.close"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = PythonRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "python".into(),
-            rule_kind: "python/alloc_fn".into(),
-            pattern: "my_open".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = PythonRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "python".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }

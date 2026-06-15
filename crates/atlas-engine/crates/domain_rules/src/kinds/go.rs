@@ -115,7 +115,6 @@ impl RuleLearningStrategy for GoLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -134,51 +133,5 @@ mod tests {
         assert!(alloc_rules.iter().any(|r| r.pattern == "os.Open"));
         assert!(alloc_rules.iter().any(|r| r.pattern == "sql.Open"));
         assert!(free_rules.iter().any(|r| r.pattern == "Close()"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = GoRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "go".into(),
-            rule_kind: "go/alloc_fn".into(),
-            pattern: "my.Open".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = GoRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "go".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }

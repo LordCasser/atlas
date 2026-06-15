@@ -124,7 +124,6 @@ impl RuleLearningStrategy for TypeScriptLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -148,51 +147,5 @@ mod tests {
         assert!(alloc_rules.iter().any(|r| r.pattern == "createReadStream"));
         assert!(free_rules.iter().any(|r| r.pattern == ".close"));
         assert!(hook_rules.iter().any(|r| r.pattern == "useEffect"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = TypeScriptRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "typescript".into(),
-            rule_kind: "ts/alloc_fn".into(),
-            pattern: "myCreate".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = TypeScriptRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "typescript".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }

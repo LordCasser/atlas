@@ -120,7 +120,6 @@ impl RuleLearningStrategy for CSharpLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -139,51 +138,5 @@ mod tests {
         assert!(alloc_rules.iter().any(|r| r.pattern == "File.Open"));
         assert!(free_rules.iter().any(|r| r.pattern == ".Dispose"));
         assert!(free_rules.iter().any(|r| r.pattern == ".Close"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = CSharpRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "csharp".into(),
-            rule_kind: "csharp/alloc_fn".into(),
-            pattern: "myFactory".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = CSharpRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "csharp".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }

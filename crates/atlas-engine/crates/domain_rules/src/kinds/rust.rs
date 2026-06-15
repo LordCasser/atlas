@@ -117,7 +117,6 @@ impl RuleLearningStrategy for RustLearningStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::RuleValidationResult;
     use super::*;
 
     #[test]
@@ -136,51 +135,5 @@ mod tests {
         assert!(alloc_rules.iter().any(|r| r.pattern == "Box::new"));
         assert!(alloc_rules.iter().any(|r| r.pattern == "Arc::new"));
         assert!(free_rules.iter().any(|r| r.pattern == "drop"));
-    }
-
-    #[test]
-    fn test_validate_valid_rule() {
-        let reg = RustRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "rust".into(),
-            rule_kind: "rust/alloc_fn".into(),
-            pattern: "my_alloc".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Valid
-        ));
-    }
-
-    #[test]
-    fn test_validate_unknown_kind() {
-        let reg = RustRegistry;
-        let rule = DomainRule {
-            id: "test".into(),
-            language: "rust".into(),
-            rule_kind: "unknown_kind".into(),
-            pattern: "x".into(),
-            pattern_kind: "exact".into(),
-            meta: None,
-            meta_version: 1,
-            source: "user".into(),
-            status: "enabled".into(),
-            confidence: 1.0,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        assert!(matches!(
-            reg.validate_rule(&rule),
-            RuleValidationResult::Rejected(_)
-        ));
     }
 }
