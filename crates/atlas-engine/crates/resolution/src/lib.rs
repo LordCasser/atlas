@@ -98,6 +98,73 @@ fn resolve_one_core(
     global_index: Option<&GlobalSymbolIndex>,
     proximity_file_id: Option<FileId>,
 ) -> Option<ResolvedTarget> {
+    // Strategies 1-5: shared implementation
+    if let Some(result) =
+        resolve_strategies_1_through_5(reference, ctx, import_resolver, name_matcher)
+    {
+        return Some(result);
+    }
+
+    // Strategy 6: Project-wide name search + fuzzy fallback
+    {
+        let _timer = StrategyTimer::new(&S6_TIME_NS);
+        if let Some(idx) = global_index {
+            if let Some(matched) = idx.find_exact_name_target(&reference.name, proximity_file_id) {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(matched);
+            }
+            if !should_run_fuzzy_fallback(&reference.name) {
+                return None;
+            }
+            // Try fuzzy-with-proximity before full global scan.
+            if let Some(fid) = proximity_file_id {
+                let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
+                if !fuzzy_prox.is_empty() {
+                    if let Some(matched) =
+                        name_matcher.best_match(&fuzzy_prox, &reference.name, Confidence::new(0.4))
+                    {
+                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                        S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: matched.confidence,
+                            strategy: ResolutionStrategy::FuzzyMatch,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                }
+            }
+            let fuzzy = idx.fuzzy_search(&reference.name, 2);
+            if !fuzzy.is_empty() {
+                if let Some(matched) =
+                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+                {
+                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(ResolvedTarget {
+                        symbol_id: matched.symbol_id,
+                        confidence: matched.confidence,
+                        strategy: ResolutionStrategy::FuzzyMatch,
+                        provenance: Provenance::Heuristic,
+                    });
+                }
+            }
+        }
+    }
+    MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+    None
+}
+
+/// Run Strategies 1–5: builtin filter, scope-local, container-local, same-file
+/// exact, import resolution.  Returns `Some(ResolvedTarget)` on first match,
+/// or `None` to fall through to Strategy 6.
+pub(crate) fn resolve_strategies_1_through_5(
+    reference: &ReferenceUse,
+    ctx: &ResolutionContext,
+    import_resolver: &ImportResolver,
+    name_matcher: &NameMatcher,
+) -> Option<ResolvedTarget> {
     // Strategy 1: Built-in / external filter
     {
         let _timer = StrategyTimer::new(&S1_TIME_NS);
@@ -207,54 +274,6 @@ fn resolve_one_core(
         }
     }
 
-    // Strategy 6: Project-wide name search + fuzzy fallback
-    {
-        let _timer = StrategyTimer::new(&S6_TIME_NS);
-        if let Some(idx) = global_index {
-            if let Some(matched) = idx.find_exact_name_target(&reference.name, proximity_file_id) {
-                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(matched);
-            }
-            if !should_run_fuzzy_fallback(&reference.name) {
-                return None;
-            }
-            // Try fuzzy-with-proximity before full global scan.
-            if let Some(fid) = proximity_file_id {
-                let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
-                if !fuzzy_prox.is_empty() {
-                    if let Some(matched) =
-                        name_matcher.best_match(&fuzzy_prox, &reference.name, Confidence::new(0.4))
-                    {
-                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                        S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return Some(ResolvedTarget {
-                            symbol_id: matched.symbol_id,
-                            confidence: matched.confidence,
-                            strategy: ResolutionStrategy::FuzzyMatch,
-                            provenance: Provenance::Heuristic,
-                        });
-                    }
-                }
-            }
-            let fuzzy = idx.fuzzy_search(&reference.name, 2);
-            if !fuzzy.is_empty() {
-                if let Some(matched) =
-                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
-                {
-                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: matched.confidence,
-                        strategy: ResolutionStrategy::FuzzyMatch,
-                        provenance: Provenance::Heuristic,
-                    });
-                }
-            }
-        }
-    }
-    MISS_COUNT.fetch_add(1, Ordering::Relaxed);
     None
 }
 
@@ -1242,117 +1261,14 @@ impl ReferenceResolver {
         ctx: &ResolutionContext,
         visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
     ) -> Option<ResolvedTarget> {
-        // Strategies 1-5: same as resolve_one_core, no visibility filter needed
-        // Strategy 1: Built-in / external filter
-        {
-            let _timer = StrategyTimer::new(&S1_TIME_NS);
-            if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-                S1_COUNT.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-        }
-
-        // Strategy 2: Scope-local exact match
-        {
-            let _timer = StrategyTimer::new(&S2_TIME_NS);
-            if let Some(scope_id) = reference.scope_id {
-                if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
-                    S2_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return Some(ResolvedTarget {
-                        symbol_id: sym.id,
-                        confidence: Confidence::certain(),
-                        strategy: ResolutionStrategy::ExactMatch,
-                        provenance: Provenance::TreeSitter,
-                    });
-                }
-            }
-        }
-
-        // Strategy 3: Container/class-local
-        {
-            let _timer = StrategyTimer::new(&S3_TIME_NS);
-            if let Some(source_sym) = reference.source_symbol {
-                if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
-                    if let Some(container) = source.container {
-                        if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
-                            if let Some(scope) = container_sym.scope_id {
-                                if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
-                                    S3_COUNT.fetch_add(1, Ordering::Relaxed);
-                                    return Some(ResolvedTarget {
-                                        symbol_id: sym.id,
-                                        confidence: Confidence::certain(),
-                                        strategy: ResolutionStrategy::ExactMatch,
-                                        provenance: Provenance::TreeSitter,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Strategy 4: Same-file exact match
-        {
-            let _timer = StrategyTimer::new(&S4_TIME_NS);
-            let same_file = ctx.find_in_file_by_name(&reference.name);
-            if let Some(matched) =
-                self.name_matcher
-                    .best_match(&same_file, &reference.name, Confidence::certain())
-            {
-                S4_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: matched.strategy,
-                    provenance: matched.provenance,
-                });
-            }
-        }
-
-        // Strategy 5: Import/include resolution
-        {
-            let _timer = StrategyTimer::new(&S5_TIME_NS);
-            if let Some(import_indices) = ctx.imports_by_name.get(&reference.name) {
-                for &idx in import_indices {
-                    let import = &ctx.imports[idx];
-                    let import_local = import.local_name.as_deref().unwrap_or("");
-                    let matches_by_alias =
-                        !import_local.is_empty() && import_local == reference.name;
-
-                    if let Ok(candidates) = self.import_resolver.resolve_import(import) {
-                        if let Ok(chain_candidates) = self
-                            .import_resolver
-                            .resolve_through_reexports(import, candidates)
-                        {
-                            if matches_by_alias {
-                                if let Some(first) = chain_candidates.first() {
-                                    S5_COUNT.fetch_add(1, Ordering::Relaxed);
-                                    return Some(ResolvedTarget {
-                                        symbol_id: first.id,
-                                        confidence: Confidence::new(0.8),
-                                        strategy: ResolutionStrategy::ImportResolved,
-                                        provenance: Provenance::Heuristic,
-                                    });
-                                }
-                            }
-                            if let Some(matched) = self.name_matcher.best_match(
-                                &chain_candidates,
-                                &reference.name,
-                                Confidence::certain(),
-                            ) {
-                                S5_COUNT.fetch_add(1, Ordering::Relaxed);
-                                return Some(ResolvedTarget {
-                                    symbol_id: matched.symbol_id,
-                                    confidence: Confidence::new(0.8),
-                                    strategy: ResolutionStrategy::ImportResolved,
-                                    provenance: Provenance::Heuristic,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+        // Strategies 1-5: shared with resolve_one_core, no visibility filter needed
+        if let Some(result) = resolve_strategies_1_through_5(
+            reference,
+            ctx,
+            &self.import_resolver,
+            &self.name_matcher,
+        ) {
+            return Some(result);
         }
 
         // Strategy 6: Project-wide name search + fuzzy fallback
