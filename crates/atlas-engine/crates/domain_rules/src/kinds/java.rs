@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Java rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for JavaRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("java/alloc_fn", "Files.newInputStream", "exact"),
             ("java/alloc_fn", "Files.newOutputStream", "exact"),
@@ -82,26 +82,7 @@ impl LanguageRuleKinds for JavaRegistry {
             ("java/free_fn", ".dispose", "suffix"),
             ("java/free_fn", ".destroy", "suffix"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "java_{}_{pattern}",
-                    kind.replace("java/", "").replace('/', "_")
-                ),
-                language: "java".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("java", "java", Some("java/"), &rules)
     }
 }
 
@@ -115,7 +96,6 @@ impl RuleLearningStrategy for JavaLearningStrategy {
     fn language(&self) -> &'static str {
         "java"
     }
-
 }
 
 #[cfg(test)]

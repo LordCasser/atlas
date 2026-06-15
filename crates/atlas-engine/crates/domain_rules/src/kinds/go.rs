@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Go rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for GoRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("go/alloc_fn", "os.Open", "exact"),
             ("go/alloc_fn", "os.Create", "exact"),
@@ -80,23 +80,7 @@ impl LanguageRuleKinds for GoRegistry {
             ("go/free_fn", "close()", "suffix"),
             ("go/escape_fn", "go func", "prefix"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!("go_{}_{pattern}", kind.replace("go/", "").replace('/', "_")),
-                language: "go".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("go", "go", Some("go/"), &rules)
     }
 }
 
@@ -110,7 +94,6 @@ impl RuleLearningStrategy for GoLearningStrategy {
     fn language(&self) -> &'static str {
         "go"
     }
-
 }
 
 #[cfg(test)]

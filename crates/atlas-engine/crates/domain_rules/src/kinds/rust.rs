@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Rust rule kind registry.
 #[derive(Debug)]
@@ -69,7 +70,6 @@ impl LanguageRuleKinds for RustRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("rust/alloc_fn", "Box::new", "exact"),
             ("rust/alloc_fn", "Vec::new", "exact"),
@@ -79,26 +79,7 @@ impl LanguageRuleKinds for RustRegistry {
             ("rust/free_fn", "std::mem::drop", "exact"),
             ("rust/cleanup_fn", "std::mem::forget", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "rust_{}_{pattern}",
-                    kind.replace("rust/", "").replace('/', "_")
-                ),
-                language: "rust".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("rust", "rust", Some("rust/"), &rules)
     }
 }
 
@@ -112,7 +93,6 @@ impl RuleLearningStrategy for RustLearningStrategy {
     fn language(&self) -> &'static str {
         "rust"
     }
-
 }
 
 #[cfg(test)]

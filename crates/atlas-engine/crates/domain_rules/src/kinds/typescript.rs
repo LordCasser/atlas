@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// TypeScript / JavaScript rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for TypeScriptRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("ts/alloc_fn", "open", "exact"),
             ("ts/alloc_fn", "createReadStream", "exact"),
@@ -89,23 +89,7 @@ impl LanguageRuleKinds for TypeScriptRegistry {
             ("ts/react_hook", "useMemo", "exact"),
             ("ts/react_hook", "useCallback", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!("ts_{}_{pattern}", kind.replace("ts/", "").replace('/', "_")),
-                language: "typescript".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("typescript", "ts", Some("ts/"), &rules)
     }
 }
 
@@ -119,7 +103,6 @@ impl RuleLearningStrategy for TypeScriptLearningStrategy {
     fn language(&self) -> &'static str {
         "typescript"
     }
-
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 use super::super::learning::{LearnedRuleCandidate, LearningEvidence, RuleLearningStrategy};
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 use db::Store;
 
@@ -71,7 +72,6 @@ impl LanguageRuleKinds for CRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("free_fn", "free", "exact"),
             ("free_fn", "delete", "exact"),
@@ -82,23 +82,7 @@ impl LanguageRuleKinds for CRegistry {
             ("alloc_fn", "strdup", "exact"),
             ("alloc_fn", "operator new", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!("c_{kind}_{pattern}"),
-                language: "c".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("c", "c", None, &rules)
     }
 }
 

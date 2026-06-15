@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Python rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for PythonRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("python/alloc_fn", "open", "exact"),
             ("python/alloc_fn", "sqlite3.connect", "exact"),
@@ -80,26 +80,7 @@ impl LanguageRuleKinds for PythonRegistry {
             ("python/free_fn", ".release", "suffix"),
             ("python/free_fn", "os.close", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "python_{}_{pattern}",
-                    kind.replace("python/", "").replace('/', "_")
-                ),
-                language: "python".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("python", "python", Some("python/"), &rules)
     }
 }
 
@@ -113,7 +94,6 @@ impl RuleLearningStrategy for PythonLearningStrategy {
     fn language(&self) -> &'static str {
         "python"
     }
-
 }
 
 #[cfg(test)]

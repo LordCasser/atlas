@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Kotlin rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for KotlinRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("kotlin/alloc_fn", "File", "suffix"),
             ("kotlin/alloc_fn", "bufferedReader", "suffix"),
@@ -84,26 +84,7 @@ impl LanguageRuleKinds for KotlinRegistry {
             ("kotlin/coroutine", "withContext", "exact"),
             ("kotlin/coroutine", "coroutineScope", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "kotlin_{}_{pattern}",
-                    kind.replace("kotlin/", "").replace('/', "_")
-                ),
-                language: "kotlin".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("kotlin", "kotlin", Some("kotlin/"), &rules)
     }
 }
 
@@ -117,7 +98,6 @@ impl RuleLearningStrategy for KotlinLearningStrategy {
     fn language(&self) -> &'static str {
         "kotlin"
     }
-
 }
 
 #[cfg(test)]

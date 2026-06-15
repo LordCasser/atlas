@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// C# rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for CSharpRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("csharp/alloc_fn", "File.Open", "exact"),
             ("csharp/alloc_fn", "new FileStream", "exact"),
@@ -82,26 +82,7 @@ impl LanguageRuleKinds for CSharpRegistry {
             ("csharp/free_fn", ".Close", "suffix"),
             ("csharp/idisposable", "IDisposable", "suffix"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "csharp_{}_{pattern}",
-                    kind.replace("csharp/", "").replace('/', "_")
-                ),
-                language: "csharp".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("csharp", "csharp", Some("csharp/"), &rules)
     }
 }
 
@@ -115,7 +96,6 @@ impl RuleLearningStrategy for CSharpLearningStrategy {
     fn language(&self) -> &'static str {
         "csharp"
     }
-
 }
 
 #[cfg(test)]

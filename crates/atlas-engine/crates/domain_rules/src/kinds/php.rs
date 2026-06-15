@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// PHP rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for PhpRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("php/alloc_fn", "fopen", "exact"),
             ("php/alloc_fn", "mysqli_connect", "exact"),
@@ -81,26 +81,7 @@ impl LanguageRuleKinds for PhpRegistry {
             ("php/procedural_resource", "fopen", "exact"),
             ("php/procedural_resource", "fclose", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "php_{}_{pattern}",
-                    kind.replace("php/", "").replace('/', "_")
-                ),
-                language: "php".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("php", "php", Some("php/"), &rules)
     }
 }
 
@@ -114,7 +95,6 @@ impl RuleLearningStrategy for PhpLearningStrategy {
     fn language(&self) -> &'static str {
         "php"
     }
-
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@
 use super::super::learning::RuleLearningStrategy;
 use super::super::registry::{LanguageRuleKinds, RuleKindSpec};
 use super::super::types::{DomainRule, PatternKind};
+use super::rules_from_static;
 
 /// Ruby rule kind registry.
 #[derive(Debug)]
@@ -70,7 +71,6 @@ impl LanguageRuleKinds for RubyRegistry {
     }
 
     fn builtin_rules(&self) -> Vec<DomainRule> {
-        let now = String::new();
         let rules = [
             ("ruby/alloc_fn", "File.open", "exact"),
             ("ruby/alloc_fn", "File.new", "exact"),
@@ -83,26 +83,7 @@ impl LanguageRuleKinds for RubyRegistry {
             ("ruby/block_resource", "File.open", "exact"),
             ("ruby/block_resource", "IO.open", "exact"),
         ];
-        rules
-            .iter()
-            .map(|(kind, pattern, pkind)| DomainRule {
-                id: format!(
-                    "ruby_{}_{pattern}",
-                    kind.replace("ruby/", "").replace('/', "_")
-                ),
-                language: "ruby".into(),
-                rule_kind: kind.to_string(),
-                pattern: pattern.to_string(),
-                pattern_kind: pkind.to_string(),
-                meta: None,
-                meta_version: 1,
-                source: "builtin".into(),
-                status: "enabled".into(),
-                confidence: 0.8,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .collect()
+        rules_from_static("ruby", "ruby", Some("ruby/"), &rules)
     }
 }
 
@@ -116,7 +97,6 @@ impl RuleLearningStrategy for RubyLearningStrategy {
     fn language(&self) -> &'static str {
         "ruby"
     }
-
 }
 
 #[cfg(test)]
