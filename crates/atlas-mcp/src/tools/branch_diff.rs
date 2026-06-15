@@ -87,51 +87,22 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let mut cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
-            Ok(nodes) => nodes,
-            Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
-        };
-
-        if cfg_nodes.is_empty() {
-            // Trigger lazy CFG extraction via the dataflow service
-            match self
-                .active_mut()
-                .analysis_runtime
-                .ensure_dataflow_for_function(&sid, Some(&query_id))
-            {
-                Ok(()) => {
-                    // Re-query CFG after lazy extraction
-                    cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
-                        Ok(nodes) => nodes,
-                        Err(e) => {
-                            return (
-                                format!("Failed to load CFG nodes after lazy extraction: {e}"),
-                                true,
-                            );
-                        }
-                    };
-                }
-                Err(e) => {
-                    // Lazy extraction itself failed — return graceful diagnostics
-                    let resp = json!({
-                        "ok": false,
-                        "function": symbol,
-                        "error": format!("CFG not available for branch diff analysis: {:#}", e),
-                    });
-                    return lr.with_is_error(true).build(resp, self);
-                }
+        let store = self.active().store.clone();
+        let (cfg_nodes, cfg_edges) = match self
+            .active_mut()
+            .analysis_runtime
+            .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
+        {
+            Ok((nodes, edges)) => (nodes, edges),
+            Err(e) => {
+                let resp = json!({
+                    "ok": false,
+                    "function": symbol,
+                    "error": e,
+                });
+                return lr.with_is_error(true).build(resp, self);
             }
-        }
-
-        // After all attempts, if CFG is still unavailable, return graceful diagnostics
-        if cfg_nodes.is_empty() {
-            let resp = json!({
-                "ok": false,
-                "function": symbol,
-                "message": "CFG not available for branch diff analysis. The function may be in a language that does not yet support CFG extraction, or the source file could not be read. Scoped focus/dataflow preparation could not produce the required CFG facts.",
-            });
-            return lr.with_is_error(true).build(resp, self);
-        }
+        };
 
         // --- CFG is available — run branch diff analysis ---
 
@@ -143,12 +114,6 @@ impl ToolRouter {
             .flatten()
             .map(|s| s.qualified_name)
             .unwrap_or_else(|| symbol.to_string());
-
-        let cfg_edges = self
-            .active_mut()
-            .store
-            .find_cfg_edges_by_function(&sid)
-            .unwrap_or_default();
 
         // Check for semantic analysis mode (default: true)
         let use_semantic = args

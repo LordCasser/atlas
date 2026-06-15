@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use atlas_engine::{LazyDataflowService, Store, SymbolId};
+use atlas_engine::{CfgEdge, CfgNode, LazyDataflowService, Store, SymbolId};
 
 /// Provides CFG and dataflow facts for branch_diff and lifecycle analysis.
 ///
@@ -45,6 +45,47 @@ impl AnalysisRuntime {
     ) -> anyhow::Result<()> {
         let _ = self.lazy_service.ensure_for_function(symbol_id, query_id)?;
         Ok(())
+    }
+
+    /// Ensure CFG nodes and edges are available for a function, with lazy fallback.
+    ///
+    /// Queries the store for CFG nodes. If none exist, triggers lazy CFG extraction
+    /// via [`ensure_dataflow_for_function`] and re-queries. Returns `Err(String)` with
+    /// a human-readable message when the CFG still cannot be loaded.
+    pub fn ensure_cfg_for_function(
+        &self,
+        store: &Store,
+        sid: &SymbolId,
+        query_id: &str,
+        fn_name: &str,
+    ) -> Result<(Vec<CfgNode>, Vec<CfgEdge>), String> {
+        let mut cfg_nodes = store
+            .find_cfg_nodes_by_function(sid)
+            .map_err(|e| format!("Failed to load CFG nodes: {e}"))?;
+
+        if cfg_nodes.is_empty() {
+            // Trigger lazy CFG extraction
+            self.ensure_dataflow_for_function(sid, Some(query_id))
+                .map_err(|e| {
+                    format!("CFG not available for analysis of '{fn_name}': {e:#}")
+                })?;
+            // Re-query after lazy extraction
+            cfg_nodes = store
+                .find_cfg_nodes_by_function(sid)
+                .map_err(|e| format!("Failed to load CFG nodes after lazy extraction: {e}"))?;
+        }
+
+        if cfg_nodes.is_empty() {
+            return Err(format!(
+                "CFG not available for '{fn_name}'. The function may be in a language that does not yet support CFG extraction, or the source file could not be read."
+            ));
+        }
+
+        let cfg_edges = store
+            .find_cfg_edges_by_function(sid)
+            .unwrap_or_default();
+
+        Ok((cfg_nodes, cfg_edges))
     }
 }
 

@@ -87,63 +87,23 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let mut cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
-            Ok(nodes) => nodes,
-            Err(e) => return (format!("Failed to load CFG nodes: {e}"), true),
-        };
-        let mut cfg_edges = self
+        let store = self.active().store.clone();
+        let (cfg_nodes, cfg_edges) = match self
             .active_mut()
-            .store
-            .find_cfg_edges_by_function(&sid)
-            .unwrap_or_default();
-
-        if cfg_nodes.is_empty() {
-            // Trigger lazy CFG extraction via the dataflow service
-            match self
-                .active_mut()
-                .analysis_runtime
-                .ensure_dataflow_for_function(&sid, Some(&query_id))
-            {
-                Ok(()) => {
-                    // Re-query CFG after lazy extraction
-                    cfg_nodes = match self.active_mut().store.find_cfg_nodes_by_function(&sid) {
-                        Ok(nodes) => nodes,
-                        Err(e) => {
-                            return (
-                                format!("Failed to load CFG nodes after lazy extraction: {e}"),
-                                true,
-                            );
-                        }
-                    };
-                    cfg_edges = self
-                        .active_mut()
-                        .store
-                        .find_cfg_edges_by_function(&sid)
-                        .unwrap_or_default();
-                }
-                Err(e) => {
-                    // Lazy extraction itself failed — return graceful diagnostics
-                    let resp = json!({
-                        "ok": false,
-                        "function": symbol,
-                        "field_path": field,
-                        "error": format!("CFG not available for lifecycle analysis: {:#}", e),
-                    });
-                    return lr.with_is_error(true).build(resp, self);
-                }
+            .analysis_runtime
+            .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
+        {
+            Ok((nodes, edges)) => (nodes, edges),
+            Err(e) => {
+                let resp = json!({
+                    "ok": false,
+                    "function": symbol,
+                    "field_path": field,
+                    "error": e,
+                });
+                return lr.with_is_error(true).build(resp, self);
             }
-        }
-
-        // After all attempts, if CFG is still unavailable, return graceful diagnostics
-        if cfg_nodes.is_empty() {
-            let resp = json!({
-                "ok": false,
-                "function": symbol,
-                "field_path": field,
-                "message": "CFG not available for lifecycle analysis...",
-            });
-            return lr.with_is_error(true).build(resp, self);
-        }
+        };
 
         // --- CFG is available — run lifecycle analysis ---
 
