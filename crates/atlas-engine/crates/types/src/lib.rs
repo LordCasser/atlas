@@ -51,7 +51,7 @@ pub use ids::{
 pub use enums::Confidence;
 pub use enums::{
     BindingKind, CallContext, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, EdgeKind,
-    ImportKind, Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus,
+    EffectKind, ImportKind, Language, ParseStatus, Provenance, ReferenceKind, ResolutionStatus,
     ResolutionStrategy, ScopeKind, SymbolKind, Visibility,
 };
 
@@ -77,12 +77,12 @@ pub use capability::{CapabilityLevel, FeatureMatrix, FeatureSupport, LanguageCap
 
 // --- Trace types ---
 pub use trace::{
-    Evidence, LazySummary, TraceDataNodeRef, TraceDiagnostic, TracePath, TracePathStep, TracePoint,
-    VariableTracePath,
+    BoundaryKind, BoundaryMarker, Evidence, LazySummary, TraceDataNodeRef, TraceDiagnostic,
+    TracePath, TracePathStep, TracePoint, VariableTracePath,
 };
 
 // --- Caller path types ---
-pub use caller_path::{CallerChain, CallerChainStep, CallerPath};
+pub use caller_path::{CallerChain, CallerChainStep, CallerPath, ForwardChain, ForwardChainStep};
 
 // --- Summary types ---
 pub use summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
@@ -92,6 +92,9 @@ pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, Phase
 
 // --- Lazy types ---
 pub use lazy::{AnalysisUnit, LazyWindow, VariableFocus};
+
+// --- Progress types ---
+pub use progress::{CompletedPhase, PhaseEntry, PhaseState, ProgressPhase, ProgressSnapshot, ProgressState};
 
 // --- Utilities ---
 
