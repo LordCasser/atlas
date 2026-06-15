@@ -30,13 +30,11 @@ impl Store {
         content_hash: Option<&str>,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
-        // precision_tier is deprecated (vestigial column), write empty string
-        // for backwards compat with old DBs that still have the NOT NULL column.
         conn.execute(
             "INSERT INTO closure_coverage
                 (closure_id, file_id, source, visibility_state, generation,
-                 content_hash, precision_tier)
-             VALUES (?1, ?2, ?3, 'staged', ?4, ?5, '')",
+                 content_hash)
+             VALUES (?1, ?2, ?3, 'staged', ?4, ?5)",
             params![closure_id, file_id, source, generation, content_hash],
         )?;
         Ok(())
