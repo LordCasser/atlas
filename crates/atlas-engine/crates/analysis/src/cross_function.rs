@@ -21,7 +21,7 @@
 
 use db::TraceStore;
 use types::enums::{DataFlowKind, DataNodeKind};
-use types::ids::DataNodeId;
+use types::ids::{CallsiteId, DataNodeId, SymbolId};
 
 use crate::trace::virtual_edges::TraceEdge;
 
@@ -58,11 +58,7 @@ impl CrossFunctionBridge {
             None => return Ok(vec![]),
         };
 
-        let callee_params = store.find_data_nodes_by_function(&function_id)?;
-        let param_index = callee_params
-            .iter()
-            .filter(|dn| dn.kind == DataNodeKind::Parameter)
-            .position(|dn| &dn.id == param_id);
+        let param_index = find_param_index(store, &function_id, param_id)?;
 
         let direct_callers = match store.find_resolved_callsites_by_callee(&function_id) {
             Ok(c) => c,
@@ -133,12 +129,8 @@ impl CrossFunctionBridge {
             None => return Ok(vec![]),
         };
 
-        let resolved = match store.find_resolved_callsites_by_id(callsite_id) {
-            Ok(c) => c,
-            Err(_) => return Ok(vec![]),
-        };
-        let callee_sym_id = match resolved.first() {
-            Some(rc) => rc.callee,
+        let callee_sym_id = match resolve_callsite_to_callee(store, callsite_id)? {
+            Some(sym) => sym,
             None => return Ok(vec![]),
         };
 
@@ -178,6 +170,41 @@ impl CrossFunctionBridge {
 // (added in Schema v3), so `store.query_call_arg_sources(...)` and
 // `store.query_return_sources(...)` are available directly through the trait
 // object.
+
+// ---------------------------------------------------------------------------
+// Shared traversal helpers — used by both CrossFunctionBridge and
+// SummaryEdgeProvider (virtual_edges.rs) to avoid duplicated logic.
+// ---------------------------------------------------------------------------
+
+/// Find the 0-based index of a Parameter [`DataNode`] within its function.
+///
+/// Queries all data nodes for `function_id` and returns the position of
+/// `param_node_id` among the `Parameter`-kind nodes.  Returns `None` when
+/// the node is not found or is not a parameter.
+pub(crate) fn find_param_index(
+    store: &dyn TraceStore,
+    function_id: &SymbolId,
+    param_node_id: &DataNodeId,
+) -> anyhow::Result<Option<usize>> {
+    let params = store.find_data_nodes_by_function(function_id)?;
+    Ok(params
+        .iter()
+        .filter(|dn| dn.kind == DataNodeKind::Parameter)
+        .position(|dn| &dn.id == param_node_id))
+}
+
+/// Resolve a [`CallsiteId`] to its callee [`SymbolId`].
+///
+/// Returns `Ok(None)` when the callsite is not found in the DB or has no
+/// resolved callee.  Callers can decide whether that is an error condition
+/// (e.g. early-return with empty edges).
+pub(crate) fn resolve_callsite_to_callee(
+    store: &dyn TraceStore,
+    callsite_id: &CallsiteId,
+) -> anyhow::Result<Option<SymbolId>> {
+    let resolved = store.find_resolved_callsites_by_id(callsite_id)?;
+    Ok(resolved.first().map(|rc| rc.callee))
+}
 
 #[cfg(test)]
 mod tests {

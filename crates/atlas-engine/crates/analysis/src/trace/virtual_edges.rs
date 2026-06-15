@@ -126,11 +126,8 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
 
                 // Layer 1: direct callers
                 let direct_callers = store.find_resolved_callsites_by_callee(&function_id)?;
-                let callee_params = store.find_data_nodes_by_function(&function_id)?;
-                let param_index = callee_params
-                    .iter()
-                    .filter(|dn| dn.kind == DataNodeKind::Parameter)
-                    .position(|dn| &dn.id == target_id);
+                let param_index =
+                    crate::cross_function::find_param_index(store, &function_id, target_id)?;
 
                 for rc in &direct_callers {
                     let cs = &rc.callsite;
@@ -256,11 +253,11 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
                 };
 
                 // Find the callsite → get the callee symbol
-                let resolved = store.find_resolved_callsites_by_id(callsite_id)?;
-                let callee_sym_id = match resolved.first() {
-                    Some(rc) => rc.callee,
-                    None => return Ok(vec![]),
-                };
+                let callee_sym_id =
+                    match crate::cross_function::resolve_callsite_to_callee(store, callsite_id)? {
+                        Some(sym) => sym,
+                        None => return Ok(vec![]),
+                    };
 
                 // Try summary-based bridge first.
                 // Pass None for function_range: SummaryBuilder uses all DataNodes
