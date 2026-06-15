@@ -8,8 +8,8 @@
 
 use crate::languages::shared::{
     compact_signature, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_assign_value, make_df_parameter, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    make_df_assign_value, make_df_call_arg, make_df_parameter, make_df_return_value,
+    make_reference_use, make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
 
@@ -317,24 +317,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call_expression", "new_expression"]),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
-        "df.call_arg" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(
-                node,
-                &["call_expression", "new_expression"],
-            )
-            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&types::ids::SymbolId>,
-                "call_arg",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
-            (Some(dn), None)
-        }
+        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["call_expression", "new_expression"]),
         "df.call_target" => node_text(node, source)
             .map(|terminal_name| {
                 // For member_expression captures (e.g., "conn.close"), walk up to the

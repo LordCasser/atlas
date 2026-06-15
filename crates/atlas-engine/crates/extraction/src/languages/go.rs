@@ -16,8 +16,9 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_assign_value, make_df_parameter, make_df_receiver_or_literal,
-    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    make_df_assign_value, make_df_call_arg, make_df_parameter,
+    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
+    make_scope_def_auto_name,
 };
 use std::collections::HashMap;
 use types::bindings::BindingDef;
@@ -566,23 +567,7 @@ fn normalize_go_dataflow_builder(
             );
             (Some(dn), None)
         }
-        "df.call_arg" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id =
-                crate::languages::shared::find_call_expression(node, &["call_expression"]).map(
-                    |ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32),
-                );
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "call_arg",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            let dn = DataNode::call_arg(node_id, file_id, None, callsite_id, Some(&text), range);
-            (Some(dn), None)
-        }
+        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["call_expression"]),
         "df.field_name" => node_text(node, source)
             .map(|name| {
                 let access_path = node

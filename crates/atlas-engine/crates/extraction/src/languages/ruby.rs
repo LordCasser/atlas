@@ -24,8 +24,8 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_value,
-    make_df_parameter, make_df_receiver_or_literal, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -512,30 +512,7 @@ fn normalize_ruby_dataflow_builder(
                 None,
             )
         }
-        "df.call_arg" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "call_arg",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode::call_arg(
-                    node_id,
-                    file_id,
-                    None,
-                    callsite_id,
-                    Some(&text),
-                    range,
-                )),
-                None,
-            )
-        }
+        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["call"]),
         "df.field_name" => {
             // Build qualified access_path from receiver.method like df.call_target
             let terminal_text = node_text(node, source).unwrap_or_default();

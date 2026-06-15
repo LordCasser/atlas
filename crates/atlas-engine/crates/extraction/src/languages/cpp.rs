@@ -12,8 +12,8 @@ use crate::frontend::{
 use crate::languages::shared::{
     SymbolDefBuilder, compact_signature, find_c_like_declaration_header, leading_parenthesized,
     make_binding_def, make_df_assign_field_target, make_df_assign_value,
-    make_df_assign_target, make_df_parameter, make_df_receiver_or_literal,
-    make_df_return_value, make_reference_use, make_scope_def,
+    make_df_assign_target, make_df_call_arg, make_df_parameter,
+    make_df_receiver_or_literal, make_df_return_value, make_reference_use, make_scope_def,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -419,33 +419,7 @@ fn normalize_cpp_dataflow_builder(
                 )
             })
             .unwrap_or((None, None)),
-        "df.call_arg" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(
-                node,
-                &["call_expression", "new_expression"],
-            )
-            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "call_arg",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode::call_arg(
-                    node_id,
-                    file_id,
-                    None,
-                    callsite_id,
-                    Some(&text),
-                    range,
-                )),
-                None,
-            )
-        }
+        "df.call_arg" => make_df_call_arg(file_id, node, source, range, &["call_expression", "new_expression"]),
         "df.field_name" => node_text(node, source)
             .map(|name| {
                 let access_path = node

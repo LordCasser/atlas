@@ -526,6 +526,48 @@ pub fn make_df_assign_value(
     )
 }
 
+/// Construct a CallArg DataNode for `"df.call_arg"` and return it as
+/// `(Some(dn), None)`.
+///
+/// Walks up the parent chain to find the enclosing call expression using
+/// `find_call_expression` with per-language `call_kinds`. The resulting
+/// callsite_id is set on the DataNode for call-graph linking.
+///
+/// Used by 10 of 12 language adapters for the `"df.call_arg"` arm.
+/// PHP is excluded because it strips sigils from the text.
+/// Cangjie is excluded because it uses a custom `find_call_expression_cangjie`
+/// helper.
+pub fn make_df_call_arg(
+    file_id: FileId,
+    node: tree_sitter::Node,
+    source: &str,
+    range: TextRange,
+    call_kinds: &[&str],
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    let text = super::node_text(node, source).unwrap_or_default();
+    let callsite_id = find_call_expression(node, call_kinds)
+        .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+    let node_id = DataNodeId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        "call_arg",
+        Some(&text),
+        None,
+        range.start_byte,
+    );
+    (
+        Some(DataNode::call_arg(
+            node_id,
+            file_id,
+            None,
+            callsite_id,
+            Some(&text),
+            range,
+        )),
+        None,
+    )
+}
+
 // ── Shared call-expression ancestor walk ───────────────────────────────
 
 /// Walk up the AST parent chain from `node` to find the first ancestor
