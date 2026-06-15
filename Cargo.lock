@@ -185,7 +185,6 @@ dependencies = [
  "atlas-engine",
  "blake3",
  "criterion",
- "hex",
  "rmcp",
  "serde",
  "serde_json",
