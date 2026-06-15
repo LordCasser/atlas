@@ -45,20 +45,7 @@ impl ToolRouter {
         ) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                let candidates_str: Vec<String> = candidates
-                    .iter()
-                    .take(5)
-                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
-                    .collect();
-                return (
-                    format!(
-                        "Symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
-                        symbol,
-                        candidates.len(),
-                        candidates_str.join(", ")
-                    ),
-                    true,
-                );
+                return super::format_ambiguous_error(&candidates, &symbol);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {symbol}");

@@ -64,21 +64,8 @@ impl ToolRouter {
         ) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                let candidates_str: Vec<String> = candidates
-                    .iter()
-                    .take(5)
-                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
-                    .collect();
-                return (
-                    json!({
-                        "error": format!(
-                            "Field symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
-                            field_qname, candidates.len(), candidates_str.join(", ")
-                        )
-                    })
-                    .to_string(),
-                    true,
-                );
+                let (msg, is_error) = super::format_ambiguous_error(&candidates, field_qname);
+                return (json!({"error": msg}).to_string(), is_error);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {field_qname}");
@@ -95,21 +82,8 @@ impl ToolRouter {
         ) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                let candidates_str: Vec<String> = candidates
-                    .iter()
-                    .take(5)
-                    .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
-                    .collect();
-                return (
-                    json!({
-                        "error": format!(
-                            "Target symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
-                            target_qname, candidates.len(), candidates_str.join(", ")
-                        )
-                    })
-                    .to_string(),
-                    true,
-                );
+                let (msg, is_error) = super::format_ambiguous_error(&candidates, target_qname);
+                return (json!({"error": msg}).to_string(), is_error);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {target_qname}");
@@ -361,21 +335,8 @@ impl ToolRouter {
             ) {
                 Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
                 Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                    let candidates_str: Vec<String> = candidates
-                        .iter()
-                        .take(5)
-                        .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
-                        .collect();
-                    return (
-                        json!({
-                            "error": format!(
-                                "Field symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
-                                field_qname, candidates.len(), candidates_str.join(", ")
-                            )
-                        })
-                        .to_string(),
-                        true,
-                    );
+                    let (msg, is_error) = super::format_ambiguous_error(&candidates, field_qname);
+                    return (json!({"error": msg}).to_string(), is_error);
                 }
                 Ok(SymbolResolution::NotFound { .. }) => {
                     let mut err = format!("Symbol not found: {field_qname}");

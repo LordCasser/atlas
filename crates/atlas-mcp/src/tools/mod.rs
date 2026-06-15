@@ -25,7 +25,7 @@ use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::query_snapshot::QuerySnapshot;
 use crate::tools::runtime::graph_runtime::GraphMode;
-use symbol_selector::{SymbolInput, parse_symbol_input};
+use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
 
 use crate::tools::active_project::ActiveProject;
 use crate::tools::project_slot::ProjectSlot;
@@ -856,6 +856,42 @@ impl SnapshotStore for ToolRouter {
 // -------------------------------------------------------------------
 // Shared helper functions (module-level, not on ToolRouter)
 // -------------------------------------------------------------------
+
+/// Validates that a symbol name does not exceed the maximum length.
+/// Returns `Err(message)` if too long.
+pub(crate) fn validate_symbol_name_length(name: &str) -> Result<(), String> {
+    if name.len() > MAX_SYMBOL_NAME_LENGTH {
+        Err(format!(
+            "symbol exceeds max length of {MAX_SYMBOL_NAME_LENGTH}"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Format an "ambiguous symbol" error message for display.
+///
+/// Produces a human-readable error listing up to 5 candidate matches
+/// with file, line, and kind information.
+pub(crate) fn format_ambiguous_error(
+    candidates: &[ScoredCandidate],
+    symbol_name: &str,
+) -> (String, bool) {
+    let candidates_str: Vec<String> = candidates
+        .iter()
+        .take(5)
+        .map(|c| format!("{}::{} [{}]", c.file_path, c.line, c.kind))
+        .collect();
+    (
+        format!(
+            "Symbol '{}' is ambiguous ({} matches: {}). Use a SymbolSelector object from search results (symbol_ref field).",
+            symbol_name,
+            candidates.len(),
+            candidates_str.join(", ")
+        ),
+        true,
+    )
+}
 
 /// Render a graph node as a JSON object.
 ///
