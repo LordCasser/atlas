@@ -11,7 +11,14 @@ pub trait RuleLearningStrategy: std::fmt::Debug + Send + Sync {
     fn discover_candidates(&self, store: &db::Store) -> anyhow::Result<Vec<LearnedRuleCandidate>>;
 
     /// Human-readable explanation for a candidate.
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String;
+    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
+        format!(
+            "{} function '{}' matched {} pattern",
+            self.language(),
+            candidate.pattern,
+            candidate.rule_kind
+        )
+    }
 
     /// Minimum number of usage sites before a candidate is considered.
     fn min_usage_count(&self) -> usize {

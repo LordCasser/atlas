@@ -127,12 +127,6 @@ impl RuleLearningStrategy for TypeScriptLearningStrategy {
         Ok(Vec::new())
     }
 
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
-        format!(
-            "TypeScript function '{}' matched {} pattern",
-            candidate.pattern, candidate.rule_kind
-        )
-    }
 }
 
 #[cfg(test)]

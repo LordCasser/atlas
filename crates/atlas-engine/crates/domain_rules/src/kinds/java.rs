@@ -123,12 +123,6 @@ impl RuleLearningStrategy for JavaLearningStrategy {
         Ok(Vec::new())
     }
 
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
-        format!(
-            "Java method '{}' matched {} pattern",
-            candidate.pattern, candidate.rule_kind
-        )
-    }
 }
 
 #[cfg(test)]

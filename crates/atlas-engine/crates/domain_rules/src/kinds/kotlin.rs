@@ -124,12 +124,6 @@ impl RuleLearningStrategy for KotlinLearningStrategy {
         Ok(Vec::new())
     }
 
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
-        format!(
-            "Kotlin function '{}' matched {} pattern",
-            candidate.pattern, candidate.rule_kind
-        )
-    }
 }
 
 #[cfg(test)]

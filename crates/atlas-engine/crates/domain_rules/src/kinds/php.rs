@@ -121,12 +121,6 @@ impl RuleLearningStrategy for PhpLearningStrategy {
         Ok(Vec::new())
     }
 
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
-        format!(
-            "PHP function '{}' matched {} pattern",
-            candidate.pattern, candidate.rule_kind
-        )
-    }
 }
 
 #[cfg(test)]

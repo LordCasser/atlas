@@ -123,12 +123,6 @@ impl RuleLearningStrategy for RubyLearningStrategy {
         Ok(Vec::new())
     }
 
-    fn explain_candidate(&self, candidate: &LearnedRuleCandidate) -> String {
-        format!(
-            "Ruby method '{}' matched {} pattern",
-            candidate.pattern, candidate.rule_kind
-        )
-    }
 }
 
 #[cfg(test)]
