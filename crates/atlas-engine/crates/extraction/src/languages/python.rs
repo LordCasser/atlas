@@ -4,7 +4,7 @@
 
 use crate::languages::shared::{
     compact_signature, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_parameter, make_reference_use, make_scope_def_auto_name,
+    make_df_assign_value, make_df_parameter, make_reference_use, make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
 use types::*;
@@ -159,32 +159,7 @@ fn normalize_py_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&types::ids::SymbolId>,
-                "expr",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            let dn = DataNode {
-                id: node_id,
-                file_id,
-                function_id: None,
-                kind: types::enums::DataNodeKind::Expr,
-                binding_id: None,
-                callsite_id,
-                name: Some(text),
-                access_path: None,
-                arg_index: None,
-                range,
-            };
-            (Some(dn), None)
-        }
+        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call"]),
         "df.return_value" => {
             let node_id = DataNodeId::generate(
                 &file_id,

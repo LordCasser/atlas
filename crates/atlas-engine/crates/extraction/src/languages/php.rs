@@ -17,7 +17,7 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target,
-    make_df_receiver_or_literal, make_df_return_value,
+    make_df_assign_value, make_df_receiver_or_literal, make_df_return_value,
     make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
@@ -440,41 +440,7 @@ fn normalize_php_dataflow_builder(
                 )
             })
             .unwrap_or((None, None)),
-        "df.assign_value" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(
-                node,
-                &[
-                    "function_call_expression",
-                    "member_call_expression",
-                    "object_creation_expression",
-                ],
-            )
-            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "expr",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            (
-                Some(DataNode {
-                    id: node_id,
-                    file_id,
-                    function_id: None,
-                    kind: DataNodeKind::Expr,
-                    binding_id: None,
-                    callsite_id,
-                    name: Some(text),
-                    access_path: None,
-                    arg_index: None,
-                    range,
-                }),
-                None,
-            )
-        }
+        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["function_call_expression", "member_call_expression", "object_creation_expression"]),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|raw_name| {

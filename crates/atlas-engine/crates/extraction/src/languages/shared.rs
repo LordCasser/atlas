@@ -481,6 +481,50 @@ pub fn make_df_receiver_or_literal(
     };
     (Some(dn), None)
 }
+/// Construct an Expr DataNode for `"df.assign_value"` and return it as
+/// `(Some(dn), None)`.
+///
+/// Walks up the parent chain to find the enclosing call expression using
+/// `find_call_expression` with per-language `call_kinds`. The resulting
+/// callsite_id is set on the DataNode for call-graph linking.
+///
+/// Used by 11 of 12 language adapters for the `"df.assign_value"` arm.
+/// Cangjie is excluded because it uses a custom `find_call_expression_cangjie`
+/// helper.
+pub fn make_df_assign_value(
+    file_id: FileId,
+    node: tree_sitter::Node,
+    source: &str,
+    range: TextRange,
+    call_kinds: &[&str],
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    let text = super::node_text(node, source).unwrap_or_default();
+    let callsite_id = find_call_expression(node, call_kinds)
+        .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+    let node_id = DataNodeId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        "expr",
+        Some(&text),
+        None,
+        range.start_byte,
+    );
+    (
+        Some(DataNode {
+            id: node_id,
+            file_id,
+            function_id: None,
+            kind: DataNodeKind::Expr,
+            binding_id: None,
+            callsite_id,
+            name: Some(text),
+            access_path: None,
+            arg_index: None,
+            range,
+        }),
+        None,
+    )
+}
 
 // ── Shared call-expression ancestor walk ───────────────────────────────
 

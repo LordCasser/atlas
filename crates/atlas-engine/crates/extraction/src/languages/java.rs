@@ -13,8 +13,9 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
-    make_df_assign_target, make_df_parameter, make_df_receiver_or_literal,
-    make_df_return_value, make_reference_use, make_scope_def_auto_name,
+    make_df_assign_target, make_df_assign_value, make_df_parameter,
+    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
+    make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -409,35 +410,7 @@ fn normalize_java_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => {
-            let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = crate::languages::shared::find_call_expression(
-                node,
-                &["method_invocation", "object_creation_expression"],
-            )
-            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
-            let node_id = DataNodeId::generate(
-                &file_id,
-                None::<&SymbolId>,
-                "expr",
-                Some(&text),
-                None,
-                range.start_byte,
-            );
-            let dn = DataNode {
-                id: node_id,
-                file_id,
-                function_id: None,
-                kind: DataNodeKind::Expr,
-                binding_id: None,
-                callsite_id,
-                name: Some(text),
-                access_path: None,
-                arg_index: None,
-                range,
-            };
-            (Some(dn), None)
-        }
+        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["method_invocation", "object_creation_expression"]),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|name| {
