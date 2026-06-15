@@ -278,3 +278,17 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 查询时的调度和决策层，不重写 extraction 管线。
 
 详见 [`architecture.md` §10.1.10-10.1.11](./architecture.md) 中的 Focus-Lazy 架构约束。
+
+## 10. 代码质量与技术债务清理
+
+### 10.1 Capability Profile 数据声明化
+
+当前 `types/src/capability.rs` 中 14 种语言的 `LanguageCapabilityProfile` 均以 ~60-70 行的 struct literal 硬编码构造，约 80% 字段为重复样板。Go 和 Python 已通过 `ProfileSpec` + `build_profile()` 原型迁移为数据声明模式。
+
+- 将剩余 12 种语言（TypeScript、JavaScript、Java、C、C++、C#、PHP、Ruby、Rust、Kotlin、Cangjie、ArkTS）逐语言迁移到 `ProfileSpec` 模式。
+- 每个迁移以 identity test 验证产出 `LanguageCapabilityProfile` 与迁移前完全一致。
+- 迁移完成后考虑删除原始 `ts_profile()` / `java_profile()` 等构造器，统一为 `build_profile(&LANG_PROFILE_SPEC)`。
+
+### 10.2 FeatureMatrix 镜像方法合并
+
+`FeatureMatrix::supported_feature_names()` 和 `FeatureMatrix::unsupported_feature_names()` 是两个结构完全相同的方法（一个在 `is_supported()` 为 true 时 push，另一个在 false 时 push）。可合并为一个返回 `(Vec<String>, Vec<String>)` 的单一方法，或改为接受谓词参数。
