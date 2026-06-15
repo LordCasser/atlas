@@ -88,10 +88,7 @@ pub enum ClosureStrategy {
 pub struct WindowBudget {
     pub max_files: usize,
     pub max_time_ms: u64,
-    pub max_symbols: usize,
-    pub max_edges: usize,
     pub max_fanout_per_name: usize,
-    pub max_bytes: u64,
     pub max_iterations: u32,
 }
 
@@ -100,10 +97,7 @@ impl Default for WindowBudget {
         WindowBudget {
             max_files: 30,
             max_time_ms: 18_000,
-            max_symbols: 0,
-            max_edges: 0,
             max_fanout_per_name: 20,
-            max_bytes: 0,
             max_iterations: 3,
         }
     }
@@ -115,10 +109,7 @@ impl WindowBudget {
         WindowBudget {
             max_files: 100,
             max_time_ms: 60_000,
-            max_symbols: 0,
-            max_edges: 0,
             max_fanout_per_name: 20,
-            max_bytes: 0,
             max_iterations: 1,
         }
     }

@@ -726,30 +726,7 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "Phase 2: needs multi-file DB setup with imports"]
-    fn closure_plan_discovers_direct_deps() {
-        // Setup: bar.ts imports ./foo. Verify direct_deps contains foo.
-    }
 
-    #[test]
-    #[ignore = "Phase 2: needs multi-file DB setup with imports"]
-    fn closure_plan_discovers_transitive_deps() {
-        // Setup: bar.ts → ./foo → ./baz. Verify transitive_deps contains baz.
-    }
-
-    #[test]
-    #[ignore = "Phase 2: needs multi-file DB setup with imports"]
-    fn bare_imports_are_external() {
-        // Setup: bar.ts imports "react" (is_relative=false).
-        // Verify resolve_import_target returns None.
-    }
-
-    #[test]
-    #[ignore = "Phase 2: needs multi-file DB setup with imports"]
-    fn prioritize_deps_before_seed() {
-        // Setup: seed imports dep. Verify workset.order has dep before seed.
-    }
 
     // ── Include root resolution tests ─────────────────────────────────
 

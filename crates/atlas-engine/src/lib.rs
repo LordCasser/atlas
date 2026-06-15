@@ -37,7 +37,7 @@ pub use lazy_crate::LazyDataflowService;
 
 mod closure_planner;
 /// Precision method tests: validations for best(), worst(), is_exact(), is_unavailable().
-pub mod compat;
+mod compat;
 /// Focus-driven incremental analysis types: FocusSeed, FocusWindow, FocusClosure.
 pub mod focus;
 mod index_precision;

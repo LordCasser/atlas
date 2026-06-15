@@ -11,10 +11,7 @@ fn test_default_window_budget() {
     let budget = WindowBudget::default();
     assert_eq!(budget.max_files, 30);
     assert_eq!(budget.max_time_ms, 18_000);
-    assert_eq!(budget.max_symbols, 0);
-    assert_eq!(budget.max_edges, 0);
     assert_eq!(budget.max_fanout_per_name, 20);
-    assert_eq!(budget.max_bytes, 0);
     assert_eq!(budget.max_iterations, 3);
 }
 
@@ -23,10 +20,7 @@ fn test_background_budget() {
     let budget = WindowBudget::background();
     assert_eq!(budget.max_files, 100);
     assert_eq!(budget.max_time_ms, 60_000);
-    assert_eq!(budget.max_symbols, 0);
-    assert_eq!(budget.max_edges, 0);
     assert_eq!(budget.max_fanout_per_name, 20);
-    assert_eq!(budget.max_bytes, 0);
     assert_eq!(budget.max_iterations, 1);
 }
 
