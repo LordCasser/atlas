@@ -45,18 +45,6 @@ impl OverlayRuntime {
         }
     }
 
-    /// Increment the overlay generation counter.
-    /// Returns the new generation value.
-    /// Used primarily by tests; mutation methods bump counters directly via
-    /// `RuntimeInvalidation` for fine-grained ordering control.
-    #[allow(dead_code)]
-    pub fn increment_generation(&self) -> u64 {
-        self.invalidation
-            .overlay_generation
-            .fetch_add(1, Ordering::Relaxed)
-            + 1
-    }
-
     /// Get the current overlay generation (for cache comparison).
     /// Currently exercised only in tests; reserved for future cache invalidation logic.
     #[allow(dead_code)]
@@ -223,14 +211,6 @@ mod tests {
     fn generation_starts_at_one() {
         let or = create_test_overlay_runtime();
         assert_eq!(or.current_generation(), 1);
-    }
-
-    #[test]
-    fn increment_generation_returns_new_value() {
-        let or = create_test_overlay_runtime();
-        assert_eq!(or.increment_generation(), 2);
-        assert_eq!(or.increment_generation(), 3);
-        assert_eq!(or.current_generation(), 3);
     }
 
     // ── FP annotation mutation tests ─────────────────────────────────────────

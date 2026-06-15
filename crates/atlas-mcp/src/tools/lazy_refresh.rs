@@ -120,19 +120,6 @@ impl LazyRefreshQueue {
     pub(crate) fn mark_rebuild_finished(&self) {
         self.rebuild_in_progress.store(false, Ordering::Release);
     }
-
-    /// Drop all queued refresh state.
-    ///
-    /// Used when the active project changes.
-    #[allow(dead_code)]
-    pub(crate) fn clear(&self) {
-        if let Ok(mut pending) = self.pending_file_ids.lock() {
-            pending.clear();
-        }
-        self.cumulative_count.store(0, Ordering::Release);
-        self.rebuild_needed.store(false, Ordering::Release);
-        self.rebuild_in_progress.store(false, Ordering::Release);
-    }
 }
 
 #[cfg(test)]

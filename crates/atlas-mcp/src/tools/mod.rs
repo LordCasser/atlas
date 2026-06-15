@@ -21,7 +21,7 @@ use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolI
 
 use serde_json::{Value, json};
 
-use crate::tools::analysis_envelope::{AnalysisEnvelope, CapabilityStats, SnapshotStore};
+use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
 use crate::tools::analysis_response::{WorkItem, WorkProgress, precision_to_view};
 use crate::tools::query_snapshot::QuerySnapshot;
 use crate::tools::runtime::graph_runtime::GraphMode;
@@ -351,14 +351,6 @@ impl ToolRouter {
         }
 
         (focus_result, warnings)
-    }
-
-    /// Query the DB for real capability file counts.
-    /// Returns None if the query fails (graceful degradation).
-    /// Reserved for future status/capabilities reporting endpoints.
-    #[allow(dead_code)]
-    pub(crate) fn get_capability_stats(&self) -> Option<CapabilityStats> {
-        self.active().store_query_runtime.get_capability_stats()
     }
 
     /// Inject graph edge provenance into the response JSON when the graph
@@ -818,8 +810,6 @@ impl ToolRouter {
         (roots, warnings)
     }
 
-    // -------------------------------------------------------------------
-    // Query snapshot + investigation helpers
     // -------------------------------------------------------------------
     // Query snapshot + investigation helpers
     // -------------------------------------------------------------------

@@ -20,25 +20,19 @@ use std::sync::Arc;
 
 use atlas_engine::{FileId, SourceExtractor, Store, SymbolId};
 
-use crate::tools::analysis_envelope::CapabilityStats;
-
 /// Direct store-fact queries (symbols, files, usages) that don't
 /// require the full in-memory graph or focus-driven extraction.
 pub struct StoreQueryRuntime {
     pub store: Arc<Store>,
     pub source_extractor: SourceExtractor,
-    /// Root directory of the project. Stored for future path-resolution helpers.
-    #[allow(dead_code)]
-    pub project_root: PathBuf,
 }
 
 impl StoreQueryRuntime {
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
-        let source_extractor = SourceExtractor::new(store.clone(), project_root.clone());
+        let source_extractor = SourceExtractor::new(store.clone(), project_root);
         Self {
             store,
             source_extractor,
-            project_root,
         }
     }
 
@@ -79,20 +73,6 @@ impl StoreQueryRuntime {
         }
     }
 
-    /// Query the DB for real capability file counts.
-    /// Returns None if the query fails (graceful degradation).
-    /// Reserved for future status/capabilities reporting endpoints.
-    #[allow(dead_code)]
-    pub fn get_capability_stats(&self) -> Option<CapabilityStats> {
-        let (files_with_dataflow, files_structural_only, files_manifest_only, files_with_cfg) =
-            self.store.get_capability_counts().ok()?;
-        Some(CapabilityStats {
-            files_with_dataflow,
-            files_structural_only,
-            files_manifest_only,
-            files_with_cfg,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -116,13 +96,5 @@ mod tests {
         // Should fall back to the hex representation of the blake3 hash.
         assert!(!result.is_empty());
         assert_eq!(result.len(), 64);
-    }
-
-    #[test]
-    fn project_root_is_accessible() {
-        let sqr = create_test_store_query_runtime();
-        // Prove the project_root field is wired correctly — reserved for
-        // future path-resolution helpers.
-        assert_eq!(sqr.project_root, PathBuf::from("/test/project"));
     }
 }

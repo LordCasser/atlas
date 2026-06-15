@@ -9,7 +9,7 @@
 //!
 //! # Public API
 //! - `ensure_initialized()`: build graph snapshot from DB (idempotent)
-//! - `precision_info()`: return GraphPrecision { mode, symbol_count, edge_count }
+//! - `precision_info()`: return GraphPrecision { mode, edge_count }
 //! - `provider()`: return &dyn GraphProvider — sole entry point for graph queries
 //! - `is_graph_stale()` / `mark_graph_fresh()`: generation-based staleness tracking
 //!
@@ -33,8 +33,6 @@ use atlas_engine::{SearchEngine, SourceExtractor, Store};
 use super::closure_graph_provider::ClosureGraphProvider;
 use super::graph_state::GraphState;
 use super::invalidation::RuntimeInvalidation;
-use crate::tools::lazy_refresh::LazyRefreshQueue;
-
 use super::graph_provider::GraphProvider;
 
 // ── Precision types ─────────────────────────────────────────────────────
@@ -58,10 +56,6 @@ pub struct GraphPrecision {
     pub initialized: bool,
     /// Total edge count in the current snapshot (approximate).
     pub edge_count: usize,
-    /// Approximate symbol count in the current snapshot.
-    /// Reserved for future MCP response enrichment (e.g. `symbol_count` in status output).
-    #[allow(dead_code)]
-    pub symbol_count: usize,
 }
 
 // ── GraphRuntime ────────────────────────────────────────────────────────
@@ -137,23 +131,6 @@ impl GraphRuntime {
             .ok_or_else(|| anyhow::anyhow!("graph not initialized"))
     }
 
-    /// Try to apply a background-built graph or spawn a rebuild.
-    #[allow(dead_code)]
-    pub fn maybe_refresh(
-        &mut self,
-        lazy_refresh_queue: Arc<LazyRefreshQueue>,
-    ) -> anyhow::Result<()> {
-        self.state
-            .try_apply_or_spawn_rebuild(self.store.clone(), lazy_refresh_queue);
-        Ok(())
-    }
-
-    /// Refresh the graph snapshot after lazy extraction for specific files.
-    #[allow(dead_code)]
-    pub fn refresh_for_files(&mut self, file_ids: &[atlas_engine::FileId]) -> anyhow::Result<()> {
-        self.state.refresh_graph_for_files(&self.store, file_ids)
-    }
-
     /// Returns true if the graph needs a full rebuild (generation changed).
     pub(crate) fn is_graph_stale(&self) -> bool {
         let current = self.invalidation.graph_generation.load(Ordering::Relaxed);
@@ -183,7 +160,6 @@ impl GraphRuntime {
             mode: self.mode,
             initialized: self.state.graph_initialized,
             edge_count: self.state.edge_count(),
-            symbol_count: self.state.symbol_count(),
         }
     }
 
@@ -256,30 +232,6 @@ mod tests {
             se_opt.is_some(),
             "search_engine should be accessible after init"
         );
-    }
-
-    #[test]
-    fn precision_info_includes_symbol_count() {
-        let gr = create_test_graph_runtime();
-        let info = gr.precision_info();
-        // symbol_count field is reserved for future MCP response enrichment;
-        // verify it is initialized and accessible.
-        assert_eq!(info.symbol_count, 0);
-    }
-
-    #[test]
-    fn maybe_refresh_does_not_panic_on_uninitialized_graph() {
-        let mut gr = create_test_graph_runtime();
-        let lrq = LazyRefreshQueue::new();
-        let result = gr.maybe_refresh(lrq);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn refresh_for_files_handles_empty_list() {
-        let mut gr = create_test_graph_runtime();
-        let result = gr.refresh_for_files(&[]);
-        assert!(result.is_ok());
     }
 
     #[test]

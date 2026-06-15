@@ -71,14 +71,6 @@ impl GraphState {
             .unwrap_or(0)
     }
 
-    /// Return the number of symbols in the current graph snapshot (0 if not init).
-    pub(crate) fn symbol_count(&self) -> usize {
-        self.search
-            .as_ref()
-            .map(|s| s.graph_snapshot().node_count())
-            .unwrap_or(0)
-    }
-
     /// Atomically swap in a pre-built graph, updating both search and context engines.
     pub(crate) fn swap_graph(&mut self, store: &Store, graph: Arc<GraphEngine>) {
         if let Some(ref mut s) = self.search {
