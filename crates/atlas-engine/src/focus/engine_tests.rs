@@ -420,6 +420,46 @@ fn test_build_closure_budget_exhausted() {
 }
 
 #[test]
+fn test_build_closure_time_budget_records_gap() {
+    let store = test_store();
+    let seed_id = insert_file_structural_complete(&store, "src/main.c");
+    let _sib = insert_file_structural_complete(&store, "src/other.c");
+    let engine = test_engine(store);
+
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: seed_id,
+            language: Language::C,
+        },
+        strategies: vec![ClosureStrategy::SameDirectory],
+        budget: WindowBudget {
+            max_time_ms: 0,
+            ..WindowBudget::default()
+        },
+        language: Language::C,
+        max_iterations: 3,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-time-budget-exhausted")
+        .expect("build_closure should succeed");
+
+    assert!(
+        closure.files.contains(&seed_id),
+        "seed file must still be returned when time budget prevents expansion"
+    );
+    assert!(
+        closure.gaps.iter().any(|gap| matches!(
+            gap,
+            types::structs::KnownGap::BudgetExhausted { strategy, .. }
+                if strategy.contains("time_budget")
+        )),
+        "closure must record a time budget gap: {:?}",
+        closure.gaps
+    );
+}
+
+#[test]
 fn test_build_closure_records_gap_on_missing_file() {
     let store = test_store();
     // Do NOT insert any files — store is empty, identify the seed by Symbol
@@ -1373,7 +1413,7 @@ fn test_callgraph_incoming_finds_caller_file() {
     let main_id = insert_file_structural_complete(&store, "src/main.c");
     let helper_id = insert_file_structural_complete(&store, "src/helper.c");
 
-    let main_sym = insert_function_symbol(&store, main_id, "main");
+    let _main_sym = insert_function_symbol(&store, main_id, "main");
     let helper_sym = insert_function_symbol(&store, helper_id, "helper");
 
     // Call reference in helper.c → "main" (helper calls main)
@@ -1440,7 +1480,7 @@ fn test_callgraph_both_finds_both_directions() {
 
     let sym_a = insert_function_symbol(&store, file_a, "a");
     let sym_b = insert_function_symbol(&store, file_b, "b");
-    let sym_c = insert_function_symbol(&store, file_c, "c");
+    let _sym_c = insert_function_symbol(&store, file_c, "c");
 
     // Reference A → "b" (A calls B) — outgoing from B, incoming to A
     let ref_a_to_b =
@@ -1696,7 +1736,7 @@ fn test_callgraph_incoming_from_scoped_resolution() {
     let main_id = insert_file_structural_complete(&store, "src/main.c");
     let helper_id = insert_file_structural_complete(&store, "src/helper.c");
 
-    let main_sym = insert_function_symbol(&store, main_id, "main");
+    let _main_sym = insert_function_symbol(&store, main_id, "main");
     let helper_sym = insert_function_symbol(&store, helper_id, "helper");
 
     // Call reference in helper.c → "main" (helper calls main)

@@ -25,8 +25,11 @@
 //! - [`CandidateProvider`] is a trait — swap implementations for different
 //!   discovery strategies (e.g. compile_commands.json, ctags, custom heuristics).
 
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -40,6 +43,13 @@ use types::{FileInfo, Language, ParseStatus, layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
 const MAX_CANDIDATE_FILES: usize = 10;
+
+/// Maximum time to spend asking ripgrep for lazy candidates.
+///
+/// Large repositories such as the Linux kernel can contain tens of thousands
+/// of source files. Candidate discovery must be bounded independently from
+/// extraction so a broad query never waits for ripgrep to scan the full tree.
+const RG_CANDIDATE_TIMEOUT_MS: u64 = 1_500;
 
 /// Wall-clock guard for a single lazy structural invocation (milliseconds).
 ///
@@ -103,8 +113,8 @@ impl CandidateProvider for DefaultCandidateProvider {
         if !candidates.is_empty() {
             return Ok(candidates);
         }
-        // 2. Fallback: ripgrep
-        self.candidates_from_ripgrep(name)
+        // 2. Fallback: bounded ripgrep
+        self.candidates_from_ripgrep(name, None)
     }
 
     fn candidates_for_path(&self, path: &str) -> Result<Vec<FileId>> {
@@ -135,50 +145,28 @@ impl DefaultCandidateProvider {
         Ok(file_ids)
     }
 
-    fn candidates_from_ripgrep(&self, name: &str) -> Result<Vec<FileId>> {
+    fn candidates_from_ripgrep(&self, name: &str, scope: Option<&str>) -> Result<Vec<FileId>> {
         let project_root = match &self.project_root {
             Some(r) => r.clone(),
             None => return Ok(Vec::new()),
         };
 
-        let atlasignore = project_root.join(".atlasignore");
-        let has_atlasignore = atlasignore.exists();
-
-        let mut cmd = std::process::Command::new("rg");
-        cmd.args([
-            "--files-with-matches",
-            "--no-heading",
-            "--word-regexp",
-            "--fixed-strings",
-            "--max-count=1",
-        ]);
-        if has_atlasignore {
-            cmd.args(["--ignore-file", ".atlasignore"]);
+        let mut paths = run_rg_candidate_paths(&project_root, name, scope, true)?;
+        if paths.is_empty() {
+            paths = run_rg_candidate_paths(&project_root, name, scope, false)?;
         }
-        cmd.arg(name).current_dir(&project_root);
 
-        let output = cmd.output();
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => return Ok(Vec::new()),
-        };
         let mut file_ids = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .take(MAX_CANDIDATE_FILES)
-        {
-            let line = line.trim();
+        let mut seen = std::collections::HashSet::new();
+        for line in paths {
             if line.is_empty() {
                 continue;
             }
-            match self.store.resolve_file_id(&project_root, line) {
-                Ok(Some(file_id)) => file_ids.push(file_id),
-                _ => {
-                    if let Some(row) = self.store.find_file_inventory_by_path(line)? {
-                        if let Some(file_id) = file_id_from_inventory_bytes(&row.file_id) {
-                            file_ids.push(file_id);
-                        }
-                    }
+            if let Some(file_id) =
+                resolve_or_inventory_candidate(&self.store, &project_root, &line)?
+            {
+                if seen.insert(file_id) {
+                    file_ids.push(file_id);
                 }
             }
         }
@@ -220,6 +208,8 @@ pub struct EnsureStructuralResult {
     pub files_pending: usize,
     /// IDs of extraction jobs that are currently in-flight (AlreadyBuilding).
     pub pending_job_ids: Vec<String>,
+    /// Candidate files intentionally left for background focus warming.
+    pub deferred_file_ids: Vec<FileId>,
 }
 
 /// Entry point for query-driven lazy structural extraction.
@@ -270,6 +260,7 @@ impl LazyStructuralService {
                 precision: Precision::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
+                deferred_file_ids: vec![],
             });
         }
         self.ensure_structural_for_files(&candidates, None)
@@ -296,9 +287,56 @@ impl LazyStructuralService {
                 precision: Precision::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
+                deferred_file_ids: vec![],
             });
         }
         self.ensure_structural_for_files(&candidates, None)
+    }
+
+    /// Ensure a bounded number of candidate files matching `symbol_name`.
+    ///
+    /// This is used by latency-sensitive frontends such as MCP search. Candidate
+    /// discovery is already bounded, but parsing every cold candidate on the
+    /// first query can still exceed an AI client's tool timeout. Limiting the
+    /// synchronous parse count lets the first response return partial results
+    /// quickly while still warming the most likely files.
+    pub fn ensure_structural_for_symbol_in_scope_limited(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+        max_files: usize,
+    ) -> Result<EnsureStructuralResult> {
+        let mut candidates = self.candidates_for_symbol_in_scope(name, scope)?;
+        if candidates.is_empty() || max_files == 0 {
+            return Ok(EnsureStructuralResult {
+                files_built: 0,
+                files_cached: 0,
+                budget_exceeded: !candidates.is_empty(),
+                built_file_ids: vec![],
+                cached_file_ids: vec![],
+                precision: Precision::worst(),
+                files_pending: 0,
+                pending_job_ids: vec![],
+                deferred_file_ids: candidates,
+            });
+        }
+
+        let truncated = candidates.len() > max_files;
+        let deferred_file_ids = if truncated {
+            candidates[max_files..].to_vec()
+        } else {
+            Vec::new()
+        };
+        candidates.truncate(max_files);
+        let mut result = self.ensure_structural_for_files(&candidates, None)?;
+        result.budget_exceeded |= truncated;
+        result.deferred_file_ids = deferred_file_ids;
+        result.precision = crate::precision::structural_precision(
+            result.files_built,
+            result.files_cached,
+            result.budget_exceeded,
+        );
+        Ok(result)
     }
 
     /// Ensure a specific file has full structural facts.
@@ -379,6 +417,7 @@ impl LazyStructuralService {
             precision: Precision::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
+            deferred_file_ids: vec![],
         };
 
         for file_id in file_ids {
@@ -497,6 +536,7 @@ impl LazyStructuralService {
             precision: Precision::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
+            deferred_file_ids: vec![],
         };
 
         for file_id in file_ids {
@@ -751,43 +791,20 @@ impl LazyStructuralService {
             None => return Ok(Vec::new()),
         };
 
-        let mut cmd = std::process::Command::new("rg");
-        cmd.args([
-            "--files-with-matches",
-            "--no-heading",
-            "--word-regexp",
-            "--fixed-strings",
-            "--max-count=1",
-        ]);
-        if project_root.join(".atlasignore").exists() {
-            cmd.args(["--ignore-file", ".atlasignore"]);
+        let mut paths =
+            run_rg_candidate_paths(project_root, name, Some(normalized_scope.as_str()), true)?;
+        if paths.is_empty() {
+            paths =
+                run_rg_candidate_paths(project_root, name, Some(normalized_scope.as_str()), false)?;
         }
-        cmd.arg(name)
-            .arg(&normalized_scope)
-            .current_dir(project_root);
-
-        let output = match cmd.output() {
-            Ok(o) if o.status.success() => o,
-            _ => return Ok(Vec::new()),
-        };
 
         let mut seen = std::collections::HashSet::new();
         let mut file_ids = Vec::new();
-        for line in String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .take(MAX_CANDIDATE_FILES)
-        {
-            let rel = line.trim();
+        for rel in paths {
             if rel.is_empty() {
                 continue;
             }
-            let file_id = match self.store.resolve_file_id(project_root, rel)? {
-                Some(file_id) => Some(file_id),
-                None => self
-                    .store
-                    .find_file_inventory_by_path(rel)?
-                    .and_then(|row| file_id_from_inventory_bytes(&row.file_id)),
-            };
+            let file_id = resolve_or_inventory_candidate(&self.store, project_root, &rel)?;
             if let Some(file_id) = file_id {
                 if seen.insert(file_id) {
                     file_ids.push(file_id);
@@ -795,6 +812,205 @@ impl LazyStructuralService {
             }
         }
         Ok(file_ids)
+    }
+}
+
+fn resolve_or_inventory_candidate(
+    store: &Store,
+    project_root: &Path,
+    rel_path: &str,
+) -> Result<Option<FileId>> {
+    if let Some(file_id) = store.resolve_file_id(project_root, rel_path)? {
+        return Ok(Some(file_id));
+    }
+    if let Some(row) = store.find_file_inventory_by_path(rel_path)? {
+        return Ok(file_id_from_inventory_bytes(&row.file_id));
+    }
+    insert_inventory_candidate(store, project_root, rel_path)
+}
+
+fn insert_inventory_candidate(
+    store: &Store,
+    project_root: &Path,
+    rel_path: &str,
+) -> Result<Option<FileId>> {
+    if rel_path.is_empty() || Path::new(rel_path).is_absolute() {
+        return Ok(None);
+    }
+
+    let abs_path = project_root.join(rel_path);
+    let canonical_root = project_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize project root {}",
+            project_root.display()
+        )
+    })?;
+    let canonical_file = match abs_path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    if !canonical_file.starts_with(&canonical_root) {
+        return Ok(None);
+    }
+
+    let metadata = match std::fs::metadata(&canonical_file) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        _ => return Ok(None),
+    };
+    let language = Language::from_path(Path::new(rel_path)).unwrap_or_else(|| Language::default());
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+
+    #[cfg(unix)]
+    let (inode, dev) = {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.ino() as i64, metadata.dev() as i64)
+    };
+    #[cfg(not(unix))]
+    let (inode, dev) = (0i64, 0i64);
+
+    let file_id = FileId::generate(rel_path);
+    store.insert_file_inventory(
+        &file_id,
+        rel_path,
+        language.as_str(),
+        mtime,
+        metadata.len() as i64,
+        inode,
+        dev,
+    )?;
+    Ok(Some(file_id))
+}
+
+fn run_rg_candidate_paths(
+    project_root: &Path,
+    name: &str,
+    scope: Option<&str>,
+    definition_like: bool,
+) -> Result<Vec<String>> {
+    let mut cmd = std::process::Command::new("rg");
+    cmd.args(["--files-with-matches", "--no-heading", "--max-count=1"]);
+    for glob in [
+        "*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.rs", "*.go", "*.java", "*.py", "*.ts",
+        "*.tsx", "*.js", "*.jsx", "*.php", "*.rb", "*.kt", "*.kts",
+    ] {
+        cmd.arg("--type-add").arg(format!("atlassrc:{glob}"));
+    }
+    cmd.args(["--type", "atlassrc"]);
+    cmd.args(["--glob", "!.git/**"]);
+    if project_root.join(".atlasignore").exists() {
+        cmd.args(["--ignore-file", ".atlasignore"]);
+    }
+
+    let pattern;
+    if definition_like {
+        pattern = format!(r"\b{}\s*\(", regex::escape(name));
+        cmd.arg(&pattern);
+    } else {
+        cmd.args(["--word-regexp", "--fixed-strings"]);
+        cmd.arg(name);
+    }
+    if let Some(scope) = scope.filter(|s| !s.is_empty() && *s != ".") {
+        cmd.arg(scope);
+    }
+    cmd.current_dir(project_root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => return Ok(Vec::new()),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_millis(RG_CANDIDATE_TIMEOUT_MS);
+    let mut paths = Vec::new();
+    loop {
+        if paths.len() >= MAX_CANDIDATE_FILES {
+            let _ = child.kill();
+            break;
+        }
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = child.kill();
+            break;
+        }
+        let wait = std::cmp::min(deadline - now, Duration::from_millis(25));
+        match rx.recv_timeout(wait) {
+            Ok(Ok(line)) => {
+                let line = line.trim();
+                if !line.is_empty() {
+                    paths.push(line.to_string());
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if child.try_wait()?.is_some() {
+                    break;
+                }
+            }
+        }
+    }
+
+    let _ = child.wait();
+    drain_rg_candidate_lines(&rx, &mut paths);
+    paths.truncate(MAX_CANDIDATE_FILES);
+    Ok(paths)
+}
+
+fn drain_rg_candidate_lines(
+    rx: &std::sync::mpsc::Receiver<std::io::Result<String>>,
+    paths: &mut Vec<String>,
+) {
+    let drain_deadline = Instant::now() + Duration::from_millis(100);
+    while paths.len() < MAX_CANDIDATE_FILES {
+        match rx.try_recv() {
+            Ok(Ok(line)) => {
+                let line = line.trim();
+                if !line.is_empty() {
+                    paths.push(line.to_string());
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if Instant::now() >= drain_deadline {
+                    break;
+                }
+                match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(Ok(line)) => {
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            paths.push(line.to_string());
+                        }
+                    }
+                    Ok(Err(_)) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        }
     }
 }
 
@@ -1052,6 +1268,96 @@ mod tests {
         assert_eq!(
             candidates[0], resolved,
             "ripgrep result FileId should match store.resolve_file_id"
+        );
+    }
+
+    #[test]
+    fn run_rg_candidate_paths_stops_at_candidate_limit() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "atlas_rg_limit_test_{}_{}",
+            std::process::id(),
+            next_test_counter(),
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        for i in 0..25 {
+            std::fs::write(
+                root.join(format!("src/file_{i}.rs")),
+                "fn sharedterm() {}\n",
+            )
+            .unwrap();
+        }
+
+        let paths = run_rg_candidate_paths(&root, "sharedterm", None, true).unwrap();
+        cleanup_ripgrep_test(&root);
+
+        assert_eq!(
+            paths.len(),
+            MAX_CANDIDATE_FILES,
+            "candidate discovery must stop at the lazy structural limit"
+        );
+    }
+
+    #[test]
+    fn run_rg_candidate_paths_drains_fast_process_output() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "atlas_rg_fast_drain_test_{}_{}",
+            std::process::id(),
+            next_test_counter(),
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/fast.c"),
+            "static void fast_symbol(void) {}\n",
+        )
+        .unwrap();
+
+        let paths = run_rg_candidate_paths(&root, "fast_symbol", None, true).unwrap();
+        cleanup_ripgrep_test(&root);
+
+        assert!(
+            paths.iter().any(|path| path == "src/fast.c"),
+            "candidate discovery should drain stdout even when rg exits quickly: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn candidates_from_ripgrep_inventories_unindexed_hits() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let store = test_store();
+        let root = std::env::temp_dir().join(format!(
+            "atlas_rg_inventory_test_{}_{}",
+            std::process::id(),
+            next_test_counter(),
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "fn late_inventory() {}\n").unwrap();
+
+        let provider = DefaultCandidateProvider::new(store.clone(), Some(root.clone()));
+        let candidates = provider.candidates_for_symbol("late_inventory").unwrap();
+        cleanup_ripgrep_test(&root);
+
+        let expected = FileId::generate("src/lib.rs");
+        assert_eq!(candidates, vec![expected]);
+        assert!(
+            store
+                .find_file_inventory_by_path("src/lib.rs")
+                .unwrap()
+                .is_some(),
+            "unindexed rg hit should be inserted into file_inventory"
         );
     }
 }

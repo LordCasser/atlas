@@ -35,10 +35,13 @@ use super::writer_coordinator::ProjectWriteCoordinator;
 static JOB_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn next_job_id() -> String {
-    let ts = SystemTime::now()
+    // Robust: SystemTime::now() is virtually always after UNIX_EPOCH; fall back to 0 on
+    // pathological clock (pre-epoch or platform oddity). Counter provides uniqueness.
+    let now = SystemTime::now();
+    let ts = now
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let counter = JOB_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("cl_{ts}_{counter}")
 }
@@ -202,8 +205,7 @@ impl FocusScheduler {
             job.closure_id = Some(closure_id.clone());
             let closure = engine.build_closure(&job.window, &closure_id)?;
             processed += 1;
-            // Trigger dataflow for closure files (opportunistic, background)
-            let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+            Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
         }
         self.coordinator.reset_cancellation();
         Ok(processed)
@@ -232,7 +234,7 @@ impl FocusScheduler {
                 job.closure_id = Some(closure_id.clone());
                 let closure = engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
-                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
+                Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
             }
         }
         self.coordinator.reset_cancellation();
@@ -248,9 +250,8 @@ impl FocusScheduler {
             while let Some(mut job) = self.queues[1].pop_front() {
                 let closure_id = next_job_id();
                 job.closure_id = Some(closure_id.clone());
-                let closure = engine.build_closure(&job.window, &closure_id)?;
+                engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
-                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
             }
         }
         // UserFocus acquire sets the flag; clear it so lower levels
@@ -268,9 +269,8 @@ impl FocusScheduler {
             while let Some(mut job) = self.queues[2].pop_front() {
                 let closure_id = next_job_id();
                 job.closure_id = Some(closure_id.clone());
-                let closure = engine.build_closure(&job.window, &closure_id)?;
+                engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
-                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
             }
         }
 
@@ -285,13 +285,23 @@ impl FocusScheduler {
             while let Some(mut job) = self.queues[3].pop_front() {
                 let closure_id = next_job_id();
                 job.closure_id = Some(closure_id.clone());
-                let closure = engine.build_closure(&job.window, &closure_id)?;
+                engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
-                let _ = engine.build_dataflow_for_closure(&closure_id, &closure.files);
             }
         }
 
         Ok(processed)
+    }
+
+    fn build_dataflow_for_sync(
+        engine: &ClosureEngine,
+        closure_id: &str,
+        files: &std::collections::HashSet<FileId>,
+    ) {
+        // Dataflow extraction can take tens of seconds on large C files.
+        // Keep it out of background focus/prewarm queues; tools that need
+        // dataflow request it explicitly through their own lazy path.
+        let _ = engine.build_dataflow_for_closure(closure_id, files);
     }
 
     /// Signal the background worker to stop.

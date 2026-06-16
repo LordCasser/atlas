@@ -1353,9 +1353,23 @@ mod tests {
             SymbolResolutionPolicy::UniqueOrCandidates,
         )
         .unwrap();
+        // Per SymbolSelector contract (arch §10.6 + code): wrong path hints are
+        // ignored (recorded in match_info.ignored_mismatches) and do not veto a
+        // name/qname match. With a single candidate, UniqueOrCandidates yields Single
+        // (the path mismatch affects only ranking/score, not presence of result).
         match resolved {
-            SymbolResolution::NotFound { qname, .. } => assert_eq!(qname, "main"),
-            other => panic!("expected NotFound for unmatched selector path, got {other:?}"),
+            SymbolResolution::Single { resolved, .. } => {
+                assert_eq!(resolved.qualified_name, "main");
+                assert!(
+                    resolved
+                        .match_info
+                        .ignored_mismatches
+                        .contains(&"file_path".to_string())
+                );
+            }
+            other => panic!(
+                "expected Single (with ignored file_path) for tolerant short-name + bad path hint, got {other:?}"
+            ),
         }
     }
 

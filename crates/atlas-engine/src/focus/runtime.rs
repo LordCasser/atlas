@@ -16,11 +16,12 @@
 //! - Background expansion is enqueued via [`FocusScheduler`] for pre-warming.
 //! - All DB writes are serialized through the scheduler's write coordinator.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -39,6 +40,19 @@ use super::engine::ClosureEngine;
 use super::query::QueryIntent;
 use super::scheduler::{self, FocusPriority, FocusScheduler};
 use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
+
+/// Maximum time a foreground MCP request should wait for initial file
+/// inventory. Bootstrap continues in the background after this deadline.
+const BOOTSTRAP_MIN_READY_WAIT_MS: u64 = 5_000;
+const HOT_REGION_EXTENSION_FILE_BONUS: usize = 50;
+const HOT_REGION_EXTENSION_DEPTH_CAP: u32 = 3;
+/// Maximum number of independent hot regions kept in memory for
+/// in-memory (non-persistent) stores.  When exceeded, the shallowest
+/// and oldest region is evicted.  Persistent stores keep all regions
+/// indefinitely since they are bounded by the project's natural
+/// investigation breadth — an LRU would discard useful state that
+/// can survive across sessions.
+const MAX_MEMORY_HOT_REGIONS: usize = 10;
 
 // ── IndexMode ───────────────────────────────────────────────────────────────
 
@@ -104,13 +118,189 @@ pub struct FocusRuntime {
     /// a duplicate instance.  The scheduler background engine still
     /// creates its own instance (independent thread safety boundary).
     shared_lazy_dataflow: Option<LazyDataflowService>,
+    /// Runtime-owned hot region state. The scheduler executes jobs; this
+    /// tracker decides whether a new query is extending an existing closure.
+    hot_regions: HotRegionTracker,
+}
+
+// ── Hot region tracking ────────────────────────────────────────────────────
+
+#[derive(Debug)]
+struct HotRegionTracker {
+    regions: Vec<HotRegion>,
+    next_region_id: u64,
+    /// When `true`, the backing store is persistent (disk-backed atlas.db).
+    /// Persistent stores keep all hot regions indefinitely — investigations
+    /// span sessions and evicting would discard useful state.
+    /// When `false` (in-memory store), regions are bounded by
+    /// [`MAX_MEMORY_HOT_REGIONS`] with LRU eviction.
+    is_persistent: bool,
+}
+
+impl Default for HotRegionTracker {
+    fn default() -> Self {
+        // Default to persistent; FocusRuntime::new() sets this correctly
+        // from Store::db_path().
+        Self {
+            regions: Vec::new(),
+            next_region_id: 0,
+            is_persistent: true,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HotRegion {
+    id: String,
+    files: HashSet<FileId>,
+    boundary_files: HashSet<FileId>,
+    depth: u32,
+    pending_closure_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BoundaryHit {
+    region_id: String,
+    depth: u32,
+}
+
+impl HotRegionTracker {
+    fn boundary_hit(&self, seed_file_id: Option<FileId>) -> Option<BoundaryHit> {
+        let seed_file_id = seed_file_id?;
+        self.boundary_hit_for_file(seed_file_id)
+    }
+
+    fn boundary_hit_for_files(&self, file_ids: &[FileId]) -> Option<BoundaryHit> {
+        file_ids
+            .iter()
+            .find_map(|file_id| self.boundary_hit_for_file(*file_id))
+    }
+
+    fn boundary_hit_for_file(&self, file_id: FileId) -> Option<BoundaryHit> {
+        self.regions
+            .iter()
+            .find(|region| {
+                region.boundary_files.contains(&file_id) || region.files.contains(&file_id)
+            })
+            .map(|region| BoundaryHit {
+                region_id: region.id.clone(),
+                depth: region.depth,
+            })
+    }
+
+    fn observe_closure(
+        &mut self,
+        seed_file_id: Option<FileId>,
+        built_files: &[FileId],
+        pending_closure_ids: &[String],
+        expanded_existing_region: bool,
+    ) -> Option<String> {
+        if seed_file_id.is_none() && built_files.is_empty() {
+            return None;
+        }
+
+        // LRU eviction: in-memory stores are bounded. Evict the shallowest
+        // region with the lowest depth (least investigated) when the cap
+        // is exceeded. Persistent stores never evict — their atlas.db
+        // survives across sessions and investigation breadth is naturally
+        // bounded by the user's focus areas.
+        //
+        // Eviction is done BEFORE creating/finding the region for this call,
+        // so the mutable borrow of self.regions is resolved by the time we
+        // need to mutate the target region.
+        if !self.is_persistent && self.regions.len() >= MAX_MEMORY_HOT_REGIONS {
+            // Find the new region's tentative index to avoid evicting it.
+            let existing_index = self.find_region_index(seed_file_id, built_files);
+
+            // Find the shallowest (lowest depth) region that is NOT the one
+            // we're about to touch. Ties broken by position (oldest first).
+            let evict_idx = self
+                .regions
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| Some(*idx) != existing_index)
+                .min_by_key(|(_, r)| r.depth)
+                .map(|(idx, _)| idx);
+
+            if let Some(idx) = evict_idx {
+                tracing::info!(
+                    region_id = %self.regions[idx].id,
+                    depth = self.regions[idx].depth,
+                    remaining = self.regions.len() - 1,
+                    "evicting LRU hot region (in-memory mode)"
+                );
+                self.regions.remove(idx);
+            }
+        }
+
+        let region_index = self.find_region_index(seed_file_id, built_files);
+        let region_index = match region_index {
+            Some(index) => index,
+            None => {
+                let id = format!("hr_{}", self.next_region_id);
+                self.next_region_id += 1;
+                self.regions.push(HotRegion {
+                    id,
+                    files: HashSet::new(),
+                    boundary_files: HashSet::new(),
+                    depth: 0,
+                    pending_closure_ids: Vec::new(),
+                });
+                self.regions.len() - 1
+            }
+        };
+
+        let region = &mut self.regions[region_index];
+        if expanded_existing_region {
+            region.depth = region.depth.saturating_add(1).max(1);
+        } else {
+            region.depth = region.depth.max(1);
+        }
+
+        if let Some(file_id) = seed_file_id {
+            region.files.insert(file_id);
+            region.boundary_files.insert(file_id);
+        }
+        for file_id in built_files {
+            region.files.insert(*file_id);
+            region.boundary_files.insert(*file_id);
+        }
+        for closure_id in pending_closure_ids {
+            if !region.pending_closure_ids.contains(closure_id) {
+                region.pending_closure_ids.push(closure_id.clone());
+            }
+        }
+
+        Some(region.id.clone())
+    }
+
+    fn find_region_index(
+        &self,
+        seed_file_id: Option<FileId>,
+        built_files: &[FileId],
+    ) -> Option<usize> {
+        self.regions.iter().position(|region| {
+            seed_file_id.is_some_and(|file_id| {
+                region.boundary_files.contains(&file_id) || region.files.contains(&file_id)
+            }) || built_files.iter().any(|file_id| {
+                region.boundary_files.contains(file_id) || region.files.contains(file_id)
+            })
+        })
+    }
 }
 
 impl FocusRuntime {
     // ── Construction ─────────────────────────────────────────────────────
 
     /// Create a new FocusRuntime. Does NOT start bootstrap.
+    ///
+    /// Detects whether the backing store is persistent (on-disk atlas.db)
+    /// or in-memory, and configures the hot region tracker accordingly:
+    /// persistent stores keep all hot regions indefinitely, while
+    /// in-memory stores evict the shallowest/LRU region beyond
+    /// [`MAX_MEMORY_HOT_REGIONS`].
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
+        let is_persistent = store.db_path().to_string_lossy() != ":memory:";
         Self {
             store: store.clone(),
             project_root: project_root.clone(),
@@ -121,6 +311,10 @@ impl FocusRuntime {
             bg_handle: None,
             detect_index_mode_override: None,
             shared_lazy_dataflow: None,
+            hot_regions: HotRegionTracker {
+                is_persistent,
+                ..HotRegionTracker::default()
+            },
         }
     }
 
@@ -194,10 +388,13 @@ impl FocusRuntime {
 
         // 1. Ensure bootstrap is started and minimum tier is ready
         self.ensure_started();
-        self.bootstrap.ensure_minimum_ready();
+        let bootstrap_ready = self
+            .bootstrap
+            .wait_minimum_ready(Duration::from_millis(BOOTSTRAP_MIN_READY_WAIT_MS));
 
         // 2. Locate seed
         let (seed, seed_file_id, seed_symbol_id, language) = self.locate_seed(intent)?;
+        let mut boundary_hit = self.hot_regions.boundary_hit(seed_file_id);
 
         // 3. Ensure closure engine exists
         self.ensure_closure_engine()?;
@@ -280,6 +477,9 @@ impl FocusRuntime {
         };
 
         let built_files: Vec<FileId> = closure.files.iter().copied().collect();
+        if boundary_hit.is_none() {
+            boundary_hit = self.hot_regions.boundary_hit_for_files(&built_files);
+        }
 
         // 5b. Compute coverage distribution from the closure_coverage table.
         let coverage_counts: Option<HashMap<String, usize>> = self
@@ -292,7 +492,13 @@ impl FocusRuntime {
                     .collect()
             });
 
-        let gaps = closure.gaps.clone();
+        let mut gaps = closure.gaps.clone();
+        if !bootstrap_ready {
+            gaps.push(KnownGap::BudgetExhausted {
+                strategy: "bootstrap_tier0_wait".to_string(),
+                remaining: 0,
+            });
+        }
         let pending_closure_ids = vec![closure_id.clone()];
 
         // 6. Enqueue background expansion
@@ -348,10 +554,26 @@ impl FocusRuntime {
             .scheduler
             .lock()
             .unwrap()
-            .enqueue(bg_window, FocusPriority::UserFocus);
+            .enqueue(bg_window.clone(), FocusPriority::UserFocus);
 
         let mut pending_ids = pending_closure_ids;
         pending_ids.push(bg_closure_id);
+        if let Some(hit) = boundary_hit.as_ref() {
+            let extension_window = hot_region_extension_window(&bg_window, hit);
+            let extension_closure_id = self
+                .scheduler
+                .lock()
+                .unwrap()
+                .enqueue(extension_window, FocusPriority::UserFocus);
+            pending_ids.push(extension_closure_id);
+        }
+
+        self.hot_regions.observe_closure(
+            seed_file_id,
+            &built_files,
+            &pending_ids,
+            boundary_hit.is_some(),
+        );
 
         // 7. Pre-warm investigation for the built files so their import
         //    neighborhoods are ready before the user queries them.
@@ -455,6 +677,45 @@ impl FocusRuntime {
     /// Check if the scheduler has pending background jobs.
     pub fn has_pending_jobs(&self) -> bool {
         self.scheduler.lock().unwrap().has_pending()
+    }
+
+    /// Enqueue file-focused background warming without building a foreground closure.
+    ///
+    /// Search uses this after returning a fast partial result: the current
+    /// request stays responsive, while the focus scheduler parses the remaining
+    /// hot files for a likely follow-up query.
+    pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Vec<String>> {
+        if file_ids.is_empty() || self.detect_index_mode() == IndexMode::FullIndex {
+            return Ok(Vec::new());
+        }
+
+        self.ensure_closure_engine()?;
+        self.ensure_started();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut job_ids = Vec::new();
+        let mut scheduler = self.scheduler.lock().unwrap();
+        for file_id in file_ids {
+            if !seen.insert(*file_id) {
+                continue;
+            }
+            let language = self.resolve_language_for_file(file_id).unwrap_or_default();
+            let window = FocusWindow {
+                seed: FocusSeed::File {
+                    file_id: *file_id,
+                    language,
+                },
+                strategies: vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                    ClosureStrategy::SameDirectory,
+                ],
+                budget: WindowBudget::background(),
+                language,
+                max_iterations: 2,
+            };
+            job_ids.push(scheduler.enqueue(window, FocusPriority::UserFocus));
+        }
+        Ok(job_ids)
     }
 
     /// Called when a file is structurally ensured — pre-warm its imports
@@ -678,6 +939,24 @@ fn map_coverage_source_to_tier(source: &str) -> String {
         "extracted_manifest" => "basic".to_string(),
         other => other.to_string(),
     }
+}
+
+fn hot_region_extension_window(base: &FocusWindow, hit: &BoundaryHit) -> FocusWindow {
+    let mut window = base.clone();
+    let depth_bonus = hit.depth.clamp(1, HOT_REGION_EXTENSION_DEPTH_CAP);
+    window.max_iterations = window.max_iterations.saturating_add(depth_bonus);
+    window.budget.max_iterations = window.budget.max_iterations.saturating_add(1);
+    window.budget.max_files = window
+        .budget
+        .max_files
+        .saturating_add(HOT_REGION_EXTENSION_FILE_BONUS * depth_bonus as usize);
+    tracing::debug!(
+        hot_region_id = %hit.region_id,
+        depth_bonus,
+        max_files = window.budget.max_files,
+        "enqueueing hot-region boundary expansion"
+    );
+    window
 }
 
 impl Drop for FocusRuntime {

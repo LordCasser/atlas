@@ -42,7 +42,9 @@
 //! })?;
 //! ```
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use db::Store;
 use search::query_parser::parse_query;
@@ -129,6 +131,8 @@ pub struct ScopedSearchResponse {
     pub precision: Precision,
     /// Warnings for the user.
     pub warnings: Vec<String>,
+    /// File ids that should be parsed by background focus warming.
+    pub deferred_file_ids: Vec<types::ids::FileId>,
 }
 
 // ── Service ─────────────────────────────────────────────────────────────────
@@ -141,12 +145,30 @@ pub struct ScopedSearchResponse {
 pub struct ScopedSearchService {
     store: Arc<Store>,
     engine: Arc<Engine>,
+    project_root: Option<PathBuf>,
 }
 
 impl ScopedSearchService {
     /// Create a new service.
     pub fn new(store: Arc<Store>, engine: Arc<Engine>) -> Self {
-        Self { store, engine }
+        Self {
+            store,
+            engine,
+            project_root: None,
+        }
+    }
+
+    /// Create a new service with a project root for cold-scope inventory seeding.
+    pub fn new_with_project_root(
+        store: Arc<Store>,
+        engine: Arc<Engine>,
+        project_root: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            store,
+            engine,
+            project_root,
+        }
     }
 
     /// Execute a scoped search.
@@ -194,10 +216,19 @@ impl ScopedSearchService {
             self.store.count_files_in_scope(&normalized_scope)?
         };
         let mut inventory_backed = false;
-        let inventory_scope_count = self
+        let mut inventory_scope_count = self
             .store
             .count_file_inventory_in_scope(&normalized_scope)
             .unwrap_or(0);
+        if scope_file_count == 0 && inventory_scope_count == 0 {
+            if let Some(root) = &self.project_root {
+                seed_inventory_from_scope(&self.store, root, &normalized_scope)?;
+                inventory_scope_count = self
+                    .store
+                    .count_file_inventory_in_scope(&normalized_scope)
+                    .unwrap_or(0);
+            }
+        }
         if inventory_scope_count > scope_file_count {
             scope_file_count = inventory_scope_count;
             inventory_backed = true;
@@ -222,6 +253,7 @@ impl ScopedSearchService {
                 capability_mask: CapabilityMask::default(),
                 precision: Precision::worst(),
                 warnings,
+                deferred_file_ids: Vec::new(),
             });
         }
 
@@ -284,18 +316,25 @@ impl ScopedSearchService {
 
         let mut triggered_lazy = false;
         let mut lazy_covered_scope = false;
+        let mut lazy_truncated_for_latency = false;
+        let mut deferred_file_ids = Vec::new();
 
         // 5. Trigger lazy structural if manifest returned nothing and policy
         //    says we should try. For inventory-backed projects there is no
         //    manifest index yet, so use the query text to locate a bounded
         //    candidate set instead of expanding an arbitrary prefix of a large
         //    scope.
+        const COLD_SEARCH_MAX_SYNC_LAZY_FILES: usize = 2;
         if symbols.is_empty() && !term.is_empty() && (should_trigger_lazy || inventory_backed) {
             if inventory_backed && !should_trigger_lazy {
                 let ensured = self
                     .engine
                     .lazy_structural()
-                    .ensure_structural_for_symbol_in_scope(&term, Some(&normalized_scope))?;
+                    .ensure_structural_for_symbol_in_scope_limited(
+                        &term,
+                        Some(&normalized_scope),
+                        COLD_SEARCH_MAX_SYNC_LAZY_FILES,
+                    )?;
                 triggered_lazy = ensured.files_built > 0 || ensured.files_cached > 0;
                 lazy_covered_scope = scope_file_count <= ensured.files_built + ensured.files_cached
                     && !ensured.budget_exceeded;
@@ -305,10 +344,11 @@ impl ScopedSearchService {
                 }
                 if ensured.budget_exceeded {
                     warnings.push(
-                        "Structural parsing hit budget; narrow the scope for exact results."
+                        "Cold search parsed only a bounded candidate subset; narrow the scope for exact results."
                             .to_string(),
                     );
                 }
+                deferred_file_ids.extend(ensured.deferred_file_ids.iter().copied());
                 symbols = search_symbols_scoped(
                     &self.store,
                     &term,
@@ -336,18 +376,36 @@ impl ScopedSearchService {
                 }
 
                 if !file_ids.is_empty() {
+                    let truncated_for_latency = matches!(req.analysis, SearchAnalysis::Auto)
+                        && file_ids.len() > COLD_SEARCH_MAX_SYNC_LAZY_FILES;
+                    if truncated_for_latency {
+                        deferred_file_ids.extend(
+                            file_ids
+                                .iter()
+                                .skip(COLD_SEARCH_MAX_SYNC_LAZY_FILES)
+                                .copied(),
+                        );
+                        file_ids.truncate(COLD_SEARCH_MAX_SYNC_LAZY_FILES);
+                        lazy_truncated_for_latency = true;
+                    }
                     let requested_files = file_ids.len();
                     let ensured = self
                         .engine
                         .lazy_structural()
                         .ensure_structural_for_file_ids(&file_ids)?;
                     triggered_lazy = true;
-                    lazy_covered_scope =
-                        requested_files >= scope_file_count && !ensured.budget_exceeded;
+                    lazy_covered_scope = requested_files >= scope_file_count
+                        && !ensured.budget_exceeded
+                        && !truncated_for_latency;
                     precision = ensured.precision.clone();
                     capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
 
-                    if ensured.budget_exceeded {
+                    if truncated_for_latency {
+                        warnings.push(
+                            "Cold search parsed only a bounded file subset; narrow the scope for exact results."
+                                .to_string(),
+                        );
+                    } else if ensured.budget_exceeded {
                         warnings.push(
                             "Structural parsing hit budget; narrow the scope for exact results."
                                 .to_string(),
@@ -401,7 +459,7 @@ impl ScopedSearchService {
             SearchCoverage::Partial {
                 reason: "No indexed files".to_string(),
             }
-        } else if inventory_backed && !lazy_covered_scope {
+        } else if lazy_truncated_for_latency || (inventory_backed && !lazy_covered_scope) {
             SearchCoverage::Partial {
                 reason: "Focus inventory is available, but only a bounded subset has structural facts for this query".to_string(),
             }
@@ -418,6 +476,7 @@ impl ScopedSearchService {
             capability_mask,
             precision,
             warnings,
+            deferred_file_ids,
         })
     }
 }
@@ -557,6 +616,110 @@ fn ranked_simple_score(query: &str, sym: &SymbolDef, preferred_language: Option<
     let weights = ScoreWeights::default();
     simple_score(query, sym)
         + language_preference_bonus(preferred_language == Some(sym.language)) * weights.language
+}
+
+const COLD_SCOPE_INVENTORY_LIMIT: usize = 100;
+const COLD_SCOPE_INVENTORY_TIMEOUT_MS: u64 = 500;
+
+fn seed_inventory_from_scope(
+    store: &Store,
+    project_root: &Path,
+    scope: &str,
+) -> anyhow::Result<()> {
+    let start_dir = if scope.is_empty() {
+        project_root.to_path_buf()
+    } else {
+        project_root.join(scope)
+    };
+    if !start_dir.exists() {
+        return Ok(());
+    }
+
+    let canonical_root = project_root.canonicalize()?;
+    let mut stack = vec![start_dir];
+    let deadline = Instant::now() + Duration::from_millis(COLD_SCOPE_INVENTORY_TIMEOUT_MS);
+    let mut inserted = 0usize;
+
+    while let Some(dir) = stack.pop() {
+        if inserted >= COLD_SCOPE_INVENTORY_LIMIT || Instant::now() >= deadline {
+            break;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            if inserted >= COLD_SCOPE_INVENTORY_LIMIT || Instant::now() >= deadline {
+                break;
+            }
+            let path = entry.path();
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with('.')
+                    || matches!(
+                        name,
+                        "target"
+                            | "node_modules"
+                            | "build"
+                            | "dist"
+                            | ".cache"
+                            | "__pycache__"
+                            | "venv"
+                            | ".venv"
+                    )
+                {
+                    continue;
+                }
+                if let Ok(canonical) = path.canonicalize() {
+                    if canonical.starts_with(&canonical_root) {
+                        stack.push(path);
+                    }
+                }
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(project_root) else {
+                continue;
+            };
+            let Some(language) = Language::from_path(rel) else {
+                continue;
+            };
+            let rel_path = rel.to_string_lossy().replace('\\', "/");
+            let file_id = types::ids::FileId::generate(&rel_path);
+            let mtime = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_default();
+
+            #[cfg(unix)]
+            let (inode, dev) = {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.ino() as i64, metadata.dev() as i64)
+            };
+            #[cfg(not(unix))]
+            let (inode, dev) = (0i64, 0i64);
+
+            store.insert_file_inventory(
+                &file_id,
+                &rel_path,
+                language.as_str(),
+                mtime,
+                metadata.len() as i64,
+                inode,
+                dev,
+            )?;
+            inserted += 1;
+        }
+    }
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -880,6 +1043,34 @@ mod tests {
             "Auto should trigger lazy when only manifest data exists"
         );
         assert_eq!(resp.scope_file_count, 1);
+    }
+
+    #[test]
+    fn execute_auto_bounds_cold_lazy_file_count() {
+        let svc = test_service();
+        seed_ts_file(&svc.store, "src/a.ts", "function a() {}");
+        seed_ts_file(&svc.store, "src/b.ts", "function b() {}");
+        seed_ts_file(&svc.store, "src/c.ts", "function c() {}");
+
+        let resp = svc
+            .execute(ScopedSearchRequest {
+                query: "nonexistent".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Auto,
+                limit: 10,
+                ..Default::default()
+            })
+            .expect("execute should succeed");
+
+        assert!(resp.triggered_lazy, "Auto should still try cold lazy");
+        assert!(
+            resp.warnings
+                .iter()
+                .any(|w| w.contains("bounded file subset")),
+            "cold Auto search should warn when synchronous parsing is bounded: {:?}",
+            resp.warnings
+        );
+        assert!(matches!(resp.coverage, SearchCoverage::Partial { .. }));
     }
 
     #[test]

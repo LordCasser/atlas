@@ -674,9 +674,9 @@ fn test_coordinator_acquired_for_sync_jobs() {
 #[test]
 fn test_userfocus_acquires_coordinator() {
     let store = test_store();
-    let file_id = test_file_with_structural_complete(&store, "main.c");
+    let _file_id = test_file_with_structural_complete(&store, "main.c");
     let engine = test_engine_for_store(store.clone());
-    let mut scheduler = FocusScheduler::new(store).with_engine(engine);
+    let scheduler = FocusScheduler::new(store).with_engine(engine);
 
     assert!(!scheduler.coordinator.is_background_cancelled());
 

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs, time};
 
 use anyhow::Result;
@@ -120,6 +120,24 @@ impl BootstrapManager {
         while !self.tier0_complete.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Block until Tier0 is complete, but no longer than `timeout`.
+    ///
+    /// Large repositories can take long enough to inventory that waiting
+    /// unconditionally makes the first MCP tool call look hung. Focus queries
+    /// can still make progress from direct scoped/candidate discovery while
+    /// Tier0 continues in the background, so callers should prefer this bounded
+    /// wait on request paths.
+    pub fn wait_minimum_ready(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while !self.tier0_complete.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        true
     }
 
     /// Check if Tier 0 (file_inventory) is complete.

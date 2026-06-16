@@ -402,6 +402,49 @@ fn test_prepare_focus_enqueues_background() {
     );
 }
 
+#[test]
+fn test_prepare_boundary_hit_expands_existing_hot_region() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/main.c");
+    let mut rt = test_runtime_focus_mode(store);
+    let intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(file_id),
+        symbol_id: None,
+        direction: None,
+        depth: None,
+    };
+
+    let first = rt.prepare(&intent).unwrap();
+    assert_eq!(
+        first.pending_closure_ids.len(),
+        2,
+        "first query should return sync closure plus normal background expansion"
+    );
+    assert_eq!(
+        rt.hot_regions.regions.len(),
+        1,
+        "first query should establish one hot region"
+    );
+    let first_depth = rt.hot_regions.regions[0].depth;
+
+    let second = rt.prepare(&intent).unwrap();
+    assert_eq!(
+        second.pending_closure_ids.len(),
+        3,
+        "boundary hit should add an extra background region-extension closure"
+    );
+    assert_eq!(
+        rt.hot_regions.regions.len(),
+        1,
+        "boundary hit should expand the existing region instead of creating a new one"
+    );
+    assert!(
+        rt.hot_regions.regions[0].depth > first_depth,
+        "existing hot region depth should grow after boundary expansion"
+    );
+}
+
 // ── Tests: TracePoint intent ────────────────────────────────────────────────
 
 #[test]

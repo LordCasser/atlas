@@ -25,16 +25,6 @@ impl LazyBudget {
         }
     }
 
-    /// Custom budget (for testing only — not part of the stable API surface).
-    #[cfg(test)]
-    pub(crate) fn new(budget_ms: u64) -> Self {
-        Self {
-            budget_ms,
-            start: std::time::Instant::now(),
-            cancelled: AtomicBool::new(false),
-        }
-    }
-
     /// Milliseconds elapsed since creation.
     pub fn elapsed_ms(&self) -> u128 {
         self.start.elapsed().as_millis()

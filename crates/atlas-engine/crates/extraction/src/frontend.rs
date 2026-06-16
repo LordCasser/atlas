@@ -83,11 +83,14 @@ pub trait SymbolExtractorSpec: Send + Sync {
     fn definition_query(&self) -> &str;
     /// S-expression query for manifest-level (top-level only) symbol definitions.
     ///
-    /// Defaults to [`definition_query`] for languages that don't have a
-    /// separate manifest query yet.
-    fn manifest_query(&self) -> &str {
-        self.definition_query()
-    }
+    /// MUST return a query that captures **only top-level** (file-scope) declarations.
+    /// Every language MUST override this (no default) to enforce the Manifest layer
+    /// contract (see ExtractionMode::Manifest, architecture.md, and testing.md).
+    /// The query is typically a wrapper such as (translation_unit ...) or (program ...)
+    /// around top-level definition patterns only; nested symbols inside bodies must
+    /// not be captured. All 14 current languages provide a dedicated
+    /// queries/<lang>/manifest.scm and override.
+    fn manifest_query(&self) -> &str;
     /// Feature support for symbol extraction.
     fn capability(&self) -> FeatureSupport;
     /// Normalize a definition capture into a [`SymbolDef`], or `None`

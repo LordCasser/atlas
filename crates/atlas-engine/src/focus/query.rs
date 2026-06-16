@@ -63,6 +63,14 @@ pub enum QueryIntent {
         symbol_id: Option<SymbolId>,
     },
     /// `atlas_search` — search symbols by name within a scope.
+    ///
+    /// Note: The MCP search tool handler no longer calls
+    /// `prepare_focus_query(Search { .. })` directly — it delegates to
+    /// `ScopedSearchService` which manages its own lazy extraction and
+    /// background warming. This variant is still used for background focus
+    /// warming via `FocusRuntime::enqueue_file_focus_warm()` and for
+    /// `FocusRuntime::prepare()` strategy dispatch when a search seed
+    /// triggers a closure build.
     Search {
         /// The search query text.
         query: String,

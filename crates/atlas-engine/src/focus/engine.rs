@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -90,6 +91,8 @@ impl ClosureEngine {
     /// 5. Repeat until termination
     /// 6. Commit visibility atomically (coverage + resolutions)
     pub fn build_closure(&self, window: &FocusWindow, closure_id: &str) -> Result<FocusClosure> {
+        let started_at = Instant::now();
+        let deadline = started_at + Duration::from_millis(window.budget.max_time_ms);
         // Insert closure generation record
         self.store.insert_closure_generation(closure_id)?;
 
@@ -100,6 +103,17 @@ impl ClosureEngine {
         let seed_files = self.locate_seed(&window.seed)?;
         let generation: i64 = 0; // generation 0 = seed extraction
         for file_id in &seed_files {
+            // Design note: the first seed file is intentionally exempted from
+            // the time budget (the check only fires when `!closure.files.is_empty()`).
+            // This ensures at least one file is extracted even under tight deadlines —
+            // returning an empty closure would be useless to the caller.
+            if !closure.files.is_empty() && Instant::now() >= deadline {
+                closure.record_gap(KnownGap::BudgetExhausted {
+                    strategy: "seed_time_budget".to_string(),
+                    remaining: seed_files.len().saturating_sub(closure.files.len()),
+                });
+                break;
+            }
             let result = self.extract_file(file_id)?;
             closure.mark_extracted(*file_id, &result.precision);
 
@@ -126,27 +140,13 @@ impl ClosureEngine {
         // CallGraph can find their call targets on the first loop iteration.
         let mut previously_resolved: HashSet<FileId> = HashSet::new();
         if !seed_files.is_empty() {
-            // Build visibility filter for seed file resolution (same logic as
-            // the final pass at end of build_closure).
-            let language: Option<Language> = closure
-                .files
-                .iter()
-                .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())
-                .map(|file_info| file_info.language)
-                .next();
-            let registry = VisibilityFilterRegistry::new();
-            let visibility_filter: Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> =
-                language.map(|lang| {
-                    let filter = registry.get(lang);
-                    let ctx = VisibilityContext {
-                        from_file: FileId::default(),
-                        from_crate_root: None,
-                        target_crate_root: None,
-                    };
-                    Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
-                        filter.is_visible(sym, from_file, &ctx)
-                    }) as Box<dyn Fn(&SymbolDef, FileId) -> bool>
-                });
+            // Build visibility filter for seed file resolution.
+            // NOTE: from_file uses FileId::default() because closure-scoped
+            // resolution doesn't have a single "calling" file — it resolves
+            // across all seed files. Per-reference visibility still works
+            // correctly because the filter's `from_file` parameter is set
+            // by the resolver for each individual reference.
+            let visibility_filter = self.build_visibility_filter(&closure.files);
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
                 visibility_filter.as_deref();
             self.resolver.borrow_mut().resolve_for_closure(
@@ -164,20 +164,34 @@ impl ClosureEngine {
         // TypeGraph handles its own depth internally — we do NOT re-invoke it
         // inside the fixed-point loop below.
         let mut pre_additions = Vec::new();
-        for strategy in &window.strategies {
-            if let ClosureStrategy::TypeGraph { max_depth } = strategy {
-                let type_files = self.expand_types(&closure, *max_depth, closure_id)?;
-                for f in type_files {
-                    if !closure.visited.contains(&f) {
-                        pre_additions.push(f);
+        if Instant::now() < deadline {
+            for strategy in &window.strategies {
+                if let ClosureStrategy::TypeGraph { max_depth } = strategy {
+                    let type_files = self.expand_types(&closure, *max_depth, closure_id)?;
+                    for f in type_files {
+                        if !closure.visited.contains(&f) {
+                            pre_additions.push(f);
+                        }
                     }
                 }
             }
+        } else {
+            closure.record_gap(KnownGap::BudgetExhausted {
+                strategy: "typegraph_time_budget".to_string(),
+                remaining: 0,
+            });
         }
 
         // Phase 3: bounded fixed-point expansion
         let mut last_generation: i64 = 0; // generation 0 = seed extraction
         loop {
+            if Instant::now() >= deadline {
+                closure.record_gap(KnownGap::BudgetExhausted {
+                    strategy: "closure_time_budget".to_string(),
+                    remaining: 0,
+                });
+                break;
+            }
             iteration += 1;
 
             // Plan: ask strategies what to add next.
@@ -221,6 +235,13 @@ impl ClosureEngine {
             let generation = iteration as i64;
             last_generation = generation;
             for file_id in &new_files {
+                if Instant::now() >= deadline {
+                    closure.record_gap(KnownGap::BudgetExhausted {
+                        strategy: format!("iteration {iteration} time_budget"),
+                        remaining: new_files.len(),
+                    });
+                    break;
+                }
                 let result = self.extract_file(file_id)?;
                 closure.mark_extracted(*file_id, &result.precision);
 
@@ -273,28 +294,8 @@ impl ClosureEngine {
         // Language-specific visibility filter excludes symbols that are not
         // reachable from the reference's file (e.g., C static, Rust private).
         let closure_files: Vec<FileId> = closure.files.iter().copied().collect();
-        if !closure_files.is_empty() {
-            let language: Option<Language> = closure
-                .files
-                .iter()
-                .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())
-                .map(|file_info| file_info.language)
-                .next();
-
-            let registry = VisibilityFilterRegistry::new();
-            let visibility_filter: Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> =
-                language.map(|lang| {
-                    let filter = registry.get(lang);
-                    let ctx = VisibilityContext {
-                        from_file: FileId::default(),
-                        from_crate_root: None,
-                        target_crate_root: None,
-                    };
-                    Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
-                        filter.is_visible(sym, from_file, &ctx)
-                    }) as Box<dyn Fn(&SymbolDef, FileId) -> bool>
-                });
-
+        if !closure_files.is_empty() && Instant::now() < deadline {
+            let visibility_filter = self.build_visibility_filter(&closure.files);
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
                 visibility_filter.as_deref();
             self.resolver.borrow_mut().resolve_for_closure(
@@ -303,6 +304,11 @@ impl ClosureEngine {
                 &closure_files,
                 filter_ref,
             )?;
+        } else if !closure_files.is_empty() {
+            closure.record_gap(KnownGap::BudgetExhausted {
+                strategy: "final_resolution_time_budget".to_string(),
+                remaining: closure_files.len(),
+            });
         }
 
         // Commit: atomic visibility switch
@@ -311,16 +317,23 @@ impl ClosureEngine {
         // Build scoped graph edges from closure resolutions.
         // FocusGraphBuilder reads from reference_resolutions (is_visible=1)
         // and routes edges via EdgeConflictPolicy.
-        let stats = self
-            .graph_builder
-            .build_for_closure(closure_id, last_generation)?;
-        tracing::debug!(
-            closure_id = %closure_id,
-            edges_built = stats.stats.edges_built,
-            edges_written = stats.stats.edges_written,
-            candidate_count = stats.candidate_count,
-            "FocusGraphBuilder completed"
-        );
+        if Instant::now() < deadline {
+            let stats = self
+                .graph_builder
+                .build_for_closure(closure_id, last_generation)?;
+            tracing::debug!(
+                closure_id = %closure_id,
+                edges_built = stats.stats.edges_built,
+                edges_written = stats.stats.edges_written,
+                candidate_count = stats.candidate_count,
+                "FocusGraphBuilder completed"
+            );
+        } else {
+            closure.record_gap(KnownGap::BudgetExhausted {
+                strategy: "graph_build_time_budget".to_string(),
+                remaining: closure.files.len(),
+            });
+        }
 
         Ok(closure)
     }
@@ -357,6 +370,52 @@ impl ClosureEngine {
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    /// Build a visibility filter for resolving references scoped to a closure.
+    ///
+    /// Constructs a language-specific `Fn(&SymbolDef, FileId) -> bool` that
+    /// checks whether a symbol is visible from a given file. Uses
+    /// `FileId::default()` as the "from" context because closure-scoped
+    /// resolution operates across all files in the closure (visibility
+    /// decisions are per-reference, not per-closure-file).
+    ///
+    /// The `VisibilityFilterRegistry` is owned by the returned closure so
+    /// the filter's lifetime is self-contained — callers do not need to
+    /// hold a reference to the registry.
+    ///
+    /// Returns `None` when the closure contains no files with a known language.
+    fn build_visibility_filter(
+        &self,
+        closure_files: &HashSet<FileId>,
+    ) -> Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> {
+        let language: Option<Language> = closure_files
+            .iter()
+            .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())
+            .map(|file_info| file_info.language)
+            .next();
+
+        // The registry is moved into the closure, so the filter's lifetime
+        // is self-contained. This is the same pattern as the original inline
+        // code — the registry exists only as long as the closure.
+        let registry = VisibilityFilterRegistry::new();
+        language.map(move |lang| {
+            // We need the filter from the registry. Since registry is moved
+            // into this closure, we extract the filter result by calling
+            // get() and then capturing it in an inner closure.
+            //
+            // However, get() returns &dyn VisibilityFilter which borrows
+            // from registry. We work around this by storing the registry
+            // inside the closure and calling get() on each invocation.
+            let ctx = VisibilityContext {
+                from_file: FileId::default(),
+                from_crate_root: None,
+                target_crate_root: None,
+            };
+            Box::new(move |sym: &SymbolDef, from_file: FileId| -> bool {
+                registry.get(lang).is_visible(sym, from_file, &ctx)
+            }) as Box<dyn Fn(&SymbolDef, FileId) -> bool>
+        })
+    }
 
     /// Locate files containing the seed.
     fn locate_seed(&self, seed: &FocusSeed) -> Result<Vec<FileId>> {
