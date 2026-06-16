@@ -298,13 +298,17 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Unified symbol resolution — BestEffortSingle always picks one symbol.
-        let resolution =
-            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
-                Ok(r) => r,
-                Err(e) => {
-                    return (format!("Symbol resolution error: {e}"), true);
-                }
-            };
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            Some("incoming".to_string()),
+            Some(max_depth),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return (format!("Symbol resolution error: {e}"), true);
+            }
+        };
         let (target_id, resolved_symbol) = match resolution {
             SymbolResolution::Single {
                 symbol_id,
@@ -337,9 +341,15 @@ impl ToolRouter {
                 (sid, None)
             }
             SymbolResolution::NotFound { qname, suggestions } => {
-                return (
-                    format!("Symbol not found: {qname}. Suggestions: {suggestions:?}"),
-                    true,
+                return self.retryable_symbol_not_found_response(
+                    "trace",
+                    args,
+                    &qname,
+                    suggestions,
+                    Some(
+                        "trace(kind=callers) requires the target symbol to be materialized first"
+                            .into(),
+                    ),
                 );
             }
         };
@@ -454,9 +464,12 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // -- Resolve 'from' symbol --
-        let from_resolution = match self
-            .resolve_symbol_input(&from_input, SymbolResolutionPolicy::BestEffortSingle)
-        {
+        let from_resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &from_input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            Some("outgoing".to_string()),
+            Some(max_depth),
+        ) {
             Ok(r) => r,
             Err(e) => {
                 return (format!("Symbol resolution error for 'from': {e}"), true);
@@ -491,18 +504,31 @@ impl ToolRouter {
                 (sid, None)
             }
             SymbolResolution::NotFound { qname, .. } => {
-                return (format!("Symbol not found: {qname}"), true);
+                return self.retryable_symbol_not_found_response(
+                    "trace",
+                    args,
+                    &qname,
+                    Vec::new(),
+                    Some(
+                        "trace(kind=forward) requires the source symbol to be materialized first"
+                            .into(),
+                    ),
+                );
             }
         };
 
         // -- Resolve 'to' symbol --
-        let to_resolution =
-            match self.resolve_symbol_input(&to_input, SymbolResolutionPolicy::BestEffortSingle) {
-                Ok(r) => r,
-                Err(e) => {
-                    return (format!("Symbol resolution error for 'to': {e}"), true);
-                }
-            };
+        let to_resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &to_input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            None,
+            Some(max_depth),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return (format!("Symbol resolution error for 'to': {e}"), true);
+            }
+        };
         let (to_id, resolved_to) = match to_resolution {
             SymbolResolution::Single {
                 symbol_id,
@@ -533,9 +559,24 @@ impl ToolRouter {
             }
             SymbolResolution::NotFound { qname, .. } => {
                 if let Some(hint) = self.unresolved_call_target_hint(&[from_id], &qname) {
-                    return (format!("Symbol not found: {qname}.{hint}"), true);
+                    return self.retryable_symbol_not_found_response(
+                        "trace",
+                        args,
+                        &qname,
+                        Vec::new(),
+                        Some(hint),
+                    );
                 }
-                return (format!("Symbol not found: {qname}"), true);
+                return self.retryable_symbol_not_found_response(
+                    "trace",
+                    args,
+                    &qname,
+                    Vec::new(),
+                    Some(
+                        "trace(kind=forward) requires the target symbol to be materialized first"
+                            .into(),
+                    ),
+                );
             }
         };
 
@@ -748,6 +789,9 @@ mod tests {
     fn trace_callers_hex_input_returns_not_found() {
         // Hex strings are no longer auto-detected — they are treated as
         // qualified names. A hex-looking string won't match any symbol.
+        // In focus mode (no full index), this returns a partial "building"
+        // result instead of a hard error — the symbol may exist but hasn't
+        // been materialized in the local closure yet.
         let store = test_store();
         let f = register_file(&store, "test.ts");
         let sid = insert_symbol(&store, f, "func", "func.func", SymbolKind::Function);
@@ -757,7 +801,10 @@ mod tests {
         let args = serde_json::json!({"symbol": hex});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
         assert!(
-            resp_str.contains("not found") || is_error,
+            resp_str.contains("not found")
+                || resp_str.contains("not available")
+                || resp_str.contains("building")
+                || is_error,
             "hex string should not resolve as SymbolId: {resp_str}"
         );
     }
@@ -820,10 +867,19 @@ mod tests {
         let args = serde_json::json!({"from": "sender", "to": "copy_from_user"});
         let (resp, is_error) = router.handle_trace_forward(&args);
 
-        assert!(is_error, "target should remain unresolved: {resp}");
-        assert!(
-            resp.contains("unresolved call token") && resp.contains("trace(kind=\"point\")"),
-            "missing actionable unresolved-call hint: {resp}"
-        );
+        // In focus mode, the response is a partial "building" result (is_error=false)
+        // instead of a hard error. The symbol may exist but hasn't been materialized
+        // in the local closure yet. Both error and partial-result are acceptable.
+        if is_error {
+            assert!(
+                resp.contains("unresolved call token") && resp.contains("trace(kind=\"point\")"),
+                "missing actionable unresolved-call hint: {resp}"
+            );
+        } else {
+            assert!(
+                resp.contains("building") || resp.contains("not available") || resp.contains("partial"),
+                "focus-mode partial result should indicate building state: {resp}"
+            );
+        }
     }
 }

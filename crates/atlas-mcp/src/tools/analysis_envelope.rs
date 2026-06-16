@@ -91,10 +91,20 @@ pub(crate) struct AnalysisEnvelope {
     analysis_missing: Option<Vec<String>>,
     /// Suggested delay before retrying/resuming this query.
     analysis_retry_after_ms: Option<u64>,
+    /// Explicit background refinement status for partial focus responses.
+    background_refinement: Option<BackgroundRefinement>,
     /// Project-level index statistics for non-focus full-index responses.
     capability_stats: Option<CapabilityStats>,
     /// Project-level index snapshot (file/symbol/edge counts, index mode).
     project_stats: Option<ProjectStats>,
+}
+
+#[derive(Debug, Clone)]
+struct BackgroundRefinement {
+    state: String,
+    job_count: Option<usize>,
+    retry_after_ms: u64,
+    description: String,
 }
 
 impl AnalysisEnvelope {
@@ -124,6 +134,7 @@ impl AnalysisEnvelope {
             analysis_basis: None,
             analysis_missing: None,
             analysis_retry_after_ms: None,
+            background_refinement: None,
             capability_stats: None,
             project_stats: None,
         }
@@ -229,6 +240,23 @@ impl AnalysisEnvelope {
     /// Set a suggested delay before retrying/resuming this query.
     pub fn with_analysis_retry_after_ms(mut self, retry_after_ms: u64) -> Self {
         self.analysis_retry_after_ms = Some(retry_after_ms);
+        self
+    }
+
+    /// Set explicit background refinement metadata.
+    pub fn with_background_refinement(
+        mut self,
+        state: impl Into<String>,
+        job_count: Option<usize>,
+        retry_after_ms: u64,
+        description: impl Into<String>,
+    ) -> Self {
+        self.background_refinement = Some(BackgroundRefinement {
+            state: state.into(),
+            job_count,
+            retry_after_ms,
+            description: description.into(),
+        });
         self
     }
 
@@ -349,6 +377,23 @@ impl AnalysisEnvelope {
 
         if self.partial_result {
             body["partial_result"] = json!(true);
+            if body.get("background_refinement").is_none() {
+                if let Some(ref refinement) = self.background_refinement {
+                    body["background_refinement"] = json!({
+                        "state": refinement.state,
+                        "job_count": refinement.job_count,
+                        "retry_after_ms": refinement.retry_after_ms,
+                        "description": refinement.description
+                    });
+                } else if let Some(retry_after_ms) = self.analysis_retry_after_ms {
+                    body["background_refinement"] = json!({
+                        "state": "pending",
+                        "job_count": null,
+                        "retry_after_ms": retry_after_ms,
+                        "description": "background focus refinement is continuing for this partial result"
+                    });
+                }
+            }
         }
 
         // 5. Inject focus-aware precision (new type system)
@@ -576,6 +621,30 @@ mod tests {
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &mut store);
         assert!(!json_str.contains("\"work\""));
+    }
+
+    #[test]
+    fn test_partial_response_emits_explicit_background_refinement() {
+        let mut store = MockStore::new();
+        let args = json!({"symbol": "test"});
+        let lr = AnalysisEnvelope::new("calls", &args)
+            .with_partial_result(true)
+            .with_analysis_state("building".into())
+            .with_analysis_next_action("wait_then_resume".into())
+            .with_analysis_retry_after_ms(2000)
+            .with_background_refinement(
+                "queued",
+                Some(3),
+                2000,
+                "background focus refinement is continuing",
+            )
+            .with_is_error(false);
+        let body = json!({"ok": true});
+        let (json_str, _) = lr.build(body, &mut store);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(v["background_refinement"]["state"], "queued");
+        assert_eq!(v["background_refinement"]["job_count"], 3);
+        assert_eq!(v["background_refinement"]["retry_after_ms"], 2000);
     }
 
     #[test]

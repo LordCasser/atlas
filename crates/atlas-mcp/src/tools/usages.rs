@@ -18,16 +18,26 @@ impl ToolRouter {
             Ok(inp) => inp,
             Err(e) => return (e, true),
         };
-        let resolution =
-            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
-                Ok(r) => r,
-                Err(e) => return (e, true),
-            };
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            None,
+            None,
+        ) {
+            Ok(r) => r,
+            Err(e) => return (e, true),
+        };
         let sid = match resolution {
             SymbolResolution::Single { symbol_id, .. } => symbol_id,
             SymbolResolution::Ambiguous { candidates, .. } => candidates[0].symbol_id,
             SymbolResolution::NotFound { qname, .. } => {
-                return (format!("Symbol not found: {qname}"), true);
+                return self.retryable_symbol_not_found_response(
+                    "symbol",
+                    args,
+                    &qname,
+                    Vec::new(),
+                    Some("view=usages requires the symbol to be materialized first".into()),
+                );
             }
         };
 

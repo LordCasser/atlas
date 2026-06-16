@@ -142,12 +142,362 @@ fn handler_graph_tools_return_expected_structure() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[test]
+fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_calls_cold_symbol");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+    let mut router = setup_temp_c_project(&temp_dir);
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "calls",
+        &json!({"symbol": "foo", "direction": "outgoing"}),
+    );
+
+    assert!(
+        !err,
+        "cold calls query should not fail as NotFound: {resp:.500}"
+    );
+    assert_eq!(resp["symbol"], "foo");
+    assert!(
+        resp.get("total_callees").is_some() || resp.get("callees").is_some(),
+        "cold calls query should return a bounded graph response: {resp:.500}",
+    );
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_explore_cold_scope_returns_local_dossier() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_explore_cold_scope");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+    let mut router = setup_temp_c_project(&temp_dir);
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "explore",
+        &json!({"symbol": "foo", "scope": ".", "source_mode": "full"}),
+    );
+
+    assert!(
+        !err,
+        "cold scoped explore should return local dossier instead of NotFound: {resp:.500}"
+    );
+    assert!(
+        resp.get("subject").is_some() || resp.get("sourceExcerpt").is_some(),
+        "cold scoped explore should contain local dossier fields: {resp:.500}",
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_explore_scope_miss");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(temp_dir.join("a")).expect("create scope a");
+    std::fs::create_dir_all(temp_dir.join("b")).expect("create scope b");
+    std::fs::write(temp_dir.join("a/only_a.c"), "void only_a(void) {}\n").expect("write a");
+    std::fs::write(temp_dir.join("b/foo.c"), "void foo(void) {}\n").expect("write b");
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "explore",
+        &json!({"symbol": "foo", "scope": "a"}),
+    );
+
+    assert!(
+        !err,
+        "scoped explore miss should be a retryable partial response: {resp:.500}"
+    );
+    assert_eq!(resp["status"], "building");
+    assert_eq!(resp["scope"], "a");
+    assert!(
+        resp.get("subject").is_none(),
+        "explore must not return a dossier for a symbol outside the requested scope: {resp:.500}"
+    );
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_explore_unscoped_candidate");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+    std::fs::write(temp_dir.join("target.c"), "void unscoped_target(void) {}\n")
+        .expect("write target");
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "explore",
+        &json!({"symbol": "unscoped_target"}),
+    );
+
+    assert!(
+        !err,
+        "unscoped cold explore should be a retryable partial response: {resp:.500}"
+    );
+    assert_eq!(resp["status"], "building");
+    assert!(
+        resp.get("subject").is_none(),
+        "unscoped cold explore should not synchronously return a dossier: {resp:.500}"
+    );
+    assert!(
+        resp["candidate_files"]
+            .as_array()
+            .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
+        "unscoped cold explore should expose bounded candidate files: {resp:.500}",
+    );
+    assert!(
+        resp["background_refinement"]["job_count"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "unscoped cold explore with candidate files should enqueue background focus: {resp:.500}",
+    );
+    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
+    for (tool, args) in [
+        (
+            "calls",
+            json!({"symbol": "unscoped_tool_target", "direction": "both"}),
+        ),
+        (
+            "trace",
+            json!({"kind": "callers", "symbol": "unscoped_tool_target"}),
+        ),
+        (
+            "symbol",
+            json!({"symbol": "unscoped_tool_target", "view": "usages"}),
+        ),
+        (
+            "lifecycle",
+            json!({"symbol": "unscoped_tool_target", "field": "state.ptr"}),
+        ),
+    ] {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "atlas_hdlr_unscoped_candidate_{}_{}",
+            tool,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+        std::fs::write(
+            temp_dir.join("target.c"),
+            "void unscoped_tool_target(void) {}\n",
+        )
+        .expect("write target");
+
+        let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+        store.init_schema().expect("init_schema");
+        let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+        router.init_focus();
+
+        let (resp, err) = call_tool(&mut router, tool, &args);
+        assert!(
+            !err,
+            "{tool} should return retryable partial for unscoped cold symbol: {resp:.500}"
+        );
+        if resp["status"] == "building" {
+            assert!(
+                resp["candidate_files"]
+                    .as_array()
+                    .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
+                "{tool} should expose bounded candidate files while unresolved: {resp:.500}",
+            );
+            assert!(
+                resp["background_refinement"]["job_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+                "{tool} should enqueue background focus for candidate files: {resp:.500}",
+            );
+            assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+        } else {
+            assert_eq!(
+                resp["partial_result"].as_bool(),
+                Some(true),
+                "{tool} should mark local materialized result as partial: {resp:.500}"
+            );
+            assert!(
+                resp.get("background_refinement").is_some(),
+                "{tool} should still expose background refinement for local partial result: {resp:.500}",
+            );
+            assert_eq!(
+                resp["background_refinement"]["state"], "queued",
+                "{tool} local partial result should expose real queued focus work: {resp:.500}",
+            );
+            assert!(
+                resp["background_refinement"]["job_count"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0),
+                "{tool} local partial result should include pending closure count: {resp:.500}",
+            );
+            assert!(
+                matches!(
+                    resp["analysis"]["next_action"].as_str(),
+                    Some("use_result" | "wait_then_resume")
+                ),
+                "{tool} should give a usable next_action for local partial result: {resp:.500}",
+            );
+        }
+        assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[test]
+fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_retryable_cold_symbol_tools");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+    std::fs::write(
+        temp_dir.join("target.c"),
+        "void unrelated_target(void) {}\n",
+    )
+    .expect("write target");
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    for (tool, args) in [
+        (
+            "trace",
+            json!({"kind": "callers", "symbol": "missing_trace_target"}),
+        ),
+        (
+            "symbol",
+            json!({"symbol": "missing_usages_target", "view": "usages"}),
+        ),
+        (
+            "lifecycle",
+            json!({"symbol": "missing_lifecycle_target", "field": "state.ptr"}),
+        ),
+        ("branch_diff", json!({"symbol": "missing_branch_target"})),
+    ] {
+        let (resp, err) = call_tool(&mut router, tool, &args);
+        assert!(
+            !err,
+            "{tool} should return a retryable partial response for cold symbols: {resp:.500}"
+        );
+        assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
+        assert_eq!(
+            resp["analysis"]["next_action"], "wait_then_resume",
+            "{tool}: {resp:.500}"
+        );
+        assert_eq!(
+            resp["analysis"]["retry_after_ms"], 2000,
+            "{tool}: {resp:.500}"
+        );
+        assert_eq!(
+            resp["background_refinement"]["retry_after_ms"], 2000,
+            "{tool}: {resp:.500}"
+        );
+        assert!(
+            matches!(
+                resp["background_refinement"]["state"].as_str(),
+                Some("queued" | "pending")
+            ),
+            "{tool}: {resp:.500}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_retryable_graph_missing_symbol");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+    std::fs::write(
+        temp_dir.join("target.c"),
+        "void unrelated_target(void) {}\n",
+    )
+    .expect("write target");
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    for (tool, args) in [
+        (
+            "calls",
+            json!({"symbol": "missing_calls_target", "direction": "incoming"}),
+        ),
+        (
+            "calls",
+            json!({"symbol": "missing_callees_target", "direction": "outgoing"}),
+        ),
+        (
+            "path",
+            json!({"from": "missing_path_from", "to": "missing_path_to"}),
+        ),
+        ("impact", json!({"symbol": "missing_impact_target"})),
+    ] {
+        let (resp, err) = call_tool(&mut router, tool, &args);
+        assert!(
+            !err,
+            "{tool} should return a retryable partial response for missing symbols: {resp:.500}"
+        );
+        assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
+        assert_eq!(
+            resp["analysis"]["next_action"], "wait_then_resume",
+            "{tool}: {resp:.500}"
+        );
+        assert_eq!(
+            resp["analysis"]["retry_after_ms"], 2000,
+            "{tool}: {resp:.500}"
+        );
+        assert_eq!(
+            resp["background_refinement"]["retry_after_ms"], 2000,
+            "{tool}: {resp:.500}"
+        );
+        assert!(
+            matches!(
+                resp["background_refinement"]["state"].as_str(),
+                Some("queued" | "pending")
+            ),
+            "{tool}: {resp:.500}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 // =========================================================================
-// Test 2: Analysis tools reject non-C/C++ / missing symbols gracefully
+// Test 2: Analysis tools return bounded responses for missing symbols
 // =========================================================================
 
 #[test]
-fn handler_analysis_tools_reject_non_cpp() {
+fn handler_analysis_tools_missing_symbols_are_retryable() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
@@ -159,18 +509,9 @@ fn handler_analysis_tools_reject_non_cpp() {
         "lifecycle",
         &json!({"symbol": "NonExistentFunction_XYZ_999", "field": "ptr"}),
     );
-    // Should be an error of some form — either Symbol not found or
-    // unsupported_language.  Just verify it's an error response.
-    let text = resp.to_string();
-    assert!(
-        text.contains("error")
-            || text.contains("not found")
-            || text.contains("not_found")
-            || text.contains("unsupported")
-            || text.contains("No results")
-            || text.contains("Symbol not found"),
-        "lifecycle for non-existent symbol should return an error, got: {text:.300}",
-    );
+    assert_eq!(resp["status"], "building", "lifecycle: {resp:.300}");
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
 
     // ── branch_diff with non-existent symbol ─────────────────────────
     let (resp2, _err2) = call_tool(
@@ -178,16 +519,9 @@ fn handler_analysis_tools_reject_non_cpp() {
         "branch_diff",
         &json!({"symbol": "NonExistentFunction_XYZ_999"}),
     );
-    let text2 = resp2.to_string();
-    assert!(
-        text2.contains("error")
-            || text2.contains("not found")
-            || text2.contains("not_found")
-            || text2.contains("unsupported")
-            || text2.contains("No results")
-            || text2.contains("Symbol not found"),
-        "branch_diff for non-existent symbol should return an error, got: {text2:.300}",
-    );
+    assert_eq!(resp2["status"], "building", "branch_diff: {resp2:.300}");
+    assert_eq!(resp2["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp2["background_refinement"]["retry_after_ms"], 2000);
 }
 
 // =========================================================================
@@ -284,6 +618,158 @@ int top_function(void) {
     assert!(
         resp3.get("coverage").is_some(),
         "search response should include coverage signal: {resp3:.300}"
+    );
+    assert!(
+        resp3.get("coverage_counts").is_none(),
+        "search should not merge focus closure coverage_counts: {resp3:.300}"
+    );
+    assert!(
+        resp3.get("gaps").is_none(),
+        "search should not merge focus closure gaps: {resp3:.300}"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_search_queues_background_refinement_for_cold_scope() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_bg_refine");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+    for ix in 0..4 {
+        std::fs::write(
+            temp_dir.join(format!("cold_{ix}.c")),
+            "void cold_target(void) {}\n",
+        )
+        .expect("write cold file");
+    }
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "search",
+        &json!({"query": "cold_target", "scope": "."}),
+    );
+    assert!(
+        !err,
+        "cold search should return a bounded result, got: {resp:.300}"
+    );
+    assert!(
+        resp.get("background_refinement").is_some(),
+        "cold bounded search should queue background refinement: {resp:.300}"
+    );
+    assert_eq!(
+        resp["background_refinement"]["retry_after_ms"].as_u64(),
+        Some(2000),
+        "response should tell clients when to retry/resume: {resp:.300}"
+    );
+    assert!(
+        resp["analysis"].get("retry_after_ms").is_some(),
+        "analysis block should carry retry_after_ms: {resp:.300}"
+    );
+    if resp["coverage"]["state"] == "partial" {
+        assert_ne!(
+            resp["precision"]["coverage"], "repo_complete",
+            "partial search must not advertise repo-complete precision: {resp:.300}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_search_partial_hit_without_deferred_ids_still_queues_background_refinement() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_bg_refine_single_hit");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+    for ix in 0..35 {
+        let body = if ix == 17 {
+            "void singleton_cold_target(void) {}\n"
+        } else {
+            "void unrelated_helper(void) {}\n"
+        };
+        std::fs::write(temp_dir.join(format!("cold_{ix}.c")), body).expect("write cold file");
+    }
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "search",
+        &json!({"query": "singleton_cold_target", "scope": "."}),
+    );
+    assert!(
+        !err,
+        "partial cold search with one hit should return a bounded result: {resp:.300}"
+    );
+    assert_eq!(resp["coverage"]["state"], "partial");
+    assert!(
+        resp.get("background_refinement").is_some(),
+        "partial search with hits should still queue background refinement: {resp:.300}"
+    );
+    assert_eq!(
+        resp["background_refinement"]["retry_after_ms"].as_u64(),
+        Some(2000),
+        "partial search should tell clients when retry/resume may improve coverage: {resp:.300}"
+    );
+    assert_ne!(
+        resp["precision"]["coverage"], "repo_complete",
+        "partial search must not advertise repo-complete precision: {resp:.300}"
+    );
+    assert_eq!(resp["analysis"]["next_action"], "use_result");
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_search_partial_no_hit_tells_client_to_retry() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_no_hit_retry");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+    for ix in 0..36 {
+        std::fs::write(
+            temp_dir.join(format!("cold_{ix}.c")),
+            "void unrelated_helper(void) {}\n",
+        )
+        .expect("write cold file");
+    }
+
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, temp_dir.clone());
+    router.init_focus();
+
+    let (resp, err) = call_tool(
+        &mut router,
+        "search",
+        &json!({"query": "definitely_absent_symbol", "scope": "."}),
+    );
+    assert!(
+        !err,
+        "partial cold no-hit search should return retryable partial response: {resp:.300}"
+    );
+    assert_eq!(resp["coverage"]["state"], "partial");
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert_eq!(
+        resp["background_refinement"]["retry_after_ms"].as_u64(),
+        Some(2000),
+        "partial no-hit search should tell clients when to retry: {resp:.300}"
+    );
+    assert_ne!(
+        resp["precision"]["coverage"], "repo_complete",
+        "partial no-hit search must not advertise repo-complete precision: {resp:.300}"
     );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -418,28 +904,46 @@ fn handler_symbol_detail_returns_source() {
 }
 
 // =========================================================================
-// Test: Graph-backed tools on empty store return graceful errors
+// Test: Graph-backed tools on empty store return graceful bounded responses
 // =========================================================================
 
 #[test]
-fn graph_tools_on_empty_store_return_errors() {
+fn graph_tools_on_empty_store_return_bounded_responses() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
     let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
-    // These should fail because symbol doesn't exist — but must NOT panic.
-    let tools = ["calls", "explore", "path", "impact"];
-    for tool in &tools {
-        let result = router.call_tool(&ctx, tool, &json!({"symbol": "nonexistent"}));
-        // Should return error, NOT panic
+    // These should return bounded retryable responses because the symbol does
+    // not exist in the current focus closure — and must NOT panic.
+    for (tool, args) in [
+        ("calls", json!({"symbol": "nonexistent"})),
+        (
+            "path",
+            json!({"from": "nonexistent_from", "to": "nonexistent_to"}),
+        ),
+        ("impact", json!({"symbol": "nonexistent"})),
+    ] {
+        let result = router.call_tool(&ctx, tool, &args);
         let text = extract_text(&result);
-        assert!(
-            result.is_error == Some(true) || text.contains("error") || text.contains("not found"),
-            "Tool '{tool}' should return error on empty store, got: {text}"
+        let resp: Value = serde_json::from_str(text).expect("graph tool should return JSON");
+        assert_eq!(result.is_error, Some(false), "{tool}: {text}");
+        assert_eq!(resp["status"], "building", "{tool}: {text}");
+        assert_eq!(
+            resp["analysis"]["next_action"], "wait_then_resume",
+            "{tool}: {text}"
         );
+        assert_eq!(resp["analysis"]["retry_after_ms"], 2000, "{tool}: {text}");
     }
+
+    let result = router.call_tool(&ctx, "explore", &json!({"symbol": "nonexistent"}));
+    let text = extract_text(&result);
+    let resp: Value = serde_json::from_str(text).expect("explore should return JSON");
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(resp["status"], "building");
+    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 }
 
 // =========================================================================

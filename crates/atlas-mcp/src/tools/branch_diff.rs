@@ -161,9 +161,13 @@ impl ToolRouter {
                 return super::format_ambiguous_error(&candidates, &symbol);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
-                let mut err = format!("Symbol not found: {symbol}");
-                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
-                return (err, true);
+                return self.retryable_symbol_not_found_response(
+                    "branch_diff",
+                    args,
+                    &symbol,
+                    Vec::new(),
+                    Some("branch_diff requires the function CFG to be materialized first".into()),
+                );
             }
             Err(e) => return (e, true),
         };

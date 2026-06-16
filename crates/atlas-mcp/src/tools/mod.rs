@@ -6,7 +6,9 @@
 //! Handler methods are organized by capability category in sub-modules:
 //!   status, search, graph, context, trace, lifecycle, branch_diff.
 
+use atlas_engine::CandidateProvider;
 use atlas_engine::ContextBuilder;
+use atlas_engine::DefaultCandidateProvider;
 use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
@@ -39,6 +41,7 @@ pub(crate) type ProgressSender = tokio::sync::mpsc::UnboundedSender<ProgressRepo
 /// Maximum number of ambiguous candidates to display in diagnostics.
 /// Beyond this, candidates are truncated to avoid log flooding in large projects.
 pub(crate) const MAX_AMBIGUOUS_CANDIDATES: usize = 5;
+const RETRYABLE_CANDIDATE_LIMIT: usize = 8;
 
 // -------------------------------------------------------------------
 // ToolCallContext — request-scoped progress capabilities
@@ -141,6 +144,14 @@ pub(crate) fn apply_focus_result_to_lr(
         }
         if !result.gaps.is_empty() {
             lr = lr.with_gaps(result.gaps.clone());
+        }
+        if !result.pending_closure_ids.is_empty() {
+            lr = lr.with_background_refinement(
+                "queued",
+                Some(result.pending_closure_ids.len()),
+                2000,
+                "background focus refinement is continuing for this partial result",
+            );
         }
 
         // ── Analysis envelope ──
@@ -346,6 +357,138 @@ impl ToolRouter {
         (focus_result, warnings)
     }
 
+    /// Queue background focus warming for already-identified hot files.
+    ///
+    /// This is the non-blocking companion to [`prepare_focus_query`]. It is
+    /// used by latency-sensitive tools that have already returned a bounded
+    /// result and want later calls/resume_query to see richer local facts.
+    pub(crate) fn enqueue_background_file_focus(&mut self, file_ids: &[FileId]) -> Vec<String> {
+        if file_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let active = self.active_mut();
+        let mut runtime = active.query_runtime.focus_runtime.lock().unwrap();
+        match runtime.enqueue_file_focus_warm(file_ids) {
+            Ok(job_ids) => job_ids,
+            Err(err) => {
+                tracing::warn!("background focus warming enqueue failed: {err:#}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Find likely source files for an unresolved symbol without blocking on
+    /// project-wide indexing. Candidate discovery lives in atlas-engine so MCP
+    /// stays a thin response-contract layer.
+    pub(crate) fn candidate_file_ids_for_symbol(&self, symbol: &str) -> Vec<FileId> {
+        let provider = DefaultCandidateProvider::new(
+            self.active().store.clone(),
+            Some(self.active().root.clone()),
+        );
+        let mut seen = HashSet::new();
+        provider
+            .candidates_for_symbol(symbol)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file_id| seen.insert(*file_id))
+            .take(RETRYABLE_CANDIDATE_LIMIT)
+            .collect()
+    }
+
+    pub(crate) fn candidate_file_paths(&self, file_ids: &[FileId]) -> Vec<String> {
+        let mut seen = HashSet::new();
+        file_ids
+            .iter()
+            .filter_map(|file_id| {
+                if !seen.insert(*file_id) {
+                    return None;
+                }
+                Some(
+                    self.active()
+                        .store
+                        .find_file_inventory_by_id(file_id)
+                        .ok()
+                        .flatten()
+                        .map(|row| row.path)
+                        .unwrap_or_else(|| {
+                            self.active().store_query_runtime.resolve_file_path(file_id)
+                        }),
+                )
+            })
+            .take(RETRYABLE_CANDIDATE_LIMIT)
+            .collect()
+    }
+
+    /// Build a bounded, retryable response for cold symbol lookups.
+    ///
+    /// This is used instead of returning a plain "Symbol not found" error when
+    /// a focus-mode project has not materialized the relevant local facts yet.
+    /// It gives MCP clients a concrete wait/resume contract and still warms
+    /// likely candidate files in the background.
+    pub(crate) fn retryable_symbol_not_found_response(
+        &mut self,
+        tool_name: &'static str,
+        args: &serde_json::Value,
+        symbol: &str,
+        suggestions: Vec<String>,
+        detail: Option<String>,
+    ) -> (String, bool) {
+        let file_ids = self.candidate_file_ids_for_symbol(symbol);
+        let candidate_files = self.candidate_file_paths(&file_ids);
+        let background_jobs = self.enqueue_background_file_focus(&file_ids);
+        let (refinement_state, refinement_description) = if background_jobs.is_empty() {
+            (
+                "pending",
+                "candidate discovery did not find a bounded local file yet; retry after focus bootstrap has warmed more inventory",
+            )
+        } else {
+            (
+                "queued",
+                "background scoped analysis is preparing local symbol facts",
+            )
+        };
+
+        let mut resp = json!({
+            "symbol": symbol,
+            "status": "building",
+            "partial_result": true,
+            "message": if background_jobs.is_empty() {
+                "The symbol is not available in the current local focus closure yet. Retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
+            } else {
+                "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
+            },
+            "candidate_files": candidate_files,
+            "background_refinement": {
+                "state": refinement_state,
+                "job_count": background_jobs.len(),
+                "retry_after_ms": 2000,
+                "description": refinement_description
+            }
+        });
+        if !suggestions.is_empty() {
+            resp["suggestions"] = json!(suggestions);
+        }
+        if let Some(detail) = detail {
+            resp["detail"] = json!(detail);
+        }
+
+        AnalysisEnvelope::new(tool_name, args)
+            .with_is_error(false)
+            .with_partial_result(true)
+            .with_analysis_state("building".into())
+            .with_analysis_scope("local".into())
+            .with_analysis_summary(
+                "bounded unresolved result; background scoped analysis is preparing local symbol facts"
+                    .into(),
+            )
+            .with_analysis_next_action("wait_then_resume".into())
+            .with_analysis_basis(vec!["manifest".into(), "structural".into()])
+            .with_analysis_missing(vec!["symbol_resolution".into(), "repo_complete".into()])
+            .with_analysis_retry_after_ms(2000)
+            .build(resp, self)
+    }
+
     /// Inject graph edge provenance into the response JSON when the graph
     /// was built from a partial/closure-based index (FocusPartial mode).
     ///
@@ -458,6 +601,11 @@ impl ToolRouter {
                 .invalidation
                 .graph_generation
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // The incremental per-file refresh above has already brought the
+            // in-memory graph up to date for these lazy writes. Mark this
+            // generation as consumed so the stale check below does not perform
+            // an immediate synchronous full-graph rebuild on large projects.
+            active.graph_runtime.mark_graph_fresh();
         }
 
         // Step 2: Deferred full rebuild — try to apply a background-built graph,
@@ -1108,6 +1256,7 @@ fn make_graph_tools() -> Vec<Tool> {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches return candidates. Use SymbolSelector object for precise disambiguation."),
+                    "scope": { "type": "string", "description": "Optional project-relative directory or file scope for cold/local exploration (e.g. drivers/hid, net/smc). Keeps first-pass analysis bounded to the requested region." },
                     "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
                     "source_lines": { "type": "integer", "description": "Max source lines to return when source_mode=excerpt. Default: 40." },
                     "evidence_limit": { "type": "integer", "description": "Max call evidence examples per direction. Default: 5." },
@@ -3458,6 +3607,8 @@ mod tests {
     fn trace_callers_hex_symbol_accepted() {
         // Hex strings are no longer auto-detected — they are treated as
         // qualified names. A hex-looking string won't match any symbol.
+        // In focus mode, this returns a partial "building" result instead
+        // of a hard error.
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         let sym_name = "my_func";
@@ -3471,7 +3622,8 @@ mod tests {
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
         assert!(
-            resp_str.contains("not found") || is_error,
+            resp_str.contains("not found") || resp_str.contains("not available")
+                || resp_str.contains("building") || is_error,
             "Hex string should not resolve as SymbolId: {resp_str}"
         );
     }
@@ -4817,6 +4969,8 @@ mod tests {
         let ctx = ToolCallContext::empty();
 
         // view=detail → StoreFactQuery (no graph needed)
+        // In focus mode, symbol-not-found can return either a hard error or
+        // a partial "building" result (is_error=false with analysis.state="building").
         let r1 = router.call_tool(
             &ctx,
             "symbol",
@@ -4824,7 +4978,8 @@ mod tests {
         );
         let t1 = extract_text(&r1);
         assert!(
-            r1.is_error == Some(true) || t1.contains("not found") || t1.contains("error"),
+            r1.is_error == Some(true) || t1.contains("not found") || t1.contains("error")
+                || t1.contains("building") || t1.contains("not available"),
             "symbol view=detail should not panic, got: {t1}"
         );
 
@@ -4836,7 +4991,8 @@ mod tests {
         );
         let t2 = extract_text(&r2);
         assert!(
-            r2.is_error == Some(true) || t2.contains("not found") || t2.contains("error"),
+            r2.is_error == Some(true) || t2.contains("not found") || t2.contains("error")
+                || t2.contains("building") || t2.contains("not available"),
             "symbol view=context should not panic, got: {t2}"
         );
 
@@ -4848,7 +5004,8 @@ mod tests {
         );
         let t3 = extract_text(&r3);
         assert!(
-            r3.is_error == Some(true) || t3.contains("not found") || t3.contains("error"),
+            r3.is_error == Some(true) || t3.contains("not found") || t3.contains("error")
+                || t3.contains("building") || t3.contains("not available"),
             "symbol view=usages should not panic, got: {t3}"
         );
     }

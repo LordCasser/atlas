@@ -14,6 +14,7 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
+use atlas_engine::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
@@ -23,6 +24,7 @@ use crate::tools::symbol_selector::{
 };
 
 use serde_json::json;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // ── MCP response helpers ────────────────────────────────────────────────────
@@ -37,6 +39,21 @@ struct SearchHit {
     file: String,
     line: u32,
     layer: String,
+}
+
+fn search_public_precision(engine_precision: &Precision, search_is_partial: bool) -> Precision {
+    if !search_is_partial {
+        return engine_precision.clone();
+    }
+    Precision {
+        coverage: CoverageTier::Partial {
+            gaps: vec![KnownGap::BudgetExhausted {
+                strategy: "scoped_search_background_refinement".to_string(),
+                remaining: 0,
+            }],
+        },
+        confidence: engine_precision.confidence.max(SemanticConfidence::Medium),
+    }
 }
 
 impl ToolRouter {
@@ -125,20 +142,9 @@ impl ToolRouter {
         scope: &str,
         is_manual_full: bool,
         include_roots: Vec<atlas_engine::IncludeRoot>,
-        mut root_warnings: Vec<String>,
+        root_warnings: Vec<String>,
     ) -> (String, bool) {
         ctx.send_progress(0.1, &format!("Searching for '{query}' in {scope}..."));
-
-        let mut focus_result = None;
-        if !is_manual_full {
-            let (prepared, focus_warnings) =
-                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Search {
-                    query: query.to_string(),
-                    scope: Some(scope.to_string()),
-                }));
-            focus_result = prepared;
-            root_warnings.extend(focus_warnings);
-        }
 
         // Build the search request → delegate to ScopedSearchService.
         let kind_filter = kind.and_then(SymbolKind::from_str);
@@ -168,7 +174,11 @@ impl ToolRouter {
             self.active().store.clone(),
             Some(&self.active().root),
         ));
-        let svc = ScopedSearchService::new(self.active().store.clone(), engine);
+        let svc = ScopedSearchService::new_with_project_root(
+            self.active().store.clone(),
+            engine,
+            Some(self.active().root.clone()),
+        );
 
         let engine_resp = match svc.execute(req) {
             Ok(r) => r,
@@ -181,7 +191,7 @@ impl ToolRouter {
 
         // Unavailable means no data at all — not even manifest extraction.
         // Convert to a clear error instead of returning empty results.
-        if engine_resp.precision.is_unavailable() {
+        if engine_resp.precision.is_unavailable() && engine_resp.scope_file_count == 0 {
             let guidance = self.active().store_query_runtime.not_indexed_guidance();
             let mut msg =
                 format!("scope \"{scope}\" has no indexed data and cannot return any results");
@@ -199,6 +209,28 @@ impl ToolRouter {
             return lr.build(error_body, self);
         }
 
+        let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
+        let mut background_file_ids = engine_resp.deferred_file_ids.clone();
+        if search_is_partial && background_file_ids.is_empty() {
+            let mut seen: HashSet<FileId> = background_file_ids.iter().copied().collect();
+            for hit in &engine_resp.results {
+                if seen.insert(hit.symbol.file_id) {
+                    background_file_ids.push(hit.symbol.file_id);
+                }
+            }
+            for file_id in self
+                .active()
+                .store
+                .list_file_inventory_ids_in_scope(scope, 24)
+                .unwrap_or_default()
+            {
+                if seen.insert(file_id) {
+                    background_file_ids.push(file_id);
+                }
+            }
+        }
+        let background_jobs = self.enqueue_background_file_focus(&background_file_ids);
+
         // Build the MCP JSON response from the engine response.
         let hits: Vec<SearchHit> = engine_resp
             .results
@@ -214,7 +246,6 @@ impl ToolRouter {
             "scope_file_count": engine_resp.scope_file_count,
         });
 
-        let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
         response["coverage"] = match &engine_resp.coverage {
             SearchCoverage::Full => json!({"state": "complete"}),
             SearchCoverage::Partial { reason } => {
@@ -223,11 +254,28 @@ impl ToolRouter {
         };
         response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
         response["capability_mask"] = json!(engine_resp.capability_mask.bits());
+        if !background_jobs.is_empty() {
+            response["background_refinement"] = json!({
+                "state": "queued",
+                "job_count": background_jobs.len(),
+                "retry_after_ms": 2000,
+                "description": "background focus warming is parsing the remaining hot files"
+            });
+        } else if search_is_partial {
+            response["background_refinement"] = json!({
+                "state": "pending",
+                "job_count": 0,
+                "retry_after_ms": 2000,
+                "description": "coverage is partial; retry after the focus runtime has had a chance to warm this area"
+            });
+        }
         // Map Precision → public precision contract.
         // Unavailable (Manifest + Low) means no data at all → omit the field entirely.
-        if !engine_resp.precision.is_unavailable() {
-            response["precision"] = serde_json::to_value(precision_to_view(&engine_resp.precision))
-                .unwrap_or(json!(null));
+        if !engine_resp.precision.is_unavailable() || search_is_partial {
+            let public_precision =
+                search_public_precision(&engine_resp.precision, search_is_partial);
+            response["precision"] =
+                serde_json::to_value(precision_to_view(&public_precision)).unwrap_or(json!(null));
         }
 
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
@@ -237,21 +285,34 @@ impl ToolRouter {
             .with_lazy_warnings(engine_resp.warnings)
             .with_is_error(false);
         if search_is_partial {
+            let search_has_hits = !hits.is_empty();
+            let background_queued = !background_jobs.is_empty();
             lr = lr
                 .with_partial_result(true)
                 .with_analysis_state("usable_partial".into())
                 .with_analysis_scope("local".into())
-                .with_analysis_summary(
-                    "scoped search coverage is partial; results are bounded by the current focus scope"
-                        .into(),
-                )
-                .with_analysis_next_action("wait_then_resume".into())
-                .with_analysis_basis(vec!["manifest".into()])
-                .with_analysis_missing(vec!["structural".into()])
-                .with_analysis_retry_after_ms(2000);
-        }
-        if let Some(ref result) = focus_result {
-            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+                .with_analysis_summary(if search_has_hits {
+                    if background_queued {
+                        "scoped search returned bounded matches; background focus warming is preparing broader coverage"
+                    } else {
+                        "scoped search returned matches from the current focus scope; full repository coverage is unavailable"
+                    }
+                        .into()
+                } else if background_queued {
+                    "scoped search returned no matches yet; background focus warming is preparing broader coverage"
+                        .into()
+                } else {
+                    "scoped search returned no matches in the bounded foreground pass; retry after background focus warming"
+                        .into()
+                })
+                .with_analysis_next_action(if !search_has_hits {
+                    "wait_then_resume".into()
+                } else {
+                    "use_result".into()
+                })
+                .with_analysis_basis(vec!["manifest".into(), "structural".into()])
+                .with_analysis_missing(vec!["repo_complete".into()]);
+            lr = lr.with_analysis_retry_after_ms(2000);
         }
         if !search_is_partial {
             lr = lr
@@ -559,5 +620,29 @@ impl ToolRouter {
             "error": hint,
             "candidates": candidates_json,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_search_public_precision_never_reports_repo_complete() {
+        let public_precision = search_public_precision(&Precision::best(), true);
+        assert!(matches!(
+            public_precision.coverage,
+            CoverageTier::Partial { .. }
+        ));
+        assert_eq!(public_precision.confidence, SemanticConfidence::Certain);
+    }
+
+    #[test]
+    fn complete_search_public_precision_preserves_engine_precision() {
+        let public_precision = search_public_precision(&Precision::best(), false);
+        assert!(matches!(
+            public_precision.coverage,
+            CoverageTier::RepoComplete
+        ));
     }
 }

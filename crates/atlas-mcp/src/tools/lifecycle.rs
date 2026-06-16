@@ -38,16 +38,27 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
-        {
+        let sid = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::BestEffortSingle,
+            None,
+            None,
+        ) {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 return super::format_ambiguous_error(&candidates, &symbol);
             }
             Ok(SymbolResolution::NotFound { .. }) => {
-                let mut err = format!("Symbol not found: {symbol}");
-                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
-                return (err, true);
+                return self.retryable_symbol_not_found_response(
+                    "lifecycle",
+                    args,
+                    &symbol,
+                    Vec::new(),
+                    Some(
+                        "lifecycle analysis requires the function CFG to be materialized first"
+                            .into(),
+                    ),
+                );
             }
             Err(e) => return (e, true),
         };
