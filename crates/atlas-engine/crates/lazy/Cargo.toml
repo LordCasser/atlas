@@ -1,6 +1,6 @@
 [package]
 name = "lazy"
-version = "1.4.2"
+version = "1.5.1"
 edition = "2024"
 description = "Atlas lazy dataflow engine — planner, loader, and hardcoded budgets"
 license = "MIT"

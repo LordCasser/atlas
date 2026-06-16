@@ -1,6 +1,6 @@
 [package]
 name = "db"
-version = "1.4.2"
+version = "1.5.1"
 edition = "2024"
 description = "Atlas SQLite persistence layer — Store, schema, FTS5 search"
 license = "MIT"

@@ -1,6 +1,6 @@
 [package]
 name = "dossier"
-version = "1.4.2"
+version = "1.5.1"
 edition = "2024"
 description = "Atlas dossier builder — Symbol Dossier for atlas_explore"
 license = "MIT"

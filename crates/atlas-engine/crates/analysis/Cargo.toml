@@ -1,6 +1,6 @@
 [package]
 name = "analysis"
-version = "1.4.2"
+version = "1.5.1"
 edition = "2024"
 description = "Atlas analysis engine — function summaries, trace analysis, call-path exploration"
 license = "MIT"

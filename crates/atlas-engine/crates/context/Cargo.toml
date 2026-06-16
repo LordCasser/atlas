@@ -1,6 +1,6 @@
 [package]
 name = "context"
-version = "1.4.2"
+version = "1.5.1"
 edition = "2024"
 description = "Atlas context builder — assembles code context views from graph + store"
 license = "MIT"
