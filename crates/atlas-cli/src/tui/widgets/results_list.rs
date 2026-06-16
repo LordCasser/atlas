@@ -33,6 +33,8 @@ impl From<SearchResult> for ResultRow {
 /// - `rows`: all matching symbols (pre-flattened).
 /// - `selected`: index of the currently highlighted row (0-based).
 /// - `scroll`: first visible row (adjusted so `selected` is in view).
+/// - `analysis_note`: optional focus/partial badge suffix for the title (e.g. " [usable_partial g:1]").
+///   Empty string => classic title. Surfaces AnalysisHud state (gaps/precision) in results pane for hybrid TUI parity.
 ///
 /// The widget automatically computes the visible window so `selected`
 /// is never outside the rendered area.
@@ -42,6 +44,7 @@ pub fn render(
     rows: &[ResultRow],
     selected: usize,
     scroll: &mut usize,
+    analysis_note: &str,
 ) {
     let list_height = area.height.saturating_sub(2) as usize; // minus borders
     if list_height == 0 {
@@ -94,11 +97,12 @@ pub fn render(
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Results ({}) ", rows.len())),
-    );
+    let title = if analysis_note.is_empty() {
+        format!(" Results ({}) ", rows.len())
+    } else {
+        format!(" Results ({}) {} ", rows.len(), analysis_note)
+    };
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     frame.render_widget(list, area);
 }

@@ -49,6 +49,8 @@ impl DetailTab {
 /// - `tab`: which tab is active.
 /// - `selected`: which caller/callee item is highlighted (for Callers/Callees tabs).
 /// - `scroll`: vertical scroll offset (pre-clamped by caller so selected is visible).
+/// - `focus_note`: short focus/partial or tool state for embedding (e.g. "focus:usable_partial"), shown in overview.
+///   Keeps hybrid state visible even inside detail without relying solely on bottom tool bar or global status.
 pub fn render(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -56,6 +58,7 @@ pub fn render(
     tab: DetailTab,
     selected: usize,
     scroll: usize,
+    focus_note: &str,
 ) {
     // Vertical: tab bar (1) + tab content.
     let v_chunks = Layout::default()
@@ -92,7 +95,7 @@ pub fn render(
 
     // ── Tab content ─────────────────────────────────────────────────────
     match tab {
-        DetailTab::Overview => render_overview(frame, v_chunks[1], context),
+        DetailTab::Overview => render_overview(frame, v_chunks[1], context, focus_note),
         DetailTab::Callers => render_caller_list(
             frame,
             v_chunks[1],
@@ -114,7 +117,7 @@ pub fn render(
     }
 }
 
-fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
+fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView, focus_note: &str) {
     let subject = &ctx.subject;
     let file_path = ctx.subject_file_path.as_deref().unwrap_or("(unknown)");
 
@@ -126,7 +129,7 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
         .map(|v| format!("{v:?}"))
         .unwrap_or_else(|| "default".to_string());
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             format!("  {}", subject.qualified_name),
             Style::default()
@@ -174,6 +177,14 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
             Style::default().fg(Color::DarkGray),
         )),
     ];
+
+    if !focus_note.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!("  [focus: {}]", focus_note),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
 
     let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::NONE))
