@@ -229,6 +229,8 @@ impl ToolRouter {
                 }
             }
         }
+        const SEARCH_BACKGROUND_FOCUS_LIMIT: usize = 4;
+        background_file_ids.truncate(SEARCH_BACKGROUND_FOCUS_LIMIT);
         let background_jobs = self.enqueue_background_file_focus(&background_file_ids);
 
         // Build the MCP JSON response from the engine response.

@@ -877,7 +877,9 @@ mod tests {
             );
         } else {
             assert!(
-                resp.contains("building") || resp.contains("not available") || resp.contains("partial"),
+                resp.contains("building")
+                    || resp.contains("not available")
+                    || resp.contains("partial"),
                 "focus-mode partial result should indicate building state: {resp}"
             );
         }

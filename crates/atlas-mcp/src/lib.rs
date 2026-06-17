@@ -11,8 +11,7 @@
 //! triggers `notifications/progress` updates through the `peer` transport.
 //! See https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress.
 
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, TryLockError};
 
 use atlas_engine::Store;
 use atlas_engine::Workspace;
@@ -148,6 +147,23 @@ impl AtlasMcpService {
             rmcp_model::CallToolResult::success(content)
         }
     }
+
+    fn router_busy_result(tool_name: &str) -> rmcp_model::CallToolResult {
+        let body = serde_json::json!({
+            "partial_result": true,
+            "retry_after_ms": 1000,
+            "tool": tool_name,
+            "analysis": {
+                "state": "server_busy",
+                "next_action": "retry",
+                "scope": "server",
+                "summary": "Atlas is handling another tool call; retry shortly instead of waiting for the MCP request to time out."
+            }
+        });
+        rmcp_model::CallToolResult::success(vec![rmcp_model::Content::text(
+            serde_json::to_string_pretty(&body).unwrap_or_else(|e| e.to_string()),
+        )])
+    }
 }
 
 impl ServerHandler for AtlasMcpService {
@@ -233,9 +249,11 @@ impl ServerHandler for AtlasMcpService {
             // ── Standard tool dispatch ────────────────────────────────────
             // Resource preparation (graph init / refresh) is now handled
             // inside call_tool() based on the ToolContract.  The server
-            // layer only locks the router and delegates.
-            let result = {
-                self.lock_router().and_then(|mut router| {
+            // layer only locks the router and delegates. If another request is
+            // already running, return a retryable response instead of blocking
+            // until the MCP client times out.
+            let result = match self.router.try_lock() {
+                Ok(mut router) => {
                     let tool_result = router.call_tool(&ctx, &tool_name, &args);
                     let tool_error = tool_result.is_error.unwrap_or(false);
                     let duration_ms = start.elapsed().as_millis() as u64;
@@ -249,7 +267,21 @@ impl ServerHandler for AtlasMcpService {
                     );
                     tracing::info!(parent: &_span, "request handled");
                     Ok(Self::to_rmcp_result(tool_result))
-                })
+                }
+                Err(TryLockError::Poisoned(poisoned)) => {
+                    let mut router = poisoned.into_inner();
+                    let tool_result = router.call_tool(&ctx, &tool_name, &args);
+                    Ok(Self::to_rmcp_result(tool_result))
+                }
+                Err(TryLockError::WouldBlock) => {
+                    tracing::info!(
+                        method = "tools/call",
+                        tool_name = %tool_name,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        "router busy; returning retryable response"
+                    );
+                    Ok(Self::router_busy_result(&tool_name))
+                }
             };
 
             // Wait for the progress notification task to finish (receiver dropped).

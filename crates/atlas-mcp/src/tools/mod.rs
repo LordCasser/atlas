@@ -1109,7 +1109,7 @@ pub(crate) fn warnings_to_trace_diagnostics(
 fn make_project_tools() -> Vec<Tool> {
     vec![Tool {
         name: "project".into(),
-        description: "Open, inspect, or list files in a project. Use action='open' to synchronously activate a project; MCP open never indexes or scans the whole tree. storage='auto' reuses an existing compatible project/.atlas/atlas.db, otherwise opens zero-footprint memory storage. storage='memory' ignores .atlas; storage='persistent' opens or creates project/.atlas/atlas.db. Explicit indexing is CLI-only (`atlas index`). action='status' reports the active project and cache/focus state; action='files' lists known project files.".into(),
+        description: "Open, inspect, or list files in a project. Use action='open' to synchronously activate a project backed by project/.atlas/atlas.db; MCP open never indexes or scans the whole tree. Explicit indexing is CLI-only (`atlas index`). action='status' reports the active project and focus state; action='files' lists known project files.".into(),
         input_schema: ToolInputSchema {
             schema_type: "object".into(),
             properties: Some(json!({
@@ -1119,11 +1119,6 @@ fn make_project_tools() -> Vec<Tool> {
                     "description": "Operation: 'open' activates a project, 'status' shows overview, 'files' lists known project files."
                 },
                 "project_path": { "type": "string", "description": "Absolute path to the project directory to open (required for action='open')." },
-                "storage": {
-                    "type": "string",
-                    "enum": ["auto", "memory", "persistent"],
-                    "description": "Storage mode for focus/cache/overlay writes: 'auto' reuses existing .atlas/atlas.db when compatible, otherwise memory; 'memory' is session-local; 'persistent' writes project/.atlas/atlas.db."
-                },
                 "verbose": { "type": "boolean", "description": "Include verbose details (action='status')." },
                 "limit": { "type": "integer", "description": "Max files returned (action='files', default unlimited)." },
                 "language": { "type": "string", "description": "Filter files by language (action='files', e.g. 'rust', 'typescript')." },
@@ -1458,7 +1453,7 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "fp_dispatches".into(),
-            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). Annotations are session-local with storage='memory' and persisted with storage='persistent'; graph edges are materialized immediately.".into(),
+            description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). Annotations are stored in the active project database; graph edges are materialized immediately.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1568,8 +1563,7 @@ impl ToolRouter {
                         "tool": "project",
                         "args": {
                             "action": "open",
-                            "project_path": "absolute project path",
-                            "storage": "auto"
+                            "project_path": "absolute project path"
                         }
                     }
                 }))
@@ -3622,8 +3616,10 @@ mod tests {
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
         assert!(
-            resp_str.contains("not found") || resp_str.contains("not available")
-                || resp_str.contains("building") || is_error,
+            resp_str.contains("not found")
+                || resp_str.contains("not available")
+                || resp_str.contains("building")
+                || is_error,
             "Hex string should not resolve as SymbolId: {resp_str}"
         );
     }
@@ -4978,8 +4974,11 @@ mod tests {
         );
         let t1 = extract_text(&r1);
         assert!(
-            r1.is_error == Some(true) || t1.contains("not found") || t1.contains("error")
-                || t1.contains("building") || t1.contains("not available"),
+            r1.is_error == Some(true)
+                || t1.contains("not found")
+                || t1.contains("error")
+                || t1.contains("building")
+                || t1.contains("not available"),
             "symbol view=detail should not panic, got: {t1}"
         );
 
@@ -4991,8 +4990,11 @@ mod tests {
         );
         let t2 = extract_text(&r2);
         assert!(
-            r2.is_error == Some(true) || t2.contains("not found") || t2.contains("error")
-                || t2.contains("building") || t2.contains("not available"),
+            r2.is_error == Some(true)
+                || t2.contains("not found")
+                || t2.contains("error")
+                || t2.contains("building")
+                || t2.contains("not available"),
             "symbol view=context should not panic, got: {t2}"
         );
 
@@ -5004,8 +5006,11 @@ mod tests {
         );
         let t3 = extract_text(&r3);
         assert!(
-            r3.is_error == Some(true) || t3.contains("not found") || t3.contains("error")
-                || t3.contains("building") || t3.contains("not available"),
+            r3.is_error == Some(true)
+                || t3.contains("not found")
+                || t3.contains("error")
+                || t3.contains("building")
+                || t3.contains("not available"),
             "symbol view=usages should not panic, got: {t3}"
         );
     }
