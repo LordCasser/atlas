@@ -1088,7 +1088,7 @@ mod tests {
     use crate::frontend::LanguageFrontend;
     use crate::languages::create_frontend;
     use std::path::PathBuf;
-    use types::Language;
+    use types::{Language, ReferenceKind};
 
     /// Helper: create a TypeScript LanguageFrontend for tests.
     #[cfg(feature = "typescript")]
@@ -1124,6 +1124,50 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "c")]
+    #[test]
+    fn test_extract_c_enum_type_use_does_not_own_function_body_calls() {
+        let source = r#"enum tcp_tw_status { TCP_TW_OK };
+
+int dev_net_rcu(void) {
+    return 0;
+}
+
+int tcp_v4_rcv(void) {
+    enum tcp_tw_status tw_status;
+    return dev_net_rcu();
+}
+"#;
+        let file_id = FileId::generate("test_enum_owner.c");
+        let frontend = create_frontend(Language::C).unwrap();
+        let file_path = PathBuf::from("test_enum_owner.c");
+
+        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let caller = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "tcp_v4_rcv")
+            .expect("tcp_v4_rcv symbol")
+            .id;
+        let enum_defs = facts
+            .symbols
+            .iter()
+            .filter(|s| s.name == "tcp_tw_status")
+            .count();
+        assert_eq!(
+            enum_defs, 1,
+            "plain enum-typed variables are not definitions"
+        );
+
+        let call = facts
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Call && r.name == "dev_net_rcu")
+            .expect("dev_net_rcu call reference");
+        assert_eq!(call.source_symbol, Some(caller));
+    }
+
     #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_and_insert_ts_arrow_function_registry_guard() {

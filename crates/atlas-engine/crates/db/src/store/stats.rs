@@ -157,16 +157,16 @@ impl Store {
     pub fn get_cache_stats(&self) -> anyhow::Result<SqliteCacheStats> {
         let conn = self.lock_read();
 
-        let page_count: i64 =
-            conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
-        let page_size: i64 =
-            conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
-        let freelist_count: i64 =
-            conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
-        let cache_size: i64 =
-            conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let freelist_count: i64 = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        let cache_size: i64 = conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
         // PRAGMA cache_size returns a negative number when expressed in KiB.
-        let cache_size_kib = if cache_size < 0 { -cache_size } else { cache_size };
+        let cache_size_kib = if cache_size < 0 {
+            -cache_size
+        } else {
+            cache_size
+        };
 
         let db_file_size_bytes = if self.db_path.to_string_lossy() == ":memory:" {
             0u64

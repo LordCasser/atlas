@@ -185,8 +185,10 @@ mod tests {
             disk_hash: "bbbb".into(),
         };
         let anyhow_err: anyhow::Error = err.into();
-        assert!(anyhow_err
-            .downcast_ref::<StaleStructuralIndexError>()
-            .is_some());
+        assert!(
+            anyhow_err
+                .downcast_ref::<StaleStructuralIndexError>()
+                .is_some()
+        );
     }
 }

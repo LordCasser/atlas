@@ -85,7 +85,7 @@ pub struct FocusScheduler {
     store: Arc<Store>,
     engine: Option<ClosureEngine>,
     queues: Vec<VecDeque<FocusJob>>,
-    pub(crate) coordinator: ProjectWriteCoordinator,
+    pub(crate) coordinator: Arc<ProjectWriteCoordinator>,
     running: AtomicBool,
 }
 
@@ -100,7 +100,7 @@ impl FocusScheduler {
                 VecDeque::new(), // Recent
                 VecDeque::new(), // Speculative
             ],
-            coordinator: ProjectWriteCoordinator::new(),
+            coordinator: Arc::new(ProjectWriteCoordinator::new()),
             running: AtomicBool::new(false),
         }
     }
@@ -166,7 +166,7 @@ impl FocusScheduler {
     /// and own the [`JoinHandle`] for clean shutdown.
     pub(crate) fn background_worker_loop(scheduler: Arc<Mutex<FocusScheduler>>) {
         loop {
-            {
+            let work = {
                 let mut s = scheduler.lock().unwrap();
                 if !s.running.load(Ordering::SeqCst) {
                     break;
@@ -177,12 +177,32 @@ impl FocusScheduler {
                     s.coordinator.reset_cancellation();
                     continue; // let Sync preempt
                 }
-                // Process all queues.
-                if let Err(e) = s.process_all_queues() {
+
+                match s.engine.take() {
+                    Some(engine) => {
+                        if let Some(job) = s.pop_next_job() {
+                            Some((engine, job, Arc::clone(&s.coordinator)))
+                        } else {
+                            s.engine = Some(engine);
+                            None
+                        }
+                    }
+                    None => None,
+                }
+            };
+
+            if let Some((engine, job, coordinator)) = work {
+                let result = Self::process_detached_job(&engine, job, &coordinator);
+                {
+                    let mut s = scheduler.lock().unwrap();
+                    s.engine = Some(engine);
+                }
+                if let Err(e) = result {
                     tracing::warn!("FocusScheduler background worker error: {e:#}");
                 }
+            } else {
+                std::thread::sleep(Duration::from_millis(500));
             }
-            std::thread::sleep(Duration::from_millis(500));
         }
     }
 
@@ -291,6 +311,44 @@ impl FocusScheduler {
         }
 
         Ok(processed)
+    }
+
+    fn pop_next_job(&mut self) -> Option<FocusJob> {
+        for queue in &mut self.queues {
+            if let Some(job) = queue.pop_front() {
+                return Some(job);
+            }
+        }
+        None
+    }
+
+    fn process_detached_job(
+        engine: &ClosureEngine,
+        mut job: FocusJob,
+        coordinator: &ProjectWriteCoordinator,
+    ) -> anyhow::Result<()> {
+        let should_reset_cancellation =
+            matches!(job.priority, FocusPriority::Sync | FocusPriority::UserFocus);
+        let _guard = coordinator.acquire(job.priority);
+        let closure_id = next_job_id();
+        job.closure_id = Some(closure_id.clone());
+        let closure_result = engine.build_closure(&job.window, &closure_id);
+        let closure = match closure_result {
+            Ok(closure) => closure,
+            Err(err) => {
+                if should_reset_cancellation {
+                    coordinator.reset_cancellation();
+                }
+                return Err(err);
+            }
+        };
+        if job.priority == FocusPriority::Sync {
+            Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+            coordinator.reset_cancellation();
+        } else if job.priority == FocusPriority::UserFocus {
+            coordinator.reset_cancellation();
+        }
+        Ok(())
     }
 
     fn build_dataflow_for_sync(

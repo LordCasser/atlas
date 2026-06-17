@@ -29,7 +29,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -371,7 +371,22 @@ impl LazyStructuralService {
         let layer = self
             .store
             .get_file_extraction_state(file_id, layer::STRUCTURAL)?;
-        Ok(layer.is_some_and(|(s, hash)| s == status::COMPLETE && hash == *current_hash))
+        let fresh_complete =
+            layer.is_some_and(|(s, hash)| s == status::COMPLETE && hash == *current_hash);
+        if !fresh_complete {
+            return Ok(false);
+        }
+        if self
+            .store
+            .file_has_non_callable_call_reference_sources(file_id)?
+        {
+            tracing::warn!(
+                %file_id,
+                "structural layer has stale call ownership; scheduling lazy rebuild"
+            );
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     /// Check whether a file already has a complete resolution_symbols layer
@@ -592,36 +607,6 @@ impl LazyStructuralService {
         token: Option<&dyn CancelCheck>,
     ) -> Result<ReindexOutcome> {
         let file_info = self.file_info_for_lazy(file_id)?;
-
-        // ---- G1: Stat cache fast-path ----
-        // Check file_inventory for matching mtime/size/hash.
-        // If the file hasn't changed since last index, skip re-extraction.
-        if let Ok(Some(cached)) = self.store.find_file_inventory_by_id(file_id) {
-            let resolved_path = self.resolve_file_path(&file_info.path);
-            if let Ok(meta) = std::fs::metadata(&resolved_path) {
-                let disk_mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
-                let disk_size = meta.len() as i64;
-
-                if disk_mtime == Some(cached.mtime)
-                    && disk_size == cached.size
-                    && cached.content_hash.as_deref() == Some(&file_info.content_hash)
-                    && !file_info.content_hash.is_empty()
-                {
-                    // Stat cache hit — file unchanged since last index.
-                    // Skip the expensive read+hash+extract.
-                    tracing::debug!(
-                        file = %file_info.path,
-                        "stat cache hit, skipping structural re-extraction"
-                    );
-                    return Ok(ReindexOutcome::Built);
-                }
-            }
-        }
-        // ---- End G1 ----
 
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
@@ -1063,9 +1048,9 @@ pub(crate) fn rebuild_structural_for_file(
     let file_info = match store.get_file(file_id)? {
         Some(fi) => fi,
         None => {
-            let row = store
-                .find_file_inventory_by_id(file_id)?
-                .ok_or_else(|| anyhow::anyhow!("file not found in files or inventory: {file_id:?}"))?;
+            let row = store.find_file_inventory_by_id(file_id)?.ok_or_else(|| {
+                anyhow::anyhow!("file not found in files or inventory: {file_id:?}")
+            })?;
             let language = types::Language::from_str(&row.language)
                 .or_else(|| types::Language::from_path(std::path::Path::new(&row.path)))
                 .unwrap_or_default();
@@ -1080,9 +1065,8 @@ pub(crate) fn rebuild_structural_for_file(
     };
 
     // 2. Create frontend
-    let frontend = create_frontend(file_info.language).ok_or_else(|| {
-        anyhow::anyhow!("frontend not available for {:?}", file_info.language)
-    })?;
+    let frontend = create_frontend(file_info.language)
+        .ok_or_else(|| anyhow::anyhow!("frontend not available for {:?}", file_info.language))?;
 
     // 3. Resolve path
     let resolved_path = if let Some(root) = project_root {
@@ -1093,9 +1077,9 @@ pub(crate) fn rebuild_structural_for_file(
 
     // 4. Security check (path traversal)
     if let Some(root) = project_root {
-        let canonical_root = root.canonicalize().with_context(|| {
-            format!("failed to canonicalize project root {}", root.display())
-        })?;
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize project root {}", root.display()))?;
         let canonical_file = resolved_path
             .canonicalize()
             .with_context(|| format!("failed to canonicalize {}", resolved_path.display()))?;
@@ -1225,6 +1209,103 @@ mod tests {
     }
 
     #[test]
+    fn test_has_structural_layer_rejects_non_callable_call_owner() {
+        use types::{
+            FileFacts, ReferenceId, ReferenceKind, ReferenceUse, SymbolDef, SymbolId, SymbolKind,
+            TextRange,
+        };
+
+        let store = test_store();
+        let svc = LazyStructuralService::new(store.clone(), None);
+        let fid = FileId::generate("net/ipv4/tcp_ipv4.c");
+        let hash = "abc123";
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 10,
+        };
+        let enum_id = SymbolId::generate(
+            &fid,
+            Language::C.as_str(),
+            "tcp_tw_status",
+            SymbolKind::Enum.as_str(),
+            None,
+        );
+        let enum_symbol = SymbolDef {
+            id: enum_id,
+            kind: SymbolKind::Enum,
+            name: "tcp_tw_status".to_string(),
+            qualified_name: "tcp_tw_status".to_string(),
+            symbol_path: vec!["tcp_tw_status".to_string()],
+            file_id: fid,
+            language: Language::C,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: layer::STRUCTURAL.to_string(),
+        };
+        let call_text = "tcp_filter".to_string();
+        let call_ref = ReferenceUse {
+            id: ReferenceId::generate(
+                &fid,
+                Some(&enum_id),
+                range.start_byte,
+                range.end_byte,
+                &call_text,
+                ReferenceKind::Call,
+            ),
+            file_id: fid,
+            source_symbol: Some(enum_id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: call_text.clone(),
+            name: call_text,
+            receiver: None,
+            arity: None,
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: fid,
+                    path: "net/ipv4/tcp_ipv4.c".to_string(),
+                    language: Language::C,
+                    content_hash: hash.to_string(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![enum_symbol],
+                references: vec![call_ref],
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                layer::STRUCTURAL,
+                hash,
+                status::COMPLETE,
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        assert!(!svc.has_structural_layer(&fid).unwrap());
+    }
+
+    #[test]
     fn default_provider_resolves_path_through_store() {
         use types::Language;
 
@@ -1250,6 +1331,68 @@ mod tests {
         assert_eq!(
             candidates[0], fid,
             "should return the store's canonical FileId, not a re-generated one"
+        );
+    }
+
+    #[test]
+    fn structural_ensure_does_not_treat_inventory_hit_as_extracted() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "run.py";
+        let source = "def helper():\n    pass\n\n\ndef main():\n    helper()\n";
+        let full_path = root.path().join(path);
+        std::fs::write(&full_path, source).unwrap();
+
+        let fid = FileId::generate(path);
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let metadata = std::fs::metadata(&full_path).unwrap();
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        #[cfg(unix)]
+        let (inode, dev) = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.ino() as i64, metadata.dev() as i64)
+        };
+        #[cfg(not(unix))]
+        let (inode, dev) = (0i64, 0i64);
+
+        store
+            .insert_file_inventory(
+                &fid,
+                path,
+                Language::Python.as_str(),
+                mtime,
+                metadata.len() as i64,
+                inode,
+                dev,
+            )
+            .unwrap();
+        store.set_file_fingerprint(&fid, &content_hash).unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: path.to_string(),
+                language: Language::Python,
+                content_hash,
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        assert!(!svc.has_structural_layer(&fid).unwrap());
+
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+
+        assert_eq!(result.files_built, 1);
+        assert!(svc.has_structural_layer(&fid).unwrap());
+        let refs = store.find_references_by_file(&fid).unwrap();
+        assert!(
+            refs.iter().any(|r| r.name == "helper"),
+            "structural ensure must parse references when no structural extraction_state exists"
         );
     }
 

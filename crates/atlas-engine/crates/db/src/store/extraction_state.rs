@@ -181,6 +181,30 @@ impl Store {
         Ok(CapabilityMask::from_bits(bits).has_all(required.bits()))
     }
 
+    /// Detect stale structural facts where call references are owned by
+    /// non-callable C/C++ symbols. This catches old extractor output where
+    /// plain enum-typed local variables were misclassified as enum definitions
+    /// and then stole ownership for the enclosing function body.
+    pub fn file_has_non_callable_call_reference_sources(
+        &self,
+        file_id: &FileId,
+    ) -> anyhow::Result<bool> {
+        let conn = self.lock_read();
+        let count: i64 = conn.query_row(
+            r#"SELECT COUNT(*)
+               FROM "references" r
+               JOIN symbols s ON s.symbol_id = r.source_symbol
+               JOIN files f ON f.file_id = r.file_id
+               WHERE r.file_id = ?1
+                 AND r.kind = 'call'
+                 AND f.language IN ('c', 'cpp')
+                 AND s.kind NOT IN ('function', 'method', 'constructor')"#,
+            params![file_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// Query the aggregate capability mask for a file across all layers.
     /// Returns the bitwise OR of all `capability_mask` values for the file.
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {

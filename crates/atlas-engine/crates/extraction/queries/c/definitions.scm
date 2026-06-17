@@ -16,8 +16,10 @@
   (type_identifier) @definition.class
   (field_declaration_list))
 
-;; Enum declarations
-(enum_specifier (type_identifier) @definition.enum)
+;; Enum definitions (require body to exclude plain enum-typed variables)
+(enum_specifier
+  (type_identifier) @definition.enum
+  (enumerator_list))
 
 ;; Typedef declarations
 (type_definition (type_identifier) @definition.type_alias)

@@ -312,7 +312,7 @@ impl ClosureEngine {
         }
 
         // Commit: atomic visibility switch
-        self.commit_closure(closure_id, last_generation)?;
+        self.commit_closure(closure_id)?;
 
         // Build scoped graph edges from closure resolutions.
         // FocusGraphBuilder reads from reference_resolutions (is_visible=1)
@@ -321,6 +321,10 @@ impl ClosureEngine {
             let stats = self
                 .graph_builder
                 .build_for_closure(closure_id, last_generation)?;
+            if stats.candidate_count > 0 {
+                self.store
+                    .make_candidate_edges_visible(closure_id, last_generation)?;
+            }
             tracing::debug!(
                 closure_id = %closure_id,
                 edges_built = stats.stats.edges_built,
@@ -610,7 +614,7 @@ impl ClosureEngine {
     }
 
     /// Commit closure: make all staged coverage and resolution entries visible.
-    fn commit_closure(&self, closure_id: &str, resolution_generation: i64) -> Result<i64> {
+    fn commit_closure(&self, closure_id: &str) -> Result<i64> {
         // P1a fix: make ALL staged rows visible regardless of generation.
         // Seed files are written with generation=0, expansion files with
         // generation=iteration. We must flip all of them, not just the
@@ -618,8 +622,7 @@ impl ClosureEngine {
         let generation = self.store.commit_closure_generation(closure_id)?;
         self.store.make_all_staged_coverage_visible(closure_id)?;
         // T6/D: make scoped reference resolutions visible too
-        self.store
-            .make_resolutions_visible(closure_id, resolution_generation)?;
+        self.store.make_all_staged_resolutions_visible(closure_id)?;
         Ok(generation)
     }
 

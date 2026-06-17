@@ -547,6 +547,32 @@ mod tests {
     }
 
     #[test]
+    fn test_ref_query_captures_function_call() {
+        let spec = CAdapter;
+        let lang = spec.tree_sitter_language();
+        let source = "int main(void) { return helper(1); }";
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let query = tree_sitter::Query::new(&lang, spec.reference_query()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+
+        let mut captures = cursor.captures(&query, root, source.as_bytes());
+        let mut calls = Vec::new();
+        use tree_sitter::StreamingIterator;
+        while let Some((m, idx)) = captures.next() {
+            let cap = m.captures[*idx];
+            let capture_name = &query.capture_names()[cap.index as usize];
+            if *capture_name == "reference.call" {
+                calls.push(cap.node.utf8_text(source.as_bytes()).unwrap().to_string());
+            }
+        }
+
+        assert_eq!(calls, vec!["helper"]);
+    }
+
+    #[test]
     fn test_import_query_parses() {
         let spec = CAdapter;
         let lang = spec.tree_sitter_language();

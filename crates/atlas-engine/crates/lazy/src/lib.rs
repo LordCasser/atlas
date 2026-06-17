@@ -17,10 +17,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use db::Store;
+use types::StaleStructuralIndexError;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
 use types::structs::{CapabilityMask, dataflow_precision};
-use types::StaleStructuralIndexError;
 
 /// Rebuild callback type: takes a FileId, returns Ok(()) on success.
 /// Injected by the engine layer to enable transparent self-healing.
@@ -189,19 +189,14 @@ mod tests {
 
     #[test]
     fn service_constructed_without_rebuilder() {
-        let service = LazyDataflowService::new(
-            Arc::new(Store::open_in_memory().unwrap()),
-            None,
-        );
+        let service = LazyDataflowService::new(Arc::new(Store::open_in_memory().unwrap()), None);
         assert!(service.structural_rebuilder.is_none());
     }
 
     #[test]
     fn service_set_rebuilder() {
-        let mut service = LazyDataflowService::new(
-            Arc::new(Store::open_in_memory().unwrap()),
-            None,
-        );
+        let mut service =
+            LazyDataflowService::new(Arc::new(Store::open_in_memory().unwrap()), None);
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = called.clone();
         service.set_structural_rebuilder(Arc::new(move |_file_id| {

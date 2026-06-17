@@ -172,6 +172,22 @@ impl Store {
         Ok(updated)
     }
 
+    /// Make all staged reference resolutions for a closure visible.
+    ///
+    /// Closure builds can resolve seed and expansion files across multiple
+    /// generations.  Commit needs the complete closure-scoped resolution set,
+    /// not only the final generation, for graph edge construction.
+    pub fn make_all_staged_resolutions_visible(&self, closure_id: &str) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let updated = conn.execute(
+            "UPDATE reference_resolutions
+                SET is_visible = 1
+             WHERE closure_id = ?1 AND is_visible = 0",
+            params![closure_id],
+        )?;
+        Ok(updated)
+    }
+
     /// Get all visible resolutions for a specific reference within a closure.
     pub fn get_visible_resolution(
         &self,
