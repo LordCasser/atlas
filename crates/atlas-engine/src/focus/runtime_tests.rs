@@ -381,9 +381,11 @@ fn test_prepare_focus_returns_precision_and_closure_id() {
         "focus path should return precision"
     );
     let precision = result.precision.unwrap();
+    // Confidence is High because the test store has coverage entries
+    // for the closure that was built synchronously.
     assert_eq!(
         precision.confidence,
-        types::structs::SemanticConfidence::Medium
+        types::structs::SemanticConfidence::High
     );
     assert!(result.closure_id.is_some(), "should have closure_id");
 }
@@ -427,8 +429,8 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
     let first = rt.prepare(&intent).unwrap();
     assert_eq!(
         first.pending_closure_ids.len(),
-        2,
-        "first query should return sync closure plus normal background expansion"
+        1,
+        "first query should return only background expansion (foreground is marked done immediately)"
     );
     assert_eq!(
         rt.hot_regions.regions.len(),
@@ -440,8 +442,8 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
     let second = rt.prepare(&intent).unwrap();
     assert_eq!(
         second.pending_closure_ids.len(),
-        3,
-        "boundary hit should add an extra background region-extension closure"
+        2,
+        "boundary hit should add background expansion plus region-extension closure (no foreground)"
     );
     assert_eq!(
         rt.hot_regions.regions.len(),

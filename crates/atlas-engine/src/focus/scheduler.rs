@@ -21,6 +21,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 use std::time::UNIX_EPOCH;
 use std::time::{Duration, SystemTime};
 
@@ -28,6 +29,7 @@ use db::Store;
 use types::ids::FileId;
 
 use super::engine::ClosureEngine;
+use super::job_tracker::JobTracker;
 use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
 use super::writer_coordinator::ProjectWriteCoordinator;
 
@@ -87,6 +89,9 @@ pub struct FocusScheduler {
     queues: Vec<VecDeque<FocusJob>>,
     pub(crate) coordinator: Arc<ProjectWriteCoordinator>,
     running: AtomicBool,
+    /// Optional shared tracker for job completion notification.
+    /// When set, `mark_done` is called on successful job completion.
+    job_tracker: Option<Arc<JobTracker>>,
 }
 
 impl FocusScheduler {
@@ -102,6 +107,7 @@ impl FocusScheduler {
             ],
             coordinator: Arc::new(ProjectWriteCoordinator::new()),
             running: AtomicBool::new(false),
+            job_tracker: None,
         }
     }
 
@@ -114,6 +120,14 @@ impl FocusScheduler {
     /// Set the closure engine on an existing scheduler (without consuming it).
     pub fn set_engine(&mut self, engine: ClosureEngine) {
         self.engine = Some(engine);
+    }
+
+    /// Attach a shared JobTracker for completion notification.
+    /// When set, `mark_done(job_id)` is called after each successful
+    /// background closure build.
+    pub fn with_job_tracker(mut self, tracker: Arc<JobTracker>) -> Self {
+        self.job_tracker = Some(tracker);
+        self
     }
 
     /// Set the running flag (controls background worker lifecycle).
@@ -181,7 +195,7 @@ impl FocusScheduler {
                 match s.engine.take() {
                     Some(engine) => {
                         if let Some(job) = s.pop_next_job() {
-                            Some((engine, job, Arc::clone(&s.coordinator)))
+                            Some((engine, job, Arc::clone(&s.coordinator), s.job_tracker.clone()))
                         } else {
                             s.engine = Some(engine);
                             None
@@ -191,8 +205,10 @@ impl FocusScheduler {
                 }
             };
 
-            if let Some((engine, job, coordinator)) = work {
-                let result = Self::process_detached_job(&engine, job, &coordinator);
+            if let Some((engine, job, coordinator, tracker)) = work {
+                let result = Self::process_detached_job(
+                    &engine, job, &coordinator, tracker.as_deref(),
+                );
                 {
                     let mut s = scheduler.lock().unwrap();
                     s.engine = Some(engine);
@@ -226,6 +242,9 @@ impl FocusScheduler {
             let closure = engine.build_closure(&job.window, &closure_id)?;
             processed += 1;
             Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+            if let Some(ref tracker) = self.job_tracker {
+                tracker.mark_done(&job.id);
+            }
         }
         self.coordinator.reset_cancellation();
         Ok(processed)
@@ -255,6 +274,9 @@ impl FocusScheduler {
                 let closure = engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
                 Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+                if let Some(ref tracker) = self.job_tracker {
+                    tracker.mark_done(&job.id);
+                }
             }
         }
         self.coordinator.reset_cancellation();
@@ -272,6 +294,9 @@ impl FocusScheduler {
                 job.closure_id = Some(closure_id.clone());
                 engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
+                if let Some(ref tracker) = self.job_tracker {
+                    tracker.mark_done(&job.id);
+                }
             }
         }
         // UserFocus acquire sets the flag; clear it so lower levels
@@ -291,6 +316,9 @@ impl FocusScheduler {
                 job.closure_id = Some(closure_id.clone());
                 engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
+                if let Some(ref tracker) = self.job_tracker {
+                    tracker.mark_done(&job.id);
+                }
             }
         }
 
@@ -307,6 +335,9 @@ impl FocusScheduler {
                 job.closure_id = Some(closure_id.clone());
                 engine.build_closure(&job.window, &closure_id)?;
                 processed += 1;
+                if let Some(ref tracker) = self.job_tracker {
+                    tracker.mark_done(&job.id);
+                }
             }
         }
 
@@ -326,9 +357,11 @@ impl FocusScheduler {
         engine: &ClosureEngine,
         mut job: FocusJob,
         coordinator: &ProjectWriteCoordinator,
+        job_tracker: Option<&JobTracker>,
     ) -> anyhow::Result<()> {
         let should_reset_cancellation =
             matches!(job.priority, FocusPriority::Sync | FocusPriority::UserFocus);
+        let start = Instant::now();
         let _guard = coordinator.acquire(job.priority);
         let closure_id = next_job_id();
         job.closure_id = Some(closure_id.clone());
@@ -347,6 +380,10 @@ impl FocusScheduler {
             coordinator.reset_cancellation();
         } else if job.priority == FocusPriority::UserFocus {
             coordinator.reset_cancellation();
+        }
+        if let Some(tracker) = job_tracker {
+            tracker.record_elapsed(start.elapsed().as_millis() as u64);
+            tracker.mark_done(&job.id);
         }
         Ok(())
     }

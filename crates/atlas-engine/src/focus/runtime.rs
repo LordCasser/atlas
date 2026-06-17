@@ -37,6 +37,7 @@ use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazySt
 
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
+use super::job_tracker::JobTracker;
 use super::query::QueryIntent;
 use super::scheduler::{self, FocusPriority, FocusScheduler};
 use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
@@ -93,6 +94,9 @@ pub struct FocusResult {
     /// (e.g. {"local_complete": 8, "boundary": 5, "basic": 12}).
     /// None in FullIndex mode or when coverage data is unavailable.
     pub coverage_counts: Option<HashMap<String, usize>>,
+    /// Shared job tracker for checking background job completion.
+    /// `None` in FullIndex mode (no background jobs are running).
+    pub job_tracker: Option<Arc<JobTracker>>,
 }
 
 // ── FocusRuntime ────────────────────────────────────────────────────────────
@@ -121,6 +125,10 @@ pub struct FocusRuntime {
     /// Runtime-owned hot region state. The scheduler executes jobs; this
     /// tracker decides whether a new query is extending an existing closure.
     hot_regions: HotRegionTracker,
+    /// Shared tracker for background job completion.
+    /// Foreground jobs are marked done immediately; background
+    /// jobs are marked by the scheduler on completion.
+    job_tracker: Arc<JobTracker>,
 }
 
 // ── Hot region tracking ────────────────────────────────────────────────────
@@ -292,11 +300,14 @@ impl FocusRuntime {
     /// [`MAX_MEMORY_HOT_REGIONS`].
     pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
         let is_persistent = store.db_path().to_string_lossy() != ":memory:";
+        let job_tracker = Arc::new(JobTracker::new());
         Self {
             store: store.clone(),
             project_root: project_root.clone(),
             bootstrap: BootstrapManager::new(store.clone(), project_root.clone()),
-            scheduler: Arc::new(std::sync::Mutex::new(FocusScheduler::new(store))),
+            scheduler: Arc::new(std::sync::Mutex::new(
+                FocusScheduler::new(store).with_job_tracker(Arc::clone(&job_tracker))
+            )),
             closure_engine: None,
             started: AtomicBool::new(false),
             bg_handle: None,
@@ -306,6 +317,7 @@ impl FocusRuntime {
                 is_persistent,
                 ..HotRegionTracker::default()
             },
+            job_tracker,
         }
     }
 
@@ -372,6 +384,7 @@ impl FocusRuntime {
                 seed_file_id: None,
                 built_files: Vec::new(),
                 coverage_counts: None,
+                job_tracker: None,
             });
         }
 
@@ -459,20 +472,7 @@ impl FocusRuntime {
             .context("ClosureEngine not initialized")?;
         let closure = engine.build_closure(&minimal_window, &closure_id)?;
 
-        // 5. Build FocusResult with precision from the closure
-        let precision = Precision {
-            coverage: CoverageTier::Boundary {
-                target_tier: SymbolTier::Manifest,
-            },
-            confidence: SemanticConfidence::Medium,
-        };
-
-        let built_files: Vec<FileId> = closure.files.iter().copied().collect();
-        if boundary_hit.is_none() {
-            boundary_hit = self.hot_regions.boundary_hit_for_files(&built_files);
-        }
-
-        // 5b. Compute coverage distribution from the closure_coverage table.
+        // 5. Compute coverage distribution from the closure_coverage table.
         let coverage_counts: Option<HashMap<String, usize>> = self
             .store
             .get_coverage_counts(&closure_id)
@@ -483,6 +483,33 @@ impl FocusRuntime {
                     .collect()
             });
 
+        // 5b. Derive precision from actual coverage results.
+        let total_coverage_items: usize = coverage_counts
+            .as_ref()
+            .map(|c| c.values().sum())
+            .unwrap_or(0);
+
+        let precision = if total_coverage_items > 0 {
+            Precision {
+                coverage: CoverageTier::ClosureComplete {
+                    closure_id: closure_id.clone(),
+                },
+                confidence: SemanticConfidence::High,
+            }
+        } else {
+            Precision {
+                coverage: CoverageTier::Boundary {
+                    target_tier: SymbolTier::Manifest,
+                },
+                confidence: SemanticConfidence::Low,
+            }
+        };
+
+        let built_files: Vec<FileId> = closure.files.iter().copied().collect();
+        if boundary_hit.is_none() {
+            boundary_hit = self.hot_regions.boundary_hit_for_files(&built_files);
+        }
+
         let mut gaps = closure.gaps.clone();
         if !bootstrap_ready {
             gaps.push(KnownGap::BudgetExhausted {
@@ -490,7 +517,9 @@ impl FocusRuntime {
                 remaining: 0,
             });
         }
-        let pending_closure_ids = vec![closure_id.clone()];
+        // Mark foreground closure as immediately done in the tracker.
+        self.job_tracker.mark_done(&closure_id);
+        let pending_closure_ids: Vec<String> = Vec::new();
 
         // 6. Enqueue background expansion
         let bg_window = FocusWindow {
@@ -597,6 +626,7 @@ impl FocusRuntime {
             seed_file_id,
             built_files,
             coverage_counts,
+            job_tracker: Some(Arc::clone(&self.job_tracker)),
         })
     }
 

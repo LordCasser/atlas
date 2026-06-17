@@ -20,6 +20,7 @@
 pub mod bootstrap;
 pub mod edge_policy;
 pub mod engine;
+pub mod job_tracker;
 pub mod focus_graph_builder;
 pub mod query;
 pub mod runtime;
@@ -30,6 +31,7 @@ pub mod work_registry;
 pub mod writer_coordinator;
 
 pub use work_registry::{WorkItem, WorkRegistry, WorkSource, WorkStatus, WorkView};
+pub use job_tracker::JobTracker;
 
 #[cfg(test)]
 mod bootstrap_tests;

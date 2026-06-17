@@ -1,0 +1,201 @@
+use std::sync::Mutex;
+use std::collections::HashSet;
+
+/// Tracks completion of background focus closure-building jobs.
+///
+/// Shared between [`FocusRuntime`] (which submits job IDs) and
+/// [`FocusScheduler`] (which reports completions). Enables the MCP
+/// layer to detect when all pending background work for a query
+/// has finished (terminal state) versus when polling is still needed.
+#[derive(Debug)]
+pub struct JobTracker {
+    /// Set of job IDs whose closures have been fully built.
+    completed: Mutex<HashSet<String>>,
+    /// Recorded build durations (in milliseconds) for completed jobs,
+    /// used to compute ETA for pending jobs.
+    build_times: Mutex<Vec<u64>>,
+}
+
+impl JobTracker {
+    /// Create a new, empty tracker.
+    pub fn new() -> Self {
+        Self {
+            completed: Mutex::new(HashSet::new()),
+            build_times: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Record that a job has completed its closure build.
+    ///
+    /// Called by [`FocusScheduler`] after a background job finishes.
+    /// Idempotent — duplicate calls for the same ID are harmless.
+    pub fn mark_done(&self, job_id: &str) {
+        self.completed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.to_string());
+    }
+
+    /// Check whether every job in `job_ids` has completed.
+    ///
+    /// When `job_ids` is empty, returns `true` (vacuously satisfied).
+    pub fn are_all_done(&self, job_ids: &[String]) -> bool {
+        if job_ids.is_empty() {
+            return true;
+        }
+        let completed = self
+            .completed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        job_ids.iter().all(|id| completed.contains(id))
+    }
+
+    /// Count how many jobs in `job_ids` are NOT yet completed.
+    pub fn pending_count(&self, job_ids: &[String]) -> usize {
+        if job_ids.is_empty() {
+            return 0;
+        }
+        let completed = self
+            .completed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        job_ids.iter().filter(|id| !completed.contains(*id)).count()
+    }
+
+    /// Record the wall-clock duration of a completed job build.
+    /// Used by the scheduler to feed data into ETA calculation.
+    pub fn record_elapsed(&self, elapsed_ms: u64) {
+        self.build_times
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(elapsed_ms);
+    }
+
+    /// Estimated time (ms) until all pending jobs complete.
+    /// Formula: avg_completed_duration × pending_count.
+    /// Returns baseline 5000ms when no completed samples yet.
+    /// Capped at 60000ms (1 minute).
+    pub fn eta_ms(&self, pending_ids: &[String]) -> u64 {
+        let pending = self.pending_count(pending_ids) as u64;
+        if pending == 0 {
+            return 0;
+        }
+        let times = self
+            .build_times
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if times.is_empty() {
+            return (5000 * pending).min(60000);
+        }
+        let avg: u64 = times.iter().sum::<u64>() / times.len() as u64;
+        (avg * pending).min(60000)
+    }
+}
+
+impl Default for JobTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_tracker_has_nothing_done() {
+        let tracker = JobTracker::new();
+        let ids = vec!["cl_1".to_string(), "cl_2".to_string()];
+        assert!(!tracker.are_all_done(&ids));
+        assert_eq!(tracker.pending_count(&ids), 2);
+    }
+
+    #[test]
+    fn mark_done_transitions_to_complete() {
+        let tracker = JobTracker::new();
+        tracker.mark_done("cl_1");
+        tracker.mark_done("cl_2");
+
+        let ids = vec!["cl_1".to_string(), "cl_2".to_string()];
+        assert!(tracker.are_all_done(&ids));
+        assert_eq!(tracker.pending_count(&ids), 0);
+    }
+
+    #[test]
+    fn partial_completion_is_not_all_done() {
+        let tracker = JobTracker::new();
+        tracker.mark_done("cl_1");
+
+        let ids = vec!["cl_1".to_string(), "cl_2".to_string()];
+        assert!(!tracker.are_all_done(&ids));
+        assert_eq!(tracker.pending_count(&ids), 1);
+    }
+
+    #[test]
+    fn empty_job_ids_is_always_done() {
+        let tracker = JobTracker::new();
+        assert!(tracker.are_all_done(&[]));
+        assert_eq!(tracker.pending_count(&[]), 0);
+    }
+
+    #[test]
+    fn mark_done_is_idempotent() {
+        let tracker = JobTracker::new();
+        tracker.mark_done("cl_1");
+        tracker.mark_done("cl_1");
+        tracker.mark_done("cl_1");
+
+        let ids = vec!["cl_1".to_string()];
+        assert!(tracker.are_all_done(&ids));
+    }
+
+    #[test]
+    fn unknown_id_not_in_tracker() {
+        let tracker = JobTracker::new();
+        tracker.mark_done("cl_1");
+
+        assert!(!tracker.are_all_done(&["cl_1".to_string(), "cl_unknown".to_string()]));
+        assert_eq!(tracker.pending_count(&["cl_1".to_string(), "cl_unknown".to_string()]), 1);
+    }
+
+    #[test]
+    fn test_eta_returns_zero_when_no_pending() {
+        let tracker = JobTracker::new();
+        let ids = vec!["cl_1".to_string()];
+        tracker.mark_done("cl_1");
+        assert_eq!(tracker.eta_ms(&ids), 0);
+    }
+
+    #[test]
+    fn test_eta_uses_baseline_when_no_history() {
+        let tracker = JobTracker::new();
+        let ids = vec!["cl_1".to_string(), "cl_2".to_string()];
+        // 2 pending * 5000ms baseline = 10000ms
+        assert_eq!(tracker.eta_ms(&ids), 10000);
+    }
+
+    #[test]
+    fn test_eta_computes_from_avg() {
+        let tracker = JobTracker::new();
+        tracker.record_elapsed(2000);
+        tracker.record_elapsed(4000);
+        tracker.mark_done("cl_1");
+        let ids = vec!["cl_1".to_string(), "cl_2".to_string(), "cl_3".to_string()];
+        // avg = (2000+4000)/2 = 3000; pending = 2; eta = 3000*2 = 6000
+        assert_eq!(tracker.eta_ms(&ids), 6000);
+    }
+
+    #[test]
+    fn test_eta_capped_at_60s() {
+        let tracker = JobTracker::new();
+        tracker.record_elapsed(50000);
+        // avg = 50000; baseline (no pending calculation needed since we have history)
+        // We need many pending to exceed cap
+        let mut ids = Vec::new();
+        for i in 0..10 {
+            ids.push(format!("cl_{}", i));
+        }
+        // avg=50000, pending=10, uncapped=500000 → capped to 60000
+        assert_eq!(tracker.eta_ms(&ids), 60000);
+    }
+}
