@@ -247,7 +247,7 @@ MCP Tool
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
 中累积旧版本补丁路径。
 
-主要表（23 张）：
+主要表（28 张实体表 + 1 张 FTS5 索引，共 29 张）：
 
 | 表 | 用途 |
 |----|------|
@@ -271,6 +271,12 @@ DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::i
 | `project_metadata` | 项目级键值配置 |
 | `symbols_fts` | FTS5 符号名索引 |
 | `function_pointer_annotations` | C/C++ 函数指针 dispatch 注解 |
+| `closure_generations` | Focus closure 代际追踪 |
+| `closure_coverage` | Closure 覆盖度分布 |
+| `reference_resolutions` | focus-scoped 引用解析结果 |
+| `symbol_edge_candidates` | 候选图边（resolution 噪声缓冲） |
+| `file_inventory` | 文件发现清单（增量检测用） |
+| `symbol_hints` | 符号搜索提示（language/knowledge hints） |
 
 约束：
 - SQLite 使用 WAL。
@@ -566,6 +572,8 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 | `ManifestOnly` | 仅顶层符号可用。 |
 | `Unavailable` | 文件未索引或语言不支持。 |
 
+这些精度等级是引擎内部状态，用于 extraction 层自身的决策与降级。不进入 MCP 公共响应——Agent 只接收 `analysis.retry_after_ms` 和 `gaps` 两个公开信号。
+
 #### 10.1.4 In-flight 一致性
 
 - **去重**: `extraction_jobs` 表确保同一 file+unit+layer 不会并行构建两次。
@@ -595,7 +603,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 - **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
 - **进行中状态**：所有 on-demand structural、resolution_symbols 和 dataflow 构建都必须 claim extraction job。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。
-- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。Agent 判断是否可用、是否等待、是否重试只能读取 public `analysis` 和 `work`，不能读取 raw extraction job 或 pending/partial 旧字段。
+- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。Agent 判断是否可用、是否等待、是否重试只能读取 public `analysis` 字段，不能读取 raw extraction job 或 pending/partial 旧字段。
 - **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
 #### 10.1.8 CancellationToken 可中断提取
@@ -697,7 +705,7 @@ else:
 
 - 引擎层概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
 - `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代。
-- `background_refinement` 字段及 `analysis.state`、`analysis.next_action` 已从 `analysis` 块删除。
+- `background_refinement` 字段已淘汰（lifecycle/branch_diff 已不再使用；graph/search 兼容路径中仍存在，后续待所有工具接入三态终局模型后移除）。
 
 #### 10.1.11 Focus Runtime 与 Lazy 的关系
 
@@ -732,7 +740,9 @@ analysis/retry_after_ms/gaps/work。
 - Focus 是内部机制，不是 public response surface。默认 MCP 响应和
   `atlas_status` 不暴露 `focus`、closure id、scheduler priority、
   bootstrap tier 或 focus-specific pending queue；只暴露公开语义的
-  `retry_after_ms`、`coverage_counts`、`gaps` 和统一 `work`。
+  `retry_after_ms`、`coverage_counts`、`gaps`。
+
+> **乔布斯语录**：本实体为解决 4 环无限等待链路而引入——`precision` 硬编码致终态不可达、`pending_closure_ids` 永不为空、前台闭包 ID 污染待处理列表、调度器无完成通知。修复后的核心不变式：`mark_done` 在构建成功时立即调用，前台 ID 不进入 pending，终态由 `are_all_done` 判定，`eta_ms` 提供自适应重试间隔。
 
 ### 内容哈希一致性
 
@@ -823,26 +833,6 @@ analysis response
 终态保证可达——`JobTracker` 在 `FocusScheduler::process_detached_job` 每个闭包构建
 完成后调用 `mark_done(closure_id)`，`FocusRuntime::prepare()` 在前台闭包完成后
 立即 `mark_done`，前台闭包 ID 不进入 `pending_closure_ids`。
-
-`work` 形态：
-
-```text
-work
-  relevant      true
-  status        idle | queued | running | partial | blocked | complete | failed
-  items[]       public work/task items relevant to the current response
-    id          public work id, never closure id or extraction row id
-    kind        focus | lazy_structural | lazy_dataflow | graph_refresh
-    state       queued | running | complete | failed | cancelled | blocked
-    scope       query | local | file | symbol
-    reason      user/agent-readable reason for the background work
-    progress    optional percent or done/total
-```
-
-不得再新增 `pending`、`pending_closures`、`pending_job_ids`、
-`refinement_jobs`、focus-specific queue depth 等平行字段。已有 public
-历史字段必须删除，语义并入 public `work`
-envelope；但 `work` 只在与本次响应相关时出现。
 
 ### 10.5 架构收敛约束
 
@@ -945,7 +935,7 @@ engine.prepare(params)  →  产出 query_id + 初始 result
 ### 11.1 Search
 - FTS5 + LIKE fallback + fuzzy matching。
 - `SearchQueryParser` 支持 `kind:`、`lang:`、`path:`、`name:` 前缀。
-- MCP `search` 始终要求 `scope` 参数；scope 同时是搜索边界和 focus 热点。返回值必须声明该 scope 内结果是 complete 还是 partial，并通过既有 `work`/`tasks` 暴露后台 refinement。
+- MCP `search` 始终要求 `scope` 参数；scope 同时是搜索边界和 focus 热点。返回值必须声明该 scope 内结果是 complete 还是 partial，并  通过 `analysis.retry_after_ms` 和 `tasks` 暴露后台 refinement。
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。
