@@ -27,3 +27,17 @@ budget explicitly covers it.
 Scheduler queues execute work, but they do not decide region strategy. Region
 state, boundary detection, and expansion policy belong in `FocusRuntime` so MCP
 tools get a single control-plane entry point.
+
+## Store Boundary
+
+MCP project open uses one project-local persistent SQLite store at
+`project/.atlas/atlas.db`. Atlas does not build an application-level
+memory-store plus persistent-store fallback layer for MCP queries. SQLite owns
+the physical cache hierarchy through its page cache, mmap, and WAL behavior.
+
+FocusRuntime owns semantic locality only: hot regions, bounded foreground
+closures, background expansion, and eviction priority for analysis work. LRU can
+reprioritize or evict hot-region metadata, but it must not be used as a second
+source of truth for indexed facts. Query tools should read and write through the
+active project store and report precision/partial-refinement state rather than
+which physical cache layer served a result.

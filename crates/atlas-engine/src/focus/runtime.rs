@@ -199,58 +199,21 @@ impl HotRegionTracker {
             return None;
         }
 
-        // LRU eviction: in-memory stores are bounded. Evict the shallowest
-        // region with the lowest depth (least investigated) when the cap
-        // is exceeded. Persistent stores never evict — their atlas.db
-        // survives across sessions and investigation breadth is naturally
-        // bounded by the user's focus areas.
-        //
-        // Eviction is done BEFORE creating/finding the region for this call,
-        // so the mutable borrow of self.regions is resolved by the time we
-        // need to mutate the target region.
-        if !self.is_persistent && self.regions.len() >= MAX_MEMORY_HOT_REGIONS {
-            // Find the new region's tentative index to avoid evicting it.
-            let existing_index = self.find_region_index(seed_file_id, built_files);
-
-            // Find the shallowest (lowest depth) region that is NOT the one
-            // we're about to touch. Ties broken by position (oldest first).
-            let evict_idx = self
-                .regions
-                .iter()
-                .enumerate()
-                .filter(|(idx, _)| Some(*idx) != existing_index)
-                .min_by_key(|(_, r)| r.depth)
-                .map(|(idx, _)| idx);
-
-            if let Some(idx) = evict_idx {
-                tracing::info!(
-                    region_id = %self.regions[idx].id,
-                    depth = self.regions[idx].depth,
-                    remaining = self.regions.len() - 1,
-                    "evicting LRU hot region (in-memory mode)"
-                );
-                self.regions.remove(idx);
-            }
-        }
-
-        let region_index = self.find_region_index(seed_file_id, built_files);
-        let region_index = match region_index {
-            Some(index) => index,
+        let mut region = match self.find_region_index(seed_file_id, built_files) {
+            Some(index) => self.regions.remove(index),
             None => {
                 let id = format!("hr_{}", self.next_region_id);
                 self.next_region_id += 1;
-                self.regions.push(HotRegion {
+                HotRegion {
                     id,
                     files: HashSet::new(),
                     boundary_files: HashSet::new(),
                     depth: 0,
                     pending_closure_ids: Vec::new(),
-                });
-                self.regions.len() - 1
+                }
             }
         };
 
-        let region = &mut self.regions[region_index];
         if expanded_existing_region {
             region.depth = region.depth.saturating_add(1).max(1);
         } else {
@@ -271,7 +234,35 @@ impl HotRegionTracker {
             }
         }
 
-        Some(region.id.clone())
+        let region_id = region.id.clone();
+        self.regions.push(region);
+
+        // In-memory stores keep only a bounded set of hot regions. The Vec
+        // order is the LRU order: every touched region is moved to the back
+        // above, and eviction chooses the shallowest oldest region while
+        // preserving the just-touched region.
+        if !self.is_persistent && self.regions.len() > MAX_MEMORY_HOT_REGIONS {
+            let touched_idx = self.regions.len() - 1;
+            let evict_idx = self
+                .regions
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != touched_idx)
+                .min_by_key(|(idx, region)| (region.depth, *idx))
+                .map(|(idx, _)| idx);
+
+            if let Some(idx) = evict_idx {
+                tracing::info!(
+                    region_id = %self.regions[idx].id,
+                    depth = self.regions[idx].depth,
+                    remaining = self.regions.len() - 1,
+                    "evicting LRU hot region (in-memory mode)"
+                );
+                self.regions.remove(idx);
+            }
+        }
+
+        Some(region_id)
     }
 
     fn find_region_index(

@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use db::Store;
+use tempfile::TempDir;
 use types::enums::{Language, ParseStatus};
 use types::ids::{FileId, SymbolId};
 use types::structs::{CapabilityMask, FileInfo, SymbolDef, TextRange};
@@ -24,6 +25,14 @@ fn test_store() -> Arc<Store> {
     let store = Store::open_in_memory().unwrap();
     store.init_schema().unwrap();
     Arc::new(store)
+}
+
+fn persistent_test_store() -> (Arc<Store>, TempDir) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("atlas.db");
+    let store = Store::open_db(&db_path).unwrap();
+    store.init_schema().unwrap();
+    (Arc::new(store), temp_dir)
 }
 
 /// Insert a file and mark its structural layer as complete so that
@@ -442,6 +451,140 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
     assert!(
         rt.hot_regions.regions[0].depth > first_depth,
         "existing hot region depth should grow after boundary expansion"
+    );
+}
+
+#[test]
+fn test_memory_hot_region_lru_keeps_recent_region() {
+    let store = test_store();
+    let files: Vec<FileId> = (0..=10)
+        .map(|i| insert_file_structural_complete(&store, &format!("src/file_{i}.c")))
+        .collect();
+    let mut rt = test_runtime_focus_mode(store);
+
+    for file_id in files.iter().take(10) {
+        let intent = QueryIntent::Calls {
+            symbol_name: "main".to_string(),
+            file_id: Some(*file_id),
+            symbol_id: None,
+            direction: None,
+            depth: None,
+        };
+        rt.prepare(&intent).unwrap();
+    }
+    assert_eq!(rt.hot_regions.regions.len(), 10);
+
+    let recent_intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(files[0]),
+        symbol_id: None,
+        direction: None,
+        depth: None,
+    };
+    rt.prepare(&recent_intent).unwrap();
+
+    let cold_intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(files[10]),
+        symbol_id: None,
+        direction: None,
+        depth: None,
+    };
+    rt.prepare(&cold_intent).unwrap();
+
+    assert_eq!(
+        rt.hot_regions.regions.len(),
+        10,
+        "in-memory hot regions must stay bounded"
+    );
+    assert!(
+        rt.hot_regions
+            .regions
+            .iter()
+            .any(|region| region.files.contains(&files[0])),
+        "recently touched region must not be evicted"
+    );
+    assert!(
+        !rt.hot_regions
+            .regions
+            .iter()
+            .any(|region| region.files.contains(&files[1])),
+        "oldest shallow untouched region should be evicted first"
+    );
+}
+
+#[test]
+fn test_prepare_after_memory_hot_region_eviction_still_commits_closure() {
+    let store = test_store();
+    let files: Vec<FileId> = (0..=10)
+        .map(|i| insert_file_structural_complete(&store, &format!("src/evict_{i}.c")))
+        .collect();
+    let mut rt = test_runtime_focus_mode(store.clone());
+
+    for file_id in &files {
+        let intent = QueryIntent::Calls {
+            symbol_name: "main".to_string(),
+            file_id: Some(*file_id),
+            symbol_id: None,
+            direction: None,
+            depth: None,
+        };
+        rt.prepare(&intent).unwrap();
+    }
+    assert_eq!(rt.hot_regions.regions.len(), 10);
+    assert!(
+        !rt.hot_regions
+            .regions
+            .iter()
+            .any(|region| region.files.contains(&files[0])),
+        "first region should have been evicted from in-memory hot-region state"
+    );
+
+    let replay_intent = QueryIntent::Calls {
+        symbol_name: "main".to_string(),
+        file_id: Some(files[0]),
+        symbol_id: None,
+        direction: None,
+        depth: None,
+    };
+    let replay = rt.prepare(&replay_intent).unwrap();
+    let closure_id = replay
+        .closure_id
+        .expect("prepare should return a foreground closure id");
+    let generation = store
+        .get_committed_generation(&closure_id)
+        .unwrap()
+        .expect("replayed evicted region should still commit to the DB");
+
+    assert!(
+        generation > 0,
+        "closure generation must be committed after memory LRU eviction"
+    );
+}
+
+#[test]
+fn test_persistent_hot_regions_are_not_lru_evicted() {
+    let (store, _temp_dir) = persistent_test_store();
+    let files: Vec<FileId> = (0..=10)
+        .map(|i| insert_file_structural_complete(&store, &format!("src/persist_{i}.c")))
+        .collect();
+    let mut rt = test_runtime_focus_mode(store);
+
+    for file_id in files {
+        let intent = QueryIntent::Calls {
+            symbol_name: "main".to_string(),
+            file_id: Some(file_id),
+            symbol_id: None,
+            direction: None,
+            depth: None,
+        };
+        rt.prepare(&intent).unwrap();
+    }
+
+    assert_eq!(
+        rt.hot_regions.regions.len(),
+        11,
+        "persistent stores should retain all hot regions instead of applying the in-memory LRU cap"
     );
 }
 
