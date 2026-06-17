@@ -67,16 +67,12 @@ fn schema_project_open_has_no_background_index_parameters() {
         .properties
         .as_ref()
         .expect("project tool must have properties in its schema");
-    for removed in ["background", "scan_files", "force_memory"] {
+    for removed in ["background", "scan_files", "force_memory", "storage"] {
         assert!(
             props.get(removed).is_none(),
             "project.{removed} must not be exposed in MCP schema"
         );
     }
-    assert!(
-        props.get("storage").is_some(),
-        "project.storage must remain the explicit persistence selector"
-    );
 }
 
 #[test]

@@ -11,6 +11,7 @@
 //! ```
 
 use atlas_engine::Store;
+use atlas_engine::{FileInfo, Language, ParseStatus, SymbolDef, SymbolId, SymbolKind, TextRange};
 use atlas_mcp::protocol::ContentBlock;
 use atlas_mcp::tools::{ToolCallContext, ToolRouter};
 use serde_json::{Value, json};
@@ -65,6 +66,48 @@ fn call_tool(router: &mut ToolRouter, name: &str, args: &Value) -> (Value, bool)
     };
     let is_error = result.is_error.unwrap_or(false);
     (parsed, is_error)
+}
+
+fn seed_persistent_symbol(
+    store: &Store,
+    path: &str,
+    name: &str,
+    kind: SymbolKind,
+) -> atlas_engine::FileId {
+    let file_id = atlas_engine::FileId::generate(path);
+    store
+        .upsert_file(&FileInfo {
+            file_id,
+            path: path.to_string(),
+            language: Language::C,
+            content_hash: "persistent-fixture".to_string(),
+            status: ParseStatus::Success,
+        })
+        .unwrap();
+    let sym_id = SymbolId::generate(&file_id, Language::C.as_str(), name, kind.as_str(), None);
+    let sym = SymbolDef {
+        id: sym_id,
+        kind,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        symbol_path: vec![name.to_string()],
+        file_id,
+        language: Language::C,
+        range: TextRange::default(),
+        name_range: TextRange::default(),
+        signature: None,
+        visibility: None,
+        exported: false,
+        static_: false,
+        async_: false,
+        container: None,
+        scope_id: None,
+        package_name: None,
+        namespace_path: vec![],
+        layer: "structural".to_string(),
+    };
+    store.insert_symbols(&[sym]).unwrap();
+    file_id
 }
 
 // =========================================================================
@@ -627,6 +670,71 @@ int top_function(void) {
         resp3.get("gaps").is_none(),
         "search should not merge focus closure gaps: {resp3:.300}"
     );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn handler_open_project_uses_persistent_store_without_storage_mode() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_open_project_persistent_store");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(temp_dir.join(".atlas")).expect("create atlas dir");
+
+    let canonical_temp_dir = temp_dir.canonicalize().expect("canonical temp dir");
+    let persistent_path = canonical_temp_dir.join(".atlas").join("atlas.db");
+    let persistent = Store::open_db(&persistent_path).expect("open persistent db");
+    persistent.init_schema().expect("init persistent schema");
+    seed_persistent_symbol(
+        &persistent,
+        "src/persisted.c",
+        "persisted_open_hit",
+        SymbolKind::Function,
+    );
+    drop(persistent);
+
+    let mut router = ToolRouter::new_unopened();
+    let (open_resp, open_err) = call_tool(
+        &mut router,
+        "project",
+        &json!({"action": "open", "project_path": temp_dir.to_string_lossy()}),
+    );
+    assert!(!open_err, "project open should succeed: {open_resp:.500}");
+    assert_eq!(open_resp["ok"], true);
+    assert_eq!(
+        open_resp["db_path"].as_str(),
+        Some(persistent_path.to_string_lossy().as_ref())
+    );
+    assert!(
+        open_resp.get("storage").is_none(),
+        "open response must not expose a storage mode: {open_resp:.500}"
+    );
+
+    let (status_resp, status_err) = call_tool(&mut router, "project", &json!({"action": "status"}));
+    assert!(
+        !status_err,
+        "project status should succeed: {status_resp:.500}"
+    );
+    assert!(
+        status_resp["project"].get("storage").is_none(),
+        "status response must not expose a storage mode: {status_resp:.500}"
+    );
+
+    let (search_resp, search_err) = call_tool(
+        &mut router,
+        "search",
+        &json!({"query": "persisted_open_hit", "scope": "src", "analysis": "manifest"}),
+    );
+    assert!(
+        !search_err,
+        "search should read the active persistent store directly: {search_resp:.500}"
+    );
+    assert!(
+        search_resp.get("index_source").is_none(),
+        "search response must not expose the physical index source: {search_resp:.500}"
+    );
+    assert_eq!(search_resp["total"], 1);
+    assert_eq!(search_resp["results"][0]["name"], "persisted_open_hit");
+    assert_eq!(search_resp["results"][0]["file"], "src/persisted.c");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
