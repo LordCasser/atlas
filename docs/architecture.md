@@ -163,6 +163,78 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 ## 6. Persistence 约束
 
+### 6.0 存储分层模型（Storage Hierarchy）
+
+Atlas 的存储模型是一个**单持久 SQLite 数据库** `project/.atlas/atlas.db`，内部通过 SQLite 引擎自身的页面缓存机制实现透明的分层读取。对外只有一个打开项目的语义：
+
+```text
+open_project(project_path)
+  → Store::open_db(project/.atlas/atlas.db)
+
+MCP Tool
+  → ActiveProject
+    → Store (single persistent SQLite DB)
+      → level 1: SQLite in-process page cache (64 MB, transparent)
+      → level 2: .atlas/atlas.db WAL file (256 MB mmap, durable)
+      → level 3: focus extraction (on-demand from source files)
+```
+
+**分层语义**：
+
+| 层级 | 名称 | 介质 | 特性 |
+|------|------|------|------|
+| L1 | Page Cache | SQLite进程内存 | 64 MB 透明页面缓存，LRU 由 SQLite 自动管理 |
+| L2 | Durable DB | `.atlas/atlas.db` | WAL 日志、256 MB mmap、跨会话持久 |
+| L3 | Focus Extraction | 源码文件系统 | 按需 structural/dataflow 提取，结果写回 L2 |
+
+**核心约束**：
+
+1. `open_project` 不再暴露 `storage` 参数。始终使用单持久 SQLite DB；内部存储细节对 MCP 客户端不可见。
+2. 读路径：先查 SQLite 页面缓存（L1），miss 后从 mmap/文件系统加载（L2），未索引符号通过 focus extraction 写入后查询（L3）。
+3. SQLite 页面缓存由 `PRAGMA cache_size`（64 MB）和 `PRAGMA mmap_size`（256 MB）控制，应用层不复制缓存层。
+4. 诊断信息通过 `project(status)` 的 `diagnostics.sqlite_cache` 字段暴露，包含 page_count、freelist_count、cache_size_kib、db_file_size_bytes 及其派生指标，但不成为正常 API 语义的一部分。
+5. `Store::open_in_memory()` 保留用于测试，不用于生产查询路径。
+
+**设计决策**：为什么不用应用层双 Store（memory + persistent）？
+
+- SQLite 自带的 64 MB page cache 已经是一个高效的透明 L1 缓存，应用层再建缓存层是重复造轮子。
+- `GraphSnapshot` 要求从单个 store 全量加载 symbols + edges 构建内存图，双 store 无法构建一致性视图。
+- blake3 内容寻址 ID 在双 store 场景下虽然值相同，但 `file_id` 指向的 path/符号表可能不同步，导致上下文断裂。
+
+**诊断暴露**：
+
+```json
+{
+  "diagnostics": {
+    "storage_hierarchy": {
+      "model": "single persistent SQLite DB with transparent page cache",
+      "layers": {
+        "l1_page_cache": "SQLite in-process page cache — transparent, 64 MB default, LRU eviction",
+        "l2_durable_db": "project/.atlas/atlas.db — WAL, 256 MB mmap, durable",
+        "l3_focus_extraction": "on-demand structural extraction from source files"
+      }
+    },
+    "sqlite_cache": {
+      "page_count": 1234,
+      "page_size_bytes": 4096,
+      "freelist_count": 50,
+      "cache_size_kib": 65536,
+      "db_file_size_bytes": 5054464,
+      "derived": {
+        "total_db_kib": 4936,
+        "used_db_kib": 4736,
+        "file_on_disk_kib": 4936,
+        "fragmentation_ratio": 0.041,
+        "cache_coverage_ratio": 13.3
+      }
+    }
+  }
+}
+```
+
+- `fragmentation_ratio` = `freelist_count / page_count`：表示空闲页面占比；高值意味着 `VACUUM` 可压缩文件。
+- `cache_coverage_ratio` = `cache_size_kib / total_db_kib`：表示页面缓存是否能在内存中覆盖整个 DB。>1.0 时所有页面理论可常驻内存。
+
 ### 6.1 Schema（当前版本：V1）
 
 当前 schema 版本为 V1。软件处于快速原型期，新库以主 DDL 为准，不保留

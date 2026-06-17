@@ -1,10 +1,10 @@
 ---
 name: atlas
-description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26 and exposes deterministic facts through CLI and MCP. Use for symbol search, call-graph traversal, callers/callees, dependency analysis, variable provenance tracing, caller-path exploration, barrel re-export resolution, or building AI context from indexed codebases.
+description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26. Exposes deterministic facts through 15 MCP tools: symbol search, call-graph traversal (callers/callees, multi-hop), dependency analysis, variable provenance tracing, shortest-path between symbols, impact analysis, C/C++ field lifecycle analysis, branch-diff comparison, function-pointer dispatch annotation. Use for understanding code structure, tracing data/call flow, reviewing change impact, or building AI context from indexed codebases. Prefer over text search or filename guessing.
 license: MIT
-compatibility: Requires Rust toolchain. Build with `cargo build --release -p atlas-cli --features mcp`.
+compatibility: Requires Rust toolchain and a local checkout of the target repository. Build with `cargo build --release -p atlas-cli --features mcp`. Index the project via CLI (`atlas index --project <repo>`) before starting MCP.
 metadata:
-  version: "1.4.2"
+  version: "1.5.1"
   repository: https://github.com/lordcasser/atlas
 ---
 
@@ -14,10 +14,7 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Language support
 
-14 languages compile by default. Their capability profiles currently
-report **DataflowFull** as the overall level, but individual feature support
-still varies by language; always check `project(action="status")`,
-`atlas doctor`, or trace capability metadata before making precision claims.
+14 languages compile by default. Capability profiles report **DataflowFull** as the overall level, but individual feature support varies by language; always check `project(action="status")`, `atlas doctor`, or trace capability metadata before making precision claims.
 
 | Language | Key capabilities |
 |----------|-----------------|
@@ -25,18 +22,16 @@ still varies by language; always check `project(action="status")`,
 | Python, Java, C, C++, Go, Rust | Same as above; Python/Java/C/C++/Go/Rust have CFG; C function pointers limited depth 3; C++ templates/overloads not modeled; Rust ReturnToCall gap documented |
 | C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `project(action="status")` and trace capability metadata) |
 
-All 14 languages compiled by default.
-
 ## Requirements
 
-A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")` when needed. Index the project before relying on search, graph, or trace results.
+A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")`. **Index the project via CLI before starting MCP** — `atlas index --project <repo>` auto-initializes the schema and builds the database.
 
 ## Workflow
 
 1. **Confirm the index exists**
    - CLI: `atlas status --project <repo>` or `atlas doctor --project <repo>`
-   - MCP: call `project(action="status")`
-   - If no `.atlas/atlas.db`, run `atlas index --project <repo>` (auto-initializes schema), or use MCP `project(action="open", project_path="<repo>", storage="persistent")` followed by `index`
+   - MCP: `project(action="status")`
+   - If no `.atlas/atlas.db` exists, run `atlas index --project <repo>` (CLI), then restart MCP if needed.
 
 2. **Pick the narrowest query**
    - Symbol lookup: `search` → `symbol`
@@ -46,7 +41,10 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
    - Value origin: `trace(kind="variable")`
    - Caller chain: `trace(kind="callers")`
    - Forward call trace: `trace(kind="forward")`
+   - Shortest path: `path(from="X", to="Y")`
+   - Impact analysis: `impact(symbol="X")`
    - Agent context: `symbol(view="context")`
+   - Symbol exploration: `explore(symbol="X")`
 
 3. **Respect capability metadata**
    - Call `project(action="status")` or `atlas doctor` when trace precision matters.
@@ -61,35 +59,43 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
 ```bash
 atlas index --project <repo>        # auto-initializes schema + indexes
 atlas sync --project <repo>         # incremental update
-atlas status --project <repo>
-atlas doctor --project <repo>
-atlas                               # from project root: index first if needed, then launch TUI
+atlas status --project <repo>       # index health overview
+atlas doctor --project <repo>       # detailed diagnostics
+atlas                                # from project root: launch TUI (indexes first if needed)
 ```
 
 ## MCP tools
 
-The 18 MCP tools use short names (no `atlas_` prefix):
+The 15 MCP tools use short names in the native server. Note: some MCP client environments add an `atlas_` prefix (e.g., `atlas_search`, `atlas_calls`). Use the name your environment exposes.
 
-| Tool | Purpose | Key arguments |
-|------|---------|---------------|
-| `project` | Open, inspect, or list files | `action="open\|status\|files"` |
-| `index` | Index/re-index active project | optional `include`, `exclude`, `analysis`, `background` |
-| `search` | Symbol search by name | `query` (required), optional `scope`, `kind`, `limit`, `background` |
-| `symbol` | Symbol details, context, or usages | `symbol` (required), `view="detail\|context\|usages"`, optional `file_path`+`line`+`column` for position lookup, `includeCode`, `limit` |
-| `calls` | Call graph queries (callers, callees, multi-hop) | `symbol` (required), `direction="incoming\|outgoing\|both"`, optional `depth`, `limit`, `edge_kinds` |
-| `explore` | Symbol exploration (depth=1 adjacency) | `symbol` (required), optional `includeCode` |
-| `path` | Shortest path between symbols | `from`, `to` (required), optional `max_depth`, `direction`, `edge_kinds`, `includeCode`, `include_roots` |
-| `impact` | Bidirectional impact analysis | `symbol` (required), optional `depth`, `semantic` |
-| `file_dependencies` | File-level import/include graph | `file_path` (required), `direction="incoming\|outgoing\|both"`, optional `limit` |
-| `trace` | Source-level trace (point, variable, forward, callers) | `kind="point\|variable\|forward\|callers"` (required), `file_path`/`file_id`, `line`, `column`, `symbol`, `from`/`to` |
-| `lifecycle` | Field lifecycle analysis (C/C++) | `symbol`, `field` (required), optional `include_roots` |
-| `branch_diff` | Branch side-effect comparison (C/C++) | `symbol` (required), optional `include_roots` |
-| `fp_dispatches` | Function-pointer dispatch annotations | `action="add\|list\|delete"` |
-| `domain_rules` | Domain rules for lifecycle analysis | `action="add\|list\|delete\|learn"` |
-| `tasks` | List background extraction jobs | optional `query_id` |
-| `task_status` | Poll background task progress | `task_id` (required) |
-| `wait_for_task` | Block until task completes | `task_id` (required), optional `timeout_secs`, `poll_interval_secs` |
-| `resume_task` | Resume a previous partial query | `query_id` (required) |
+### Tools reference
+
+| Tool | Purpose | Required params | Key optional params |
+|------|---------|----------------|---------------------|
+| `project` | Open project, check status, list files | — | `action` (`open`/`status`/`files`; default `status`), `project_path` (required with `open`), `storage` (`auto`/`memory`/`persistent`), `verbose`, `limit`, `language`, `path_prefix` |
+| `search` | Symbol search by name within a directory scope | `query`, `scope` | `kind` (e.g., `function`, `class`), `limit` (default 20, max 200), `include_roots` |
+| `symbol` | Symbol details, rich context, or usages | `symbol` (string or SymbolSelector) | `file_path`+`line`+`column` for position-based lookup, `view` (`detail`/`context`/`usages`; default `detail`), `includeCode`, `includeFilePeers`, `limit` (usages only), `include_roots` |
+| `calls` | Call graph: callers, callees, multi-hop | `symbol` | `direction` (`incoming`/`outgoing`/`both`; default `both`), `depth` (1-5, default 1), `limit`, `edge_kinds` (default `["calls","instantiates","implements"]`; use `["*"]` for all) |
+| `explore` | Symbol dossier: source, call evidence, relations, file context | `symbol` | `scope` (directory), `source_mode` (`excerpt`/`full`/`none`), `source_lines` (default 40), `evidence_limit` (default 5), `relation_limit` (default 20), `peer_limit` (default 12), `include_file_context`, `include_recommendations` |
+| `path` | Shortest path between two symbols through the graph | `from`, `to` | `max_depth` (1-10, default 5), `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `prefer_production`, `edge_kinds` (default `["calls","instantiates","implements","registers_callback"]`), `includeCode`, `include_roots` |
+| `impact` | Bidirectional impact analysis (what would break?) | `symbol` | `depth` (1-5, default 3), `semantic` (include lifecycle invariants and branch diffs) |
+| `file_dependencies` | File-level import/include graph | `file_path` | `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `limit` (default 50), `analysis` (`manifest`/`structural`; default `manifest`) |
+| `trace` | Source-level trace: point resolution, variable provenance, forward/caller chains | — | `kind` (`point`/`variable`/`forward`/`callers`; default `point`), `file_path`/`file_id`, `line`, `column`, `symbol`, `from`/`to`, `max_depth`, `include_roots` |
+| `lifecycle` | C/C++ field lifecycle through CFG (allocate → use → free) | `symbol`, `field` | `include_roots` |
+| `branch_diff` | Compare branch side effects within a function (C/C++) | `symbol` | `include_roots` |
+| `domain_rules` | Manage lifecycle domain rules (alloc/free/owned patterns) | — | `action` (`add`/`list`/`delete`/`learn`), `rule_kind`, `pattern`, `rule_id`, `source`, `confidence` |
+| `fp_dispatches` | C/C++ function-pointer dispatch annotations | — | `action` (`add`/`list`/`delete`), `field_qname`, `target_qname`, `annotation_id`, `confidence` |
+| `tasks` | List background extraction/lazy-refinement jobs | — | `query_id` |
+| `resume_query` | Re-run a previous query with enhanced results after lazy refinement | `query_id` | — |
+
+### Trace `kind` parameter details
+
+| `kind` | Purpose | Required params | Default `max_depth` |
+|--------|---------|----------------|---------------------|
+| `point` | Resolve a source position to its enclosing symbol, scope, and callsite | `file_path`/`file_id`, `line`, `column` | — |
+| `variable` | Trace where a variable's value comes from (backward intra-procedural dataflow) | `file_path`/`file_id`, `line`, `column` | 30 |
+| `forward` | Trace the forward call chain from source to target | `from`, `to` | 20 |
+| `callers` | Trace how a function gets invoked (backward call chain) | `symbol` | 10 |
 
 ## Symbol Selector
 
@@ -116,12 +122,12 @@ All tools that accept symbol references (`calls`, `impact`, `path`, `explore`,
 
 ## Query tactics
 
-- Start with `search` for names. Use `kind:function`, `kind:class`, or shorter terms if exact match fails.
+- Start with `search` for names. `search` **requires `scope`** — provide a project-relative directory (e.g., `"src"`, `"drivers/net"`). Use `kind: "function"`, `kind: "class"`, or shorter terms if exact match fails.
 - Prefer shallow graph depths (`depth: 1-2`) to avoid noisy results.
 - For barrel re-export chains (`import { X } from './barrel'` where barrel has `export * from './lib'`), Atlas follows the chain to the original definition via `ExportFrom` facts.
 - For code review, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
-- For position-based symbol lookup, use `symbol(file_path="src/foo.ts", line=42, view="context")` — the `view` parameter works with all position queries.
-- For ambiguous results with a SymbolSelector, check the error message for `file_path` diagnostics — invalid `file_path` hints are reported inline.
+- For position-based symbol lookup: `symbol(file_path="src/foo.ts", line=42, column=1, view="context")`.
+- For ambiguous SymbolSelector results, check the error message for `file_path` diagnostics — invalid `file_path` hints are reported inline.
 - For value flow debugging, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
 
 ## Trace response handling

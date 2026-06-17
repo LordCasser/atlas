@@ -21,13 +21,10 @@ AtlasMcpService
 ```
 
 `project(action="open")` is synchronous and does not scan or index the whole
-tree. Storage controls whether focus-produced facts are durable:
-
-- `storage="auto"` reuses a compatible `project/.atlas/atlas.db`; otherwise it
-  opens a memory store.
-- `storage="memory"` ignores any `.atlas` directory and leaves no project
-  footprint.
-- `storage="persistent"` opens or creates `project/.atlas/atlas.db`.
+tree. It opens or creates `project/.atlas/atlas.db`; focus-produced facts are
+written there and reused by later MCP sessions. SQLite provides the transparent
+page cache, mmap, and WAL-backed persistence layer, while Atlas focus controls
+which local closures are analyzed on demand.
 
 Explicit project-wide indexing is CLI-only: run `atlas index` outside MCP when
 you want a reusable full-project cache.

@@ -1379,7 +1379,6 @@ fn open_project_background_activates_on_wait_for_task() {
         &json!({
             "action": "open",
             "project_path": target.path().to_string_lossy(),
-            "storage": "memory",
             "background": true
         }),
     );
@@ -1418,7 +1417,6 @@ fn open_project_background_activates_on_wait_for_task() {
     };
     let status_json: Value = serde_json::from_str(status_text).expect("status json");
     assert_eq!(status_json["project"]["active_project"], expected);
-    assert_eq!(status_json["project"]["storage"], "memory");
 }
 
 #[test]
@@ -1529,24 +1527,15 @@ fn open_project_memory_no_index_switches_project() {
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "memory",
         }),
     );
-    assert!(
-        !is_error,
-        "project(action=open) (memory) should succeed: {json:?}"
-    );
+    assert!(!is_error, "project(action=open) should succeed: {json:?}");
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     // Status should reflect the new project
     let (status_json, status_error) =
         call_tool(&mut router, "project", json!({"action": "status"}));
     assert!(!status_error, "status should succeed");
-    assert_eq!(
-        status_json["project"]["storage"].as_str().unwrap_or(""),
-        "memory",
-        "storage should be memory"
-    );
     let active = status_json["project"]["active_project"]
         .as_str()
         .unwrap_or("");
@@ -1581,13 +1570,9 @@ fn open_project_then_index_enables_search() {
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "memory",
         }),
     );
-    assert!(
-        !is_error,
-        "project(action=open) (memory) should succeed: {json:?}"
-    );
+    assert!(!is_error, "project(action=open) should succeed: {json:?}");
     assert!(json["ok"].as_bool().unwrap_or(false), "ok must be true");
 
     let (index, index_error) = call_tool(&mut router, "index", json!({}));
@@ -1696,7 +1681,6 @@ fn mcp_search_large_scope_stays_manifest_level() {
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "memory",
         }),
     );
     assert!(!open_error, "project(action=open) should succeed");
@@ -1744,13 +1728,13 @@ fn open_project_rejects_indexing_parameters() {
 
     assert!(is_error, "project(action=open) must reject index=true");
     assert!(
-        json["error"].as_str().unwrap_or("").contains("index tool"),
-        "error should point users to index: {json:?}"
+        json["error"].as_str().unwrap_or("").contains("index"),
+        "error should identify the unsupported index parameter: {json:?}"
     );
 }
 
 #[test]
-fn open_project_persistent_creates_db_and_survives_reopen() {
+fn open_project_creates_persistent_db_and_survives_reopen() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let tmp = TempDir::new().expect("temp dir");
@@ -1766,14 +1750,13 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let files = &[("dummy.ts", "export const x = 1;\n")];
     let (_tmp_initial, mut router) = build_router(files);
 
-    // First: open persistent storage, then index the active project.
+    // First: open the project, then index the active project.
     let (json1, is_error1) = call_tool(
         &mut router,
         "project",
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "persistent",
         }),
     );
     assert!(
@@ -1785,20 +1768,14 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let (index_json, index_error) = call_tool(&mut router, "index", json!({}));
     assert!(!index_error, "index should succeed: {index_json:?}");
 
-    // Verify .atlas/atlas.db exists
+    // Verify .atlas/atlas.db exists.
     let db_path = tmp.path().join(".atlas/atlas.db");
     assert!(
         db_path.exists(),
-        ".atlas/atlas.db should exist after persistent project(action=open)"
+        ".atlas/atlas.db should exist after project(action=open)"
     );
 
-    // Status should show persistent
     let (status_json, _) = call_tool(&mut router, "project", json!({"action": "status"}));
-    assert_eq!(
-        status_json["project"]["storage"].as_str().unwrap_or(""),
-        "persistent",
-        "storage should be persistent"
-    );
     assert!(
         status_json["summary"]["files"].as_i64().unwrap_or(0) >= 1,
         "status should show indexed files"
@@ -1813,8 +1790,8 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     let results = search_json["results"].as_array().unwrap();
     assert!(!results.is_empty(), "search for 'add' should find results");
 
-    // Re-open the same project without a storage override. The default auto
-    // mode should reuse the existing persistent DB without re-indexing.
+    // Re-open the same project. It should reuse the existing persistent DB
+    // without re-indexing.
     let (json2, is_error2) = call_tool(
         &mut router,
         "project",
@@ -1825,15 +1802,9 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
     );
     assert!(!is_error2, "re-open should succeed: {json2:?}");
     assert_eq!(
-        json2["storage"].as_str(),
-        Some("persistent"),
-        "auto storage should reuse existing .atlas/atlas.db"
-    );
-    assert!(
-        json2["suggestion"]
-            .as_str()
-            .is_some_and(|s| s.contains("Reusable persistent index detected via project status")),
-        "response should explain why persistent storage was selected: {json2:?}"
+        json2["db_path"].as_str(),
+        Some(db_path.to_string_lossy().as_ref()),
+        "open should use project/.atlas/atlas.db"
     );
 
     // Search should still find add after reopen without re-index
@@ -1850,7 +1821,7 @@ fn open_project_persistent_creates_db_and_survives_reopen() {
 }
 
 #[test]
-fn open_project_auto_ignores_empty_persistent_db() {
+fn open_project_uses_persistent_db_even_when_empty() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let tmp = TempDir::new().expect("temp dir");
@@ -1859,47 +1830,30 @@ fn open_project_auto_ignores_empty_persistent_db() {
     let files = &[("dummy.ts", "export const seed = 1;\n")];
     let (_tmp_initial, mut router) = build_router(files);
 
-    // Explicit persistent open creates a schema but no reusable index.
-    let (persistent_json, persistent_error) = call_tool(
+    // Opening the project creates a schema even before any reusable index exists.
+    let (open_json, open_error) = call_tool(
         &mut router,
         "project",
         json!({
             "action": "open",
             "project_path": tmp.path().to_string_lossy(),
-            "storage": "persistent",
         }),
     );
+    assert!(!open_error, "project open should succeed: {open_json:?}");
+    let db_path = tmp.path().join(".atlas/atlas.db");
     assert!(
-        !persistent_error,
-        "explicit persistent open should succeed: {persistent_json:?}"
-    );
-    assert_eq!(persistent_json["storage"].as_str(), Some("persistent"));
-
-    // Auto should read project status from the candidate DB, see index mode
-    // "none", and avoid treating the empty DB as a usable persistent index.
-    let (auto_json, auto_error) = call_tool(
-        &mut router,
-        "project",
-        json!({
-            "action": "open",
-            "project_path": tmp.path().to_string_lossy(),
-        }),
-    );
-    assert!(!auto_error, "auto open should succeed: {auto_json:?}");
-    assert_eq!(
-        auto_json["storage"].as_str(),
-        Some("memory"),
-        "auto storage must not reuse a persistent DB whose status has no index"
+        db_path.exists(),
+        "open should create project/.atlas/atlas.db"
     );
     assert_eq!(
-        auto_json["db_path"].as_str(),
-        Some(":memory:"),
-        "auto fallback should be an in-memory store"
+        open_json["db_path"].as_str(),
+        Some(db_path.to_string_lossy().as_ref()),
+        "open should use the persistent project DB"
     );
 }
 
 #[test]
-fn open_project_refuses_memory_when_persistent_index_exists() {
+fn open_project_rejects_storage_mode_parameter() {
     let _ = tracing_subscriber::fmt::try_init();
 
     let target = TempDir::new().expect("target temp dir");
@@ -1911,7 +1865,7 @@ fn open_project_refuses_memory_when_persistent_index_exists() {
     let files = &[("dummy.ts", "export const seed = 1;\n")];
     let (_tmp_initial, mut router) = build_router(files);
 
-    let (memory_json, memory_error) = call_tool(
+    let (storage_json, storage_error) = call_tool(
         &mut router,
         "project",
         json!({
@@ -1921,18 +1875,18 @@ fn open_project_refuses_memory_when_persistent_index_exists() {
         }),
     );
     assert!(
-        memory_error,
-        "memory open should be refused when persistent index exists: {memory_json:?}"
+        storage_error,
+        "storage mode should be rejected: {storage_json:?}"
     );
     assert!(
-        memory_json["error"]
+        storage_json["error"]
             .as_str()
             .unwrap_or_default()
-            .contains("existing persistent Atlas index"),
-        "error should explain the protected persistent index: {memory_json:?}"
+            .contains("storage"),
+        "error should explain the unsupported storage parameter: {storage_json:?}"
     );
 
-    let (auto_json, auto_error) = call_tool(
+    let (open_json, open_error) = call_tool(
         &mut router,
         "project",
         json!({
@@ -1941,24 +1895,13 @@ fn open_project_refuses_memory_when_persistent_index_exists() {
         }),
     );
     assert!(
-        !auto_error,
-        "auto open should reuse persistent: {auto_json:?}"
-    );
-    assert_eq!(auto_json["storage"].as_str(), Some("persistent"));
-
-    let (forced_json, forced_error) = call_tool(
-        &mut router,
-        "project",
-        json!({
-            "action": "open",
-            "project_path": target.path().to_string_lossy(),
-            "storage": "memory",
-            "force_memory": true,
-        }),
+        !open_error,
+        "open should use persistent DB without a storage mode: {open_json:?}"
     );
     assert!(
-        !forced_error,
-        "force_memory should allow intentional memory open: {forced_json:?}"
+        open_json["db_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with(".atlas/atlas.db")),
+        "open should report project/.atlas/atlas.db: {open_json:?}"
     );
-    assert_eq!(forced_json["storage"].as_str(), Some("memory"));
 }
