@@ -1,6 +1,6 @@
 //! Status tools: project overview and file listing.
 
-use atlas_engine::{Language, LanguageCapabilityProfile, Store};
+use atlas_engine::{Language, LanguageCapabilityProfile};
 
 use super::ToolRouter;
 
@@ -102,12 +102,62 @@ impl ToolRouter {
             df
         };
 
-        // Determine storage mode from db_path
         let db_path = self.active().store.db_path().to_string_lossy().to_string();
-        let storage = if db_path == ":memory:" {
-            "memory"
-        } else {
-            "persistent"
+
+        // ── SQLite cache diagnostics ──────────────────────────────────────
+        let cache_stats = self.active().store.get_cache_stats().ok();
+        let storage_is_in_memory = db_path == ":memory:";
+
+        let diagnostics = {
+            let mut diag = json!({
+                "storage_hierarchy": {
+                    "model": "single persistent SQLite DB with transparent page cache",
+                    "layers": {
+                        "l1_page_cache": "SQLite in-process page cache — transparent, 64 MB default, evicts least-recently-used pages",
+                        "l2_durable_db": "project/.atlas/atlas.db — WAL journal, 256 MB mmap, durable across restarts",
+                        "l3_focus_extraction": "on-demand structural extraction from source files when symbols are not yet indexed"
+                    }
+                }
+            });
+            if let Some(ref cs) = cache_stats {
+                let total_db_kib = cs.page_count.saturating_mul(cs.page_size) / 1024;
+                let used_pages = cs.page_count.saturating_sub(cs.freelist_count);
+                let used_kib = used_pages.saturating_mul(cs.page_size) / 1024;
+                let file_kib = (cs.db_file_size_bytes / 1024) as i64;
+                diag.as_object_mut().unwrap().insert(
+                    "sqlite_cache".to_string(),
+                    json!({
+                        "page_count": cs.page_count,
+                        "page_size_bytes": cs.page_size,
+                        "freelist_count": cs.freelist_count,
+                        "cache_size_kib": cs.cache_size_kib,
+                        "db_file_size_bytes": cs.db_file_size_bytes,
+                        "derived": {
+                            "total_db_kib": total_db_kib,
+                            "used_db_kib": used_kib,
+                            "file_on_disk_kib": file_kib,
+                            "fragmentation_ratio": if cs.page_count > 0 {
+                                (cs.freelist_count as f64 / cs.page_count as f64 * 1000.0).round() / 1000.0
+                            } else { 0.0 },
+                            "cache_coverage_ratio": if total_db_kib > 0 {
+                                (cs.cache_size_kib as f64 / total_db_kib as f64 * 1000.0).round() / 1000.0
+                            } else { 0.0 },
+                        }
+                    }),
+                );
+            }
+            if storage_is_in_memory {
+                diag.as_object_mut().unwrap().insert(
+                    "storage_mode".to_string(),
+                    json!("in_memory (not persisted)"),
+                );
+            } else {
+                diag.as_object_mut().unwrap().insert(
+                    "storage_mode".to_string(),
+                    json!("persistent"),
+                );
+            }
+            diag
         };
 
         (
@@ -115,7 +165,6 @@ impl ToolRouter {
                 "project": {
                     "active_project": self.active().root.to_string_lossy(),
                     "db_path": db_path,
-                    "storage": storage,
                 },
                 "summary": {
                     "files": stats.total_files,
@@ -139,6 +188,7 @@ impl ToolRouter {
                 "database": {
                     "sqlite_version": stats.sqlite_version,
                 },
+                "diagnostics": diagnostics,
                 "server": {
                     "atlas_version": env!("CARGO_PKG_VERSION"),
                     "tool_contract_version": 1,
@@ -211,15 +261,6 @@ impl ToolRouter {
     }
 }
 
-/// Read the same index mode that `project(action="status")` reports.
-///
-/// This is used by `project(action="open", storage="auto")` to decide whether
-/// a persistent candidate DB contains a reusable index, instead of guessing
-/// from filesystem presence alone.
-pub(crate) fn read_index_mode(store: &Store) -> anyhow::Result<String> {
-    store.read_index_mode()
-}
-
 fn unit_id_hex(unit_id: [u8; 16]) -> String {
     let mut out = String::with_capacity(32);
     for byte in unit_id {
@@ -254,7 +295,7 @@ fn compiled_features() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use atlas_engine::Store;
 
     #[test]
     fn status_lazy_dataflow_includes_has_dataflow() {

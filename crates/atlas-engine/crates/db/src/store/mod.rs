@@ -952,6 +952,27 @@ pub struct StoreStats {
     pub files_by_language: Vec<(String, i64)>,
 }
 
+/// SQLite page-cache and file-size diagnostics.
+///
+/// These are sampled at query time via cheap PRAGMAs (< 1 ms).
+/// Together they describe how much of the database resides in the
+/// operating-system page cache vs on-disk pages.
+#[derive(Debug, Clone)]
+pub struct SqliteCacheStats {
+    /// Total pages in the database file (`PRAGMA page_count`).
+    pub page_count: i64,
+    /// Bytes per page (`PRAGMA page_size`).
+    pub page_size: i64,
+    /// Unused (free) pages (`PRAGMA freelist_count`).  A non-zero value
+    /// after bulk writes means a `VACUUM` could compact the file, but
+    /// free pages are cheap for SQLite (WAL auto-reclaims them).
+    pub freelist_count: i64,
+    /// Configured page-cache size in KiB (`PRAGMA cache_size`).
+    pub cache_size_kib: i64,
+    /// Size of the database file on disk, in bytes (`std::fs::metadata`).
+    pub db_file_size_bytes: u64,
+}
+
 // ── Reader trait implementations ────────────────────────────────────────────
 //
 // The 4 reader traits (SymbolReader, DataflowReader, CallGraphReader,

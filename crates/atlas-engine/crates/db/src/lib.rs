@@ -14,7 +14,7 @@ pub use store::domain_rules::DomainRuleRow;
 pub use store::extraction_jobs::{ClaimResult, ExtractionJob};
 pub use store::file_inventory::FileInventoryRow;
 pub use store::symbol_hints::SymbolHint;
-pub use store::{FullRebuildGuard, Store, StoreStats, WalCheckpointStats};
+pub use store::{FullRebuildGuard, SqliteCacheStats, Store, StoreStats, WalCheckpointStats};
 pub use store::{
     IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
 };

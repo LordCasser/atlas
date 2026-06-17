@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, params};
 use std::path::Path;
 use types::*;
 
-use super::{Store, StoreStats};
+use super::{SqliteCacheStats, Store, StoreStats};
 
 impl Store {
     // ── Project metadata (key-value) ────────────────────────────────────────
@@ -146,6 +146,42 @@ impl Store {
             sqlite_version,
             symbols_by_kind,
             files_by_language,
+        })
+    }
+
+    /// Return SQLite page-cache diagnostics.
+    ///
+    /// Uses cheap PRAGMAs (< 1 ms) plus a single `std::fs::metadata` call.
+    /// For in-memory stores the file-size is always 0 and `page_count`/`page_size`
+    /// reflect the transient in-memory database.
+    pub fn get_cache_stats(&self) -> anyhow::Result<SqliteCacheStats> {
+        let conn = self.lock_read();
+
+        let page_count: i64 =
+            conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+        let page_size: i64 =
+            conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        let freelist_count: i64 =
+            conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        let cache_size: i64 =
+            conn.query_row("PRAGMA cache_size", [], |r| r.get(0))?;
+        // PRAGMA cache_size returns a negative number when expressed in KiB.
+        let cache_size_kib = if cache_size < 0 { -cache_size } else { cache_size };
+
+        let db_file_size_bytes = if self.db_path.to_string_lossy() == ":memory:" {
+            0u64
+        } else {
+            std::fs::metadata(&self.db_path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+        };
+
+        Ok(SqliteCacheStats {
+            page_count,
+            page_size,
+            freelist_count,
+            cache_size_kib,
+            db_file_size_bytes,
         })
     }
 
