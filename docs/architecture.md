@@ -615,28 +615,15 @@ Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"�
 
 此设计不修改 tree-sitter C FFI，不引入 signal，不增加线程。Cancellation 是正常降级路径，产生 precision 降级而非 MCP tool error。
 
-#### 10.1.9 Analysis Contract、Query Resume 与 Investigation
+#### 10.1.9 Query Resume 与 Investigation
 
-所有触发 lazy extraction 的 MCP 响应必须暴露 `analysis_contract`，明确当前数据能支持和不能支持的结论：
-
-```text
-analysis_contract
-  safe_conclusions       当前 capability mask 支持的结论
-  unsafe_conclusions     缺失能力导致不能证明的结论
-  capability_summary     mask bits、best capability、文件能力分布
-  refinement_available   当前结果是否可通过后台构建继续提升
-```
-
-`analysis_contract` 只声明当前结果能证明什么、不能证明什么，以及是否存在
-可提升空间；它不承载后台任务列表。MCP 不再暴露可等待 task API：`tasks`
-只观测当前 session 的 focus/lazy 活动，查询恢复通过 `resume_query` 重放
-query snapshot。
+响应信封采用三态终局模型（见 §10.1.10），Agent 通过 `analysis.retry_after_ms` 和顶层 `gaps` 即可判断结果状态。Tool 响应的 coverage/missing 语义通过 `analysis.basis` 和 `gaps[].reason` 承载，可提升空间通过 `retry_after_ms` 表达。废弃的 `analysis_contract` 结构体已移除。
 
 `query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_query(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
-#### 10.1.10 统一对外分析认知界面 v2
+#### 10.1.10 统一对外分析认知界面
 
 MCP 分析响应采用**三态终局模型**，Agent 通过 `analysis.retry_after_ms` 和顶层 `gaps`
 两个信号即可判断结果状态。模型保证终态必然可达——不存在永久 `building` / `wait` 状态。
@@ -801,35 +788,25 @@ discover files
   暴露 waitable task API。
 - MCP 的 `project(action="open")` 只同步激活项目，不扫描全树、不索引。
 - MCP scoped 查询触发 focus/lazy materialization；响应通过
-  `analysis_contract`、coverage/precision 字段和 diagnostics 表达当前结果
+  `analysis.retry_after_ms`、`gaps` 和 coverage 字段表达当前结果
   是否完整可用。
 - `tasks` 仅用于观测当前 session 的 focus/lazy 活动；`resume_query`
   通过 `query_id` 重放最近查询，不能等待任意后台 task。
 
 普通分析响应只解释本次结果；全局项目状态通过 `project(status)` 查询。
 
-分析类 tool response 只有在后台工作和本次结果直接相关时才携带 `work`：
-
-- 本次查询触发了 lazy extraction、focus refinement、graph refresh 或 corpus
-  局部构建。
+分析类 tool response 只有在后台工作和本次结果直接相关时才标记非终态：
 - 当前响应处于非终态（`analysis.retry_after_ms` 存在），且后台工作会改变本次
   查询的质量或可用性。
-- 响应需要给出本次查询可等待的 public `task_id`。
-
-不得把无关的全局 indexing、project activation、corpus sync、预热队列深度
-塞进每个 tool response。无关后台状态属于 status/task 工具，不属于普通查
-询结果 envelope。
 
 ```text
-analysis response v2
+analysis response
   analysis               required for analysis tools
     scope                repo | local | file | symbol
     summary              当前可用事实和限制的短说明
     basis                使用的数据源（manifest, structural, dataflow, cfg, domain_rules 等）
     retry_after_ms       可选；存在表示非终态，Agent 应在此毫秒后轮询 resume_query
   gaps                   [{scope, reason, detail}]；可选，仅终态响应出现
-  analysis_contract      optional；tools making semantic claims (legacy trace)
-  work                   optional；focus/lazy activity，仅当与本次响应相关
   query_id               MCP 层查询标识符，用于 resume_query 重放
   coverage_counts        optional；公开 coverage label 的数量分布（非终态 + 终态均可）
 ```
@@ -867,15 +844,15 @@ work
 历史字段必须删除，语义并入 public `work`
 envelope；但 `work` 只在与本次响应相关时出现。
 
-### 10.5 v1.4.1 以来的架构收敛约束
+### 10.5 架构收敛约束
 
-v1.4.1 之后的清理目标不是单纯减少行数，而是把重复实现压回稳定边界。后续改动必须遵守以下模式：
+清理目标不是单纯减少行数，而是把重复实现压回稳定边界。后续改动必须遵守以下模式：
 
 - **先删除，再抽象**：零调用代码、过期别名、错误的 `#[allow(dead_code)]` 和未接入主路径的 facade 必须直接删除。只有当多个调用点共享同一不变式时才新增 helper、trait 或 struct；不得为了“参数成组出现”创建没有行为边界的状态对象。
 - **入口层只做编排**：CLI、TUI、MCP 只解释参数、处理锁、进度、后台任务和用户可见错误。dirty check、stale cleanup、capability upgrade、precision downgrade guard、resolution、graph build 和 summary build 都必须走 engine/filesync/service 层的共享入口。
 - **抽取层 helper 只承载机械一致性**：`languages::shared` 可以统一 `TextRange`、deterministic ID、`ScopeDef`、`BindingDef`、`ReferenceUse`、常见 `DataNode` 默认字段和 call-expression 查找。语言语义差异、特殊 AST 形状、return/callsite/field 规则必须留在各语言 adapter；禁止回到大型 `GenericExtractor`。
 - **trait 默认实现只表达真正相同的规则**：如 `LanguageRuleKinds::validate_rule` 这类跨语言完全一致的校验可以进入 trait default；只要某语言的 rule kind、pattern、metadata 或展示名语义不同，就必须在 registry 中显式覆盖，而不是在默认实现里堆条件分支。
-- **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 或 corpus 局部分析的 tool 响应必须通过 `AnalysisResponse` 等共享 builder 注入 `analysis`（含 `scope`/`summary`/`basis`/`retry_after_ms`）、`coverage_counts`、`gaps`（GapRecord 数组）、`analysis_contract`、`query_id` 和 `QuerySnapshot`；`work` 由 builder 按“是否与本次响应相关”决定是否附带。`precision_tier`、`hint`、`lazy_diagnostics` 、`partial_result`、`background_refinement`、`analysis.state`、`analysis.next_action` 等旧 public 字段已删除（**done: 2026-06-17 v2 响应信封重构**）；需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
+- **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 的 tool 响应必须通过 `AnalysisEnvelope` 等共享 builder 注入 `analysis`（含 `scope`/`summary`/`basis`/`retry_after_ms`）、`coverage_counts`、`gaps`（GapRecord 数组）、`query_id` 和 `QuerySnapshot`。`precision_tier`、`hint`、`lazy_diagnostics`、`partial_result`、`analysis.state`、`analysis.next_action` 等字段不应出现在公共响应中。`background_refinement` 结构体仍存在于代码中以兼容 graph/search 的非终态路径（通过 `with_background_refinement()` 注入），lifecycle/branch_diff 已不再使用，后续待所有工具接入三态终局模型后移除。需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
 - **public facade 改造以目标 API 为准**：快速原型期允许 breaking change。`atlas-engine` re-export 应保持调用者 ergonomics，但不得为了旧调用方式保留 wrapper、别名或过渡 API。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
 - **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
 - **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
@@ -1047,13 +1024,13 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 所有 trace 工具返回 `TraceQueryResponse<T>` envelope：
 - `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, `result`。
 - 详见 [`trace-contract.md`](./trace-contract.md)。
-- 注：`partial_result` 是 trace 工具特有字段（frozen v1 合约），与外层 MCP 响应信封的三态终局模型（`retry_after_ms` + `gaps`）独立。非 trace 工具的 `partial_result` 已删除。
+- 注：`partial_result` 是 trace 工具特有字段（frozen 合约），与外层 MCP 响应信封的三态终局模型（`retry_after_ms` + `gaps`）独立。非 trace 工具的 `partial_result` 已不再使用。
 
 Trace/MCP lazy contract：
 - MCP trace 入口必须优先通过 high-level `Engine`，由 engine 触发必要的 lazy dataflow；raw analysis consumer 不负责触发 lazy。
-- 只要 lazy structural、lazy dataflow 或 focus refinement 被触发，响应就必须通过统一 public analysis view 暴露 `analysis`（含 `retry_after_ms`）、`gaps` 和 `analysis_contract`；只有当后台工作会影响本次 trace 结果时才附带 `work`。即使 trace 没有找到 path，也必须说明当前结果可用性、已知缺口和下一步动作；默认契约不暴露 `lazy_diagnostics`。
-- CFG-consuming tools（如 `branch_diff`、`lifecycle`）如果已经 re-query 到 CFG 并基于 CFG 产出结果，`analysis_contract` 必须反映“本次工具已证明 CFG 可用”；不能同时返回 CFG 分析结果又声明 CFG 不可分析。
-- `analysis_contract.safe_conclusions` 和 `unsafe_conclusions` 必须直接来源于 capability mask 或本次工具已验证的事实，不允许使用推测性默认值。
+- 只要 lazy structural、lazy dataflow 或 focus refinement 被触发，响应就必须通过统一 public analysis view 暴露 `analysis`（含 `retry_after_ms`）和 `gaps`。即使 trace 没有找到 path，也必须说明当前结果可用性、已知缺口和下一步动作；默认契约不暴露 `lazy_diagnostics`。
+- CFG-consuming tools（如 `branch_diff`、`lifecycle`）如果已经 re-query 到 CFG 并基于 CFG 产出结果，`analysis.basis` 必须包含 `cfg` 或 `dataflow`；不能同时返回 CFG 分析结果又不声明已使用该能力。
+- 能力相关结论（safe/unsafe conclusions）通过 `analysis.basis` 使用的数据源和 `gaps[].reason` 缺失原因直接表达，不再使用独立的 `analysis_contract` 结构体。
 
 ### 12.3 Lifecycle、Branch Diff 与 Semantic Impact
 
