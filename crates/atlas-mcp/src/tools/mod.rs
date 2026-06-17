@@ -15,7 +15,6 @@ use atlas_engine::Store;
 use atlas_engine::SymbolId;
 use atlas_engine::SyncEngine;
 use atlas_engine::TraceDiagnostic;
-use atlas_engine::structs::SemanticConfidence;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,7 +25,6 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 
 use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
-use crate::tools::analysis_response::precision_to_view;
 use crate::tools::query_snapshot::QuerySnapshot;
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
@@ -137,73 +135,46 @@ pub(crate) fn apply_focus_result_to_lr(
 ) -> analysis_envelope::AnalysisEnvelope {
     let mut lr = lr;
 
-    if result.mode == atlas_engine::focus::runtime::IndexMode::Focus {
-        // ── Raw data ──
-        if let Some(ref precision) = result.precision {
-            lr = lr.with_precision(precision.clone());
-        }
-        if let Some(ref counts) = result.coverage_counts {
-            lr = lr.with_coverage_counts(counts.clone());
-        }
-        if !result.gaps.is_empty() {
-            lr = lr.with_gaps(result.gaps.clone());
-        }
-        if !result.pending_closure_ids.is_empty() {
-            lr = lr.with_background_refinement(
-                "queued",
-                Some(result.pending_closure_ids.len()),
-                2000,
-                "background focus refinement is continuing for this partial result",
-            );
-        }
+    if result.mode != atlas_engine::focus::runtime::IndexMode::Focus {
+        return lr;
+    }
 
-        // ── Analysis envelope ──
-        if let Some(ref precision) = result.precision {
-            let view = precision_to_view(precision);
-            let state = if precision.confidence == SemanticConfidence::Certain {
-                "ready"
-            } else if precision.confidence == SemanticConfidence::High {
-                "usable_partial"
-            } else {
-                "building"
-            };
-            let next_action = if precision.confidence == SemanticConfidence::Certain {
-                "use_result"
-            } else if !result.pending_closure_ids.is_empty() {
-                "wait_then_resume"
-            } else {
-                "resume_query"
-            };
-            lr = lr.with_analysis_state(state.to_string());
-            lr = lr.with_analysis_scope("local".to_string());
-            lr = lr.with_analysis_summary(format!(
-                "scoped analysis: {} coverage, {} confidence",
-                view.coverage, view.confidence
-            ));
-            lr = lr.with_analysis_next_action(next_action.to_string());
-            lr = lr.with_analysis_basis(vec!["manifest".into(), "structural".into()]);
-            if precision.confidence != SemanticConfidence::Certain {
-                lr = lr.with_analysis_missing(vec!["repo_complete".into()]);
-                lr = lr.with_partial_result(true);
-                if !result.pending_closure_ids.is_empty() {
-                    lr = lr.with_analysis_retry_after_ms(2000);
-                }
-            }
-        } else if let Some(ref counts) = result.coverage_counts {
-            lr = lr.with_analysis_state("building".to_string());
-            lr = lr.with_analysis_scope("local".to_string());
-            let total: usize = counts.values().sum();
-            lr = lr.with_analysis_summary(format!(
-                "partial results: {total} items across {} tiers",
-                counts.len()
-            ));
-            lr = lr.with_analysis_next_action("wait_then_resume".to_string());
-            lr = lr.with_analysis_basis(vec!["manifest".into(), "structural".into()]);
-            lr = lr.with_analysis_missing(vec!["repo_complete".into()]);
-            if !result.pending_closure_ids.is_empty() {
-                lr = lr.with_analysis_retry_after_ms(2000);
-            }
-        }
+    // Always inject coverage distribution from FocusResult
+    if let Some(ref counts) = result.coverage_counts {
+        lr = lr.with_coverage_counts(counts.clone());
+    }
+
+    // Always inject known gaps (for terminal display)
+    if !result.gaps.is_empty() {
+        lr = lr.with_gaps(result.gaps.clone());
+    }
+
+    // Determine terminality: are all background jobs done?
+    let is_terminal = result
+        .job_tracker
+        .as_ref()
+        .map(|tracker| tracker.are_all_done(&result.pending_closure_ids))
+        .unwrap_or(true); // no tracker = assume terminal
+
+    if is_terminal {
+        // Terminal: result is ready to use
+        lr = lr
+            .with_analysis_scope("local".to_string())
+            .with_analysis_summary(
+                "Focus analysis complete: all background jobs have finished.".to_string(),
+            )
+            .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+    } else {
+        // Non-terminal: background jobs are still running
+        let pending = result.pending_closure_ids.len();
+        lr = lr
+            .with_analysis_scope("local".to_string())
+            .with_analysis_summary(format!(
+                "Focus analysis still expanding: {pending} background job(s) remaining.",
+            ))
+            .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+        // Set retry guidance — client should poll resume_query after 8s
+        lr = lr.with_analysis_retry_after_ms(8000);
     }
 
     lr
@@ -549,34 +520,19 @@ impl ToolRouter {
         let file_ids = self.candidate_file_ids_for_symbol(symbol);
         let candidate_files = self.candidate_file_paths(&file_ids);
         let background_jobs = self.enqueue_background_file_focus(&file_ids);
-        let (refinement_state, refinement_description) = if background_jobs.is_empty() {
-            (
-                "pending",
-                "candidate discovery did not find a bounded local file yet; retry after focus bootstrap has warmed more inventory",
-            )
+
+        let message = if background_jobs.is_empty() {
+            "The symbol is not available in the current local focus closure yet. Retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
         } else {
-            (
-                "queued",
-                "background scoped analysis is preparing local symbol facts",
-            )
+            "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
         };
 
         let mut resp = json!({
             "symbol": symbol,
             "status": "building",
-            "partial_result": true,
-            "message": if background_jobs.is_empty() {
-                "The symbol is not available in the current local focus closure yet. Retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
-            } else {
-                "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
-            },
+            "message": message,
             "candidate_files": candidate_files,
-            "background_refinement": {
-                "state": refinement_state,
-                "job_count": background_jobs.len(),
-                "retry_after_ms": 2000,
-                "description": refinement_description
-            }
+            "retry_after_ms": 8000,
         });
         if !suggestions.is_empty() {
             resp["suggestions"] = json!(suggestions);
@@ -587,17 +543,14 @@ impl ToolRouter {
 
         AnalysisEnvelope::new(tool_name, args)
             .with_is_error(false)
-            .with_partial_result(true)
-            .with_analysis_state("building".into())
             .with_analysis_scope("local".into())
             .with_analysis_summary(
                 "bounded unresolved result; background scoped analysis is preparing local symbol facts"
                     .into(),
             )
-            .with_analysis_next_action("wait_then_resume".into())
             .with_analysis_basis(vec!["manifest".into(), "structural".into()])
             .with_analysis_missing(vec!["symbol_resolution".into(), "repo_complete".into()])
-            .with_analysis_retry_after_ms(2000)
+            .with_analysis_retry_after_ms(8000)
             .build(resp, self)
     }
 
@@ -1379,7 +1332,7 @@ fn make_graph_tools() -> Vec<Tool> {
                     "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
                     "source_lines": { "type": "integer", "description": "Max source lines to return when source_mode=excerpt. Default: 40." },
                     "evidence_limit": { "type": "integer", "description": "Max call evidence examples per direction. Default: 5." },
-                    "relation_limit": { "type": "integer", "description": "Max non-call relation examples across all groups. Default: 20." },
+                    "relation_limit": { "type": "integer", "description": "Max non-call relation examples across all groups. Default: 12." },
                     "peer_limit": { "type": "integer", "description": "Max file peer symbols to return. Default: 12." },
                     "include_file_context": { "type": "boolean", "description": "Include imports, exports, and file peers. Default: true." },
                     "include_recommendations": { "type": "boolean", "description": "Include recommended next queries. Default: true." },
@@ -1415,11 +1368,16 @@ fn make_graph_tools() -> Vec<Tool> {
         },
         Tool {
             name: "impact".into(),
-            description: "Compute impact analysis: all symbols reachable from a given symbol (BFS bidirectionally — both downstream and upstream). Use semantic=true to include lifecycle invariants and branch diffs for impacted functions.".into(),
+            description: "Compute impact analysis: all symbols reachable from a given symbol via call graph traversal. Use direction='both' for bidirectional (downstream + upstream), direction='incoming' for callers only. Use semantic=true to include lifecycle invariants and branch diffs for impacted functions.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches are auto-aggregated."),
+                    "direction": {
+                        "type": "string",
+                        "enum": ["outgoing", "incoming", "both"],
+                        "description": "Traversal direction. 'outgoing' (default) follows forward/call edges only (downstream effects). 'incoming' follows reverse/caller edges only. 'both' follows both directions for full impact radius."
+                    },
                     "depth": { "type": "integer", "description": "Max traversal depth (default 3, max 5)" },
                     "semantic": { "type": "boolean", "description": "When true, includes semantic impact analysis (lifecycle invariants, branch diffs) for impacted functions. Default false." },
                 })),
@@ -1970,10 +1928,8 @@ impl ToolRouter {
                 let lr = if let Some(ref result) = focus_result {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
-                    lr.with_analysis_state("ready".into())
-                        .with_analysis_scope("structural".into())
+                    lr.with_analysis_scope("structural".into())
                         .with_analysis_summary(summary)
-                        .with_analysis_next_action("use_result".into())
                 };
                 lr.build(body, self)
             }
@@ -1991,10 +1947,8 @@ impl ToolRouter {
                 let lr = if let Some(ref result) = focus_result {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
-                    lr.with_analysis_state("ready".into())
-                        .with_analysis_scope("structural".into())
+                    lr.with_analysis_scope("structural".into())
                         .with_analysis_summary(summary)
-                        .with_analysis_next_action("use_result".into())
                 };
                 lr.build(body, self)
             }
@@ -2017,10 +1971,8 @@ impl ToolRouter {
                 let lr = if let Some(ref result) = focus_result {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
-                    lr.with_analysis_state("ready".into())
-                        .with_analysis_scope("structural".into())
+                    lr.with_analysis_scope("structural".into())
                         .with_analysis_summary(summary)
-                        .with_analysis_next_action("use_result".into())
                 };
                 lr.build(body, self)
             }
@@ -2348,12 +2300,10 @@ fn add_manifest_analysis(response: String) -> String {
 
 fn manifest_analysis_value() -> Value {
     json!({
-        "state": "ready",
         "scope": "local",
         "basis": ["manifest"],
         "missing": [],
         "summary": "Manifest file dependency facts are available for this file.",
-        "next_action": "use_result",
     })
 }
 
@@ -3123,11 +3073,9 @@ mod tests {
             resp.get("analysis_contract").is_none(),
             "legacy contract field must not be public: {resp_str}"
         );
-        assert_eq!(resp["analysis"]["state"].as_str(), Some("ready"));
         assert_eq!(resp["analysis"]["scope"].as_str(), Some("local"));
         assert_eq!(resp["analysis"]["basis"], serde_json::json!(["manifest"]));
         assert_eq!(resp["analysis"]["missing"], serde_json::json!([]));
-        assert_eq!(resp["analysis"]["next_action"].as_str(), Some("use_result"));
     }
 
     #[test]
@@ -3268,20 +3216,9 @@ mod tests {
         // analysis block must be present (unified envelope)
         let analysis = &resp["analysis"];
         assert!(
-            analysis.get("state").is_some(),
-            "analysis block missing state field: {resp_str}"
+            analysis.get("scope").is_some(),
+            "analysis block missing scope field: {resp_str}"
         );
-        let state = analysis["state"].as_str().unwrap_or_default();
-        assert!(
-            matches!(state, "ready" | "usable_partial" | "building"),
-            "unexpected analysis state: {resp_str}"
-        );
-        if state != "ready" {
-            assert!(matches!(
-                analysis["next_action"].as_str(),
-                Some("wait_then_resume" | "resume_query")
-            ));
-        }
         assert!(
             analysis.get("summary").is_some(),
             "analysis block missing summary field: {resp_str}"
@@ -4516,63 +4453,93 @@ mod tests {
 
     #[test]
     fn test_focus_result_refinement_guidance_lives_in_analysis_not_work() {
+        use atlas_engine::focus::job_tracker::JobTracker;
         use atlas_engine::structs::{CoverageTier, Precision, SemanticConfidence};
+        use std::sync::Arc;
 
-        // 1. Build a FocusResult with pending_closure_ids and Focus mode.
-        let result = atlas_engine::focus::runtime::FocusResult {
-            mode: atlas_engine::focus::runtime::IndexMode::Focus,
-            precision: Some(Precision {
-                coverage: CoverageTier::Partial { gaps: vec![] },
-                confidence: SemanticConfidence::Medium,
-            }),
-            gaps: vec![],
-            pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
-            closure_id: None,
-            seed_symbol_id: None,
-            seed_file_id: None,
-            built_files: vec![],
-            coverage_counts: None,
-        };
+        // ── Helper: build JSON from FocusResult ──
+        fn build_json(result: &atlas_engine::focus::runtime::FocusResult) -> serde_json::Value {
+            let lr = AnalysisEnvelope::new("test_tool", &serde_json::json!({}));
+            let lr = apply_focus_result_to_lr(lr, result);
+            let mock = MockSnapshotStore {
+                snapshots: Mutex::new(Vec::new()),
+            };
+            let (json_str, _is_error) = lr.build(serde_json::json!({"result": "ok"}), &mock);
+            serde_json::from_str(&json_str).unwrap()
+        }
 
-        // 2. Create a AnalysisEnvelope and apply the focus result.
-        let lr = AnalysisEnvelope::new("test_tool", &serde_json::json!({}));
-        let lr = apply_focus_result_to_lr(lr, &result);
+        // ── Case 1: Terminal — job_tracker is None → assume all done ──
+        {
+            let result = atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: Some(Precision {
+                    coverage: CoverageTier::Partial { gaps: vec![] },
+                    confidence: SemanticConfidence::Medium,
+                }),
+                gaps: vec![],
+                pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: None,
+            };
 
-        // 3. Build to JSON via a mock store so we can inspect public guidance.
-        let mock = MockSnapshotStore {
-            snapshots: Mutex::new(Vec::new()),
-        };
-        let (json_str, _is_error) = lr.build(serde_json::json!({"result": "ok"}), &mock);
-        let resp: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+            let resp = build_json(&result);
 
-        // 4. Public response should not expose internal closure work items.
-        assert!(
-            resp.get("work").is_none(),
-            "work must not be public: {resp}"
-        );
+            assert!(
+                resp.get("work").is_none(),
+                "work must not be public: {resp}"
+            );
+            assert_eq!(
+                resp["analysis"]["basis"],
+                serde_json::json!(["manifest", "structural"])
+            );
+            // Terminal case: no retry_after_ms, no partial_result, no missing
+            assert!(resp["analysis"].get("retry_after_ms").is_none(),
+                "terminal should not have retry_after_ms: {resp}");
+            assert!(resp.get("partial_result").is_none(),
+                "terminal should not have partial_result: {resp}");
+        }
 
-        assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
-        assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
-        assert_eq!(
-            resp["analysis"]["basis"],
-            serde_json::json!(["manifest", "structural"])
-        );
-        assert_eq!(
-            resp["analysis"]["missing"],
-            serde_json::json!(["repo_complete"])
-        );
-        assert_eq!(resp["partial_result"].as_bool(), Some(true));
+        // ── Case 2: Non-terminal — tracker says jobs are pending ──
+        {
+            let tracker = JobTracker::new();
+            // cl_test_1 is NOT marked done, so are_all_done returns false
+            tracker.mark_done("cl_test_2");
 
-        // 5. Assert analysis summary doesn't leak "focus" term.
-        let summary = resp["analysis"]["summary"].as_str().unwrap();
-        assert!(
-            !summary.contains("focus analysis"),
-            "summary should not contain 'focus analysis', got: {summary:?}"
-        );
-        assert!(
-            summary.contains("scoped analysis"),
-            "summary should contain 'scoped analysis', got: {summary:?}"
-        );
+            let result = atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: Some(Precision {
+                    coverage: CoverageTier::Partial { gaps: vec![] },
+                    confidence: SemanticConfidence::Medium,
+                }),
+                gaps: vec![],
+                pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: Some(Arc::new(tracker)),
+            };
+
+            let resp = build_json(&result);
+
+            assert!(
+                resp.get("work").is_none(),
+                "work must not be public: {resp}"
+            );
+            assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+            assert_eq!(
+                resp["analysis"]["basis"],
+                serde_json::json!(["manifest", "structural"])
+            );
+            // Non-terminal: no partial_result in the new protocol
+            assert!(resp.get("partial_result").is_none(),
+                "non-terminal should not set partial_result in new protocol: {resp}");
+        }
     }
 
     // ── Contract-based dispatch tests ────────────────────────────────────

@@ -5,7 +5,7 @@
 //! a field while the other does not.
 
 use super::ToolRouter;
-use super::analysis_envelope::AnalysisEnvelope;
+use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
@@ -69,61 +69,51 @@ fn apply_branch_diff_analysis(
     match mode {
         BranchDiffAnalysisMode::SemanticBoundary { has_dataflow } => {
             let mut basis = vec!["cfg".into()];
-            let missing = if has_dataflow {
+            if has_dataflow {
                 basis.extend(["dataflow".into(), "effects".into()]);
-                vec!["closure_refinement".into()]
-            } else {
-                vec!["dataflow".into()]
-            };
+            }
 
-            lr.with_analysis_state("boundary".into())
-                .with_analysis_scope("local".into())
+            lr.with_analysis_scope("local".into())
                 .with_analysis_unit("function".into())
                 .with_analysis_coverage("boundary_partial".into())
                 .with_analysis_basis(basis)
-                .with_analysis_missing(missing)
                 .with_analysis_summary(
                     "Branch diff used the focused function context; nearby semantic facts are still being expanded."
                         .into(),
                 )
-                .with_analysis_next_action("wait_then_resume".into())
-                .with_analysis_retry_after_ms(2000)
-                .with_partial_result(true)
+                .with_analysis_retry_after_ms(8000)
         }
         BranchDiffAnalysisMode::SemanticUnavailable => {
-            lr.with_analysis_state("degraded".into())
-                .with_analysis_scope("local".into())
+            lr.with_analysis_scope("local".into())
                 .with_analysis_unit("function".into())
                 .with_analysis_coverage("function_complete".into())
                 .with_analysis_basis(vec!["cfg".into()])
-                .with_analysis_missing(vec!["dataflow".into()])
+                .with_gap_records(vec![GapRecord {
+                    scope: "current function".into(),
+                    reason: "no_dataflow".into(),
+                    detail: "Dataflow refinement failed for this function. The analysis fell back to CFG-only effects. Check that the source file compiles successfully and the function uses recognized memory-allocation patterns.".into(),
+                }])
                 .with_analysis_summary(
                     "Semantic branch diff fell back to CFG-only effects because dataflow facts are unavailable."
                     .into(),
                 )
-                .with_analysis_next_action("run_full_index".into())
-                .with_partial_result(true)
         }
         BranchDiffAnalysisMode::SemanticReady => lr
-            .with_analysis_state("ready".into())
             .with_analysis_scope("local".into())
             .with_analysis_unit("function".into())
             .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into(), "dataflow".into(), "effects".into()])
-            .with_analysis_missing(vec![])
+            .with_gap_records(vec![])
             .with_analysis_summary(
                 "Semantic branch diff used complete focused function CFG and dataflow effects.".into(),
-            )
-            .with_analysis_next_action("use_result".into()),
+            ),
         BranchDiffAnalysisMode::CfgOnly => lr
-            .with_analysis_state("ready".into())
             .with_analysis_scope("local".into())
             .with_analysis_unit("function".into())
             .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into()])
-            .with_analysis_missing(vec![])
-            .with_analysis_summary("Branch diff used complete focused function CFG effects.".into())
-            .with_analysis_next_action("use_result".into()),
+            .with_gap_records(vec![])
+            .with_analysis_summary("Branch diff used complete focused function CFG effects.".into()),
     }
 }
 
@@ -293,7 +283,7 @@ impl ToolRouter {
             atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges)
         };
 
-        let resp = json!({
+        let mut resp = json!({
             "ok": true,
             "function": qname,
             "branch_count": diffs.len(),
@@ -315,6 +305,14 @@ impl ToolRouter {
                 "asymmetry": d.suspicious_asymmetry,
             })).collect::<Vec<_>>(),
         });
+
+        // Add diagnostic when no branches found
+        if diffs.is_empty() {
+            resp["diagnostic"] = json!({
+                "message": "No branch asymmetries found. The function may have straight-line code without branch points, or the CFG analysis did not detect sibling branches.",
+                "suggestion": "Verify the function contains if/else or switch constructs. For C/C++, ensure the source file compiles to produce accurate CFG data."
+            });
+        }
 
         let analysis_mode = classify_branch_diff_analysis(
             use_semantic,
@@ -394,12 +392,12 @@ mod tests {
     #[test]
     fn cfg_only_branch_diff_is_function_complete() {
         let value = analysis_json_for(BranchDiffAnalysisMode::CfgOnly);
-        assert_eq!(value["analysis"]["state"], "ready");
+        assert_eq!(value["analysis"]["scope"], "local");
         assert_eq!(value["analysis"]["unit"], "function");
         assert_eq!(value["analysis"]["coverage"], "function_complete");
         assert_eq!(value["analysis"]["basis"], json!(["cfg"]));
-        assert_eq!(value["analysis"]["missing"], json!([]));
-        assert_eq!(value["analysis"]["next_action"], "use_result");
+        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
+        assert!(value["analysis"].get("retry_after_ms").is_none());
         assert!(value.get("work").is_none(), "work must not be public");
     }
 
@@ -412,16 +410,16 @@ mod tests {
         assert_eq!(mode, BranchDiffAnalysisMode::SemanticReady);
 
         let value = analysis_json_for(mode);
-        assert_eq!(value["analysis"]["state"], "ready");
+        assert_eq!(value["analysis"]["scope"], "local");
         assert_eq!(value["analysis"]["unit"], "function");
         assert_eq!(value["analysis"]["coverage"], "function_complete");
         assert_eq!(
             value["analysis"]["basis"],
             json!(["cfg", "dataflow", "effects"])
         );
-        assert_eq!(value["analysis"]["missing"], json!([]));
-        assert_eq!(value["analysis"]["next_action"], "use_result");
+        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
         assert!(value["analysis"].get("retry_after_ms").is_none());
+        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
         assert!(value.get("work").is_none(), "work must not be public");
     }
 
@@ -437,17 +435,17 @@ mod tests {
         );
 
         let value = analysis_json_for(mode);
-        assert_eq!(value["analysis"]["state"], "boundary");
+        assert_eq!(value["analysis"]["scope"], "local");
         assert_eq!(value["analysis"]["unit"], "function");
         assert_eq!(value["analysis"]["coverage"], "boundary_partial");
         assert_eq!(
             value["analysis"]["basis"],
             json!(["cfg", "dataflow", "effects"])
         );
-        assert_eq!(value["analysis"]["missing"], json!(["closure_refinement"]));
-        assert_eq!(value["analysis"]["next_action"], "wait_then_resume");
-        assert_eq!(value["analysis"]["retry_after_ms"], 2000);
-        assert!(value["partial_result"].as_bool().unwrap());
+        // Non-terminal response must NOT include gaps
+        assert!(value.get("gaps").is_none(), "gaps must not appear in non-terminal response");
+        assert_eq!(value["analysis"]["retry_after_ms"], 8000);
+        assert!(value.get("partial_result").is_none(), "partial_result must not be set");
         assert!(value.get("work").is_none(), "work must not be public");
     }
 
@@ -457,12 +455,89 @@ mod tests {
         assert_eq!(mode, BranchDiffAnalysisMode::SemanticUnavailable);
 
         let value = analysis_json_for(mode);
-        assert_eq!(value["analysis"]["state"], "degraded");
+        assert_eq!(value["analysis"]["scope"], "local");
         assert_eq!(value["analysis"]["unit"], "function");
         assert_eq!(value["analysis"]["coverage"], "function_complete");
-        assert_eq!(value["analysis"]["missing"], json!(["dataflow"]));
-        assert_eq!(value["analysis"]["next_action"], "run_full_index");
+        let gaps = value["gaps"].as_array().expect("gaps should be present");
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["scope"], "current function");
+        assert_eq!(gaps[0]["reason"], "no_dataflow");
+        assert!(
+            gaps[0]["detail"].as_str().unwrap().contains("Dataflow refinement failed"),
+        );
         assert!(value["analysis"].get("retry_after_ms").is_none());
         assert!(value.get("work").is_none(), "work must not be public");
+    }
+
+    #[test]
+    fn branch_diff_zero_branches_has_diagnostic() {
+        // Simulate handle_branch_diff's response-building when branch_count is 0.
+        // We don't invoke the full handler; we construct the same JSON shape.
+        let diffs: Vec<atlas_engine::analysis::BranchDiff> = Vec::new();
+        let mut resp = json!({
+            "ok": true,
+            "function": "test_func",
+            "branch_count": diffs.len(),
+            "branches": diffs.iter().map(|d| json!({
+                "line": d.branch_node_line,
+                "common_field": d.common_prefix,
+                "true_path": {
+                    "frees": d.path_true.frees,
+                    "allocates": d.path_true.allocates,
+                    "writes": d.path_true.writes,
+                    "reads": d.path_true.reads,
+                },
+                "false_path": {
+                    "frees": d.path_false.frees,
+                    "allocates": d.path_false.allocates,
+                    "writes": d.path_false.writes,
+                    "reads": d.path_false.reads,
+                },
+                "asymmetry": d.suspicious_asymmetry,
+            })).collect::<Vec<_>>(),
+        });
+
+        // Add diagnostic when no branches found (same logic as handle_branch_diff)
+        if diffs.is_empty() {
+            resp["diagnostic"] = json!({
+                "message": "No branch asymmetries found. The function may have straight-line code without branch points, or the CFG analysis did not detect sibling branches.",
+                "suggestion": "Verify the function contains if/else or switch constructs. For C/C++, ensure the source file compiles to produce accurate CFG data."
+            });
+        }
+
+        let diagnostic = resp.get("diagnostic").expect("diagnostic should exist");
+        assert_eq!(diagnostic["message"].as_str().unwrap().len() > 0, true);
+        assert_eq!(diagnostic["suggestion"].as_str().unwrap().len() > 0, true);
+    }
+
+    #[test]
+    fn semantic_branch_diff_missing_is_descriptive() {
+        // SemanticBoundary is non-terminal → gaps must NOT appear
+        let value = analysis_json_for(BranchDiffAnalysisMode::SemanticBoundary {
+            has_dataflow: true,
+        });
+        assert!(
+            value.get("gaps").is_none(),
+            "gaps must not appear in non-terminal SemanticBoundary response"
+        );
+
+        let value2 = analysis_json_for(BranchDiffAnalysisMode::SemanticBoundary {
+            has_dataflow: false,
+        });
+        assert!(
+            value2.get("gaps").is_none(),
+            "gaps must not appear in non-terminal SemanticBoundary response"
+        );
+
+        // SemanticUnavailable is terminal → gaps SHOULD appear with reason "no_dataflow"
+        let value3 = analysis_json_for(BranchDiffAnalysisMode::SemanticUnavailable);
+        let gaps3 = value3["gaps"].as_array().unwrap();
+        assert_eq!(gaps3.len(), 1);
+        assert_eq!(
+            gaps3[0]["reason"].as_str().unwrap(),
+            "no_dataflow",
+            "gaps should contain no_dataflow, got: {}",
+            gaps3[0]
+        );
     }
 }

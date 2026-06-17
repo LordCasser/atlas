@@ -208,8 +208,8 @@ fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
         resp.get("total_callees").is_some() || resp.get("callees").is_some(),
         "cold calls query should return a bounded graph response: {resp:.500}",
     );
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert_eq!(resp["analysis"]["scope"], "local");
+    assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -270,7 +270,6 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
         resp.get("subject").is_none(),
         "explore must not return a dossier for a symbol outside the requested scope: {resp:.500}"
     );
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
     assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -317,7 +316,6 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
         "unscoped cold explore with candidate files should enqueue background focus: {resp:.500}",
     );
     assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -372,42 +370,30 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
                     .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
                 "{tool} should expose bounded candidate files while unresolved: {resp:.500}",
             );
-            assert!(
-                resp["background_refinement"]["job_count"]
-                    .as_u64()
-                    .is_some_and(|count| count > 0),
-                "{tool} should enqueue background focus for candidate files: {resp:.500}",
+            // Phase 1.5: retryable_symbol_not_found_response no longer
+            // emits background_refinement; the retry contract is in the
+            // flat retry_after_ms field and the analysis block.
+            assert_eq!(
+                resp["retry_after_ms"], 8000,
+                "{tool} should expose flat retry_after_ms while building: {resp:.500}",
             );
-            assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
         } else {
-            assert_eq!(
-                resp["partial_result"].as_bool(),
-                Some(true),
-                "{tool} should mark local materialized result as partial: {resp:.500}"
+            // Phase 1.4: apply_focus_result_to_lr no longer sets partial_result.
+            // The retry guidance is expressed via retry_after_ms presence in the analysis block.
+            assert!(
+                resp["analysis"]["scope"].as_str().is_some(),
+                "{tool} should have analysis scope for local materialized result: {resp:.500}",
             );
             assert!(
-                resp.get("background_refinement").is_some(),
-                "{tool} should still expose background refinement for local partial result: {resp:.500}",
+                resp["analysis"]["retry_after_ms"].as_u64().is_some_and(|ms| ms > 0),
+                "{tool} should carry retry_after_ms in the analysis block: {resp:.500}",
             );
-            assert_eq!(
-                resp["background_refinement"]["state"], "queued",
-                "{tool} local partial result should expose real queued focus work: {resp:.500}",
-            );
-            assert!(
-                resp["background_refinement"]["job_count"]
-                    .as_u64()
-                    .is_some_and(|count| count > 0),
-                "{tool} local partial result should include pending closure count: {resp:.500}",
-            );
-            assert!(
-                matches!(
-                    resp["analysis"]["next_action"].as_str(),
-                    Some("use_result" | "wait_then_resume")
-                ),
-                "{tool} should give a usable next_action for local partial result: {resp:.500}",
-            );
+            // background_refinement may be present via the build() fallback
+            // when partial_result + retry_after_ms are both set, but we do not
+            // assert a specific state because the new protocol puts guidance
+            // into the analysis block.
         }
-        assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+        assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -450,23 +436,15 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
             "{tool} should return a retryable partial response for cold symbols: {resp:.500}"
         );
         assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
+        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
         assert_eq!(
-            resp["analysis"]["next_action"], "wait_then_resume",
+            resp["analysis"]["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
+        // Phase 1.5: background_refinement removed — the flat retry_after_ms
+        // field carries the retry contract instead.
         assert_eq!(
-            resp["analysis"]["retry_after_ms"], 2000,
-            "{tool}: {resp:.500}"
-        );
-        assert_eq!(
-            resp["background_refinement"]["retry_after_ms"], 2000,
-            "{tool}: {resp:.500}"
-        );
-        assert!(
-            matches!(
-                resp["background_refinement"]["state"].as_str(),
-                Some("queued" | "pending")
-            ),
+            resp["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
     }
@@ -493,11 +471,11 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
     for (tool, args) in [
         (
             "calls",
-            json!({"symbol": "missing_calls_target", "direction": "incoming"}),
+            json!({"symbol": "missing_calls_target", "direction": "both"}),
         ),
         (
-            "calls",
-            json!({"symbol": "missing_callees_target", "direction": "outgoing"}),
+            "trace",
+            json!({"kind": "callers", "symbol": "missing_trace_target"}),
         ),
         (
             "path",
@@ -511,23 +489,15 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
             "{tool} should return a retryable partial response for missing symbols: {resp:.500}"
         );
         assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
+        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
         assert_eq!(
-            resp["analysis"]["next_action"], "wait_then_resume",
+            resp["analysis"]["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
+        // Phase 1.5: background_refinement removed — the flat retry_after_ms
+        // field carries the retry contract instead.
         assert_eq!(
-            resp["analysis"]["retry_after_ms"], 2000,
-            "{tool}: {resp:.500}"
-        );
-        assert_eq!(
-            resp["background_refinement"]["retry_after_ms"], 2000,
-            "{tool}: {resp:.500}"
-        );
-        assert!(
-            matches!(
-                resp["background_refinement"]["state"].as_str(),
-                Some("queued" | "pending")
-            ),
+            resp["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
     }
@@ -553,8 +523,9 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
         &json!({"symbol": "NonExistentFunction_XYZ_999", "field": "ptr"}),
     );
     assert_eq!(resp["status"], "building", "lifecycle: {resp:.300}");
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
-    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
+    // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms flat & analysis.
+    assert_eq!(resp["retry_after_ms"], 8000);
+    assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
 
     // ── branch_diff with non-existent symbol ─────────────────────────
     let (resp2, _err2) = call_tool(
@@ -563,8 +534,8 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
         &json!({"symbol": "NonExistentFunction_XYZ_999"}),
     );
     assert_eq!(resp2["status"], "building", "branch_diff: {resp2:.300}");
-    assert_eq!(resp2["analysis"]["next_action"], "wait_then_resume");
-    assert_eq!(resp2["background_refinement"]["retry_after_ms"], 2000);
+    assert_eq!(resp2["retry_after_ms"], 8000);
+    assert_eq!(resp2["analysis"]["retry_after_ms"], 8000);
 }
 
 // =========================================================================
@@ -833,7 +804,6 @@ fn handler_search_partial_hit_without_deferred_ids_still_queues_background_refin
         resp["precision"]["coverage"], "repo_complete",
         "partial search must not advertise repo-complete precision: {resp:.300}"
     );
-    assert_eq!(resp["analysis"]["next_action"], "use_result");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -868,7 +838,6 @@ fn handler_search_partial_no_hit_tells_client_to_retry() {
         "partial cold no-hit search should return retryable partial response: {resp:.300}"
     );
     assert_eq!(resp["coverage"]["state"], "partial");
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
     assert_eq!(
         resp["background_refinement"]["retry_after_ms"].as_u64(),
@@ -1038,19 +1007,16 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
         let resp: Value = serde_json::from_str(text).expect("graph tool should return JSON");
         assert_eq!(result.is_error, Some(false), "{tool}: {text}");
         assert_eq!(resp["status"], "building", "{tool}: {text}");
-        assert_eq!(
-            resp["analysis"]["next_action"], "wait_then_resume",
-            "{tool}: {text}"
-        );
-        assert_eq!(resp["analysis"]["retry_after_ms"], 2000, "{tool}: {text}");
+        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
+        assert_eq!(resp["analysis"]["retry_after_ms"], 8000, "{tool}: {text}");
     }
 
+    // explore uses its own inline not-found handler (unchanged in Phase 1.5).
     let result = router.call_tool(&ctx, "explore", &json!({"symbol": "nonexistent"}));
     let text = extract_text(&result);
     let resp: Value = serde_json::from_str(text).expect("explore should return JSON");
     assert_eq!(result.is_error, Some(false));
     assert_eq!(resp["status"], "building");
-    assert_eq!(resp["analysis"]["next_action"], "wait_then_resume");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 }
 

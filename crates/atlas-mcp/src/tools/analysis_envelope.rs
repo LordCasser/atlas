@@ -13,6 +13,7 @@ use atlas_engine::structs::KnownGap;
 use atlas_engine::structs::Precision;
 #[cfg(test)]
 use atlas_engine::structs::SemanticConfidence;
+use serde::Serialize;
 use serde_json::json;
 
 use super::analysis_response::precision_to_view;
@@ -73,14 +74,10 @@ pub(crate) struct AnalysisEnvelope {
     coverage_counts: Option<HashMap<String, usize>>,
     /// Known gaps in analysis completeness.
     known_gaps: Option<Vec<KnownGap>>,
-    /// Explicitly set analysis state (from focus path).
-    analysis_state: Option<String>,
     /// Explicitly set analysis scope (from focus path).
     analysis_scope: Option<String>,
     /// Explicitly set analysis summary (from focus path).
     analysis_summary: Option<String>,
-    /// Explicitly set analysis next action (from focus path).
-    analysis_next_action: Option<String>,
     /// Local analysis unit this response covers, e.g. "function".
     analysis_unit: Option<String>,
     /// Public coverage label for the analysis unit.
@@ -91,6 +88,8 @@ pub(crate) struct AnalysisEnvelope {
     analysis_missing: Option<Vec<String>>,
     /// Suggested delay before retrying/resuming this query.
     analysis_retry_after_ms: Option<u64>,
+    /// Structured gap records for the response envelope (MCP v2 format).
+    gap_records: Option<Vec<GapRecord>>,
     /// Explicit background refinement status for partial focus responses.
     background_refinement: Option<BackgroundRefinement>,
     /// Project-level index statistics for non-focus full-index responses.
@@ -105,6 +104,18 @@ struct BackgroundRefinement {
     job_count: Option<usize>,
     retry_after_ms: u64,
     description: String,
+}
+
+/// A known gap in the current analysis — what is missing and why.
+/// Serialized as `{"gaps": [...]}` in the MCP response.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct GapRecord {
+    /// Scope of the gap — function qualified name or file path.
+    pub scope: String,
+    /// Machine-readable reason code (no_dataflow, no_cfg, no_transitions, etc.).
+    pub reason: String,
+    /// Human-readable detail describing what the agent should know.
+    pub detail: String,
 }
 
 impl AnalysisEnvelope {
@@ -125,15 +136,14 @@ impl AnalysisEnvelope {
             precision: None,
             coverage_counts: None,
             known_gaps: None,
-            analysis_state: None,
             analysis_scope: None,
             analysis_summary: None,
-            analysis_next_action: None,
             analysis_unit: None,
             analysis_coverage: None,
             analysis_basis: None,
             analysis_missing: None,
             analysis_retry_after_ms: None,
+            gap_records: None,
             background_refinement: None,
             capability_stats: None,
             project_stats: None,
@@ -189,12 +199,6 @@ impl AnalysisEnvelope {
         self
     }
 
-    /// Set analysis state (from focus path).
-    pub fn with_analysis_state(mut self, state: String) -> Self {
-        self.analysis_state = Some(state);
-        self
-    }
-
     /// Set analysis scope (from focus path).
     pub fn with_analysis_scope(mut self, scope: String) -> Self {
         self.analysis_scope = Some(scope);
@@ -204,12 +208,6 @@ impl AnalysisEnvelope {
     /// Set analysis summary (from focus path).
     pub fn with_analysis_summary(mut self, summary: String) -> Self {
         self.analysis_summary = Some(summary);
-        self
-    }
-
-    /// Set analysis next action (from focus path).
-    pub fn with_analysis_next_action(mut self, action: String) -> Self {
-        self.analysis_next_action = Some(action);
         self
     }
 
@@ -240,6 +238,13 @@ impl AnalysisEnvelope {
     /// Set a suggested delay before retrying/resuming this query.
     pub fn with_analysis_retry_after_ms(mut self, retry_after_ms: u64) -> Self {
         self.analysis_retry_after_ms = Some(retry_after_ms);
+        self
+    }
+
+    /// Set structured gap records (MCP v2 format).
+    /// Replaces `with_analysis_missing` for tools that provide structured gaps.
+    pub fn with_gap_records(mut self, gaps: Vec<GapRecord>) -> Self {
+        self.gap_records = Some(gaps);
         self
     }
 
@@ -314,19 +319,15 @@ impl AnalysisEnvelope {
         body["query_id"] = json!(self.query_id);
 
         // 3. Analysis block — always present.
-        //    When focus analysis state is set, use focus fields.
+        //    When focus analysis scope/summary is set, use focus fields.
         //    Otherwise compute from project stats / capability stats.
-        if self.analysis_state.is_some() {
-            let analysis_state = self.analysis_state.clone().unwrap_or_default();
+        if self.analysis_scope.is_some() || self.analysis_summary.is_some() {
             let analysis_scope = self.analysis_scope.clone().unwrap_or_default();
             let analysis_summary = self.analysis_summary.clone().unwrap_or_default();
-            let analysis_next_action = self.analysis_next_action.clone().unwrap_or_default();
 
             let mut analysis = json!({
-                "state": analysis_state,
                 "scope": analysis_scope,
                 "summary": analysis_summary,
-                "next_action": analysis_next_action,
             });
             if let Some(ref basis) = self.analysis_basis {
                 analysis["basis"] = serde_json::to_value(basis).unwrap_or(json!([]));
@@ -367,10 +368,8 @@ impl AnalysisEnvelope {
                 );
 
                 body["analysis"] = json!({
-                    "state": "ready",
                     "scope": "repo",
                     "summary": summary,
-                    "next_action": "use_result",
                 });
             }
         }
@@ -410,6 +409,13 @@ impl AnalysisEnvelope {
         // 7. Inject known gaps
         if let Some(ref gaps) = self.known_gaps {
             body["gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
+        }
+
+        // 7b. Inject structured gap records (MCP v2 format)
+        if let Some(ref records) = self.gap_records {
+            if !records.is_empty() {
+                body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
+            }
         }
 
         // 8. Store snapshot
@@ -605,14 +611,14 @@ mod tests {
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
             .with_is_error(false)
-            .with_analysis_state("building".into());
+            .with_analysis_scope("local".into());
 
         let body = json!({"ok": true, "data": "test_result"});
         let (json_str, is_err) = lr.build(body, &store);
         assert!(!is_err);
-        // Analysis block should be emitted when analysis_state is explicitly set
+        // Analysis block should be emitted when analysis_scope is explicitly set
         assert!(json_str.contains("\"analysis\""));
-        assert!(json_str.contains("\"state\""));
+        assert!(json_str.contains("\"scope\""));
     }
 
     #[test]
@@ -620,8 +626,8 @@ mod tests {
         let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
-            .with_analysis_state("building".into())
-            .with_analysis_next_action("wait_then_resume".into())
+            .with_analysis_scope("local".into())
+            .with_analysis_summary("building analysis".into())
             .with_analysis_retry_after_ms(2000);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &store);
@@ -634,8 +640,8 @@ mod tests {
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("calls", &args)
             .with_partial_result(true)
-            .with_analysis_state("building".into())
-            .with_analysis_next_action("wait_then_resume".into())
+            .with_analysis_scope("local".into())
+            .with_analysis_summary("building analysis".into())
             .with_analysis_retry_after_ms(2000)
             .with_background_refinement(
                 "queued",
@@ -657,10 +663,8 @@ mod tests {
         let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
-            .with_analysis_state("ready".into())
             .with_analysis_scope("local".into())
             .with_analysis_summary("custom summary".into())
-            .with_analysis_next_action("use_result".into())
             .with_analysis_unit("function".into())
             .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into()])
@@ -670,7 +674,7 @@ mod tests {
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(v["analysis"]["state"], "ready");
+        assert_eq!(v["analysis"]["scope"], "local");
         assert_eq!(v["analysis"]["summary"], "custom summary");
         assert_eq!(v["analysis"]["unit"], "function");
         assert_eq!(v["analysis"]["coverage"], "function_complete");
@@ -678,6 +682,9 @@ mod tests {
         assert_eq!(v["analysis"]["missing"], json!(["dataflow"]));
         assert_eq!(v["analysis"]["retry_after_ms"], 2000);
         assert!(v.get("work").is_none());
+        // state and next_action must not be present
+        assert!(v["analysis"].get("state").is_none(), "state field must be absent");
+        assert!(v["analysis"].get("next_action").is_none(), "next_action field must be absent");
     }
 
     #[test]
@@ -727,6 +734,59 @@ mod tests {
         assert!(
             json_str.contains("coverage_counts"),
             "should contain coverage_counts even when empty"
+        );
+    }
+
+    #[test]
+    fn test_gap_records_serialize_as_structured_gaps() {
+        let args = json!({"symbol": "test_fn"});
+        let gap = GapRecord {
+            scope: "function foo".into(),
+            reason: "no_dataflow".into(),
+            detail: "Dataflow not available".into(),
+        };
+
+        let lr = AnalysisEnvelope::new("test_tool", &args)
+            .with_gap_records(vec![gap])
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            json_str.contains("\"gaps\""),
+            "should contain gaps key"
+        );
+        // Parse and verify structure
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let gaps = v["gaps"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0]["scope"], "function foo");
+        assert_eq!(gaps[0]["reason"], "no_dataflow");
+        assert_eq!(gaps[0]["detail"], "Dataflow not available");
+        // Must NOT contain background_refinement
+        assert!(
+            !json_str.contains("background_refinement"),
+            "should not contain background_refinement"
+        );
+    }
+
+    #[test]
+    fn test_empty_gap_records_do_not_appear() {
+        let args = json!({"symbol": "test_fn"});
+
+        let lr = AnalysisEnvelope::new("test_tool", &args)
+            .with_gap_records(vec![])
+            .with_is_error(false);
+
+        let body = json!({"result": "ok"});
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
+
+        assert!(!is_err);
+        assert!(
+            !json_str.contains("\"gaps\""),
+            "empty gaps should not appear in response"
         );
     }
 }

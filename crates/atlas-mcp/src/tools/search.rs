@@ -291,7 +291,6 @@ impl ToolRouter {
             let background_queued = !background_jobs.is_empty();
             lr = lr
                 .with_partial_result(true)
-                .with_analysis_state("usable_partial".into())
                 .with_analysis_scope("local".into())
                 .with_analysis_summary(if search_has_hits {
                     if background_queued {
@@ -307,11 +306,6 @@ impl ToolRouter {
                     "scoped search returned no matches in the bounded foreground pass; retry after background focus warming"
                         .into()
                 })
-                .with_analysis_next_action(if !search_has_hits {
-                    "wait_then_resume".into()
-                } else {
-                    "use_result".into()
-                })
                 .with_analysis_basis(vec!["manifest".into(), "structural".into()])
                 .with_analysis_missing(vec!["repo_complete".into()]);
             lr = lr.with_analysis_retry_after_ms(2000);
@@ -319,10 +313,8 @@ impl ToolRouter {
         if !search_is_partial {
             lr = lr
                 .with_partial_result(false)
-                .with_analysis_state("ready".into())
                 .with_analysis_scope("local".into())
-                .with_analysis_summary("scoped search coverage is complete".into())
-                .with_analysis_next_action("use_result".into());
+                .with_analysis_summary("scoped search coverage is complete".into());
         }
         lr.build(response, self)
     }

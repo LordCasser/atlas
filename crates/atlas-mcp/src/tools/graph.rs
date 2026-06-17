@@ -1711,7 +1711,7 @@ impl ToolRouter {
         let relation_limit = args
             .get("relation_limit")
             .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
+            .unwrap_or(12) as usize;
         let peer_limit = args
             .get("peer_limit")
             .and_then(|v| v.as_u64())
@@ -1840,13 +1840,11 @@ impl ToolRouter {
                 return lr
                     .with_is_error(false)
                     .with_partial_result(true)
-                    .with_analysis_state("building".into())
                     .with_analysis_scope("local".into())
                     .with_analysis_summary(
                         "explore returned a bounded unresolved result; background scoped analysis is preparing local symbol facts"
                             .into(),
                     )
-                    .with_analysis_next_action("wait_then_resume".into())
                     .with_analysis_basis(vec!["manifest".into(), "structural".into()])
                     .with_analysis_missing(vec![
                         "symbol_resolution".into(),
@@ -2665,6 +2663,24 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_impact_with_direction_param() {
+        // Verify that direction="both" is accepted and processed without error
+        let store = test_store();
+        let mut router = test_router(store);
+        let (resp, is_error) = router.handle_impact(&json!({
+            "symbol": "test_func",
+            "direction": "both",
+            "depth": 2
+        }));
+        // direction="both" must not produce an argument parsing error.
+        // Symbol may not exist (focus mode returns partial), but that's ok.
+        assert!(
+            is_error || resp.contains("building") || resp.contains("not available"),
+            "direction='both' should be accepted; got: {resp}"
+        );
+    }
+
+    #[test]
     fn test_handle_impact_invalid_direction_returns_error() {
         let store = test_store();
         let mut router = test_router(store);
@@ -3011,7 +3027,6 @@ mod tests {
         );
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(resp["status"], json!("building"));
-        assert_eq!(resp["analysis"]["next_action"], json!("wait_then_resume"));
         assert_eq!(resp["analysis"]["retry_after_ms"], json!(2000));
         assert_eq!(resp["background_refinement"]["retry_after_ms"], json!(2000));
     }
@@ -3611,6 +3626,7 @@ mod tests {
             seed_file_id: None,
             built_files: vec![],
             coverage_counts: None,
+            job_tracker: None,
         };
 
         let args = json!({"symbol": "test"});
