@@ -48,7 +48,7 @@ pub(crate) struct ProjectStats {
 /// This decouples [`AnalysisEnvelope`] from the concrete router type so the
 /// builder can store snapshots without knowing the handler's full context.
 pub(crate) trait SnapshotStore {
-    fn store_query_snapshot(&mut self, snapshot: QuerySnapshot);
+    fn store_query_snapshot(&self, snapshot: QuerySnapshot);
 }
 
 // ── AnalysisEnvelope builder ──────────────────────────────────────────────
@@ -283,7 +283,7 @@ impl AnalysisEnvelope {
     /// - `query_id`
     /// - `analysis` block
     /// - `precision`, `coverage_counts`, `gaps` (when set)
-    pub fn build(self, body: serde_json::Value, store: &mut impl SnapshotStore) -> (String, bool) {
+    pub fn build(self, body: serde_json::Value, store: &impl SnapshotStore) -> (String, bool) {
         let args = self.tool_args.clone();
         self.build_with_args(body, &args, store)
     }
@@ -296,7 +296,7 @@ impl AnalysisEnvelope {
         self,
         mut body: serde_json::Value,
         stored_args: &serde_json::Value,
-        store: &mut impl SnapshotStore,
+        store: &impl SnapshotStore,
     ) -> (String, bool) {
         // 1. Merge warnings into JSON "warnings" array (only when non-empty)
         let mut all_warnings = self.root_warnings;
@@ -450,22 +450,23 @@ mod tests {
     // ── Shared test infrastructure ─────────────────────────────────────
 
     use crate::tools::query_snapshot::QuerySnapshot;
+    use std::sync::Mutex;
 
     struct MockStore {
-        snapshots: Vec<QuerySnapshot>,
+        snapshots: Mutex<Vec<QuerySnapshot>>,
     }
 
     impl MockStore {
         fn new() -> Self {
             Self {
-                snapshots: Vec::new(),
+                snapshots: Mutex::new(Vec::new()),
             }
         }
     }
 
     impl super::SnapshotStore for MockStore {
-        fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
-            self.snapshots.push(snapshot);
+        fn store_query_snapshot(&self, snapshot: QuerySnapshot) {
+            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
         }
     }
 
@@ -479,16 +480,17 @@ mod tests {
         assert!(!qid.is_empty(), "query_id should be generated");
 
         let body = json!({"result": "ok"});
-        let mut store = MockStore { snapshots: vec![] };
-        let (json_str, is_err) = lr.with_is_error(false).build(body, &mut store);
+        let store = MockStore::new();
+        let (json_str, is_err) = lr.with_is_error(false).build(body, &store);
 
         assert!(!is_err);
         assert!(
             json_str.contains("query_id"),
             "response must contain query_id"
         );
-        assert!(!store.snapshots.is_empty(), "snapshot must be stored");
-        assert_eq!(store.snapshots[0].query_id, qid);
+        let snapshots = store.snapshots.lock().unwrap();
+        assert!(!snapshots.is_empty(), "snapshot must be stored");
+        assert_eq!(snapshots[0].query_id, qid);
     }
 
     // ── Focus envelope tests ───────────────────────────────────────────
@@ -506,7 +508,7 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
         assert!(
@@ -545,7 +547,7 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
         assert!(
@@ -571,7 +573,7 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
         assert!(json_str.contains("\"gaps\""), "should contain gaps field");
@@ -583,12 +585,12 @@ mod tests {
 
     #[test]
     fn test_lazy_response_no_analysis_block_without_explicit_data() {
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args).with_is_error(false);
 
         let body = json!({"ok": true, "data": "test_result"});
-        let (json_str, is_err) = lr.build(body, &mut store);
+        let (json_str, is_err) = lr.build(body, &store);
         assert!(!is_err);
         // Analysis block should NOT be emitted when no analysis fields are explicitly set
         assert!(!json_str.contains("\"analysis\""));
@@ -596,14 +598,14 @@ mod tests {
 
     #[test]
     fn test_lazy_response_explicit_analysis_data_emits_block() {
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
             .with_is_error(false)
             .with_analysis_state("building".into());
 
         let body = json!({"ok": true, "data": "test_result"});
-        let (json_str, is_err) = lr.build(body, &mut store);
+        let (json_str, is_err) = lr.build(body, &store);
         assert!(!is_err);
         // Analysis block should be emitted when analysis_state is explicitly set
         assert!(json_str.contains("\"analysis\""));
@@ -612,20 +614,20 @@ mod tests {
 
     #[test]
     fn test_lazy_response_never_emits_work_block() {
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
             .with_analysis_state("building".into())
             .with_analysis_next_action("wait_then_resume".into())
             .with_analysis_retry_after_ms(2000);
         let body = json!({"ok": true});
-        let (json_str, _) = lr.build(body, &mut store);
+        let (json_str, _) = lr.build(body, &store);
         assert!(!json_str.contains("\"work\""));
     }
 
     #[test]
     fn test_partial_response_emits_explicit_background_refinement() {
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("calls", &args)
             .with_partial_result(true)
@@ -640,7 +642,7 @@ mod tests {
             )
             .with_is_error(false);
         let body = json!({"ok": true});
-        let (json_str, _) = lr.build(body, &mut store);
+        let (json_str, _) = lr.build(body, &store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(v["background_refinement"]["state"], "queued");
         assert_eq!(v["background_refinement"]["job_count"], 3);
@@ -649,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_lazy_response_explicit_analysis_fields() {
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("explore", &args)
             .with_analysis_state("ready".into())
@@ -663,7 +665,7 @@ mod tests {
             .with_analysis_retry_after_ms(2000)
             .with_is_error(false);
         let body = json!({"ok": true});
-        let (json_str, _) = lr.build(body, &mut store);
+        let (json_str, _) = lr.build(body, &store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(v["analysis"]["state"], "ready");
         assert_eq!(v["analysis"]["summary"], "custom summary");
@@ -694,7 +696,7 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
         assert!(json_str.contains("precision"), "should contain precision");
@@ -716,7 +718,7 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &mut MockStore::new());
+        let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
         assert!(

@@ -5,7 +5,7 @@
 //! - `cached_signature`: current index signature for change detection
 //! - `last_signature_check`: timestamp of last signature comparison
 
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 use atlas_engine::Store;
@@ -14,9 +14,9 @@ use atlas_engine::is_rich_index_mode;
 /// Index-signature and manual-full-index detection cache.
 pub(crate) struct CacheState {
     /// Cached index signature to avoid per-request COUNT queries.
-    pub(crate) cached_signature: String,
+    pub(crate) cached_signature: Mutex<String>,
     /// When the cached signature was last checked (avoids re-query within cooldown).
-    pub(crate) last_signature_check: Instant,
+    pub(crate) last_signature_check: Mutex<Instant>,
     /// Cached result of `has_manual_full_index()` keyed by index signature.
     /// `None` means not yet checked; signature changes force re-check.
     pub(crate) cached_manual_full_index: RwLock<Option<(String, bool)>>,

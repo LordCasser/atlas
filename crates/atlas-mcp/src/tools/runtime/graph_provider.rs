@@ -1,28 +1,23 @@
 //! Graph provider trait — the contract between GraphRuntime and its graph backend.
-//!
-//! # Implementors
-//! - `GraphState` (production): full in-memory graph from SQLite DB
-//! - (future) `ClosureGraphProvider`: closure-scoped graph from focus extraction
-//!
-//! # Why a trait?
-//! The trait separates the graph *query* interface from the graph *lifecycle*
-//! management. GraphRuntime handles lifecycle (init, refresh, mode detection);
-//! GraphProvider handles queries (search, context, counts). When closure-scoped
-//! graphs are implemented, switching backends is a one-line change in GraphRuntime.
 
-use atlas_engine::{ContextBuilder, SearchEngine};
+use std::sync::Arc;
+
+use atlas_engine::{ContextView, GraphEngine, SymbolId};
 
 /// Minimal abstraction over graph backends.
-#[allow(dead_code)]
 pub(crate) trait GraphProvider {
     /// Whether the graph has been built.
     fn is_initialized(&self) -> bool;
 
-    /// Traversal engine (BFS, shortest-path, impact radius).
-    fn search_engine(&self) -> Option<&SearchEngine>;
+    /// Return the full graph snapshot (Arc<GraphEngine>).
+    fn graph_snapshot(&self) -> Option<Arc<GraphEngine>>;
 
-    /// Context builder (callers, callees, source snippets).
-    fn context_builder(&self) -> Option<&ContextBuilder>;
+    /// Build a context view for the given symbol.
+    fn build_context_for_symbol(
+        &self,
+        sid: &SymbolId,
+        include_file_peers: bool,
+    ) -> Option<Result<ContextView, anyhow::Error>>;
 
     /// Total symbols in the graph, or 0 if not yet built.
     fn node_count(&self) -> usize;

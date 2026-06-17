@@ -1,71 +1,32 @@
 //! Closure-scoped graph provider — second implementor of [`GraphProvider`].
 //!
-//! # Design
-//! `ClosureGraphProvider` shares the **same** heap-allocated [`GraphState`]
-//! as the `FullCanonical` path via a raw pointer.  This avoids cloning
-//! (the engine types contain `RwLock` and are not `Clone`) and guarantees
-//! that graph refreshes are visible through both providers immediately.
-//!
-//! The raw pointer points into the `Box<GraphState>` owned by
-//! [`GraphRuntime`]; it is valid for the entire lifetime of `GraphRuntime`.
-//!
-//! # Future
-//! When closure-scoped snapshots are implemented, this struct will own an
-//! independent [`GraphState`] built from a subset of edges.
+//! Shares the same heap-allocated [`GraphState`] as the full-canonical path
+//! via a raw pointer.  GraphState uses interior mutability so the raw-pointer
+//! const access is safe.
 
-use atlas_engine::{ContextBuilder, SearchEngine};
+use std::sync::Arc;
+
+use atlas_engine::{ContextView, GraphEngine, SymbolId};
 
 use super::graph_provider::GraphProvider;
 use super::graph_state::GraphState;
 
-/// Graph provider for focus/closure mode queries.
-///
-/// Shares the same underlying [`GraphState`] as `FullCanonical` mode.
-/// The dispatch via [`GraphProvider`] proves the trait supports
-/// polymorphism and paves the way for true closure-scoped snapshots.
 pub(crate) struct ClosureGraphProvider {
-    /// Raw pointer to the heap-allocated `GraphState` in `GraphRuntime`.
-    ///
-    /// # Safety
-    /// The pointed-to `GraphState` lives inside a `Box` that is dropped
-    /// together with `GraphRuntime`.  Since `ClosureGraphProvider` is a
-    /// field of `GraphRuntime`, the pointer is always valid when accessed.
-    ///
-    /// SAFETY: `GraphRuntime` must **never** derive `Clone` or `mem::replace`
-    /// the `Box<GraphState>`.  The raw pointer points to the stable heap
-    /// allocation; it is valid for the entire lifetime of `GraphRuntime`.
     state: *const GraphState,
 }
 
-// SAFETY: `*const GraphState` is `Send` because `GraphState` is `Send`
-// (it contains `Arc<…>` and `Mutex<…>`, both `Send`).
+// SAFETY: GraphState contains Mutex+AtomicBool (all Send+Sync).
 unsafe impl Send for ClosureGraphProvider {}
-// SAFETY: `*const GraphState` is `Sync` because `GraphState` is `Sync`
-// (the inner `Mutex` and `RwLock` provide internal synchronisation).
 unsafe impl Sync for ClosureGraphProvider {}
 
 impl ClosureGraphProvider {
-    /// Create a closure provider that shares the given heap-allocated state.
-    ///
-    /// The `state` parameter is a `Box<GraphState>` — its heap address is
-    /// stable across moves of the `Box` itself.  The returned provider holds
-    /// a raw pointer into the boxed allocation.
     pub(crate) fn from_box(state: &Box<GraphState>) -> Self {
-        Self {
-            state: &**state as *const GraphState,
-        }
+        Self { state: &**state as *const GraphState }
     }
 
-    /// Dereference the raw pointer to get a `&GraphState`.
-    ///
-    /// # Safety
-    /// The caller must ensure the original `Box<GraphState>` has not been
-    /// dropped.  This is guaranteed by the fact that `GraphRuntime` owns
-    /// both the `Box` and this `ClosureGraphProvider`.
     #[inline]
     fn state_ref(&self) -> &GraphState {
-        // SAFETY: the pointer was created from a live `Box<GraphState>`
-        // owned by `GraphRuntime`, which outlives this provider.
+        // SAFETY: pointer from live Box<GraphState> owned by GraphRuntime.
         unsafe { &*self.state }
     }
 }
@@ -75,12 +36,16 @@ impl GraphProvider for ClosureGraphProvider {
         self.state_ref().is_initialized()
     }
 
-    fn search_engine(&self) -> Option<&SearchEngine> {
-        self.state_ref().search_engine()
+    fn graph_snapshot(&self) -> Option<Arc<GraphEngine>> {
+        self.state_ref().graph_snapshot()
     }
 
-    fn context_builder(&self) -> Option<&ContextBuilder> {
-        self.state_ref().context_builder()
+    fn build_context_for_symbol(
+        &self,
+        sid: &SymbolId,
+        include_file_peers: bool,
+    ) -> Option<Result<ContextView, anyhow::Error>> {
+        self.state_ref().build_context_for_symbol(sid, include_file_peers)
     }
 
     fn node_count(&self) -> usize {

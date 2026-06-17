@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 impl ToolRouter {
     /// Handle `resume_query` — re-run lazy extraction then re-execute the
     /// original tool handler with the same arguments.
-    pub(crate) fn handle_resume_query(&mut self, args: &Value) -> (String, bool) {
+    pub(crate) fn handle_resume_query(&self, args: &Value) -> (String, bool) {
         let query_id = crate::tools::get_str(args, "query_id");
         if query_id.is_empty() {
             return (
@@ -23,10 +23,9 @@ impl ToolRouter {
         }
 
         // Prune expired snapshots before lookup
-        self.active_mut().job_runtime.prune_expired_snapshots();
+        self.project().job_runtime.prune_expired_snapshots();
 
-        let snapshot = match self
-            .active_mut()
+        let snapshot = match self.project()
             .job_runtime
             .query_snapshots
             .lock()
@@ -47,8 +46,7 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self
-            .active_mut()
+        if let Some(s) = self.project()
             .job_runtime
             .query_snapshots
             .lock()
@@ -65,7 +63,7 @@ impl ToolRouter {
                 .seed_unit
                 .symbol_id
                 .and_then(|sid| {
-                    self.active_mut()
+                    self.project()
                         .store
                         .find_symbol_by_id(&sid)
                         .ok()
@@ -90,8 +88,7 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    if let Err(e) = self
-                        .active_mut()
+                    if let Err(e) = self.project()
                         .analysis_runtime
                         .ensure_dataflow_for_function(sid, None)
                     {
@@ -180,8 +177,7 @@ impl ToolRouter {
             Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
 
         // Mark as Ready if the re-run completed successfully
-        if let Some(s) = self
-            .active_mut()
+        if let Some(s) = self.project()
             .job_runtime
             .query_snapshots
             .lock()

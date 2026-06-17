@@ -146,6 +146,43 @@ fn is_mutation(args: &Value) -> bool {
     }
 }
 
+// ── Execution mode ──────────────────────────────────────────────────────────
+
+/// Execution mode for a tool based on its contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Tool runs synchronously — result returned immediately.
+    Sync,
+    /// Tool runs asynchronously — result available via polling.
+    Async,
+}
+
+/// Determine whether a tool runs synchronously or asynchronously.
+pub fn execution_mode(contract: &ToolContract) -> ExecutionMode {
+    match contract {
+        // Always sync: fast reads, mutations, and task control
+        ToolContract::StatusRead
+        | ToolContract::OverlayRead
+        | ToolContract::OverlayMutation(_)
+        | ToolContract::TaskControl => ExecutionMode::Sync,
+
+        // Sync by default: manifest store queries are fast
+        ToolContract::StoreFactQuery(QueryNeeds::Manifest) => ExecutionMode::Sync,
+
+        // Async: structural queries may trigger lazy extraction
+        ToolContract::StoreFactQuery(QueryNeeds::Structural) => ExecutionMode::Async,
+
+        // Always async: slow operations
+        ToolContract::ProjectLifecycle
+        | ToolContract::SemanticGraphQuery(_)
+        | ToolContract::TraceQuery(_)
+        | ToolContract::SemanticAnalysis(_) => ExecutionMode::Async,
+
+        // Sync fallback for remaining store query levels
+        ToolContract::StoreFactQuery(_) => ExecutionMode::Async,
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -330,5 +367,61 @@ mod tests {
         assert!(!is_mutation(&json!({"action": "list"})));
         assert!(!is_mutation(&json!({"action": "learn"})));
         assert!(!is_mutation(&json!({})));
+    }
+
+    // ── Execution mode tests ──────────────────────────────────────
+
+    #[test]
+    fn test_status_read_is_sync() {
+        let c = contract_for("project", &json!({"action": "status"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_overlay_read_is_sync() {
+        let c = contract_for("domain_rules", &json!({"action": "list"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_overlay_mutation_is_sync() {
+        let c = contract_for("fp_dispatches", &json!({"action": "add", "field_qname": "x", "target_qname": "y"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_task_control_is_sync() {
+        let c = contract_for("tasks", &json!({}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_store_fact_manifest_is_sync() {
+        let c = contract_for("symbol", &json!({"symbol": "foo"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_semantic_graph_is_async() {
+        let c = contract_for("calls", &json!({"symbol": "foo"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Async);
+    }
+
+    #[test]
+    fn test_store_fact_structural_is_async() {
+        let c = contract_for("file_dependencies", &json!({"file_path": "src/main.rs"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Async);
+    }
+
+    #[test]
+    fn test_trace_query_is_async() {
+        let c = contract_for("trace", &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Async);
+    }
+
+    #[test]
+    fn test_analysis_is_async() {
+        let c = contract_for("lifecycle", &json!({"symbol": "foo", "field": "ptr"}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Async);
     }
 }

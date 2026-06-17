@@ -22,7 +22,7 @@ impl ToolRouter {
     /// declares that when `do_it` field of `Curl_handler` struct is called,
     /// the concrete target is `Curl_http`.
     pub(crate) fn handle_annotate_fp_dispatch(
-        &mut self,
+        &self,
         args: &serde_json::Value,
     ) -> (String, bool) {
         let field_qname = get_str(args, "field_qname");
@@ -69,7 +69,7 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {field_qname}");
-                err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                 return (json!({"error": err}).to_string(), true);
             }
             Err(e) => return (json!({"error": e}).to_string(), true),
@@ -87,7 +87,7 @@ impl ToolRouter {
             }
             Ok(SymbolResolution::NotFound { .. }) => {
                 let mut err = format!("Symbol not found: {target_qname}");
-                err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                 return (json!({"error": err}).to_string(), true);
             }
             Err(e) => return (json!({"error": e}).to_string(), true),
@@ -98,8 +98,7 @@ impl ToolRouter {
         // C and C++. Other languages use dynamic dispatch (virtual tables,
         // reflection, prototype chains) that the engine detects through
         // static analysis.
-        let field_sym = self
-            .active()
+        let field_sym = self.project()
             .store
             .find_symbol_by_id(&field_id)
             .ok()
@@ -156,8 +155,7 @@ impl ToolRouter {
         }
 
         // ── Target must be a Function or Method ────────────────────
-        let target_sym = self
-            .active()
+        let target_sym = self.project()
             .store
             .find_symbol_by_id(&target_id)
             .ok()
@@ -206,14 +204,13 @@ impl ToolRouter {
             confidence,
         };
 
-        match self
-            .active()
+        match self.project()
             .overlay_runtime
             .upsert_fp_annotation(&annotation)
         {
             Ok(()) => {
                 // Materialize the edge immediately
-                if let Err(e) = atlas_engine::materialize_annotations(&self.active().store) {
+                if let Err(e) = atlas_engine::materialize_annotations(&self.project().store) {
                     return (
                         json!({
                             "error": format!("Annotation stored but edge materialization failed: {}", e),
@@ -251,7 +248,7 @@ impl ToolRouter {
 
     /// Handle `list_fp_annotations` — list all dispatch annotations.
     pub(crate) fn handle_list_fp_annotations(&self) -> (String, bool) {
-        match self.active().store.get_all_fp_annotations() {
+        match self.project().store.get_all_fp_annotations() {
             Ok(annotations) => {
                 // Batch-lookup all source + target symbols to avoid N+1 queries.
                 let mut symbol_ids = std::collections::HashSet::new();
@@ -262,8 +259,7 @@ impl ToolRouter {
                 let mut symbol_map: std::collections::HashMap<atlas_engine::SymbolId, String> =
                     std::collections::HashMap::new();
                 for id in symbol_ids {
-                    let qname = self
-                        .active()
+                    let qname = self.project()
                         .store
                         .find_symbol_by_id(&id)
                         .ok()
@@ -314,7 +310,7 @@ impl ToolRouter {
 
     /// Handle `delete_fp_annotation` — delete a dispatch annotation.
     pub(crate) fn handle_delete_fp_annotation(
-        &mut self,
+        &self,
         args: &serde_json::Value,
     ) -> (String, bool) {
         let annotation_id = get_str(args, "annotation_id");
@@ -322,7 +318,7 @@ impl ToolRouter {
 
         let (deleted, deleted_annotation_id) = if !annotation_id.is_empty() {
             (
-                self.active()
+                self.project()
                     .overlay_runtime
                     .delete_fp_annotation(annotation_id)
                     .map_err(|e| format!("Failed to delete annotation: {e}")),
@@ -340,7 +336,7 @@ impl ToolRouter {
                 }
                 Ok(SymbolResolution::NotFound { .. }) => {
                     let mut err = format!("Symbol not found: {field_qname}");
-                    err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                    err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                     return (json!({"error": err}).to_string(), true);
                 }
                 Err(e) => return (json!({"error": e}).to_string(), true),
@@ -351,8 +347,7 @@ impl ToolRouter {
                 .find(|s| !s.is_empty())
                 .unwrap_or(field_qname);
             // Look up annotation to get its ID for the response
-            let annotation_id = self
-                .active()
+            let annotation_id = self.project()
                 .store
                 .find_fp_annotation_by_field(&field_id, field_name)
                 .map_err(|e| format!("Lookup error: {e}"));
@@ -368,7 +363,7 @@ impl ToolRouter {
                 Err(e) => return (json!({"error": e}).to_string(), true),
             };
             (
-                self.active()
+                self.project()
                     .overlay_runtime
                     .delete_fp_annotation(&ann_id)
                     .map_err(|e| format!("Failed to delete annotation: {e}")),
@@ -384,7 +379,7 @@ impl ToolRouter {
         match deleted {
             Ok(true) => {
                 // Clean up stale materialized edges
-                if let Err(e) = atlas_engine::materialize_annotations(&self.active().store) {
+                if let Err(e) = atlas_engine::materialize_annotations(&self.project().store) {
                     return (
                         json!({"error": format!("Annotation deleted but edge cleanup failed: {e}"), "annotation_id": deleted_annotation_id}).to_string(),
                         true,

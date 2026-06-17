@@ -4,7 +4,7 @@ use super::{ToolRouter, get_str};
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_atlas_annotate(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_atlas_annotate(&self, args: &serde_json::Value) -> (String, bool) {
         let language = get_str(args, "language");
         let rule_kind = get_str(args, "rule_kind");
         let pattern = get_str(args, "pattern");
@@ -31,7 +31,7 @@ impl ToolRouter {
             );
         }
 
-        match self.active_mut().overlay_runtime.upsert_domain_rule(
+        match self.project().overlay_runtime.upsert_domain_rule(
             language, rule_kind, pattern, "exact", "user", "enabled", confidence, None,
         ) {
             Ok(id) => {
@@ -53,7 +53,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_atlas_domain_rules(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_atlas_domain_rules(&self, args: &serde_json::Value) -> (String, bool) {
         let action = get_str(args, "action");
         let rule_id = get_str(args, "rule_id");
         let source = get_str(args, "source");
@@ -65,8 +65,7 @@ impl ToolRouter {
                 if rule_id.is_empty() {
                     return ("Missing rule_id for delete action".to_string(), true);
                 }
-                match self
-                    .active_mut()
+                match self.project()
                     .overlay_runtime
                     .delete_domain_rule(rule_id)
                 {
@@ -93,8 +92,7 @@ impl ToolRouter {
                 } else {
                     Some(status)
                 };
-                match self
-                    .active_mut()
+                match self.project()
                     .store
                     .list_domain_rules(lang_filter, status_filter)
                 {
@@ -133,7 +131,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_atlas_rule_learn(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_atlas_rule_learn(&self, args: &serde_json::Value) -> (String, bool) {
         let min_confidence = args
             .get("min_confidence")
             .and_then(|v| v.as_f64())
@@ -144,7 +142,7 @@ impl ToolRouter {
         use atlas_engine::rule_engine::learning::RuleLearningStrategy;
 
         let learner = CLearningStrategy;
-        match learner.discover_candidates(&self.active_mut().store) {
+        match learner.discover_candidates(&self.project().store) {
             Ok(candidates) => {
                 let filtered: Vec<_> = candidates
                     .iter()

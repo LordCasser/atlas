@@ -12,7 +12,7 @@ use crate::tools::symbol_selector::{
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_lifecycle(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_lifecycle(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -64,7 +64,7 @@ impl ToolRouter {
         };
 
         // Ensure structural data is available (may trigger lazy extraction)
-        if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
+        if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&sid) {
             let (focus_result, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -82,9 +82,8 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let store = self.active().store.clone();
-        let (cfg_nodes, cfg_edges) = match self
-            .active_mut()
+        let store = self.project().store.clone();
+        let (cfg_nodes, cfg_edges) = match self.project()
             .analysis_runtime
             .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
         {
@@ -103,8 +102,7 @@ impl ToolRouter {
         // --- CFG is available — run lifecycle analysis ---
 
         // Lifecycle analysis only supports C/C++ — gate on language
-        let sym_info = self
-            .active_mut()
+        let sym_info = self.project()
             .store
             .find_symbol_by_id(&sid)
             .ok()
@@ -135,7 +133,7 @@ impl ToolRouter {
 
         // Load domain rules from DB for this symbol's language
         let cpp_rules =
-            atlas_engine::analysis::CppOwnershipRules::load_for(&self.active_mut().store, lang_str);
+            atlas_engine::analysis::CppOwnershipRules::load_for(&self.project().store, lang_str);
         let has_any_rules = cpp_rules.has_any_rules();
         let has_user_rules = cpp_rules.has_user_rules();
         let ownership_rules = atlas_engine::analysis::OwnershipRules::default();

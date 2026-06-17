@@ -13,7 +13,7 @@ impl ToolRouter {
             Err(_) => return (format!("Invalid file_id: {file_id_hex}"), true),
         };
 
-        let deps = match self.active().store.find_dependents_by_file(&fid) {
+        let deps = match self.project().store.find_dependents_by_file(&fid) {
             Ok(d) => d,
             Err(e) => return (format!("Failed to query dependents: {e}"), true),
         };
@@ -30,7 +30,7 @@ impl ToolRouter {
 
         (
             serde_json::to_string_pretty(&json!({
-                "file": self.active().store_query_runtime.resolve_file_path(&fid),
+                "file": self.project().store_query_runtime.resolve_file_path(&fid),
                 "total_dependents": deps.len(),
                 "dependents": dependents,
             }))

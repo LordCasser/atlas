@@ -48,8 +48,8 @@ impl QueryRuntime {
     ) -> Self {
         let signature = store.index_signature().unwrap_or_default();
         let cache = CacheState {
-            cached_signature: signature,
-            last_signature_check: std::time::Instant::now(),
+            cached_signature: Mutex::new(signature),
+            last_signature_check: Mutex::new(std::time::Instant::now()),
             cached_manual_full_index: RwLock::new(None),
         };
         let focus_runtime = Mutex::new(FocusRuntime::new(store.clone(), project_root));

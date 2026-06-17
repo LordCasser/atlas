@@ -778,8 +778,7 @@ mod focus_tests {
                 .built_files
                 .iter()
                 .map(|f| {
-                    focus_router
-                        .active_mut()
+                    focus_router.project()
                         .store_query_runtime
                         .resolve_file_path(f)
                 })

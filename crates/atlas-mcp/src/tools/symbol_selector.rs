@@ -23,7 +23,7 @@ impl ToolRouter {
         input: &SymbolInput,
         policy: SymbolResolutionPolicy,
     ) -> Result<SymbolResolution, String> {
-        atlas_engine::symbol_selector::resolve_symbol_input(&self.active().store, input, policy)
+        atlas_engine::symbol_selector::resolve_symbol_input(&self.project().store, input, policy)
     }
 
     /// Resolve a SymbolSelector file_path before the file exists in `files`.
@@ -43,15 +43,14 @@ impl ToolRouter {
             return None;
         }
 
-        if let Ok(Some(file_id)) = self
-            .active()
+        if let Ok(Some(file_id)) = self.project()
             .store
-            .resolve_file_id(&self.active().root, clean)
+            .resolve_file_id(&self.project().root, clean)
         {
             return Some(file_id);
         }
 
-        self.active()
+        self.project()
             .store
             .find_file_inventory_by_path(clean)
             .ok()
@@ -68,7 +67,7 @@ impl ToolRouter {
             return None;
         }
 
-        let active = self.active();
+        let active = self.project();
         let abs_path = active.root.join(clean);
         let metadata = std::fs::metadata(&abs_path).ok()?;
         if !metadata.is_file() {

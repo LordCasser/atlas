@@ -10,7 +10,7 @@ use crate::tools::symbol_selector::{
 use serde_json::json;
 
 impl ToolRouter {
-    pub(crate) fn handle_usages(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_usages(&self, args: &serde_json::Value) -> (String, bool) {
         let limit = get_u64(args, "limit").unwrap_or(50) as usize;
 
         // Unified symbol resolution via SymbolInput (string or structured selector).
@@ -42,10 +42,10 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self
-            .active_mut()
+        let _investigation = self.project()
             .job_runtime
             .investigation_state
+            .lock().unwrap()
             .active_investigation
             .clone();
 
@@ -70,7 +70,7 @@ impl ToolRouter {
 
         let mut lr = AnalysisEnvelope::new("symbol", args);
 
-        let refs = match self.active_mut().store.find_references_by_symbol(&sid) {
+        let refs = match self.project().store.find_references_by_symbol(&sid) {
             Ok(r) => r,
             Err(e) => return (format!("Failed to query usages: {e}"), true),
         };
@@ -78,15 +78,14 @@ impl ToolRouter {
         let shown = refs.iter().take(limit.min(100));
         let usages: Vec<_> = shown
             .map(|r| {
-                let mask = self
-                    .active_mut()
+                let mask = self.project()
                     .store
                     .get_capability_mask(&r.file_id)
                     .unwrap_or_default();
                 json!({
                     "text": r.text,
                     "kind": r.kind.as_str(),
-                    "file": self.active_mut().store_query_runtime.resolve_file_path(&r.file_id),
+                    "file": self.project().store_query_runtime.resolve_file_path(&r.file_id),
                     "line": r.range.start_line + 1,
                     "column": r.range.start_column + 1,
                     "evidence_level": mask.best_capability_name(),

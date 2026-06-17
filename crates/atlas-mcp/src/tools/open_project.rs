@@ -34,7 +34,7 @@ impl ToolRouter {
     ///
     /// Parameters:
     ///   project_path (required): absolute path to the project directory.
-    pub(crate) fn handle_open_project(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_open_project(&self, args: &serde_json::Value) -> (String, bool) {
         match prepare_project(args) {
             Ok(prepared) => {
                 let result = serde_json::to_string_pretty(&prepared.result)

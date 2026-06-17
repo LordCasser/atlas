@@ -25,10 +25,10 @@
 //! - `super::invalidation::RuntimeInvalidation`
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use atlas_engine::{SearchEngine, SourceExtractor, Store};
+use atlas_engine::{SourceExtractor, Store};
 
 use super::closure_graph_provider::ClosureGraphProvider;
 use super::graph_provider::GraphProvider;
@@ -74,14 +74,14 @@ pub struct GraphRuntime {
     pub source_extractor: SourceExtractor,
     pub project_root: PathBuf,
     /// Provenance mode of graph edges (detected on first init).
-    pub mode: GraphMode,
+    pub mode: Mutex<GraphMode>,
     /// Cached store index mode at graph init time.
-    cached_index_mode: Option<String>,
+    cached_index_mode: Mutex<Option<String>>,
     /// Shared invalidation counters for generation-based staleness detection.
     pub invalidation: Arc<RuntimeInvalidation>,
     /// Cached graph_generation at last refresh — compared against current
     /// to decide if a full rebuild is needed.
-    pub last_graph_generation: u64,
+    pub last_graph_generation: AtomicU64,
 }
 
 impl GraphRuntime {
@@ -94,10 +94,10 @@ impl GraphRuntime {
         let last_graph_signature = store.index_signature().unwrap_or_default();
         let last_graph_generation = invalidation.graph_generation.load(Ordering::Relaxed);
         let state = Box::new(GraphState {
-            search: None,
-            context: None,
-            graph_initialized: false,
-            last_graph_signature,
+            search: Mutex::new(None),
+            context: Mutex::new(None),
+            graph_initialized: std::sync::atomic::AtomicBool::new(false),
+            last_graph_signature: Mutex::new(last_graph_signature),
             pending_graph_rebuild: Arc::new(std::sync::Mutex::new(None)),
         });
         let closure_provider = ClosureGraphProvider::from_box(&state);
@@ -107,47 +107,49 @@ impl GraphRuntime {
             store,
             source_extractor,
             project_root,
-            mode: GraphMode::FocusPartial,
-            cached_index_mode: None,
+            mode: Mutex::new(GraphMode::FocusPartial),
+            cached_index_mode: Mutex::new(None),
             invalidation,
-            last_graph_generation,
+            last_graph_generation: AtomicU64::new(last_graph_generation),
         }
     }
 
     /// Ensure the graph is initialized (lazy init on first query).
     /// Detects and caches the graph provenance mode on first init.
     /// Returns &SearchEngine or an error.
-    pub fn ensure_initialized(&mut self) -> anyhow::Result<&SearchEngine> {
-        let was_initialized = self.state.graph_initialized;
+    pub fn ensure_initialized(&self) -> anyhow::Result<()> {
+        let was_initialized = self.state.graph_initialized.load(std::sync::atomic::Ordering::Acquire);
         self.state
             .ensure_initialized(&self.store, &self.source_extractor, &self.project_root)?;
-        // Both providers share the same Box<GraphState> — no separate init needed.
         if !was_initialized {
             let store = self.store.clone();
             self.detect_and_set_mode(&store);
         }
-        self.state
-            .search_engine()
-            .ok_or_else(|| anyhow::anyhow!("graph not initialized"))
+        if !self.state.is_initialized() {
+            return Err(anyhow::anyhow!("graph not initialized"));
+        }
+        Ok(())
     }
 
     /// Returns true if the graph needs a full rebuild (generation changed).
     pub(crate) fn is_graph_stale(&self) -> bool {
         let current = self.invalidation.graph_generation.load(Ordering::Relaxed);
-        current > self.last_graph_generation
+        current > self.last_graph_generation.load(Ordering::Relaxed)
     }
 
     /// Mark the graph as fresh (update cached generation to match current).
-    pub(crate) fn mark_graph_fresh(&mut self) {
-        self.last_graph_generation = self.invalidation.graph_generation.load(Ordering::Relaxed);
+    pub(crate) fn mark_graph_fresh(&self) {
+        self.last_graph_generation.store(
+            self.invalidation.graph_generation.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 
     /// Detect the index precision mode from the store and cache it.
-    /// Uses the same rich-index detection as FocusRuntime.
-    pub fn detect_and_set_mode(&mut self, store: &Store) {
+    pub fn detect_and_set_mode(&self, store: &Store) {
         let index_mode = store.read_index_mode().unwrap_or_default();
-        self.cached_index_mode = Some(index_mode.clone());
-        self.mode = if atlas_engine::is_rich_index_mode(&index_mode) {
+        *self.cached_index_mode.lock().unwrap() = Some(index_mode.clone());
+        *self.mode.lock().unwrap() = if atlas_engine::is_rich_index_mode(&index_mode) {
             GraphMode::FullCanonical
         } else {
             GraphMode::FocusPartial
@@ -157,8 +159,8 @@ impl GraphRuntime {
     /// Return precision metadata about the current graph.
     pub fn precision_info(&self) -> GraphPrecision {
         GraphPrecision {
-            mode: self.mode,
-            initialized: self.state.graph_initialized,
+            mode: *self.mode.lock().unwrap(),
+            initialized: self.state.is_initialized(),
             edge_count: self.state.edge_count(),
         }
     }
@@ -169,7 +171,7 @@ impl GraphRuntime {
     /// - `FullCanonical` → `&self.state` (full graph)
     /// - `FocusPartial` → `&self.closure_provider` (closure-scoped)
     pub(crate) fn provider(&self) -> &dyn GraphProvider {
-        match self.mode {
+        match *self.mode.lock().unwrap() {
             GraphMode::FullCanonical => &*self.state,
             GraphMode::FocusPartial => &self.closure_provider,
         }
@@ -193,7 +195,7 @@ mod tests {
     #[test]
     fn default_mode_is_focus_partial() {
         let gr = create_test_graph_runtime();
-        assert_eq!(gr.mode, GraphMode::FocusPartial);
+        assert_eq!(*gr.mode.lock().unwrap(), GraphMode::FocusPartial);
     }
 
     #[test]
@@ -211,13 +213,13 @@ mod tests {
         // Clone store to avoid simultaneous mutable+immutable borrow.
         let store = gr.store.clone();
         gr.detect_and_set_mode(&store);
-        assert_eq!(gr.mode, GraphMode::FocusPartial);
+        assert_eq!(*gr.mode.lock().unwrap(), GraphMode::FocusPartial);
     }
 
     #[test]
     fn precision_info_full_canonical() {
         let mut gr = create_test_graph_runtime();
-        gr.mode = GraphMode::FullCanonical;
+        *gr.mode.lock().unwrap() = GraphMode::FullCanonical;
         let info = gr.precision_info();
         assert_eq!(info.mode, GraphMode::FullCanonical);
     }
@@ -227,10 +229,10 @@ mod tests {
         let mut gr = create_test_graph_runtime();
         let result = gr.ensure_initialized();
         assert!(result.is_ok(), "ensure_initialized should succeed");
-        let se_opt = gr.provider().search_engine();
+        let gs_opt = gr.provider().graph_snapshot();
         assert!(
-            se_opt.is_some(),
-            "search_engine should be accessible after init"
+            gs_opt.is_some(),
+            "graph_snapshot should be accessible after init"
         );
     }
 
@@ -240,8 +242,8 @@ mod tests {
         {
             let p = gr.provider();
             assert!(!p.is_initialized());
-            assert!(p.search_engine().is_none());
-            assert!(p.context_builder().is_none());
+            assert!(p.graph_snapshot().is_none());
+            assert!(p.graph_snapshot().is_none());
             assert_eq!(p.node_count(), 0);
             assert_eq!(p.edge_count(), 0);
         }
@@ -261,13 +263,13 @@ mod tests {
     #[test]
     fn graph_stale_after_bump() {
         let mut gr = create_test_graph_runtime();
-        let initial_gen = gr.last_graph_generation;
+        let initial_gen = gr.last_graph_generation.load(Ordering::Relaxed);
         gr.invalidation
             .graph_generation
             .fetch_add(1, Ordering::Relaxed);
         assert!(gr.is_graph_stale());
         gr.mark_graph_fresh();
         assert!(!gr.is_graph_stale());
-        assert!(gr.last_graph_generation > initial_gen);
+        assert!(gr.last_graph_generation.load(Ordering::Relaxed) > initial_gen);
     }
 }

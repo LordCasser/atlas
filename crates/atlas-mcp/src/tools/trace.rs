@@ -17,7 +17,7 @@ use serde_json::json;
 
 impl ToolRouter {
     pub(crate) fn handle_trace_point(
-        &mut self,
+        &self,
         ctx: &super::ToolCallContext,
         args: &serde_json::Value,
     ) -> (String, bool) {
@@ -46,7 +46,7 @@ impl ToolRouter {
         let (_, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = {
-            let active = self.active_mut();
+            let active = self.project();
             match resolve_file_id(&active.store, &active.root, file_hex, file_path) {
                 Ok(Some(fid)) => fid,
                 Ok(None) => {
@@ -109,8 +109,7 @@ impl ToolRouter {
             lr = super::apply_focus_result_to_lr(lr, result);
         }
         ctx.send_progress(0.8, "Running trace point...");
-        let mut resp = self
-            .active_mut()
+        let mut resp = self.project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -137,7 +136,7 @@ impl ToolRouter {
             .build(resp_value, self)
     }
 
-    pub(crate) fn handle_trace_variable(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_variable(&self, args: &serde_json::Value) -> (String, bool) {
         let file_hex = get_str_opt(args, "file_id");
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
@@ -164,7 +163,7 @@ impl ToolRouter {
         let (_, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = {
-            let active = self.active_mut();
+            let active = self.project();
             match resolve_file_id(&active.store, &active.root, file_hex, file_path) {
                 Ok(Some(fid)) => fid,
                 Ok(None) => {
@@ -230,8 +229,7 @@ impl ToolRouter {
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
-        let mut resp = self
-            .active_mut()
+        let mut resp = self.project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -257,7 +255,7 @@ impl ToolRouter {
             .build(resp_value, self)
     }
 
-    pub(crate) fn handle_trace_caller_path(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_caller_path(&self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
         let (_, root_warnings) = self.include_roots_from_args(args);
 
@@ -319,8 +317,7 @@ impl ToolRouter {
                 // ties.  Pick the first candidate and look up its SymbolId
                 // from the store so we can proceed with tracing.
                 let first = &candidates[0];
-                let sid = match self
-                    .active_mut()
+                let sid = match self.project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -357,7 +354,7 @@ impl ToolRouter {
         // Update investigation with the target symbol
         self.update_investigation(InvestigationFocus::Symbol(target_id));
         // Ensure structural data for this symbol's file
-        if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&target_id) {
+        if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&target_id) {
             let (focus_result, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -371,8 +368,7 @@ impl ToolRouter {
             }
             lazy_warnings = focus_warnings;
         }
-        let resp = self
-            .active_mut()
+        let resp = self.project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -407,7 +403,7 @@ impl ToolRouter {
             .build(resp_value, self)
     }
 
-    pub(crate) fn handle_trace_forward(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
         let (_, root_warnings) = self.include_roots_from_args(args);
 
@@ -482,8 +478,7 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self
-                    .active_mut()
+                let sid = match self.project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -536,8 +531,7 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self
-                    .active_mut()
+                let sid = match self.project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -584,8 +578,7 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(from_id));
 
         // Ensure structural for endpoint files via focus query
-        let intent = self
-            .active_mut()
+        let intent = self.project()
             .store
             .find_symbol_by_id(&from_id)
             .ok()
@@ -602,12 +595,11 @@ impl ToolRouter {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
         let has_full_index = {
-            let active = self.active_mut();
+            let active = self.project();
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let mut resp = self
-            .active_mut()
+        let mut resp = self.project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())

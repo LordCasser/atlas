@@ -29,14 +29,14 @@ use crate::tools::query_snapshot::{InvestigationState, QUERY_SNAPSHOT_TTL_SECS, 
 /// Owns query snapshots for lazy responses and investigation state for
 /// lazy job prioritization.
 pub struct JobRuntime {
-    pub investigation_state: InvestigationState,
+    pub investigation_state: Mutex<InvestigationState>,
     pub query_snapshots: Mutex<HashMap<String, QuerySnapshot>>,
 }
 
 impl JobRuntime {
     pub fn new() -> Self {
         Self {
-            investigation_state: InvestigationState::default(),
+            investigation_state: Mutex::new(InvestigationState::default()),
             query_snapshots: Mutex::new(HashMap::new()),
         }
     }
@@ -63,8 +63,8 @@ impl JobRuntime {
     }
 
     /// Update or create investigation based on a tool call focus.
-    pub fn update_investigation(&mut self, focus: InvestigationFocus) {
-        self.investigation_state.update(focus);
+    pub fn update_investigation(&self, focus: InvestigationFocus) {
+        self.investigation_state.lock().unwrap().update(focus);
     }
 }
 
@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn investigation_state_starts_default() {
         let jr = JobRuntime::new();
-        assert!(jr.investigation_state.active_investigation.is_none());
+        assert!(jr.investigation_state.lock().unwrap().active_investigation.is_none());
     }
 
     #[test]

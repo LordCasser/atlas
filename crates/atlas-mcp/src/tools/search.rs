@@ -60,7 +60,7 @@ impl ToolRouter {
     // ── handle_search ────────────────────────────────────────────────────
 
     pub(crate) fn handle_search(
-        &mut self,
+        &self,
         ctx: &super::ToolCallContext,
         args: &serde_json::Value,
     ) -> (String, bool) {
@@ -89,10 +89,9 @@ impl ToolRouter {
         // the search analysis mode is set to Manifest (structural facts are already
         // in the store) instead of Auto (lazy triggering).  Scope is still required
         // — it defines the search boundary.
-        let is_manual_full = self
-            .active()
+        let is_manual_full = self.project()
             .query_runtime
-            .has_full_index(&self.active().store);
+            .has_full_index(&self.project().store);
 
         let scope = match scope {
             Some(s) => s.to_string(),
@@ -133,7 +132,7 @@ impl ToolRouter {
 
     #[allow(clippy::too_many_arguments)]
     fn handle_search_sync(
-        &mut self,
+        &self,
         ctx: &super::ToolCallContext,
         args: &serde_json::Value,
         query: &str,
@@ -171,20 +170,20 @@ impl ToolRouter {
         // Engine::from_store is a lightweight constructor — all inner services
         // share the same Arc<Store>.
         let engine: Arc<Engine> = Arc::new(Engine::from_store(
-            self.active().store.clone(),
-            Some(&self.active().root),
+            self.project().store.clone(),
+            Some(&self.project().root),
         ));
         let svc = ScopedSearchService::new_with_project_root(
-            self.active().store.clone(),
+            self.project().store.clone(),
             engine,
-            Some(self.active().root.clone()),
+            Some(self.project().root.clone()),
         );
 
         let engine_resp = match svc.execute(req) {
             Ok(r) => r,
             Err(err) => {
                 let mut s = format!("Search error: {err}");
-                s.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                s.push_str(self.project().store_query_runtime.not_indexed_guidance());
                 return (s, true);
             }
         };
@@ -192,7 +191,7 @@ impl ToolRouter {
         // Unavailable means no data at all — not even manifest extraction.
         // Convert to a clear error instead of returning empty results.
         if engine_resp.precision.is_unavailable() && engine_resp.scope_file_count == 0 {
-            let guidance = self.active().store_query_runtime.not_indexed_guidance();
+            let guidance = self.project().store_query_runtime.not_indexed_guidance();
             let mut msg =
                 format!("scope \"{scope}\" has no indexed data and cannot return any results");
             if !guidance.is_empty() {
@@ -218,8 +217,7 @@ impl ToolRouter {
                     background_file_ids.push(hit.symbol.file_id);
                 }
             }
-            for file_id in self
-                .active()
+            for file_id in self.project()
                 .store
                 .list_file_inventory_ids_in_scope(scope, 24)
                 .unwrap_or_default()
@@ -341,8 +339,7 @@ impl ToolRouter {
                         return None;
                     }
                     let file_id = FileId::generate(normalized);
-                    if self
-                        .active()
+                    if self.project()
                         .store
                         .get_file(&file_id)
                         .ok()
@@ -360,7 +357,7 @@ impl ToolRouter {
         }
     }
 
-    pub(crate) fn handle_symbol_detail(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_symbol_detail(&self, args: &serde_json::Value) -> (String, bool) {
         // Accept both "symbol" (structured selector from handle_symbol)
         // and "qualified_name" (legacy from handle_symbol_by_position / resume_query).
         let (qname, symbol_input) = if let Ok(input) = parse_symbol_input(args, "symbol") {
@@ -390,7 +387,7 @@ impl ToolRouter {
         match resolution {
             Ok(SymbolResolution::Single { symbol_id, .. }) => {
                 // Found a unique symbol on the first try
-                if let Ok(Some(s)) = self.active().store.find_symbol_by_id(&symbol_id) {
+                if let Ok(Some(s)) = self.project().store.find_symbol_by_id(&symbol_id) {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
                     // Ensure structural data so caller/callee results
                     // include fresh edges from lazy extraction.
@@ -412,8 +409,7 @@ impl ToolRouter {
                     ) {
                         Ok(SymbolResolution::Single {
                             symbol_id: new_id, ..
-                        }) => self
-                            .active()
+                        }) => self.project()
                             .store
                             .find_symbol_by_id(&new_id)
                             .unwrap_or_default()
@@ -434,7 +430,7 @@ impl ToolRouter {
                     };
                 } else {
                     let mut err = format!("Symbol not found: {qname}");
-                    err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                    err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                     return (err, true);
                 }
             }
@@ -474,12 +470,12 @@ impl ToolRouter {
                     .resolve_symbol_input(&symbol_input, SymbolResolutionPolicy::UniqueOrCandidates)
                 {
                     Ok(SymbolResolution::Single { symbol_id, .. }) => {
-                        if let Ok(Some(s)) = self.active().store.find_symbol_by_id(&symbol_id) {
+                        if let Ok(Some(s)) = self.project().store.find_symbol_by_id(&symbol_id) {
                             self.update_investigation(InvestigationFocus::Symbol(s.id));
                             sym = s;
                         } else {
                             let mut err = format!("Symbol not found: {qname}");
-                            err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                            err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                             return (err, true);
                         }
                     }
@@ -494,7 +490,7 @@ impl ToolRouter {
                     }
                     Ok(SymbolResolution::NotFound { .. }) => {
                         let mut err = format!("Symbol not found: {qname}");
-                        err.push_str(self.active().store_query_runtime.not_indexed_guidance());
+                        err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                         return (err, true);
                     }
                     Err(err) => {
@@ -512,38 +508,37 @@ impl ToolRouter {
         }
 
         // Re-acquire graph after lazy structural may have refreshed it
-        let se = match self.active_mut().graph_runtime.provider().search_engine() {
-            Some(se) => se,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = se.graph_snapshot();
         let snap = graph.snapshot();
 
         let caller_nodes: Vec<_> = graph
             .callers(&sym.id)
             .callers
             .iter()
-            .map(|&ix| super::node_json(&self.active().store_query_runtime, snap, ix, None))
+            .map(|&ix| super::node_json(&self.project().store_query_runtime, snap, ix, None))
             .collect();
         let callee_nodes: Vec<_> = graph
             .callees(&sym.id)
             .callees
             .iter()
-            .map(|&ix| super::node_json(&self.active().store_query_runtime, snap, ix, None))
+            .map(|&ix| super::node_json(&self.project().store_query_runtime, snap, ix, None))
             .collect();
 
         let mut result = json!({
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
-            "file": self.active().store_query_runtime.resolve_file_path(&sym.file_id),
+            "file": self.project().store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
             "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
             "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
-            if let Some(src) = self
-                .active()
+            if let Some(src) = self.project()
                 .store_query_runtime
                 .read_symbol_source(&sym.id)
             {

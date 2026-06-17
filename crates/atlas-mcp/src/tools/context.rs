@@ -33,7 +33,7 @@ enum ContextResolution {
 
 impl ToolRouter {
     pub(crate) fn handle_context(
-        &mut self,
+        &self,
         ctx: &super::ToolCallContext,
         args: &serde_json::Value,
     ) -> (String, bool) {
@@ -65,8 +65,7 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Try to find symbol by qname before resolution for initial investigation
-        let initial_sid = self
-            .active_mut()
+        let initial_sid = self.project()
             .store
             .find_symbols_by_qname(qname)
             .ok()
@@ -74,10 +73,10 @@ impl ToolRouter {
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
-        let investigation = self
-            .active_mut()
+        let investigation = self.project()
             .job_runtime
             .investigation_state
+            .lock().unwrap()
             .active_investigation
             .clone();
 
@@ -110,12 +109,9 @@ impl ToolRouter {
                 }
 
                 ctx.send_progress(0.7, "Building context view...");
-                let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-                    Some(cb) => cb,
-                    None => return ("Graph not initialized".to_string(), true),
-                };
-                match cb.build_context_for_symbol(&sid, include_file_peers) {
-                    Ok(view) => {
+                let project = self.project();
+                match project.graph_runtime.provider().build_context_for_symbol(&sid, include_file_peers) {
+                    Some(Ok(view)) => {
                         ctx.send_progress(0.8, "Context complete");
                         self.build_context_response(
                             &view,
@@ -129,7 +125,8 @@ impl ToolRouter {
                             args,
                         )
                     }
-                    Err(e) => (format!("Context build error: {e}"), true),
+                    Some(Err(e)) => (format!("Context build error: {e}"), true),
+                    None => return ("Graph not initialized".to_string(), true),
                 }
             }
             ContextResolution::Ambiguous(candidates) => {
@@ -150,7 +147,7 @@ impl ToolRouter {
 
     /// Build the context JSON response for a resolved symbol.
     fn build_context_response(
-        &mut self,
+        &self,
         view: &atlas_engine::ContextView,
         qname: &str,
         include_code: bool,
@@ -169,8 +166,7 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self
-                .active_mut()
+            if let Some(src) = self.project()
                 .store_query_runtime
                 .read_symbol_source(sid)
             {
@@ -301,7 +297,7 @@ impl ToolRouter {
     /// Returns `(ContextResolution, Option<FocusResult>)` — the focus result
     /// from any lazy structural extraction that occurred during resolution.
     fn resolve_context_symbol(
-        &mut self,
+        &self,
         ctx: &super::ToolCallContext,
         input: &SymbolInput,
         _include_roots: Vec<atlas_engine::IncludeRoot>,
@@ -330,7 +326,7 @@ impl ToolRouter {
                 resolved,
             } => {
                 // Look up symbol info for file_id
-                if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&symbol_id) {
+                if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&symbol_id) {
                     let (focus_result, focus_warnings) =
                         self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
                             symbol_name: qname.to_string(),
@@ -357,8 +353,7 @@ impl ToolRouter {
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self
-            .active_mut()
+        let name_matches = self.project()
             .store
             .find_symbols_by_name(qname)
             .unwrap_or_else(|e| {
@@ -411,8 +406,7 @@ impl ToolRouter {
                     .take(MAX_AGGREGATION_CANDIDATES)
                     .map(|s| {
                         let line = s.range.start_line.saturating_add(1);
-                        let file_path = self
-                            .active_mut()
+                        let file_path = self.project()
                             .store_query_runtime
                             .resolve_file_path(&s.file_id);
                         ScoredCandidate {
@@ -469,8 +463,7 @@ impl ToolRouter {
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self
-            .active_mut()
+        let fresh_matches = self.project()
             .store
             .find_symbols_by_name(qname)
             .unwrap_or_else(|e| {
@@ -489,8 +482,7 @@ impl ToolRouter {
                 .take(MAX_AGGREGATION_CANDIDATES)
                 .map(|s| {
                     let line = s.range.start_line.saturating_add(1);
-                    let file_path = self
-                        .active_mut()
+                    let file_path = self.project()
                         .store_query_runtime
                         .resolve_file_path(&s.file_id);
                     ScoredCandidate {
@@ -519,7 +511,7 @@ impl ToolRouter {
         let mut err = format!(
             "Symbol '{qname}' not found by qualified name or simple name. Try 'search' first to discover the correct qualified_name for this symbol."
         );
-        err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
+        err.push_str(self.project().store_query_runtime.not_indexed_guidance());
         Ok((ContextResolution::NotFound(err), focus_result_acc))
     }
 }

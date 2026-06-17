@@ -128,7 +128,7 @@ fn apply_branch_diff_analysis(
 }
 
 impl ToolRouter {
-    pub(crate) fn handle_branch_diff(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_branch_diff(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_input(args, "symbol") {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -173,7 +173,7 @@ impl ToolRouter {
         };
 
         // Ensure structural data is available
-        if let Ok(Some(sym)) = self.active_mut().store.find_symbol_by_id(&sid) {
+        if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&sid) {
             let (focus_result, focus_warnings) =
                 self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
@@ -191,9 +191,8 @@ impl ToolRouter {
         }
 
         // Load CFG nodes for this function, with lazy CFG fallback
-        let store = self.active().store.clone();
-        let (cfg_nodes, cfg_edges) = match self
-            .active_mut()
+        let store = self.project().store.clone();
+        let (cfg_nodes, cfg_edges) = match self.project()
             .analysis_runtime
             .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
         {
@@ -210,8 +209,7 @@ impl ToolRouter {
 
         // --- CFG is available — run branch diff analysis ---
 
-        let qname = self
-            .active_mut()
+        let qname = self.project()
             .store
             .find_symbol_by_id(&sid)
             .ok()
@@ -229,8 +227,7 @@ impl ToolRouter {
         let mut semantic_window = None;
         let diffs = if use_semantic {
             // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
-            let lang = self
-                .active_mut()
+            let lang = self.project()
                 .store
                 .find_symbol_by_id(&sid)
                 .ok()
@@ -239,8 +236,7 @@ impl ToolRouter {
                 .unwrap_or(atlas_engine::Language::C);
             let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
-            match self
-                .active_mut()
+            match self.project()
                 .analysis_runtime
                 .ensure_dataflow_for_function(&sid, Some(&query_id))
             {
@@ -254,8 +250,7 @@ impl ToolRouter {
             }
 
             // Load DataFlow nodes and edges
-            let data_nodes = self
-                .active_mut()
+            let data_nodes = self.project()
                 .store
                 .find_data_nodes_by_function(&sid)
                 .unwrap_or_default();
@@ -263,7 +258,7 @@ impl ToolRouter {
                 vec![]
             } else {
                 let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                self.active_mut()
+                self.project()
                     .store
                     .find_dataflow_edges_by_sources(&all_ids)
                     .unwrap_or_default()
@@ -334,21 +329,22 @@ mod tests {
     use atlas_engine::structs::{Precision, SemanticConfidence, SymbolTier};
     use atlas_engine::{AnalysisUnit, FileId, SymbolId, TextRange};
     use serde_json::json;
+    use std::sync::Mutex;
 
     struct MockStore {
-        snapshots: Vec<QuerySnapshot>,
+        snapshots: Mutex<Vec<QuerySnapshot>>,
     }
 
     impl SnapshotStore for MockStore {
-        fn store_query_snapshot(&mut self, snapshot: QuerySnapshot) {
-            self.snapshots.push(snapshot);
+        fn store_query_snapshot(&self, snapshot: QuerySnapshot) {
+            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
         }
     }
 
     fn analysis_json_for(mode: BranchDiffAnalysisMode) -> serde_json::Value {
         let lr = AnalysisEnvelope::new("branch_diff", &json!({"symbol": "f"}));
         let lr = apply_branch_diff_analysis(lr, mode).with_is_error(false);
-        let (text, err) = lr.build(json!({"ok": true}), &mut MockStore { snapshots: vec![] });
+        let (text, err) = lr.build(json!({"ok": true}), &MockStore { snapshots: Mutex::new(vec![]) });
         assert!(!err);
         serde_json::from_str(&text).unwrap()
     }

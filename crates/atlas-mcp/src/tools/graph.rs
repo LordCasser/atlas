@@ -303,7 +303,7 @@ impl ToolRouter {
         limit: usize,
         target_name: Option<&str>,
     ) -> (Vec<serde_json::Value>, usize) {
-        let store = &self.active().store;
+        let store = &self.project().store;
         let mut seen = HashSet::new();
         let mut refs = Vec::new();
         let normalized_target = target_name.map(str::trim).filter(|s| !s.is_empty());
@@ -390,7 +390,7 @@ impl ToolRouter {
     }
 
     pub(crate) fn resolve_graph_symbol_with_focus_retry(
-        &mut self,
+        &self,
         input: &SymbolInput,
         policy: SymbolResolutionPolicy,
         direction: Option<String>,
@@ -415,18 +415,18 @@ impl ToolRouter {
     }
 
     fn scoped_explore_resolution(
-        &mut self,
+        &self,
         qname: &str,
         scope: &str,
     ) -> Result<Option<SymbolResolution>, String> {
         let engine: Arc<Engine> = Arc::new(Engine::from_store(
-            self.active().store.clone(),
-            Some(&self.active().root),
+            self.project().store.clone(),
+            Some(&self.project().root),
         ));
         let svc = ScopedSearchService::new_with_project_root(
-            self.active().store.clone(),
+            self.project().store.clone(),
             engine,
-            Some(self.active().root.clone()),
+            Some(self.project().root.clone()),
         );
         let resp = svc
             .execute(ScopedSearchRequest {
@@ -454,8 +454,7 @@ impl ToolRouter {
 
         if exact.len() == 1 {
             let sym = exact.remove(0);
-            let file_path = self
-                .active()
+            let file_path = self.project()
                 .store_query_runtime
                 .resolve_file_path(&sym.file_id);
             let line = sym.range.start_line.saturating_add(1);
@@ -481,8 +480,7 @@ impl ToolRouter {
             .iter()
             .take(MAX_AMBIGUOUS_CANDIDATES)
             .map(|sym| {
-                let file_path = self
-                    .active()
+                let file_path = self.project()
                     .store_query_runtime
                     .resolve_file_path(&sym.file_id);
                 let line = sym.range.start_line.saturating_add(1);
@@ -511,7 +509,7 @@ impl ToolRouter {
         }))
     }
 
-    pub(crate) fn handle_callers(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callers(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -564,15 +562,15 @@ impl ToolRouter {
         });
         let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
         let has_full_index = {
-            let active = self.active_mut();
+            let active = self.project();
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Multi-root: union of callers from all matched SymbolIds, deduplicated.
@@ -591,7 +589,7 @@ impl ToolRouter {
         let total_callers = all_callers.len();
         let shown = all_callers.iter().take(limit);
         let nodes: Vec<_> = shown
-            .map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None))
+            .map(|ix| super::node_json(&self.project().store_query_runtime, snap, *ix, None))
             .collect();
 
         let mut resp = json!({
@@ -626,7 +624,7 @@ impl ToolRouter {
         lr.build_with_args(resp, args, self)
     }
 
-    pub(crate) fn handle_callees(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callees(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -673,8 +671,7 @@ impl ToolRouter {
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self
-                .active_mut()
+            if let Some(sym) = self.project()
                 .store
                 .find_symbol_by_id(&id)
                 .ok()
@@ -692,15 +689,15 @@ impl ToolRouter {
         });
         let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
         let has_full_index = {
-            let active = self.active_mut();
+            let active = self.project();
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Multi-root: union of callees from all matched SymbolIds, deduplicated.
@@ -719,7 +716,7 @@ impl ToolRouter {
         let total_callees = all_callees.len();
         let shown = all_callees.iter().take(limit);
         let nodes: Vec<_> = shown
-            .map(|ix| super::node_json(&self.active_mut().store_query_runtime, snap, *ix, None))
+            .map(|ix| super::node_json(&self.project().store_query_runtime, snap, *ix, None))
             .collect();
         let (unresolved_callees, total_unresolved_callees) =
             self.unresolved_call_refs_json(&symbol_ids, limit);
@@ -764,7 +761,7 @@ impl ToolRouter {
         lr.build_with_args(resp, args, self)
     }
 
-    pub(crate) fn handle_callgraph(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_callgraph(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -824,8 +821,7 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self
-                .active_mut()
+            if let Some(sym) = self.project()
                 .store
                 .find_symbol_by_id(&id)
                 .ok()
@@ -851,11 +847,11 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
 
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Build hop-by-hop view: multi-root BFS.
@@ -869,7 +865,7 @@ impl ToolRouter {
         for &root_id in &symbol_ids {
             if let Some(ix) = snap.id_to_idx.get(&root_id).copied() {
                 root_nodes.push(super::node_json(
-                    &self.active_mut().store_query_runtime,
+                    &self.project().store_query_runtime,
                     snap,
                     ix,
                     None,
@@ -935,7 +931,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.active_mut().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.project().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -957,7 +953,7 @@ impl ToolRouter {
                             "qualified_name": snap.node(neighbor_ix).qualified_name,
                             "kind": snap.node(neighbor_ix).kind.as_str(),
                             "edge": edge_kind.as_str(),
-                            "file": self.active_mut().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
+                            "file": self.project().store_query_runtime.resolve_file_path(&snap.node(neighbor_ix).file_id),
                             "line": snap.node(neighbor_ix).start_line,
                         }));
                     }
@@ -994,7 +990,7 @@ impl ToolRouter {
             }
         }
         {
-            let active = self.active_mut();
+            let active = self.project();
             if !active.query_runtime.has_full_index(&active.store) {
                 resp["note"] = json!(
                     "Graph expansion is complete only within the current focus closure. Background refinement may discover additional edges outside this closure; use CLI `atlas index --analysis full` only when you want an explicit project-wide cache."
@@ -1011,7 +1007,7 @@ impl ToolRouter {
         lr.build_with_args(resp, args, self)
     }
 
-    pub(crate) fn handle_path(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_path(&self, args: &serde_json::Value) -> (String, bool) {
         // Parse 'from' and 'to' as SymbolInput (string or selector object).
         let from_input = match parse_symbol_field(args, "from") {
             Ok(inp) => inp,
@@ -1120,7 +1116,7 @@ impl ToolRouter {
         let (_roots, root_warnings) = self.include_roots_from_args(args);
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for id in from_ids.iter().chain(to_ids.iter()) {
-            if let Some(sym) = self.active_mut().store.find_symbol_by_id(id).ok().flatten() {
+            if let Some(sym) = self.project().store.find_symbol_by_id(id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -1133,15 +1129,15 @@ impl ToolRouter {
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = {
-            let active = self.active_mut();
+            let active = self.project();
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = cb.graph_snapshot();
         let snap = graph.snapshot();
 
         // Try all SymbolId pairs for the same qname.  In C/C++, a symbol
@@ -1244,7 +1240,7 @@ impl ToolRouter {
             // Primary path (rank 0) gets the full treatment.
             let primary = &ranked[0];
             let hops = build_hops(
-                &self.active_mut().store_query_runtime,
+                &self.project().store_query_runtime,
                 snap,
                 &primary.path,
                 include_code,
@@ -1277,7 +1273,7 @@ impl ToolRouter {
                     .iter()
                     .map(|r| {
                         let alt_hops = build_hops(
-                            &self.active_mut().store_query_runtime,
+                            &self.project().store_query_runtime,
                             snap,
                             &r.path,
                             false,
@@ -1303,7 +1299,7 @@ impl ToolRouter {
                 if from_ids.len() > 1 {
                     if let Some(ref wid) = winning_from {
                         ambiguity["matched_from"] =
-                            json!(symbol_label(&self.active_mut().store, wid));
+                            json!(symbol_label(&self.project().store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
                     // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -1312,7 +1308,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.active_mut().store,
+                                &self.project().store,
                                 id,
                                 Some(id) == winning_from.as_ref(),
                             )
@@ -1325,7 +1321,7 @@ impl ToolRouter {
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
                         ambiguity["matched_to"] =
-                            json!(symbol_label(&self.active_mut().store, wid));
+                            json!(symbol_label(&self.project().store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
                     // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -1334,7 +1330,7 @@ impl ToolRouter {
                         .take(MAX_AMBIGUOUS_CANDIDATES)
                         .map(|id| {
                             candidate_json(
-                                &self.active_mut().store,
+                                &self.project().store,
                                 id,
                                 Some(id) == winning_to.as_ref(),
                             )
@@ -1540,7 +1536,7 @@ impl ToolRouter {
                     let from_candidates: Vec<serde_json::Value> = from_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.active_mut().store, id, false))
+                        .map(|id| candidate_json(&self.project().store, id, false))
                         .collect();
                     if !from_candidates.is_empty() {
                         resp["from_candidates"] = json!(from_candidates);
@@ -1550,7 +1546,7 @@ impl ToolRouter {
                     let to_candidates: Vec<serde_json::Value> = to_ids
                         .iter()
                         .take(MAX_AMBIGUOUS_CANDIDATES)
-                        .map(|id| candidate_json(&self.active_mut().store, id, false))
+                        .map(|id| candidate_json(&self.project().store, id, false))
                         .collect();
                     if !to_candidates.is_empty() {
                         resp["to_candidates"] = json!(to_candidates);
@@ -1619,7 +1615,7 @@ impl ToolRouter {
         Ok(Some(kinds))
     }
 
-    pub(crate) fn handle_explore(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_explore(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -1741,8 +1737,7 @@ impl ToolRouter {
                     resp["scope"] = json!(scope);
                 }
                 let (background_jobs, candidate_files) = if let Some(scope) = scope {
-                    let file_ids = self
-                        .active()
+                    let file_ids = self.project()
                         .store
                         .list_file_inventory_ids_in_scope(scope, 24)
                         .unwrap_or_default();
@@ -1792,22 +1787,21 @@ impl ToolRouter {
             }
         };
 
-        let sym = match self.active_mut().store.find_symbol_by_id(&sym_id) {
+        let sym = match self.project().store.find_symbol_by_id(&sym_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 let mut err = format!("Symbol not found in store: {qname}");
-                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
+                err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
             Err(e) => {
                 let mut err = format!("Lookup error: {e}");
-                err.push_str(self.active_mut().store_query_runtime.not_indexed_guidance());
+                err.push_str(self.project().store_query_runtime.not_indexed_guidance());
                 return (err, true);
             }
         };
 
-        let file_path = self
-            .active_mut()
+        let file_path = self.project()
             .store_query_runtime
             .resolve_file_path(&sym.file_id);
 
@@ -1822,17 +1816,18 @@ impl ToolRouter {
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let (store_clone, root_clone) = {
-            let active = self.active_mut();
+            let active = self.project();
             (active.store.clone(), active.root.clone())
         };
         let sym_repo = atlas_engine::dossier::SymbolRepo::new(store_clone.clone());
         let source_repo = atlas_engine::dossier::SourceRepo::new(store_clone.clone(), root_clone);
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
         let relation_repo =
-            atlas_engine::dossier::RelationRepo::new(store_clone.clone(), cb.graph_snapshot());
+            atlas_engine::dossier::RelationRepo::new(store_clone.clone(), graph);
         let file_repo = atlas_engine::dossier::FileFactsRepo::new(store_clone);
 
         let request = atlas_engine::dossier::types::ExploreRequest {
@@ -1888,7 +1883,7 @@ impl ToolRouter {
         lr.build_with_args(resp_value, args, self)
     }
 
-    pub(crate) fn handle_impact(&mut self, args: &serde_json::Value) -> (String, bool) {
+    pub(crate) fn handle_impact(&self, args: &serde_json::Value) -> (String, bool) {
         let input = match parse_symbol_arg(args) {
             Ok(inp) => inp,
             Err(e) => return (e, true),
@@ -1994,11 +1989,11 @@ impl ToolRouter {
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
-        let cb = match self.active_mut().graph_runtime.provider().context_builder() {
-            Some(cb) => cb,
+        let project = self.project();
+        let graph = match project.graph_runtime.provider().graph_snapshot() {
+            Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let graph = cb.graph_snapshot();
         let sub = if include_children {
             graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
         } else {
@@ -2038,7 +2033,7 @@ impl ToolRouter {
             .into_iter()
             .map(|(fid, symbols)| {
                 json!({
-                    "file": self.active_mut().store_query_runtime.resolve_file_path(&fid),
+                    "file": self.project().store_query_runtime.resolve_file_path(&fid),
                     "symbols": symbols,
                 })
             })
@@ -2048,10 +2043,9 @@ impl ToolRouter {
         let mut invariants: Vec<serde_json::Value> = Vec::new();
         let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
         let domain_rules = if semantic {
-            match self.active_mut().store.list_domain_rules(None, None) {
+            match self.project().store.list_domain_rules(None, None) {
                 Ok(_rows) => {
-                    let lang_str = self
-                        .active_mut()
+                    let lang_str = self.project()
                         .store
                         .find_symbol_by_id(&sid)
                         .ok()
@@ -2059,7 +2053,7 @@ impl ToolRouter {
                         .map(|s| s.language.as_str())
                         .unwrap_or("c");
                     Some(analysis::CppOwnershipRules::load_for(
-                        &self.active_mut().store,
+                        &self.project().store,
                         lang_str,
                     ))
                 }
@@ -2081,8 +2075,7 @@ impl ToolRouter {
                 }
 
                 // Load CFG for this function
-                let cfg_nodes = match self
-                    .active_mut()
+                let cfg_nodes = match self.project()
                     .store
                     .find_cfg_nodes_by_function(&node.symbol_id)
                 {
@@ -2094,14 +2087,12 @@ impl ToolRouter {
                 }
 
                 // Run branch diff analysis
-                let cfg_edges = self
-                    .active_mut()
+                let cfg_edges = self.project()
                     .store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 // ── Semantic branch diff with dataflow composition ──
-                let lang = self
-                    .active_mut()
+                let lang = self.project()
                     .store
                     .find_symbol_by_id(&node.symbol_id)
                     .ok()
@@ -2111,8 +2102,7 @@ impl ToolRouter {
                 let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
                 // Load DataFlow nodes and edges
-                let data_nodes = self
-                    .active_mut()
+                let data_nodes = self.project()
                     .store
                     .find_data_nodes_by_function(&node.symbol_id)
                     .unwrap_or_default();
@@ -2120,7 +2110,7 @@ impl ToolRouter {
                     vec![]
                 } else {
                     let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                    self.active_mut()
+                    self.project()
                         .store
                         .find_dataflow_edges_by_sources(&all_ids)
                         .unwrap_or_default()
@@ -2251,7 +2241,7 @@ impl ToolRouter {
             });
         }
         {
-            let active = self.active_mut();
+            let active = self.project();
             if !active.query_runtime.has_full_index(&active.store) {
                 resp["capability_note"] = json!(
                     "focus mode: impact is bounded by the current focus closure; background refinement may discover additional affected symbols."
@@ -2362,13 +2352,11 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         let sid_b = insert_test_symbol(&store, "b.ts", "b");
-        let before = router
-            .active_mut()
+        let before = router.project()
             .graph_runtime
             .provider()
-            .context_builder()
-            .unwrap()
             .graph_snapshot()
+            .unwrap()
             .impact_with_kinds(
                 &sid_b,
                 1,
@@ -2382,21 +2370,18 @@ mod tests {
         // Bump graph_generation to signal that the store has changed (external
         // store mutation that bypasses the overlay runtime). This replaces the
         // old TTL + signature-check cooldown bypass.
-        router
-            .active_mut()
+        router.project()
             .graph_runtime
             .invalidation
             .graph_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         router.maybe_refresh_graph().unwrap();
-        let after = router
-            .active_mut()
+        let after = router.project()
             .graph_runtime
             .provider()
-            .context_builder()
-            .unwrap()
             .graph_snapshot()
+            .unwrap()
             .impact_with_kinds(
                 &sid_b,
                 1,
@@ -3444,11 +3429,11 @@ mod tests {
             .unwrap();
         let mut router = test_router(store);
         // After construction, focus_runtime is always present (no Option wrapper).
-        let mode = router.active_mut().query_runtime.detect_index_mode();
+        let mode = router.project().query_runtime.detect_index_mode();
         assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
         // init_focus is idempotent.
         router.init_focus();
-        let mode2 = router.active_mut().query_runtime.detect_index_mode();
+        let mode2 = router.project().query_runtime.detect_index_mode();
         assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
     }
 
@@ -3497,13 +3482,11 @@ mod tests {
         let mut router = test_router(store);
         // Simulate a full index so prepare_focus_query returns early
         // without focus data — the equivalent of the old "no focus" path.
-        let signature = router
-            .active_mut()
+        let signature = router.project()
             .store
             .index_signature()
             .unwrap_or_default();
-        *router
-            .active_mut()
+        *router.project()
             .query_runtime
             .cache
             .cached_manual_full_index
@@ -3553,9 +3536,9 @@ mod tests {
         let lr = crate::tools::apply_focus_result_to_lr(lr, &result);
 
         // Build with a mock store to verify no crash
-        let mut store = MockStore::new();
+        let store = MockStore::new();
         let body = json!({"ok": true});
-        let (json_str, is_err) = lr.build(body, &mut store);
+        let (json_str, is_err) = lr.build(body, &store);
         assert!(!is_err, "should succeed with no focus data");
         // No focus fields should be injected
         assert!(
@@ -3573,19 +3556,21 @@ mod tests {
     }
 
     // Mock SnapshotStore for isolated AnalysisEnvelope tests
+    use std::sync::Mutex;
+
     struct MockStore {
-        snapshots: Vec<crate::tools::query_snapshot::QuerySnapshot>,
+        snapshots: Mutex<Vec<crate::tools::query_snapshot::QuerySnapshot>>,
     }
     impl MockStore {
         fn new() -> Self {
             Self {
-                snapshots: Vec::new(),
+                snapshots: Mutex::new(Vec::new()),
             }
         }
     }
     impl crate::tools::analysis_envelope::SnapshotStore for MockStore {
-        fn store_query_snapshot(&mut self, snapshot: crate::tools::query_snapshot::QuerySnapshot) {
-            self.snapshots.push(snapshot);
+        fn store_query_snapshot(&self, snapshot: crate::tools::query_snapshot::QuerySnapshot) {
+            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
         }
     }
 }
