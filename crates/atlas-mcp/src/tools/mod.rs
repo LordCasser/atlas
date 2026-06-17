@@ -111,7 +111,6 @@ pub(crate) mod context;
 pub(crate) mod dependencies;
 pub(crate) mod dependents;
 pub(crate) mod domain_rules;
-pub(crate) mod execution_context;
 pub(crate) mod graph;
 pub(crate) mod lazy_refresh;
 pub(crate) mod lifecycle;

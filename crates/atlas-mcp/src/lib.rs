@@ -457,7 +457,7 @@ async fn wait_for_task_completion(
         {
             if matches!(
                 state.status,
-                TaskStatus::Completed | TaskStatus::Failed { .. }
+                TaskStatus::Completed | TaskStatus::Failed
             ) {
                 return Some(state);
             }
@@ -478,7 +478,7 @@ async fn wait_for_task_completion(
 
 fn task_state_to_rmcp_result(state: TaskState) -> rmcp_model::CallToolResult {
     let is_error = match state.status {
-        TaskStatus::Failed { .. } => true,
+        TaskStatus::Failed => true,
         _ => state.is_error.unwrap_or(false),
     };
     let text = state.result.unwrap_or_else(|| {

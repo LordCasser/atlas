@@ -40,7 +40,7 @@ pub enum TaskStatus {
     /// Task completed successfully or with a known error.
     Completed,
     /// Task panicked or encountered an unrecoverable error.
-    Failed { error: String },
+    Failed,
 }
 
 /// The full state of an async task, returned to clients on poll.
@@ -152,20 +152,10 @@ impl TaskManager {
     /// Mark a task as Failed (e.g., handler panicked).
     pub fn mark_failed(&self, task_id: &str, error: String) {
         if let Some(state) = self.tasks.write().unwrap().get_mut(task_id) {
-            state.status = TaskStatus::Failed {
-                error: error.clone(),
-            };
+            state.status = TaskStatus::Failed;
             state.completed_at = Some(Instant::now());
             state.result = Some(error);
             state.is_error = Some(true);
-        }
-    }
-
-    /// Update task progress (0-100). Called by running handlers.
-    pub fn update_progress(&self, task_id: &str, pct: u8, msg: Option<String>) {
-        if let Some(state) = self.tasks.write().unwrap().get_mut(task_id) {
-            state.progress_pct = Some(pct);
-            state.progress_msg = msg;
         }
     }
 
@@ -188,14 +178,6 @@ impl TaskManager {
     /// List all active tasks (for the `tasks` MCP tool response).
     pub fn list_all(&self) -> Vec<TaskState> {
         self.tasks.read().unwrap().values().cloned().collect()
-    }
-
-    /// Remove expired completed/failed tasks. Returns count of pruned tasks.
-    pub fn prune_expired(&self) -> usize {
-        let mut tasks = self.tasks.write().unwrap();
-        let before = tasks.len();
-        tasks.retain(|_, s| s.completed_at.map_or(true, |t| t.elapsed() <= self.ttl));
-        before - tasks.len()
     }
 
     /// Get the concurrency semaphore for acquiring execution permits.
@@ -240,7 +222,7 @@ mod tests {
         let id = mgr.register("trace");
         mgr.mark_failed(&id, "handler panicked".into());
         let state = mgr.poll(&id).unwrap();
-        assert!(matches!(state.status, TaskStatus::Failed { .. }));
+        assert!(matches!(state.status, TaskStatus::Failed));
     }
 
     #[test]
@@ -299,25 +281,20 @@ mod tests {
     }
 
     #[test]
-    fn prune_removes_expired() {
-        let mgr = TaskManager::new(4);
-        let id = mgr.register("search");
-        mgr.mark_completed(&id, "done".into(), false);
-
-        // At least verify prune doesn't crash and task still exists (not yet expired)
-        mgr.prune_expired();
-        assert!(mgr.poll(&id).is_some());
-    }
-
-    #[test]
     fn progress_tracking() {
+        // Basic lifecycle test: task moves from Pending to Running to Completed.
         let mgr = TaskManager::new(4);
         let id = mgr.register("search");
-        mgr.mark_running(&id);
-        mgr.update_progress(&id, 50, Some("half done".into()));
         let state = mgr.poll(&id).unwrap();
-        assert_eq!(state.progress_pct, Some(50));
-        assert_eq!(state.progress_msg, Some("half done".into()));
+        assert!(matches!(state.status, TaskStatus::Pending));
+
+        mgr.mark_running(&id);
+        let state = mgr.poll(&id).unwrap();
+        assert!(matches!(state.status, TaskStatus::Running));
+
+        mgr.mark_completed(&id, r#"{"result":"ok"}"#.into(), false);
+        let state = mgr.poll(&id).unwrap();
+        assert!(matches!(state.status, TaskStatus::Completed));
     }
 
     #[test]
@@ -342,14 +319,11 @@ mod tests {
         let id2 = mgr.register("trace");
 
         mgr.mark_running(&id1);
-        mgr.update_progress(&id1, 30, None);
 
         let s1 = mgr.poll(&id1).unwrap();
         let s2 = mgr.poll(&id2).unwrap();
         assert!(matches!(s1.status, TaskStatus::Running));
-        assert_eq!(s1.progress_pct, Some(30));
         assert!(matches!(s2.status, TaskStatus::Pending));
-        assert_eq!(s2.progress_pct, None);
     }
 
     #[test]

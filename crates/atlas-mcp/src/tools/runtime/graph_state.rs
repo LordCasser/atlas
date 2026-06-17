@@ -29,14 +29,6 @@ impl GraphState {
         self.graph_initialized.store(true, Ordering::Release);
     }
 
-    fn search_engine_guard(&self) -> Option<std::sync::MutexGuard<'_, Option<SearchEngine>>> {
-        self.search.lock().ok()
-    }
-
-    fn context_guard(&self) -> Option<std::sync::MutexGuard<'_, Option<ContextBuilder>>> {
-        self.context.lock().ok()
-    }
-
     pub(crate) fn ensure_initialized(
         &self,
         store: &Arc<Store>,

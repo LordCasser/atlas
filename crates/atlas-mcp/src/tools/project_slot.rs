@@ -25,20 +25,9 @@ impl ProjectSlot {
             .ok_or_else(|| "No active project. Call project(action=\"open\") first.".to_string())
     }
 
-    /// Immutable access (used only where Arc clone is too much overhead).
-    /// Returns cloned Arc. Kept for backward compat during migration.
-    pub(crate) fn require(&self) -> Result<Arc<ActiveProject>, String> {
-        self.get()
-    }
-
     /// Replace the active project. Write lock held only for the assignment.
     pub(crate) fn replace(&self, project: Arc<ActiveProject>) {
         *self.active.write().unwrap() = Some(project);
-    }
-
-    /// Clear the active project.
-    pub(crate) fn clear(&self) {
-        *self.active.write().unwrap() = None;
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -69,13 +58,5 @@ mod tests {
         let slot = ProjectSlot::new(None);
         assert!(!slot.is_active());
         assert!(slot.get().is_err());
-    }
-
-    #[test]
-    fn clear_removes_active_project() {
-        let slot = ProjectSlot::new(None);
-        assert!(!slot.is_active());
-        slot.clear(); // should not panic
-        assert!(!slot.is_active());
     }
 }
