@@ -12,16 +12,19 @@ impl ToolRouter {
             Ok(s) => s,
             Err(e) => return (format!("Error getting stats: {e}"), true),
         };
-        let layer_counts = self.project()
+        let layer_counts = self
+            .project()
             .store
             .count_fresh_file_extraction_state()
             .unwrap_or_default();
-        let active_jobs = self.project()
+        let active_jobs = self
+            .project()
             .store
             .list_active_extraction_jobs()
             .unwrap_or_default();
 
-        let index_mode = self.project()
+        let index_mode = self
+            .project()
             .store
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
@@ -68,7 +71,8 @@ impl ToolRouter {
         // Build lazy_dataflow block
         let lazy_dataflow = {
             let df_stats = self.project().store.get_lazy_dataflow_stats().ok();
-            let (files_with_dataflow, _structural, _manifest, files_with_cfg) = self.project()
+            let (files_with_dataflow, _structural, _manifest, files_with_cfg) = self
+                .project()
                 .store
                 .get_capability_counts()
                 .unwrap_or((0, 0, 0, 0));
@@ -148,10 +152,9 @@ impl ToolRouter {
                     json!("in_memory (not persisted)"),
                 );
             } else {
-                diag.as_object_mut().unwrap().insert(
-                    "storage_mode".to_string(),
-                    json!("persistent"),
-                );
+                diag.as_object_mut()
+                    .unwrap()
+                    .insert("storage_mode".to_string(), json!("persistent"));
             }
             diag
         };

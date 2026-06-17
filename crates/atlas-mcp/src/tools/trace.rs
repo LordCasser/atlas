@@ -109,7 +109,8 @@ impl ToolRouter {
             lr = super::apply_focus_result_to_lr(lr, result);
         }
         ctx.send_progress(0.8, "Running trace point...");
-        let mut resp = self.project()
+        let mut resp = self
+            .project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -229,7 +230,8 @@ impl ToolRouter {
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
         // diagnostics, and partial_result from the dataflow layer.
-        let mut resp = self.project()
+        let mut resp = self
+            .project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -317,7 +319,8 @@ impl ToolRouter {
                 // ties.  Pick the first candidate and look up its SymbolId
                 // from the store so we can proceed with tracing.
                 let first = &candidates[0];
-                let sid = match self.project()
+                let sid = match self
+                    .project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -368,7 +371,8 @@ impl ToolRouter {
             }
             lazy_warnings = focus_warnings;
         }
-        let resp = self.project()
+        let resp = self
+            .project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -478,7 +482,8 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.project()
+                let sid = match self
+                    .project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -531,7 +536,8 @@ impl ToolRouter {
             } => (symbol_id, Some(resolved)),
             SymbolResolution::Ambiguous { candidates, .. } => {
                 let first = &candidates[0];
-                let sid = match self.project()
+                let sid = match self
+                    .project()
                     .store
                     .find_symbols_by_qname(&first.qualified_name)
                 {
@@ -578,7 +584,8 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(from_id));
 
         // Ensure structural for endpoint files via focus query
-        let intent = self.project()
+        let intent = self
+            .project()
             .store
             .find_symbol_by_id(&from_id)
             .ok()
@@ -599,7 +606,8 @@ impl ToolRouter {
             active.query_runtime.has_full_index(&active.store)
         };
 
-        let mut resp = self.project()
+        let mut resp = self
+            .project()
             .engine
             .lock()
             .unwrap_or_else(|e| e.into_inner())

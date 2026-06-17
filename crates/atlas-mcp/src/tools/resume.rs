@@ -25,7 +25,8 @@ impl ToolRouter {
         // Prune expired snapshots before lookup
         self.project().job_runtime.prune_expired_snapshots();
 
-        let snapshot = match self.project()
+        let snapshot = match self
+            .project()
             .job_runtime
             .query_snapshots
             .lock()
@@ -46,7 +47,8 @@ impl ToolRouter {
         };
 
         // Update snapshot status
-        if let Some(s) = self.project()
+        if let Some(s) = self
+            .project()
             .job_runtime
             .query_snapshots
             .lock()
@@ -62,13 +64,7 @@ impl ToolRouter {
             let intent = window
                 .seed_unit
                 .symbol_id
-                .and_then(|sid| {
-                    self.project()
-                        .store
-                        .find_symbol_by_id(&sid)
-                        .ok()
-                        .flatten()
-                })
+                .and_then(|sid| self.project().store.find_symbol_by_id(&sid).ok().flatten())
                 .map(|sym| atlas_engine::QueryIntent::Calls {
                     symbol_name: sym.name.clone(),
                     file_id: Some(sym.file_id),
@@ -88,7 +84,8 @@ impl ToolRouter {
             // function-level dataflow via `ensure_for_function`.
             for unit in &window.units {
                 if let Some(ref sid) = unit.symbol_id {
-                    if let Err(e) = self.project()
+                    if let Err(e) = self
+                        .project()
                         .analysis_runtime
                         .ensure_dataflow_for_function(sid, None)
                     {
@@ -177,7 +174,8 @@ impl ToolRouter {
             Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
 
         // Mark as Ready if the re-run completed successfully
-        if let Some(s) = self.project()
+        if let Some(s) = self
+            .project()
             .job_runtime
             .query_snapshots
             .lock()

@@ -160,8 +160,10 @@ pub enum ExecutionMode {
 /// Determine whether a tool runs synchronously or asynchronously.
 pub fn execution_mode(contract: &ToolContract) -> ExecutionMode {
     match contract {
-        // Always sync: fast reads, mutations, and task control
+        // Always sync: project activation mutates the active project slot and
+        // must complete before subsequent calls observe the new project.
         ToolContract::StatusRead
+        | ToolContract::ProjectLifecycle
         | ToolContract::OverlayRead
         | ToolContract::OverlayMutation(_)
         | ToolContract::TaskControl => ExecutionMode::Sync,
@@ -173,8 +175,7 @@ pub fn execution_mode(contract: &ToolContract) -> ExecutionMode {
         ToolContract::StoreFactQuery(QueryNeeds::Structural) => ExecutionMode::Async,
 
         // Always async: slow operations
-        ToolContract::ProjectLifecycle
-        | ToolContract::SemanticGraphQuery(_)
+        ToolContract::SemanticGraphQuery(_)
         | ToolContract::TraceQuery(_)
         | ToolContract::SemanticAnalysis(_) => ExecutionMode::Async,
 
@@ -385,13 +386,25 @@ mod tests {
 
     #[test]
     fn test_overlay_mutation_is_sync() {
-        let c = contract_for("fp_dispatches", &json!({"action": "add", "field_qname": "x", "target_qname": "y"}));
+        let c = contract_for(
+            "fp_dispatches",
+            &json!({"action": "add", "field_qname": "x", "target_qname": "y"}),
+        );
         assert_eq!(execution_mode(&c), ExecutionMode::Sync);
     }
 
     #[test]
     fn test_task_control_is_sync() {
         let c = contract_for("tasks", &json!({}));
+        assert_eq!(execution_mode(&c), ExecutionMode::Sync);
+    }
+
+    #[test]
+    fn test_project_lifecycle_is_sync() {
+        let c = contract_for(
+            "project",
+            &json!({"action": "open", "project_path": "/tmp"}),
+        );
         assert_eq!(execution_mode(&c), ExecutionMode::Sync);
     }
 
@@ -415,7 +428,10 @@ mod tests {
 
     #[test]
     fn test_trace_query_is_async() {
-        let c = contract_for("trace", &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1}));
+        let c = contract_for(
+            "trace",
+            &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1}),
+        );
         assert_eq!(execution_mode(&c), ExecutionMode::Async);
     }
 

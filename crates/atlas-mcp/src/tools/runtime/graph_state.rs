@@ -7,7 +7,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use atlas_engine::{ContextBuilder, ContextView, FileId, GraphEngine, SearchEngine, SourceExtractor, Store};
+use atlas_engine::{
+    ContextBuilder, ContextView, FileId, GraphEngine, SearchEngine, SourceExtractor, Store,
+};
 
 use crate::tools::lazy_refresh;
 use crate::tools::runtime::graph_provider::GraphProvider;
@@ -46,7 +48,8 @@ impl GraphState {
         }
         tracing::info!("Building graph snapshot (first request)...");
         let graph = Arc::new(GraphEngine::from_store(store, 0.3)?);
-        *self.search.lock().unwrap() = Some(SearchEngine::new(Arc::clone(store), Arc::clone(&graph)));
+        *self.search.lock().unwrap() =
+            Some(SearchEngine::new(Arc::clone(store), Arc::clone(&graph)));
         let ctx = ContextBuilder::new(Arc::clone(store), graph)
             .with_project_root(project_root.to_path_buf());
         let ext = source_extractor.clone();
@@ -58,13 +61,17 @@ impl GraphState {
     }
 
     pub(crate) fn edge_count(&self) -> usize {
-        self.search.lock().ok()
+        self.search
+            .lock()
+            .ok()
             .and_then(|g| g.as_ref().map(|s| s.graph_snapshot().edge_count()))
             .unwrap_or(0)
     }
 
     pub(crate) fn symbol_count(&self) -> usize {
-        self.search.lock().ok()
+        self.search
+            .lock()
+            .ok()
             .and_then(|g| g.as_ref().map(|s| s.graph_snapshot().node_count()))
             .unwrap_or(0)
     }
@@ -88,7 +95,12 @@ impl GraphState {
         store: Arc<Store>,
         lazy_refresh_queue: Arc<lazy_refresh::LazyRefreshQueue>,
     ) {
-        if let Some(graph) = self.pending_graph_rebuild.lock().ok().and_then(|mut p| p.take()) {
+        if let Some(graph) = self
+            .pending_graph_rebuild
+            .lock()
+            .ok()
+            .and_then(|mut p| p.take())
+        {
             tracing::info!("Applying background-built graph snapshot");
             self.swap_graph(&store, graph);
             lazy_refresh_queue.mark_rebuild_applied();
@@ -100,18 +112,16 @@ impl GraphState {
             tracing::info!("Spawning background full graph rebuild (non-blocking)");
             let pending = Arc::clone(&self.pending_graph_rebuild);
             let queue = Arc::clone(&lazy_refresh_queue);
-            std::thread::spawn(move || {
-                match GraphEngine::from_store(&store, 0.3) {
-                    Ok(graph) => {
-                        if let Ok(mut slot) = pending.lock() {
-                            *slot = Some(Arc::new(graph));
-                        }
+            std::thread::spawn(move || match GraphEngine::from_store(&store, 0.3) {
+                Ok(graph) => {
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = Some(Arc::new(graph));
                     }
-                    Err(e) => {
-                        tracing::error!("Background graph rebuild failed: {:#}", e);
-                        queue.mark_rebuild_finished();
-                        queue.schedule_full_rebuild();
-                    }
+                }
+                Err(e) => {
+                    tracing::error!("Background graph rebuild failed: {:#}", e);
+                    queue.mark_rebuild_finished();
+                    queue.schedule_full_rebuild();
                 }
             });
         }
@@ -142,7 +152,9 @@ impl GraphState {
             _ => {
                 let current = store.index_signature().unwrap_or_default();
                 if current != *self.last_graph_signature.lock().unwrap() {
-                    tracing::info!("Index signature changed, refreshing graph (no existing snapshot)");
+                    tracing::info!(
+                        "Index signature changed, refreshing graph (no existing snapshot)"
+                    );
                     let graph = Arc::new(GraphEngine::from_store(store, 0.3)?);
                     self.swap_graph(store, graph);
                 }
@@ -150,8 +162,11 @@ impl GraphState {
             }
         };
         let file_paths: std::collections::HashMap<FileId, String> = store
-            .list_files().unwrap_or_default().into_iter()
-            .map(|f| (f.file_id, f.path)).collect();
+            .list_files()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.file_id, f.path))
+            .collect();
 
         let old_snap = old_graph.snapshot();
         let mut new_snapshot = old_snap.clone();
@@ -174,7 +189,8 @@ impl GraphState {
 
     /// Lock and access the search engine for a closure.
     fn with_search<F, R>(&self, f: F) -> Option<R>
-    where F: FnOnce(&SearchEngine) -> R
+    where
+        F: FnOnce(&SearchEngine) -> R,
     {
         let guard = self.search.lock().ok()?;
         guard.as_ref().map(|s| f(s))
@@ -182,7 +198,8 @@ impl GraphState {
 
     /// Lock and access the context builder for a closure.
     fn with_context<F, R>(&self, f: F) -> Option<R>
-    where F: FnOnce(&ContextBuilder) -> R
+    where
+        F: FnOnce(&ContextBuilder) -> R,
     {
         let guard = self.context.lock().ok()?;
         guard.as_ref().map(|c| f(c))

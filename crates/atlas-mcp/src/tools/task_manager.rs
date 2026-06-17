@@ -70,10 +70,7 @@ impl TaskState {
     /// Sequence: 500, 1000, 2000, 4000, 5000, 5000, ...
     pub fn next_poll_after_ms(&self) -> u64 {
         let base = (self.backoff_config.initial_ms as f64
-            * self
-                .backoff_config
-                .multiplier
-                .powi(self.poll_count as i32))
+            * self.backoff_config.multiplier.powi(self.poll_count as i32))
         .min(self.backoff_config.max_ms as f64) as u64;
         let jitter = if self.backoff_config.jitter_ms > 0 {
             rand::thread_rng().gen_range(0..=self.backoff_config.jitter_ms)
@@ -180,10 +177,7 @@ impl TaskManager {
         state.poll_count += 1;
 
         // Check TTL for completed/failed tasks
-        if state
-            .completed_at
-            .map_or(false, |t| t.elapsed() > self.ttl)
-        {
+        if state.completed_at.map_or(false, |t| t.elapsed() > self.ttl) {
             tasks.remove(task_id);
             return None;
         }

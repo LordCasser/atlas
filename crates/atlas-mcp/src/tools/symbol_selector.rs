@@ -43,7 +43,8 @@ impl ToolRouter {
             return None;
         }
 
-        if let Ok(Some(file_id)) = self.project()
+        if let Ok(Some(file_id)) = self
+            .project()
             .store
             .resolve_file_id(&self.project().root, clean)
         {

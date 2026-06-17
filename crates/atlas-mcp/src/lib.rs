@@ -24,7 +24,7 @@ use rmcp::service::RequestContext;
 use serde_json::json;
 
 use self::tools::ToolRouter;
-use self::tools::task_manager::{BackoffConfig, TaskManager};
+use self::tools::task_manager::{BackoffConfig, TaskManager, TaskState, TaskStatus};
 use self::tools::tool_contract::{ExecutionMode, contract_for, execution_mode};
 
 pub mod protocol;
@@ -176,7 +176,8 @@ impl ServerHandler for AtlasMcpService {
         _context: RequestContext<rmcp::RoleServer>,
     ) -> impl Future<Output = Result<rmcp_model::ListToolsResult, rmcp::ErrorData>> + Send + '_
     {
-        let tools = self.router
+        let tools = self
+            .router
             .list_tools()
             .tools
             .into_iter()
@@ -259,13 +260,8 @@ impl ServerHandler for AtlasMcpService {
 
             // ── Async path: register task, spawn work, return task_id ──
             if mode == ExecutionMode::Async {
-                return Self::handle_async_tool(
-                    &self.router,
-                    &self.task_mgr,
-                    &tool_name,
-                    &args,
-                )
-                .await;
+                return Self::handle_async_tool(&self.router, &self.task_mgr, &tool_name, &args)
+                    .await;
             }
 
             // ── Sync path: execute inline ──────────────────────────────
@@ -274,8 +270,7 @@ impl ServerHandler for AtlasMcpService {
                 "project" | "search" | "symbol" | "trace"
             ) && has_progress_token
             {
-                let (tx, mut rx) =
-                    tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tools::ProgressReport>();
                 let token = progress_token.unwrap();
                 let peer = context.peer.clone();
 
@@ -331,7 +326,7 @@ impl AtlasMcpService {
         router: &ToolRouter,
         task_mgr: &Arc<TaskManager>,
         tool_name: &str,
-        _args: &serde_json::Value,
+        args: &serde_json::Value,
     ) -> Result<rmcp_model::CallToolResult, rmcp::ErrorData> {
         // Extract project snapshot for the async task
         let project = match router.project.get() {
@@ -345,12 +340,13 @@ impl AtlasMcpService {
 
         // Register the task
         let task_id = task_mgr.register(tool_name);
+        let task_id_for_response = task_id.clone();
 
         // Build immediate response with polling instructions
         let backoff = BackoffConfig::default();
         let next_poll = backoff.initial_ms;
         let response = json!({
-            "task_id": task_id,
+            "task_id": task_id_for_response,
             "partial_result": true,
             "tool": tool_name,
             "status": "accepted",
@@ -366,57 +362,72 @@ impl AtlasMcpService {
             },
             "next_action": {
                 "tool": "tasks",
-                "args": {"task_id": task_id}
+                "args": {"task_id": task_id_for_response}
             }
         });
 
         // Clone what the spawned task needs
-        let task_mgr = Arc::clone(task_mgr);
+        let task_mgr_for_worker = Arc::clone(task_mgr);
         let sem = task_mgr.semaphore();
         let tool_name_owned = tool_name.to_string();
+        let args_owned = args.clone();
+        let task_router = ToolRouter::from_active_project(project);
 
         // Spawn the async work
         tokio::spawn(async move {
-            let _permit = sem.acquire().await.expect("semaphore closed");
-            task_mgr.mark_running(&task_id);
-
-            // ── Placeholder handler execution ──────────────────────────
-            // Real handler wiring will be done in a follow-up phase.
-            // For now, demonstrate the async infrastructure with a
-            // simulated completion.
-            let handler_result = std::panic::catch_unwind(
-                std::panic::AssertUnwindSafe(|| {
-                    // Create execution context for the handler
-                    let _ec = crate::tools::execution_context::ExecutionContext::new(
-                        project,
-                        Some(task_id.clone()),
-                        None, // progress channel not wired here yet
-                    );
-                    format!(
-                        r#"{{"message": "async {} task {} accepted — handler not yet wired"}}"#,
-                        tool_name_owned, task_id
-                    )
-                }),
-            );
-
-            match handler_result {
-                Ok(result_str) => {
-                    task_mgr.mark_completed(&task_id, result_str, false);
+            let permit = match sem.acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    task_mgr_for_worker
+                        .mark_failed(&task_id, "async task semaphore closed".to_string());
+                    return;
                 }
-                Err(panic_err) => {
-                    let msg = if let Some(s) = panic_err.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = panic_err.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else {
-                        "handler panicked with unknown payload".to_string()
-                    };
-                    task_mgr.mark_failed(&task_id, msg);
+            };
+            task_mgr_for_worker.mark_running(&task_id);
+
+            let task_id_for_block = task_id.clone();
+            let blocking = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let ctx = tools::ToolCallContext::empty();
+                    task_router.call_tool(&ctx, &tool_name_owned, &args_owned)
+                }))
+            })
+            .await;
+
+            match blocking {
+                Ok(Ok(tool_result)) => {
+                    let is_error = tool_result.is_error.unwrap_or(false);
+                    let result_text = tool_result
+                        .content
+                        .into_iter()
+                        .map(|block| match block {
+                            protocol::ContentBlock::Text { text } => text,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    task_mgr_for_worker.mark_completed(&task_id, result_text, is_error);
+                }
+                Ok(Err(panic_err)) => {
+                    let msg = panic_message(panic_err);
+                    task_mgr_for_worker.mark_failed(&task_id, msg);
+                }
+                Err(join_err) => {
+                    task_mgr_for_worker.mark_failed(
+                        &task_id_for_block,
+                        format!("async handler task failed: {join_err}"),
+                    );
                 }
             }
         });
 
-        // Return immediate response with task_id
+        if let Some(state) =
+            wait_for_task_completion(task_mgr, &task_id_for_response, sync_wait_timeout()).await
+        {
+            return Ok(task_state_to_rmcp_result(state));
+        }
+
+        // Return polling contract only when the handler exceeded the sync wait budget.
         let text = serde_json::to_string_pretty(&response).unwrap_or_default();
         Ok(rmcp_model::CallToolResult::success(vec![
             rmcp_model::Content::text(text),
@@ -424,8 +435,88 @@ impl AtlasMcpService {
     }
 }
 
+fn sync_wait_timeout() -> std::time::Duration {
+    let millis = std::env::var("ATLAS_MCP_SYNC_WAIT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(25_000);
+    std::time::Duration::from_millis(millis)
+}
+
+async fn wait_for_task_completion(
+    task_mgr: &Arc<TaskManager>,
+    task_id: &str,
+    timeout: std::time::Duration,
+) -> Option<TaskState> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(state) = task_mgr
+            .list_all()
+            .into_iter()
+            .find(|state| state.id == task_id)
+        {
+            if matches!(
+                state.status,
+                TaskStatus::Completed | TaskStatus::Failed { .. }
+            ) {
+                return Some(state);
+            }
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return None;
+        }
+        let remaining = timeout.saturating_sub(elapsed);
+        tokio::time::sleep(std::cmp::min(
+            remaining,
+            std::time::Duration::from_millis(25),
+        ))
+        .await;
+    }
+}
+
+fn task_state_to_rmcp_result(state: TaskState) -> rmcp_model::CallToolResult {
+    let is_error = match state.status {
+        TaskStatus::Failed { .. } => true,
+        _ => state.is_error.unwrap_or(false),
+    };
+    let text = state.result.unwrap_or_else(|| {
+        json!({
+            "task_id": state.id,
+            "status": format!("{:?}", state.status).to_lowercase(),
+            "message": "task finished without a result payload"
+        })
+        .to_string()
+    });
+    let content = vec![rmcp_model::Content::text(text)];
+    if is_error {
+        rmcp_model::CallToolResult::error(content)
+    } else {
+        rmcp_model::CallToolResult::success(content)
+    }
+}
+
+fn panic_message(panic_err: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic_err.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic_err.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "handler panicked with unknown payload".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use atlas_engine::Store;
+    use serde_json::json;
+
+    use super::tools::task_manager::TaskStatus;
+
     #[test]
     fn unopened_server_can_be_constructed() {
         let _server = super::McpServer::new_unopened();
@@ -434,5 +525,46 @@ mod tests {
     #[test]
     fn server_new_is_constructable() {
         // Verify the server struct compiles without Mutex
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn async_tool_returns_immediate_result_when_completed_within_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let service = super::AtlasMcpService::new(store, temp.path().to_path_buf());
+
+        let args = json!({"file_path": "missing.c"});
+        let accepted = super::AtlasMcpService::handle_async_tool(
+            &service.router,
+            &service.task_mgr,
+            "file_dependencies",
+            &args,
+        )
+        .await
+        .unwrap();
+        assert!(accepted.is_error.unwrap_or(false));
+        let result = accepted
+            .content
+            .into_iter()
+            .map(|content| format!("{content:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(result.contains("File not found: missing.c"), "{result}");
+        assert!(!result.contains("handler not yet wired"), "{result}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_task_can_timeout_to_polling_contract() {
+        let mgr = Arc::new(super::TaskManager::new(1));
+        let task_id = mgr.register("calls");
+
+        let state = super::wait_for_task_completion(&mgr, &task_id, Duration::from_millis(1)).await;
+
+        assert!(state.is_none());
+        assert!(matches!(
+            mgr.poll(&task_id).unwrap().status,
+            TaskStatus::Pending
+        ));
     }
 }

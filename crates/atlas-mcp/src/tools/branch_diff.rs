@@ -192,7 +192,8 @@ impl ToolRouter {
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let store = self.project().store.clone();
-        let (cfg_nodes, cfg_edges) = match self.project()
+        let (cfg_nodes, cfg_edges) = match self
+            .project()
             .analysis_runtime
             .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
         {
@@ -209,7 +210,8 @@ impl ToolRouter {
 
         // --- CFG is available — run branch diff analysis ---
 
-        let qname = self.project()
+        let qname = self
+            .project()
             .store
             .find_symbol_by_id(&sid)
             .ok()
@@ -227,7 +229,8 @@ impl ToolRouter {
         let mut semantic_window = None;
         let diffs = if use_semantic {
             // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
-            let lang = self.project()
+            let lang = self
+                .project()
                 .store
                 .find_symbol_by_id(&sid)
                 .ok()
@@ -236,7 +239,8 @@ impl ToolRouter {
                 .unwrap_or(atlas_engine::Language::C);
             let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
-            match self.project()
+            match self
+                .project()
                 .analysis_runtime
                 .ensure_dataflow_for_function(&sid, Some(&query_id))
             {
@@ -250,7 +254,8 @@ impl ToolRouter {
             }
 
             // Load DataFlow nodes and edges
-            let data_nodes = self.project()
+            let data_nodes = self
+                .project()
                 .store
                 .find_data_nodes_by_function(&sid)
                 .unwrap_or_default();
@@ -337,14 +342,22 @@ mod tests {
 
     impl SnapshotStore for MockStore {
         fn store_query_snapshot(&self, snapshot: QuerySnapshot) {
-            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
+            self.snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(snapshot);
         }
     }
 
     fn analysis_json_for(mode: BranchDiffAnalysisMode) -> serde_json::Value {
         let lr = AnalysisEnvelope::new("branch_diff", &json!({"symbol": "f"}));
         let lr = apply_branch_diff_analysis(lr, mode).with_is_error(false);
-        let (text, err) = lr.build(json!({"ok": true}), &MockStore { snapshots: Mutex::new(vec![]) });
+        let (text, err) = lr.build(
+            json!({"ok": true}),
+            &MockStore {
+                snapshots: Mutex::new(vec![]),
+            },
+        );
         assert!(!err);
         serde_json::from_str(&text).unwrap()
     }

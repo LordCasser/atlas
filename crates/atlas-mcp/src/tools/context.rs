@@ -65,7 +65,8 @@ impl ToolRouter {
         let query_id = lr.query_id().to_string();
 
         // Try to find symbol by qname before resolution for initial investigation
-        let initial_sid = self.project()
+        let initial_sid = self
+            .project()
             .store
             .find_symbols_by_qname(qname)
             .ok()
@@ -73,10 +74,12 @@ impl ToolRouter {
         if let Some(sid) = initial_sid {
             self.update_investigation(InvestigationFocus::Symbol(sid));
         }
-        let investigation = self.project()
+        let investigation = self
+            .project()
             .job_runtime
             .investigation_state
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .active_investigation
             .clone();
 
@@ -110,7 +113,11 @@ impl ToolRouter {
 
                 ctx.send_progress(0.7, "Building context view...");
                 let project = self.project();
-                match project.graph_runtime.provider().build_context_for_symbol(&sid, include_file_peers) {
+                match project
+                    .graph_runtime
+                    .provider()
+                    .build_context_for_symbol(&sid, include_file_peers)
+                {
                     Some(Ok(view)) => {
                         ctx.send_progress(0.8, "Context complete");
                         self.build_context_response(
@@ -166,10 +173,7 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self.project()
-                .store_query_runtime
-                .read_symbol_source(sid)
-            {
+            if let Some(src) = self.project().store_query_runtime.read_symbol_source(sid) {
                 let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
                 let total = lines.len() as u32;
                 Some(json!({
@@ -353,7 +357,8 @@ impl ToolRouter {
         }
 
         // ── Tier 2: name-based search (look for symbol by simple name) ──
-        let name_matches = self.project()
+        let name_matches = self
+            .project()
             .store
             .find_symbols_by_name(qname)
             .unwrap_or_else(|e| {
@@ -406,7 +411,8 @@ impl ToolRouter {
                     .take(MAX_AGGREGATION_CANDIDATES)
                     .map(|s| {
                         let line = s.range.start_line.saturating_add(1);
-                        let file_path = self.project()
+                        let file_path = self
+                            .project()
                             .store_query_runtime
                             .resolve_file_path(&s.file_id);
                         ScoredCandidate {
@@ -463,7 +469,8 @@ impl ToolRouter {
         }
 
         // Re-check name after lazy extraction
-        let fresh_matches = self.project()
+        let fresh_matches = self
+            .project()
             .store
             .find_symbols_by_name(qname)
             .unwrap_or_else(|e| {
@@ -482,7 +489,8 @@ impl ToolRouter {
                 .take(MAX_AGGREGATION_CANDIDATES)
                 .map(|s| {
                     let line = s.range.start_line.saturating_add(1);
-                    let file_path = self.project()
+                    let file_path = self
+                        .project()
                         .store_query_runtime
                         .resolve_file_path(&s.file_id);
                     ScoredCandidate {

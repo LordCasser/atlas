@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::tools::active_project::ActiveProject;
 use crate::tools::ProgressSender;
+use crate::tools::active_project::ActiveProject;
 
 /// Execution context passed to tool handlers.
 ///

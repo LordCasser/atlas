@@ -21,10 +21,7 @@ impl ToolRouter {
     /// Example: `annotate_fp_dispatch("Curl_handler.do_it", "Curl_http")`
     /// declares that when `do_it` field of `Curl_handler` struct is called,
     /// the concrete target is `Curl_http`.
-    pub(crate) fn handle_annotate_fp_dispatch(
-        &self,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_annotate_fp_dispatch(&self, args: &serde_json::Value) -> (String, bool) {
         let field_qname = get_str(args, "field_qname");
         let target_qname = get_str(args, "target_qname");
 
@@ -98,7 +95,8 @@ impl ToolRouter {
         // C and C++. Other languages use dynamic dispatch (virtual tables,
         // reflection, prototype chains) that the engine detects through
         // static analysis.
-        let field_sym = self.project()
+        let field_sym = self
+            .project()
             .store
             .find_symbol_by_id(&field_id)
             .ok()
@@ -155,7 +153,8 @@ impl ToolRouter {
         }
 
         // ── Target must be a Function or Method ────────────────────
-        let target_sym = self.project()
+        let target_sym = self
+            .project()
             .store
             .find_symbol_by_id(&target_id)
             .ok()
@@ -204,7 +203,8 @@ impl ToolRouter {
             confidence,
         };
 
-        match self.project()
+        match self
+            .project()
             .overlay_runtime
             .upsert_fp_annotation(&annotation)
         {
@@ -259,7 +259,8 @@ impl ToolRouter {
                 let mut symbol_map: std::collections::HashMap<atlas_engine::SymbolId, String> =
                     std::collections::HashMap::new();
                 for id in symbol_ids {
-                    let qname = self.project()
+                    let qname = self
+                        .project()
                         .store
                         .find_symbol_by_id(&id)
                         .ok()
@@ -309,10 +310,7 @@ impl ToolRouter {
     }
 
     /// Handle `delete_fp_annotation` — delete a dispatch annotation.
-    pub(crate) fn handle_delete_fp_annotation(
-        &self,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    pub(crate) fn handle_delete_fp_annotation(&self, args: &serde_json::Value) -> (String, bool) {
         let annotation_id = get_str(args, "annotation_id");
         let field_qname = get_str(args, "field_qname");
 
@@ -347,7 +345,8 @@ impl ToolRouter {
                 .find(|s| !s.is_empty())
                 .unwrap_or(field_qname);
             // Look up annotation to get its ID for the response
-            let annotation_id = self.project()
+            let annotation_id = self
+                .project()
                 .store
                 .find_fp_annotation_by_field(&field_id, field_name)
                 .map_err(|e| format!("Lookup error: {e}"));

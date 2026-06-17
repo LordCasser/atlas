@@ -42,10 +42,12 @@ impl ToolRouter {
         };
 
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let _investigation = self.project()
+        let _investigation = self
+            .project()
             .job_runtime
             .investigation_state
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .active_investigation
             .clone();
 
@@ -78,7 +80,8 @@ impl ToolRouter {
         let shown = refs.iter().take(limit.min(100));
         let usages: Vec<_> = shown
             .map(|r| {
-                let mask = self.project()
+                let mask = self
+                    .project()
                     .store
                     .get_capability_mask(&r.file_id)
                     .unwrap_or_default();

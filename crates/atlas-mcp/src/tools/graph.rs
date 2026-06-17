@@ -289,6 +289,71 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKind, String> {
 }
 
 impl ToolRouter {
+    fn candidate_outgoing_neighbors(
+        &self,
+        root_id: &SymbolId,
+        allowed_edge_kinds: &[EdgeKind],
+    ) -> Vec<SymbolId> {
+        let Ok(candidates) = self
+            .project()
+            .store
+            .find_visible_candidate_edges_by_source(root_id)
+        else {
+            return Vec::new();
+        };
+
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let edge_kind = parse_edge_kind(&candidate.kind).ok()?;
+                if !is_allowed_edge(&edge_kind, allowed_edge_kinds) {
+                    return None;
+                }
+                let target = candidate.target?;
+                let bytes: [u8; 32] = target.as_slice().try_into().ok()?;
+                Some(SymbolId::from_bytes(bytes))
+            })
+            .collect()
+    }
+
+    fn candidate_incoming_neighbors(
+        &self,
+        root_id: &SymbolId,
+        allowed_edge_kinds: &[EdgeKind],
+    ) -> Vec<SymbolId> {
+        let Ok(candidates) = self
+            .project()
+            .store
+            .find_visible_candidate_edges_by_target(root_id)
+        else {
+            return Vec::new();
+        };
+
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                let edge_kind = parse_edge_kind(&candidate.kind).ok()?;
+                if !is_allowed_edge(&edge_kind, allowed_edge_kinds) {
+                    return None;
+                }
+                let bytes: [u8; 32] = candidate.source.as_slice().try_into().ok()?;
+                Some(SymbolId::from_bytes(bytes))
+            })
+            .collect()
+    }
+
+    fn symbol_json_by_id(&self, symbol_id: &SymbolId) -> Option<serde_json::Value> {
+        let project = self.project();
+        let sym = project.store.find_symbol_by_id(symbol_id).ok().flatten()?;
+        Some(json!({
+            "name": sym.name,
+            "qualified_name": sym.qualified_name,
+            "kind": sym.kind.as_str(),
+            "file": project.store_query_runtime.resolve_file_path(&sym.file_id),
+            "line": sym.range.start_line.saturating_add(1),
+        }))
+    }
+
     pub(crate) fn unresolved_call_refs_json(
         &self,
         source_ids: &[SymbolId],
@@ -454,7 +519,8 @@ impl ToolRouter {
 
         if exact.len() == 1 {
             let sym = exact.remove(0);
-            let file_path = self.project()
+            let file_path = self
+                .project()
                 .store_query_runtime
                 .resolve_file_path(&sym.file_id);
             let line = sym.range.start_line.saturating_add(1);
@@ -480,7 +546,8 @@ impl ToolRouter {
             .iter()
             .take(MAX_AMBIGUOUS_CANDIDATES)
             .map(|sym| {
-                let file_path = self.project()
+                let file_path = self
+                    .project()
                     .store_query_runtime
                     .resolve_file_path(&sym.file_id);
                 let line = sym.range.start_line.saturating_add(1);
@@ -572,25 +639,37 @@ impl ToolRouter {
             None => return ("Graph not initialized".to_string(), true),
         };
         let snap = graph.snapshot();
+        let call_edge_kinds = DEFAULT_CALL_EDGES.to_vec();
 
         // Multi-root: union of callers from all matched SymbolIds, deduplicated.
         let mut seen: HashSet<SymbolId> = HashSet::new();
-        let mut all_callers: Vec<atlas_engine::NodeIx> = Vec::new();
+        let mut all_callers: Vec<serde_json::Value> = Vec::new();
         for &root_id in &symbol_ids {
             let cg = graph.callers(&root_id);
             for &ix in &cg.callers {
                 let caller_id = snap.node(ix).symbol_id;
                 if seen.insert(caller_id) {
-                    all_callers.push(ix);
+                    all_callers.push(super::node_json(
+                        &self.project().store_query_runtime,
+                        snap,
+                        ix,
+                        None,
+                    ));
+                }
+            }
+            if !has_full_index {
+                for caller_id in self.candidate_incoming_neighbors(&root_id, &call_edge_kinds) {
+                    if seen.insert(caller_id) {
+                        if let Some(node) = self.symbol_json_by_id(&caller_id) {
+                            all_callers.push(node);
+                        }
+                    }
                 }
             }
         }
         // ── callers ────────────────────────────────────────────────────
         let total_callers = all_callers.len();
-        let shown = all_callers.iter().take(limit);
-        let nodes: Vec<_> = shown
-            .map(|ix| super::node_json(&self.project().store_query_runtime, snap, *ix, None))
-            .collect();
+        let nodes: Vec<_> = all_callers.into_iter().take(limit).collect();
 
         let mut resp = json!({
             "symbol": qname,
@@ -671,12 +750,7 @@ impl ToolRouter {
         // Lazy structural: prepare focus query for graph edges
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.project()
-                .store
-                .find_symbol_by_id(&id)
-                .ok()
-                .flatten()
-            {
+            if let Some(sym) = self.project().store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -699,25 +773,37 @@ impl ToolRouter {
             None => return ("Graph not initialized".to_string(), true),
         };
         let snap = graph.snapshot();
+        let call_edge_kinds = DEFAULT_CALL_EDGES.to_vec();
 
         // Multi-root: union of callees from all matched SymbolIds, deduplicated.
         let mut seen: HashSet<SymbolId> = HashSet::new();
-        let mut all_callees: Vec<atlas_engine::NodeIx> = Vec::new();
+        let mut all_callees: Vec<serde_json::Value> = Vec::new();
         for &root_id in &symbol_ids {
             let cg = graph.callees(&root_id);
             for &ix in &cg.callees {
                 let callee_id = snap.node(ix).symbol_id;
                 if seen.insert(callee_id) {
-                    all_callees.push(ix);
+                    all_callees.push(super::node_json(
+                        &self.project().store_query_runtime,
+                        snap,
+                        ix,
+                        None,
+                    ));
+                }
+            }
+            if !has_full_index {
+                for callee_id in self.candidate_outgoing_neighbors(&root_id, &call_edge_kinds) {
+                    if seen.insert(callee_id) {
+                        if let Some(node) = self.symbol_json_by_id(&callee_id) {
+                            all_callees.push(node);
+                        }
+                    }
                 }
             }
         }
         // ── callees ────────────────────────────────────────────────────
         let total_callees = all_callees.len();
-        let shown = all_callees.iter().take(limit);
-        let nodes: Vec<_> = shown
-            .map(|ix| super::node_json(&self.project().store_query_runtime, snap, *ix, None))
-            .collect();
+        let nodes: Vec<_> = all_callees.into_iter().take(limit).collect();
         let (unresolved_callees, total_unresolved_callees) =
             self.unresolved_call_refs_json(&symbol_ids, limit);
 
@@ -752,7 +838,7 @@ impl ToolRouter {
         // Lazy structural response with focus-aware envelope
         let lr = lr
             .with_lazy_warnings(focus_warnings)
-            .with_partial_result(!has_full_index && total_unresolved_callees > 0);
+            .with_partial_result(!has_full_index);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
         } else {
@@ -821,12 +907,7 @@ impl ToolRouter {
         // Lazy structural: ensure graph edges exist before querying.
         let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
         for &id in &symbol_ids {
-            if let Some(sym) = self.project()
-                .store
-                .find_symbol_by_id(&id)
-                .ok()
-                .flatten()
-            {
+            if let Some(sym) = self.project().store.find_symbol_by_id(&id).ok().flatten() {
                 file_ids_set.insert(sym.file_id);
             }
         }
@@ -1272,12 +1353,8 @@ impl ToolRouter {
                 let alternatives: Vec<serde_json::Value> = ranked[1..]
                     .iter()
                     .map(|r| {
-                        let alt_hops = build_hops(
-                            &self.project().store_query_runtime,
-                            snap,
-                            &r.path,
-                            false,
-                        );
+                        let alt_hops =
+                            build_hops(&self.project().store_query_runtime, snap, &r.path, false);
                         json!({
                             "path": alt_hops,
                             "total_weight": r.path.total_weight,
@@ -1298,8 +1375,7 @@ impl ToolRouter {
                 let mut ambiguity = json!({});
                 if from_ids.len() > 1 {
                     if let Some(ref wid) = winning_from {
-                        ambiguity["matched_from"] =
-                            json!(symbol_label(&self.project().store, wid));
+                        ambiguity["matched_from"] = json!(symbol_label(&self.project().store, wid));
                     }
                     ambiguity["from_count"] = json!(from_ids.len());
                     // Add from_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -1320,8 +1396,7 @@ impl ToolRouter {
                 }
                 if to_ids.len() > 1 {
                     if let Some(ref wid) = winning_to {
-                        ambiguity["matched_to"] =
-                            json!(symbol_label(&self.project().store, wid));
+                        ambiguity["matched_to"] = json!(symbol_label(&self.project().store, wid));
                     }
                     ambiguity["to_count"] = json!(to_ids.len());
                     // Add to_candidates list (truncated to MAX_AMBIGUOUS_CANDIDATES)
@@ -1737,7 +1812,8 @@ impl ToolRouter {
                     resp["scope"] = json!(scope);
                 }
                 let (background_jobs, candidate_files) = if let Some(scope) = scope {
-                    let file_ids = self.project()
+                    let file_ids = self
+                        .project()
                         .store
                         .list_file_inventory_ids_in_scope(scope, 24)
                         .unwrap_or_default();
@@ -1801,7 +1877,8 @@ impl ToolRouter {
             }
         };
 
-        let file_path = self.project()
+        let file_path = self
+            .project()
             .store_query_runtime
             .resolve_file_path(&sym.file_id);
 
@@ -1826,8 +1903,7 @@ impl ToolRouter {
             Some(g) => g,
             None => return ("Graph not initialized".to_string(), true),
         };
-        let relation_repo =
-            atlas_engine::dossier::RelationRepo::new(store_clone.clone(), graph);
+        let relation_repo = atlas_engine::dossier::RelationRepo::new(store_clone.clone(), graph);
         let file_repo = atlas_engine::dossier::FileFactsRepo::new(store_clone);
 
         let request = atlas_engine::dossier::types::ExploreRequest {
@@ -2045,7 +2121,8 @@ impl ToolRouter {
         let domain_rules = if semantic {
             match self.project().store.list_domain_rules(None, None) {
                 Ok(_rows) => {
-                    let lang_str = self.project()
+                    let lang_str = self
+                        .project()
                         .store
                         .find_symbol_by_id(&sid)
                         .ok()
@@ -2075,7 +2152,8 @@ impl ToolRouter {
                 }
 
                 // Load CFG for this function
-                let cfg_nodes = match self.project()
+                let cfg_nodes = match self
+                    .project()
                     .store
                     .find_cfg_nodes_by_function(&node.symbol_id)
                 {
@@ -2087,12 +2165,14 @@ impl ToolRouter {
                 }
 
                 // Run branch diff analysis
-                let cfg_edges = self.project()
+                let cfg_edges = self
+                    .project()
                     .store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
                 // ── Semantic branch diff with dataflow composition ──
-                let lang = self.project()
+                let lang = self
+                    .project()
                     .store
                     .find_symbol_by_id(&node.symbol_id)
                     .ok()
@@ -2102,7 +2182,8 @@ impl ToolRouter {
                 let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
                 // Load DataFlow nodes and edges
-                let data_nodes = self.project()
+                let data_nodes = self
+                    .project()
                     .store
                     .find_data_nodes_by_function(&node.symbol_id)
                     .unwrap_or_default();
@@ -2352,7 +2433,8 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         let sid_b = insert_test_symbol(&store, "b.ts", "b");
-        let before = router.project()
+        let before = router
+            .project()
             .graph_runtime
             .provider()
             .graph_snapshot()
@@ -2370,14 +2452,16 @@ mod tests {
         // Bump graph_generation to signal that the store has changed (external
         // store mutation that bypasses the overlay runtime). This replaces the
         // old TTL + signature-check cooldown bypass.
-        router.project()
+        router
+            .project()
             .graph_runtime
             .invalidation
             .graph_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         router.maybe_refresh_graph().unwrap();
-        let after = router.project()
+        let after = router
+            .project()
             .graph_runtime
             .provider()
             .graph_snapshot()
@@ -3482,11 +3566,9 @@ mod tests {
         let mut router = test_router(store);
         // Simulate a full index so prepare_focus_query returns early
         // without focus data — the equivalent of the old "no focus" path.
-        let signature = router.project()
-            .store
-            .index_signature()
-            .unwrap_or_default();
-        *router.project()
+        let signature = router.project().store.index_signature().unwrap_or_default();
+        *router
+            .project()
             .query_runtime
             .cache
             .cached_manual_full_index
@@ -3570,7 +3652,10 @@ mod tests {
     }
     impl crate::tools::analysis_envelope::SnapshotStore for MockStore {
         fn store_query_snapshot(&self, snapshot: crate::tools::query_snapshot::QuerySnapshot) {
-            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
+            self.snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(snapshot);
         }
     }
 }

@@ -21,7 +21,9 @@ unsafe impl Sync for ClosureGraphProvider {}
 
 impl ClosureGraphProvider {
     pub(crate) fn from_box(state: &Box<GraphState>) -> Self {
-        Self { state: &**state as *const GraphState }
+        Self {
+            state: &**state as *const GraphState,
+        }
     }
 
     #[inline]
@@ -45,7 +47,8 @@ impl GraphProvider for ClosureGraphProvider {
         sid: &SymbolId,
         include_file_peers: bool,
     ) -> Option<Result<ContextView, anyhow::Error>> {
-        self.state_ref().build_context_for_symbol(sid, include_file_peers)
+        self.state_ref()
+            .build_context_for_symbol(sid, include_file_peers)
     }
 
     fn node_count(&self) -> usize {

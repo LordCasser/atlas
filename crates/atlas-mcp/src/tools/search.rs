@@ -89,7 +89,8 @@ impl ToolRouter {
         // the search analysis mode is set to Manifest (structural facts are already
         // in the store) instead of Auto (lazy triggering).  Scope is still required
         // — it defines the search boundary.
-        let is_manual_full = self.project()
+        let is_manual_full = self
+            .project()
             .query_runtime
             .has_full_index(&self.project().store);
 
@@ -217,7 +218,8 @@ impl ToolRouter {
                     background_file_ids.push(hit.symbol.file_id);
                 }
             }
-            for file_id in self.project()
+            for file_id in self
+                .project()
                 .store
                 .list_file_inventory_ids_in_scope(scope, 24)
                 .unwrap_or_default()
@@ -339,7 +341,8 @@ impl ToolRouter {
                         return None;
                     }
                     let file_id = FileId::generate(normalized);
-                    if self.project()
+                    if self
+                        .project()
                         .store
                         .get_file(&file_id)
                         .ok()
@@ -409,7 +412,8 @@ impl ToolRouter {
                     ) {
                         Ok(SymbolResolution::Single {
                             symbol_id: new_id, ..
-                        }) => self.project()
+                        }) => self
+                            .project()
                             .store
                             .find_symbol_by_id(&new_id)
                             .unwrap_or_default()
@@ -538,7 +542,8 @@ impl ToolRouter {
             "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
-            if let Some(src) = self.project()
+            if let Some(src) = self
+                .project()
                 .store_query_runtime
                 .read_symbol_source(&sym.id)
             {

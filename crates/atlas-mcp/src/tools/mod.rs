@@ -268,6 +268,17 @@ impl ToolRouter {
         }
     }
 
+    /// Create a lightweight router bound to an already-active project.
+    ///
+    /// Async task execution uses this to run the normal handler pipeline against
+    /// the project snapshot that was active when the task was accepted.
+    pub(crate) fn from_active_project(project: Arc<ActiveProject>) -> Self {
+        Self {
+            project: ProjectSlot::new(Some(project)),
+            tools: Vec::new(),
+        }
+    }
+
     /// Access the active project as `Arc<ActiveProject>`. Panics if no project is active.
     /// Callers are protected by the gate in `call_tool()`.
     fn project(&self) -> Arc<ActiveProject> {
@@ -295,14 +306,24 @@ impl ToolRouter {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let last = project.sync_state.last_probe.load(std::sync::atomic::Ordering::Relaxed);
+        let last = project
+            .sync_state
+            .last_probe
+            .load(std::sync::atomic::Ordering::Relaxed);
         if now.saturating_sub(last) < 5 {
             return;
         }
-        project.sync_state.last_probe.store(now, std::sync::atomic::Ordering::Relaxed);
+        project
+            .sync_state
+            .last_probe
+            .store(now, std::sync::atomic::Ordering::Relaxed);
 
         // If sync already in progress, skip
-        if project.sync_state.in_progress.load(std::sync::atomic::Ordering::Acquire) {
+        if project
+            .sync_state
+            .in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             return;
         }
 
@@ -336,7 +357,9 @@ impl ToolRouter {
         let sync_state = project.sync_state.clone();
         let invalidation = project.graph_runtime.invalidation.clone();
 
-        sync_state.in_progress.store(true, std::sync::atomic::Ordering::Release);
+        sync_state
+            .in_progress
+            .store(true, std::sync::atomic::Ordering::Release);
 
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
@@ -353,9 +376,9 @@ impl ToolRouter {
                         "background sync completed"
                     );
                     // Bump graph generation — next maybe_refresh_graph() will detect staleness
-                    invalidation.graph_generation.fetch_add(
-                        1, std::sync::atomic::Ordering::Release
-                    );
+                    invalidation
+                        .graph_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
                 }
                 Err(e) => {
                     tracing::error!(
@@ -365,7 +388,9 @@ impl ToolRouter {
                 }
             }
 
-            sync_state.in_progress.store(false, std::sync::atomic::Ordering::Release);
+            sync_state
+                .in_progress
+                .store(false, std::sync::atomic::Ordering::Release);
         });
     }
 
@@ -473,10 +498,8 @@ impl ToolRouter {
     /// stays a thin response-contract layer.
     pub(crate) fn candidate_file_ids_for_symbol(&self, symbol: &str) -> Vec<FileId> {
         let project = self.project();
-        let provider = DefaultCandidateProvider::new(
-            project.store.clone(),
-            Some(project.root.clone()),
-        );
+        let provider =
+            DefaultCandidateProvider::new(project.store.clone(), Some(project.root.clone()));
         let mut seen = HashSet::new();
         provider
             .candidates_for_symbol(symbol)
@@ -503,9 +526,7 @@ impl ToolRouter {
                         .ok()
                         .flatten()
                         .map(|row| row.path)
-                        .unwrap_or_else(|| {
-                            project.store_query_runtime.resolve_file_path(file_id)
-                        }),
+                        .unwrap_or_else(|| project.store_query_runtime.resolve_file_path(file_id)),
                 )
             })
             .take(RETRYABLE_CANDIDATE_LIMIT)
@@ -605,25 +626,29 @@ impl ToolRouter {
     /// Rebuild the graph snapshot from the store if the index signature changed.
     fn rebuild_if_signature_changed(&self, reason: &str) -> anyhow::Result<()> {
         let project = self.project();
-        let current = project
-            .store
-            .index_signature()
-            .unwrap_or_else(|_| {
-                project
-                    .query_runtime
-                    .cache
-                    .cached_signature
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone()
-            });
-        if current != *project.graph_runtime.state.last_graph_signature.lock().unwrap() {
+        let current = project.store.index_signature().unwrap_or_else(|_| {
+            project
+                .query_runtime
+                .cache
+                .cached_signature
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        });
+        if current
+            != *project
+                .graph_runtime
+                .state
+                .last_graph_signature
+                .lock()
+                .unwrap()
+        {
             tracing::info!("{reason}");
-            let graph = Arc::new(atlas_engine::GraphEngine::from_store(
-                &project.store,
-                0.3,
-            )?);
-            project.graph_runtime.state.swap_graph(&project.store, graph);
+            let graph = Arc::new(atlas_engine::GraphEngine::from_store(&project.store, 0.3)?);
+            project
+                .graph_runtime
+                .state
+                .swap_graph(&project.store, graph);
             // Re-check whether a manual full index now exists (layer distribution
             // may have changed after external index/sync or lazy structural).
             *project
@@ -660,7 +685,12 @@ impl ToolRouter {
     /// signal) may still need to call this to pick up changes.
     pub fn maybe_refresh_graph(&self) -> anyhow::Result<()> {
         let project = self.project();
-        if !project.graph_runtime.state.graph_initialized.load(Ordering::Acquire) {
+        if !project
+            .graph_runtime
+            .state
+            .graph_initialized
+            .load(Ordering::Acquire)
+        {
             return Ok(());
         }
 
@@ -709,11 +739,19 @@ impl ToolRouter {
         if project.graph_runtime.is_graph_stale() {
             tracing::info!("Graph generation changed, triggering full rebuild");
             let graph = Arc::new(atlas_engine::GraphEngine::from_store(&project.store, 0.3)?);
-            project.graph_runtime.state.swap_graph(&project.store, graph);
-            let current = project
-                .store
-                .index_signature()
-                .unwrap_or_else(|_| project.query_runtime.cache.cached_signature.lock().unwrap().clone());
+            project
+                .graph_runtime
+                .state
+                .swap_graph(&project.store, graph);
+            let current = project.store.index_signature().unwrap_or_else(|_| {
+                project
+                    .query_runtime
+                    .cache
+                    .cached_signature
+                    .lock()
+                    .unwrap()
+                    .clone()
+            });
             *project.query_runtime.cache.cached_signature.lock().unwrap() = current;
             *project
                 .query_runtime
@@ -735,10 +773,20 @@ impl ToolRouter {
     /// tools run their queries.
     pub(crate) fn force_refresh_graph(&self) -> anyhow::Result<()> {
         let project = self.project();
-        if !project.graph_runtime.state.graph_initialized.load(Ordering::Acquire) {
+        if !project
+            .graph_runtime
+            .state
+            .graph_initialized
+            .load(Ordering::Acquire)
+        {
             return Ok(());
         }
-        *project.query_runtime.cache.last_signature_check.lock().unwrap() = std::time::Instant::now();
+        *project
+            .query_runtime
+            .cache
+            .last_signature_check
+            .lock()
+            .unwrap() = std::time::Instant::now();
         self.rebuild_if_signature_changed("Force-refreshing graph after lazy structural extraction")
     }
 
@@ -923,12 +971,7 @@ impl ToolRouter {
     }
 
     /// Sub-dispatcher: `OverlayMutation` / `OverlayRead` contract tools.
-    fn dispatch_overlay(
-        &self,
-        _ctx: &ToolCallContext,
-        name: &str,
-        args: &Value,
-    ) -> (String, bool) {
+    fn dispatch_overlay(&self, _ctx: &ToolCallContext, name: &str, args: &Value) -> (String, bool) {
         match name {
             "fp_dispatches" => self.handle_fp_dispatches(args),
             "domain_rules" => self.handle_domain_rules(args),
@@ -1902,9 +1945,7 @@ impl ToolRouter {
             built_file_count = prepared.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
             focus_result = prepared;
         } else {
-            _capability_mask = self.project()
-                .store
-                .derive_capability_for_files(&[file_id]);
+            _capability_mask = self.project().store.derive_capability_for_files(&[file_id]);
         }
 
         let file_id_hex = file_id.to_hex();
@@ -2130,7 +2171,8 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.project()
+            let path = self
+                .project()
                 .store_query_runtime
                 .resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
@@ -2187,7 +2229,8 @@ impl ToolRouter {
             if file_paths.len() >= max_results {
                 break;
             }
-            let path = self.project()
+            let path = self
+                .project()
                 .store_query_runtime
                 .resolve_file_path(&sym.file_id);
             if file_paths.insert(path.clone()) {
@@ -2210,7 +2253,11 @@ impl ToolRouter {
         if matches!(action, "add" | "delete") {
             let project = self.project();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while project.sync_state.in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            while project
+                .sync_state
+                .in_progress
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 if std::time::Instant::now() > deadline {
                     return (json!({"error": "background sync in progress, retry overlay mutation shortly"}).to_string(), true);
                 }
@@ -2237,7 +2284,11 @@ impl ToolRouter {
         if matches!(action, "add" | "delete" | "learn") {
             let project = self.project();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while project.sync_state.in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            while project
+                .sync_state
+                .in_progress
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 if std::time::Instant::now() > deadline {
                     return (json!({"error": "background sync in progress, retry overlay mutation shortly"}).to_string(), true);
                 }
@@ -2438,7 +2489,8 @@ impl ToolRouter {
             }
         };
         let file_id = FileId::generate(&normalized);
-        if self.project()
+        if self
+            .project()
             .store
             .get_file(&file_id)
             .ok()
@@ -2723,7 +2775,12 @@ mod tests {
         let store = test_store();
         let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         assert!(
-            !router.project().graph_runtime.state.graph_initialized.load(std::sync::atomic::Ordering::Acquire),
+            !router
+                .project()
+                .graph_runtime
+                .state
+                .graph_initialized
+                .load(std::sync::atomic::Ordering::Acquire),
             "graph should not be initialized yet",
         );
 
@@ -2733,7 +2790,12 @@ mod tests {
         let _result = router.call_tool(&ctx, "domain_rules", &args);
 
         assert!(
-            !router.project().graph_runtime.state.graph_initialized.load(std::sync::atomic::Ordering::Acquire),
+            !router
+                .project()
+                .graph_runtime
+                .state
+                .graph_initialized
+                .load(std::sync::atomic::Ordering::Acquire),
             "graph should still NOT be initialized after a non-graph tool call",
         );
     }
@@ -4446,7 +4508,10 @@ mod tests {
 
     impl SnapshotStore for MockSnapshotStore {
         fn store_query_snapshot(&self, snapshot: QuerySnapshot) {
-            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
+            self.snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(snapshot);
         }
     }
 
@@ -5150,14 +5215,22 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         // Record initial generation — graph is fresh after construction.
-        let gen_before = router.project().graph_runtime.last_graph_generation.load(std::sync::atomic::Ordering::Relaxed);
+        let gen_before = router
+            .project()
+            .graph_runtime
+            .last_graph_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert!(!router.project().graph_runtime.is_graph_stale());
 
         // Call maybe_refresh_graph — no lazy writes, no generation bump → no rebuild.
         router.maybe_refresh_graph().unwrap();
         assert!(!router.project().graph_runtime.is_graph_stale());
         assert_eq!(
-            router.project().graph_runtime.last_graph_generation.load(std::sync::atomic::Ordering::Relaxed),
+            router
+                .project()
+                .graph_runtime
+                .last_graph_generation
+                .load(std::sync::atomic::Ordering::Relaxed),
             gen_before
         );
     }
@@ -5170,12 +5243,17 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         // Pre-populate lazy_refresh_queue with a dummy file_id.
-        router.project()
+        router
+            .project()
             .query_runtime
             .lazy_refresh_queue
             .record_lazy_writes(&[file_id]);
 
-        let gen_before = router.project().graph_runtime.last_graph_generation.load(std::sync::atomic::Ordering::Relaxed);
+        let gen_before = router
+            .project()
+            .graph_runtime
+            .last_graph_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // Call maybe_refresh_graph → batch is non-empty → must bump graph_generation
         // and trigger rebuild.
@@ -5184,7 +5262,12 @@ mod tests {
         // After lazy writes flushed, graph should be marked fresh (rebuilt).
         assert!(!router.project().graph_runtime.is_graph_stale());
         assert!(
-            router.project().graph_runtime.last_graph_generation.load(std::sync::atomic::Ordering::Relaxed) > gen_before,
+            router
+                .project()
+                .graph_runtime
+                .last_graph_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > gen_before,
             "lazy writes should bump graph_generation"
         );
     }
@@ -5201,7 +5284,8 @@ mod tests {
         let node_before = router.project().graph_runtime.state.symbol_count();
         let edge_before = router.project().graph_runtime.state.edge_count();
 
-        router.project()
+        router
+            .project()
             .graph_runtime
             .state
             .refresh_graph_for_files(&store, &[])
@@ -5233,7 +5317,8 @@ mod tests {
         let file_id = register_test_file(&store, "src/test.ts");
         insert_test_symbol(&store, file_id, "foo");
 
-        router.project()
+        router
+            .project()
             .graph_runtime
             .invalidation
             .graph_generation
@@ -5258,7 +5343,8 @@ mod tests {
 
         let file_id = register_test_file(&store, "src/test.ts");
         insert_test_symbol(&store, file_id, "foo");
-        router.project()
+        router
+            .project()
             .graph_runtime
             .invalidation
             .graph_generation

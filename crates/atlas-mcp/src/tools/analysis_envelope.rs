@@ -466,7 +466,10 @@ mod tests {
 
     impl super::SnapshotStore for MockStore {
         fn store_query_snapshot(&self, snapshot: QuerySnapshot) {
-            self.snapshots.lock().unwrap_or_else(|e| e.into_inner()).push(snapshot);
+            self.snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(snapshot);
         }
     }
 

@@ -25,8 +25,8 @@
 //! - `super::invalidation::RuntimeInvalidation`
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use atlas_engine::{SourceExtractor, Store};
 
@@ -118,7 +118,10 @@ impl GraphRuntime {
     /// Detects and caches the graph provenance mode on first init.
     /// Returns &SearchEngine or an error.
     pub fn ensure_initialized(&self) -> anyhow::Result<()> {
-        let was_initialized = self.state.graph_initialized.load(std::sync::atomic::Ordering::Acquire);
+        let was_initialized = self
+            .state
+            .graph_initialized
+            .load(std::sync::atomic::Ordering::Acquire);
         self.state
             .ensure_initialized(&self.store, &self.source_extractor, &self.project_root)?;
         if !was_initialized {

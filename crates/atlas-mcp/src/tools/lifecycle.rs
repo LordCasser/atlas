@@ -83,7 +83,8 @@ impl ToolRouter {
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let store = self.project().store.clone();
-        let (cfg_nodes, cfg_edges) = match self.project()
+        let (cfg_nodes, cfg_edges) = match self
+            .project()
             .analysis_runtime
             .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
         {
@@ -102,7 +103,8 @@ impl ToolRouter {
         // --- CFG is available — run lifecycle analysis ---
 
         // Lifecycle analysis only supports C/C++ — gate on language
-        let sym_info = self.project()
+        let sym_info = self
+            .project()
             .store
             .find_symbol_by_id(&sid)
             .ok()

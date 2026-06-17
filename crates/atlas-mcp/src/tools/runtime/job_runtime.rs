@@ -75,7 +75,13 @@ mod tests {
     #[test]
     fn investigation_state_starts_default() {
         let jr = JobRuntime::new();
-        assert!(jr.investigation_state.lock().unwrap().active_investigation.is_none());
+        assert!(
+            jr.investigation_state
+                .lock()
+                .unwrap()
+                .active_investigation
+                .is_none()
+        );
     }
 
     #[test]
