@@ -20,6 +20,11 @@ use db::Store;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
 use types::structs::{CapabilityMask, dataflow_precision};
+use types::StaleStructuralIndexError;
+
+/// Rebuild callback type: takes a FileId, returns Ok(()) on success.
+/// Injected by the engine layer to enable transparent self-healing.
+type StructuralRebuilder = Arc<dyn Fn(FileId) -> Result<(), anyhow::Error> + Send + Sync>;
 
 /// Public entry point for the `atlas-engine` facade.
 ///
@@ -30,6 +35,9 @@ use types::structs::{CapabilityMask, dataflow_precision};
 pub struct LazyDataflowService {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
+    /// Optional callback for rebuilding a stale structural index.
+    /// Set by the engine layer; the lazy crate calls it before retrying.
+    structural_rebuilder: Option<StructuralRebuilder>,
 }
 
 impl LazyDataflowService {
@@ -41,7 +49,14 @@ impl LazyDataflowService {
         Self {
             store,
             project_root,
+            structural_rebuilder: None, // Set separately by engine layer
         }
+    }
+
+    /// Set the structural rebuild callback.
+    /// Called once during engine construction.
+    pub fn set_structural_rebuilder(&mut self, rebuilder: StructuralRebuilder) {
+        self.structural_rebuilder = Some(rebuilder);
     }
 
     /// Plan a window and ensure all units have dataflow built.
@@ -82,7 +97,55 @@ impl LazyDataflowService {
             &window,
             self.project_root.as_deref(),
             trigger_query,
-        )?;
+        );
+
+        // Handle stale structural index with self-healing retry
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                // Check if it's a StaleStructuralIndexError we can self-heal
+                if let Some(stale_err) = e.downcast_ref::<StaleStructuralIndexError>() {
+                    if let Some(rebuilder) = &self.structural_rebuilder {
+                        tracing::info!(
+                            file = %stale_err.file_path,
+                            "structural index stale; attempting self-heal rebuild"
+                        );
+                        match rebuilder(stale_err.file_id) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    file = %stale_err.file_path,
+                                    "self-heal rebuild succeeded; retrying dataflow"
+                                );
+                                // Retry exactly ONCE
+                                loader::LazyDataflowLoader::ensure(
+                                    &self.store,
+                                    &window,
+                                    self.project_root.as_deref(),
+                                    trigger_query,
+                                )?
+                            }
+                            Err(rebuild_err) => {
+                                tracing::warn!(
+                                    file = %stale_err.file_path,
+                                    "self-heal rebuild failed: {rebuild_err:#}"
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "self-heal rebuild failed for {}: {rebuild_err:#}",
+                                    stale_err.file_path,
+                                ));
+                            }
+                        }
+                    } else {
+                        // No rebuilder configured — propagate original error
+                        return Err(e);
+                    }
+                } else {
+                    // Not a stale index error — propagate as-is
+                    return Err(e);
+                }
+            }
+        };
+
         window.truncated = window.truncated || result.budget_exceeded;
         window.units_built = result.units_built;
         window.units_cached = result.units_cached;
@@ -117,5 +180,38 @@ impl LazyDataflowService {
         }
 
         Ok(window)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_constructed_without_rebuilder() {
+        let service = LazyDataflowService::new(
+            Arc::new(Store::open_in_memory().unwrap()),
+            None,
+        );
+        assert!(service.structural_rebuilder.is_none());
+    }
+
+    #[test]
+    fn service_set_rebuilder() {
+        let mut service = LazyDataflowService::new(
+            Arc::new(Store::open_in_memory().unwrap()),
+            None,
+        );
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = called.clone();
+        service.set_structural_rebuilder(Arc::new(move |_file_id| {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }));
+        assert!(service.structural_rebuilder.is_some());
+        // Call the callback
+        let rebuilder = service.structural_rebuilder.as_ref().unwrap();
+        rebuilder(FileId::default()).unwrap();
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

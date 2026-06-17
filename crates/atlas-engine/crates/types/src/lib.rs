@@ -91,7 +91,7 @@ pub use summary::{CallArgFlow, FunctionSummary, ParameterFlow, ReturnFlow};
 pub use timing::{LanguageEntry, PerLanguageStats, PhaseTimer, PhaseTiming, PhaseTimings};
 
 // --- Lazy types ---
-pub use lazy::{AnalysisUnit, LazyWindow, VariableFocus};
+pub use lazy::{AnalysisUnit, LazyWindow, StaleStructuralIndexError, VariableFocus};
 
 // --- Progress types ---
 pub use progress::{

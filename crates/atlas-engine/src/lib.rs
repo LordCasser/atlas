@@ -68,8 +68,8 @@ pub use extraction::{
 
 /// Sync layer: core indexing pipeline and progress protocol.
 pub use filesync::{
-    FileLock, IndexPipeline, IndexPipelineOptions, PhaseName, ProgressEvent, ProgressSink,
-    SyncEngine,
+    ChangedFiles, FileLock, IndexPipeline, IndexPipelineOptions, NoopSink, PhaseName,
+    ProgressEvent, ProgressSink, SyncEngine,
 };
 
 /// Database store and schema version.
@@ -258,7 +258,18 @@ impl Engine {
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        let mut lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        // Wire up self-heal callback
+        {
+            let store_for_rebuild = store.clone();
+            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
+                crate::lazy_structural::rebuild_structural_for_file(
+                    &store_for_rebuild,
+                    None,
+                    &file_id,
+                )
+            }));
+        }
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self {
@@ -276,8 +287,20 @@ impl Engine {
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Store::open_db(db_path)?;
         let store = Arc::new(store);
-        let lazy_service =
+        let mut lazy_service =
             lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
+        // Wire up self-heal callback
+        {
+            let store_for_rebuild = store.clone();
+            let root_for_rebuild = project_root.to_path_buf();
+            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
+                crate::lazy_structural::rebuild_structural_for_file(
+                    &store_for_rebuild,
+                    Some(&root_for_rebuild),
+                    &file_id,
+                )
+            }));
+        }
         let lazy_structural =
             LazyStructuralService::new(store.clone(), Some(project_root.to_path_buf()));
         let trace =
@@ -295,7 +318,18 @@ impl Engine {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let store = Arc::new(store);
-        let lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        let mut lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
+        // Wire up self-heal callback
+        {
+            let store_for_rebuild = store.clone();
+            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
+                crate::lazy_structural::rebuild_structural_for_file(
+                    &store_for_rebuild,
+                    None,
+                    &file_id,
+                )
+            }));
+        }
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
         Ok(Self {
@@ -313,10 +347,22 @@ impl Engine {
     /// When `project_root` is provided, trace results can include source code
     /// snippets from the file system.
     pub fn from_store(store: Arc<Store>, project_root: Option<&std::path::Path>) -> Self {
-        let lazy_service = lazy_crate::LazyDataflowService::new(
+        let mut lazy_service = lazy_crate::LazyDataflowService::new(
             store.clone(),
             project_root.map(|p| p.to_path_buf()),
         );
+        // Wire up self-heal callback
+        {
+            let store_for_rebuild = store.clone();
+            let root_for_rebuild = project_root.map(|p| p.to_path_buf());
+            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
+                crate::lazy_structural::rebuild_structural_for_file(
+                    &store_for_rebuild,
+                    root_for_rebuild.as_deref(),
+                    &file_id,
+                )
+            }));
+        }
         let lazy_structural =
             LazyStructuralService::new(store.clone(), project_root.map(|p| p.to_path_buf()));
         let trace = if let Some(root) = project_root {

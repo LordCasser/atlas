@@ -883,7 +883,20 @@ impl FocusRuntime {
         let lazy_structural =
             LazyStructuralService::new(self.store.clone(), self.project_root.clone());
         let lazy_dataflow = self.shared_lazy_dataflow.clone().unwrap_or_else(|| {
-            LazyDataflowService::new(self.store.clone(), self.project_root.clone())
+            let mut svc = LazyDataflowService::new(self.store.clone(), self.project_root.clone());
+            // Wire up self-heal callback
+            {
+                let store_for_rebuild = self.store.clone();
+                let root_for_rebuild = self.project_root.clone();
+                svc.set_structural_rebuilder(std::sync::Arc::new(move |file_id| {
+                    crate::lazy_structural::rebuild_structural_for_file(
+                        &store_for_rebuild,
+                        root_for_rebuild.as_deref(),
+                        &file_id,
+                    )
+                }));
+            }
+            svc
         });
         let engine = ClosureEngine::new(
             self.store.clone(),
@@ -895,8 +908,20 @@ impl FocusRuntime {
 
         // Create a second engine instance for the scheduler's background worker.
         let sched_lazy = LazyStructuralService::new(self.store.clone(), self.project_root.clone());
-        let sched_dataflow =
+        let mut sched_dataflow =
             LazyDataflowService::new(self.store.clone(), self.project_root.clone());
+        // Wire up self-heal callback
+        {
+            let store_for_rebuild = self.store.clone();
+            let root_for_rebuild = self.project_root.clone();
+            sched_dataflow.set_structural_rebuilder(std::sync::Arc::new(move |file_id| {
+                crate::lazy_structural::rebuild_structural_for_file(
+                    &store_for_rebuild,
+                    root_for_rebuild.as_deref(),
+                    &file_id,
+                )
+            }));
+        }
         let sched_engine = ClosureEngine::new(
             self.store.clone(),
             sched_lazy,

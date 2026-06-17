@@ -403,13 +403,13 @@ fn build_dataflow_for_file(
 
     // 3.5. Verify structural index is not stale
     if content_hash != file_info.content_hash {
-        anyhow::bail!(
-            "Structural index is stale for {} (DB hash: {}, disk hash: {}). \
-             Run atlas index or atlas_sync first.",
-            file_info.path,
-            &file_info.content_hash[..8.min(file_info.content_hash.len())],
-            &content_hash[..8.min(content_hash.len())]
-        );
+        return Err(types::StaleStructuralIndexError {
+            file_id,
+            file_path: file_info.path.clone(),
+            db_hash: file_info.content_hash.clone(),
+            disk_hash: content_hash,
+        }
+        .into()); // .into() converts to anyhow::Error while preserving downcast
     }
 
     // 4. Extract with LazyDataflow mode

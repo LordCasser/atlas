@@ -18,6 +18,7 @@ pub mod sync_engine;
 
 pub use cleanup::{clean_stale_file_ids, clean_stale_file_paths, source_file_id};
 pub use dirty::{DirtySet, build_dirty_set};
+pub use detector::ChangedFiles;
 pub use file_lock::FileLock;
 pub use incremental_pipeline::IncrementalPipeline;
 pub use index_phases::{

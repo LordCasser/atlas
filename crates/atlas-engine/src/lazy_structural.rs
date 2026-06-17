@@ -29,7 +29,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use db::Store;
@@ -592,6 +592,37 @@ impl LazyStructuralService {
         token: Option<&dyn CancelCheck>,
     ) -> Result<ReindexOutcome> {
         let file_info = self.file_info_for_lazy(file_id)?;
+
+        // ---- G1: Stat cache fast-path ----
+        // Check file_inventory for matching mtime/size/hash.
+        // If the file hasn't changed since last index, skip re-extraction.
+        if let Ok(Some(cached)) = self.store.find_file_inventory_by_id(file_id) {
+            let resolved_path = self.resolve_file_path(&file_info.path);
+            if let Ok(meta) = std::fs::metadata(&resolved_path) {
+                let disk_mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+                let disk_size = meta.len() as i64;
+
+                if disk_mtime == Some(cached.mtime)
+                    && disk_size == cached.size
+                    && cached.content_hash.as_deref() == Some(&file_info.content_hash)
+                    && !file_info.content_hash.is_empty()
+                {
+                    // Stat cache hit — file unchanged since last index.
+                    // Skip the expensive read+hash+extract.
+                    tracing::debug!(
+                        file = %file_info.path,
+                        "stat cache hit, skipping structural re-extraction"
+                    );
+                    return Ok(ReindexOutcome::Built);
+                }
+            }
+        }
+        // ---- End G1 ----
+
         let frontend = create_frontend(file_info.language).ok_or_else(|| {
             anyhow::anyhow!("frontend not available for {:?}", file_info.language)
         })?;
@@ -1012,6 +1043,113 @@ fn drain_rg_candidate_lines(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Self-healing structural rebuild (free function for dependency inversion)
+// ---------------------------------------------------------------------------
+
+/// Rebuild the structural layer for a single file.
+///
+/// This is a free function (not a method) so it can be injected as a callback
+/// into `LazyDataflowService` for transparent self-healing without creating
+/// a circular dependency between the `lazy` and `atlas-engine` crates.
+pub(crate) fn rebuild_structural_for_file(
+    store: &Store,
+    project_root: Option<&std::path::Path>,
+    file_id: &FileId,
+) -> anyhow::Result<()> {
+    // 1. Get file info from store (or inventory fallback)
+    let file_info = match store.get_file(file_id)? {
+        Some(fi) => fi,
+        None => {
+            let row = store
+                .find_file_inventory_by_id(file_id)?
+                .ok_or_else(|| anyhow::anyhow!("file not found in files or inventory: {file_id:?}"))?;
+            let language = types::Language::from_str(&row.language)
+                .or_else(|| types::Language::from_path(std::path::Path::new(&row.path)))
+                .unwrap_or_default();
+            types::FileInfo {
+                file_id: *file_id,
+                path: row.path,
+                language,
+                content_hash: row.content_hash.unwrap_or_default(),
+                status: types::ParseStatus::Success,
+            }
+        }
+    };
+
+    // 2. Create frontend
+    let frontend = create_frontend(file_info.language).ok_or_else(|| {
+        anyhow::anyhow!("frontend not available for {:?}", file_info.language)
+    })?;
+
+    // 3. Resolve path
+    let resolved_path = if let Some(root) = project_root {
+        root.join(&file_info.path)
+    } else {
+        std::path::PathBuf::from(&file_info.path)
+    };
+
+    // 4. Security check (path traversal)
+    if let Some(root) = project_root {
+        let canonical_root = root.canonicalize().with_context(|| {
+            format!("failed to canonicalize project root {}", root.display())
+        })?;
+        let canonical_file = resolved_path
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize {}", resolved_path.display()))?;
+        anyhow::ensure!(
+            canonical_file.starts_with(&canonical_root),
+            "path traversal detected: {} is outside project root {}",
+            canonical_file.display(),
+            canonical_root.display()
+        );
+    }
+
+    // 5. Read source
+    let source = std::fs::read_to_string(&resolved_path)
+        .with_context(|| format!("failed to read {}", resolved_path.display()))?;
+
+    // Soft-reject oversized files
+    if source.len() > LAZY_STRUCTURAL_MAX_FILE_BYTES {
+        return Err(anyhow::anyhow!(
+            "file exceeds lazy structural size limit ({} bytes > {} bytes); use `atlas index` for full indexing",
+            source.len(),
+            LAZY_STRUCTURAL_MAX_FILE_BYTES
+        ));
+    }
+
+    // 6. Compute hash
+    let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+
+    // 7. Extract structural layer
+    let mut facts = extract_file_with_mode(
+        &frontend,
+        *file_id,
+        std::path::Path::new(&file_info.path),
+        &source,
+        &content_hash,
+        ExtractionMode::Structural,
+    )?;
+
+    // Post-extraction: enrich with kernel-specific semantics
+    let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
+    if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
+        tracing::info!(
+            "Linux augment (rebuild): {} exports, {} initcall edges, {} syscalls for {}",
+            aug.symbols_exported,
+            aug.initcall_edges,
+            aug.syscall_detected,
+            file_info.path,
+        );
+    }
+
+    // 8. Write to store (atomic replacement)
+    store.replace_file_facts_with_invalidation(file_id, &facts)?;
+
+    tracing::info!(file=%file_info.path, "self-healing structural rebuild complete");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -121,3 +121,72 @@ pub struct VariableFocus {
     /// The resolved target symbol, if the reference was resolved.
     pub resolved_symbol_id: Option<SymbolId>,
 }
+
+// ---------------------------------------------------------------------------
+// StaleStructuralIndexError
+// ---------------------------------------------------------------------------
+
+/// Error returned when the structural index for a file is out of date
+/// (disk content hash differs from the DB hash).
+///
+/// The lazy dataflow layer can detect this error and trigger a structural
+/// rebuild before retrying, enabling transparent self-healing.
+#[derive(Debug, Clone)]
+pub struct StaleStructuralIndexError {
+    /// The file whose structural index is stale.
+    pub file_id: FileId,
+    /// The file path (relative to project root).
+    pub file_path: String,
+    /// The hash stored in the database.
+    pub db_hash: String,
+    /// The hash computed from disk.
+    pub disk_hash: String,
+}
+
+impl std::fmt::Display for StaleStructuralIndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Structural index is stale for {} (DB hash: {}, disk hash: {})",
+            self.file_path,
+            &self.db_hash[..8.min(self.db_hash.len())],
+            &self.disk_hash[..8.min(self.disk_hash.len())]
+        )
+    }
+}
+
+impl std::error::Error for StaleStructuralIndexError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::FileId;
+
+    #[test]
+    fn stale_error_display_formats_correctly() {
+        let err = StaleStructuralIndexError {
+            file_id: FileId::default(),
+            file_path: "src/main.rs".into(),
+            db_hash: "abc123def456".into(),
+            disk_hash: "xyz789ghi012".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("src/main.rs"));
+        assert!(msg.contains("abc123de")); // first 8 chars
+        assert!(msg.contains("xyz789gh"));
+    }
+
+    #[test]
+    fn stale_error_implements_error_trait() {
+        let err = StaleStructuralIndexError {
+            file_id: FileId::default(),
+            file_path: "test.rs".into(),
+            db_hash: "aaaa".into(),
+            disk_hash: "bbbb".into(),
+        };
+        let anyhow_err: anyhow::Error = err.into();
+        assert!(anyhow_err
+            .downcast_ref::<StaleStructuralIndexError>()
+            .is_some());
+    }
+}
