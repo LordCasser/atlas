@@ -591,10 +591,9 @@ impl TraceEngine {
         if source_sym.is_none() {
             return TraceQueryResponse::partial(
                 "trace_forward",
-                TraceDiagnostic::warning(&format!(
-                    "Source symbol '{}' not found in the index. The symbol may need structural parsing — try narrowing scope with 'search' on the containing file, or run 'index' to ensure the project is fully indexed.",
-                    source_id.to_hex()
-                ))
+                TraceDiagnostic::warning(
+                    "Source symbol is not available in the current local facts. Use `search` with its containing file as scope, then retry with a SymbolSelector built from the returned qualified_name and file fields.",
+                )
                 .with_code("symbol_not_found"),
                 None,
             );
@@ -609,11 +608,11 @@ impl TraceEngine {
             return TraceQueryResponse::partial(
                 "trace_forward",
                 TraceDiagnostic::warning(&format!(
-                    "Forward call-graph tracing is not available for {lang_name}. Consider using 'trace_caller_path' (reverse trace from target) or 'callgraph' for neighborhood exploration. If you believe call-graph edges should exist, verify that the '{lang_name}' feature is compiled into the Atlas binary (--features {lang_name}).",
+                    "Forward call tracing is not available for {lang_name}. Use `calls` for the available call-graph neighborhood or `symbol` with view `context` for local structural context.",
                 ))
                 .with_code("unsupported_language")
                 .with_detail(format!(
-                    r#"{{"alternatives":["trace_caller_path","callgraph","context"],"language":"{lang_name}"}}"#
+                    r#"{{"alternatives":["calls","symbol"],"language":"{lang_name}"}}"#
                 )),
                 cap,
             );
@@ -625,10 +624,9 @@ impl TraceEngine {
         if target_sym.is_none() {
             return TraceQueryResponse::partial(
                 "trace_forward",
-                TraceDiagnostic::warning(&format!(
-                    "Target symbol '{}' not found in the index. The symbol may need structural parsing — try running 'context' with its qualified name to trigger on-demand parsing.",
-                    target_id.to_hex()
-                ))
+                TraceDiagnostic::warning(
+                    "Target symbol is not available in the current local facts. Use `search` with its containing file as scope, then retry with a SymbolSelector built from the returned qualified_name and file fields.",
+                )
                 .with_code("target_not_found"),
                 cap,
             );
@@ -997,11 +995,24 @@ fn add_caller_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Caller
     add_chain_trail(
         diagnostics,
         hop_count,
-        format!(
-            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full source of root; `trace_caller_path` with `symbol_name: \"{}\"` to trace beyond root; `trace_forward` from root hex to trace the forward chain.",
-            root_name, target_name, chain.root.qualified_name, root_name,
+        caller_chain_trail_message(
+            root_name,
+            target_name,
+            &chain.root.qualified_name,
+            hop_count,
         ),
     );
+}
+
+fn caller_chain_trail_message(
+    root_name: &str,
+    target_name: &str,
+    root_qualified_name: &str,
+    hop_count: usize,
+) -> String {
+    format!(
+        "Trail: {root_name}→{target_name} ({hop_count} hops). Next: `symbol` with view `context` for root selector `{{\"qualified_name\":\"{root_qualified_name}\"}}`; `trace` with kind `callers` or `calls` from that selector to continue exploration."
+    )
 }
 
 /// Append actionable next-step diagnostics to a forward-chain response.
@@ -1012,11 +1023,24 @@ fn add_forward_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Forwa
     add_chain_trail(
         diagnostics,
         hop_count,
-        format!(
-            "Trail: {}→{} ({hop_count} hops). Next: `context` with `symbol: \"{}\"` for full target source; `callgraph` from target to see its callees.",
-            source_name, target_name, chain.target.qualified_name,
+        forward_chain_trail_message(
+            source_name,
+            target_name,
+            &chain.target.qualified_name,
+            hop_count,
         ),
     );
+}
+
+fn forward_chain_trail_message(
+    source_name: &str,
+    target_name: &str,
+    target_qualified_name: &str,
+    hop_count: usize,
+) -> String {
+    format!(
+        "Trail: {source_name}→{target_name} ({hop_count} hops). Next: `symbol` with view `context` for target selector `{{\"qualified_name\":\"{target_qualified_name}\"}}`; `calls` with direction `outgoing` from that selector to inspect callees."
+    )
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -1024,6 +1048,22 @@ fn add_forward_chain_trail(diagnostics: &mut Vec<TraceDiagnostic>, chain: &Forwa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chain_trails_use_current_public_tool_contract() {
+        let messages = [
+            caller_chain_trail_message("root", "target", "pkg::root", 2),
+            forward_chain_trail_message("source", "target", "pkg::target", 2),
+        ];
+        for message in messages {
+            assert!(message.contains("`symbol`"));
+            assert!(message.contains("qualified_name"));
+            assert!(!message.contains("trace_caller_path"));
+            assert!(!message.contains("trace_forward"));
+            assert!(!message.contains("callgraph"));
+            assert!(!message.contains("root hex"));
+        }
+    }
 
     #[test]
     fn response_ok() {

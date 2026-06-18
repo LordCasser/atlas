@@ -252,16 +252,16 @@ impl ContextView {
         if !self.callee_details.is_empty() {
             let first_callee = &self.callee_details[0].symbol.qualified_name;
             md.push_str(&format!(
-                "- **Calls** → `context` with `symbol: \"{first_callee}\"`\n"
+                "- **Calls** → `symbol` with `view: \"context\"` and `symbol: {{\"qualified_name\": \"{first_callee}\"}}`\n"
             ));
         }
         if !self.caller_details.is_empty() {
             md.push_str(&format!(
-                "- **Called by** → `trace_caller_path` with `symbol_name: \"{}\"`\n",
-                self.subject.name
+                "- **Called by** → `trace` with `kind: \"callers\"` and `symbol: {{\"qualified_name\": \"{}\"}}`\n",
+                self.subject.qualified_name
             ));
         }
-        md.push_str(&format!("- **Full source** → `explore` or `codegraph_node(\"{}\")` for the complete function body\n", self.subject.name));
+        md.push_str(&format!("- **Full source** → `explore` with `source_mode: \"full\"` and `symbol: {{\"qualified_name\": \"{}\"}}`\n", self.subject.qualified_name));
         if self.dependencies.len() > 1 {
             md.push_str(&format!(
                 "- **Dependencies** → {} imported files\n",
@@ -430,6 +430,10 @@ mod tests {
             md.contains("calls"),
             "must show edge kind as section header"
         );
+        assert!(md.contains("`symbol` with `view: \"context\"`"));
+        assert!(md.contains("`explore` with `source_mode: \"full\"`"));
+        assert!(!md.contains("trace_caller_path"));
+        assert!(!md.contains("codegraph_node"));
     }
 
     #[test]
