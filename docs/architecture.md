@@ -240,9 +240,9 @@ MCP Tool
 - `fragmentation_ratio` = `freelist_count / page_count`：表示空闲页面占比；高值意味着 `VACUUM` 可压缩文件。
 - `cache_coverage_ratio` = `cache_size_kib / total_db_kib`：表示页面缓存是否能在内存中覆盖整个 DB。>1.0 时所有页面理论可常驻内存。
 
-### 6.1 Schema（当前版本：V1）
+### 6.1 Schema（当前版本：V2）
 
-当前 schema 版本为 V1。软件处于快速原型期，新库以主 DDL 为准，不保留
+当前 schema 版本为 V2。软件处于快速原型期，新库以主 DDL 为准，不保留
 旧 schema 运行时补丁路径。schema contract 改变时直接更新主
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
 中累积旧版本补丁路径。
@@ -404,7 +404,7 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 
 ### 7.2 跨函数桥接（DataflowFull）
 
-Schema V1 实现了持久化摘要层：
+Schema V2 实现了持久化摘要层：
 
 ```
 dataflow_edges    = intra-procedural, fine-grained, direct edges (不变)
@@ -627,7 +627,7 @@ Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"�
 
 响应信封采用三态终局模型（见 §10.1.10），Agent 通过 `analysis.retry_after_ms` 和顶层 `gaps` 即可判断结果状态。Tool 响应的 coverage/missing 语义通过 `analysis.basis` 和 `gaps[].reason` 承载，可提升空间通过 `retry_after_ms` 表达。废弃的 `analysis_contract` 结构体已移除。
 
-`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，默认 TTL 5 分钟；`resume_query(query_id)` 使用原 tool 参数和 `LazyWindow` 重新执行查询，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
+`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，创建后 TTL 为 5 分钟；快照保存原 tool 参数及本次 `FocusResult` 的 live `JobTracker`。`resume_query(query_id)` 复用该 focus 状态重放查询，不重新调度 closure，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
@@ -642,9 +642,9 @@ MCP 分析响应采用**三态终局模型**，Agent 通过 `analysis.retry_afte
   "result": {...},
   "analysis": {
     "scope": "local",
-    "summary": "Focus analysis still expanding: N background job(s) remaining.",
+    "summary": "Focus analysis still expanding: 2 background job(s) remaining.",
     "basis": ["manifest", "structural"],
-    "retry_after_ms": 8000
+    "retry_after_ms": 10000
   }
 }
 Agent: schedule_poll(query_id, retry_after_ms) → resume_query
@@ -705,7 +705,7 @@ else:
 
 - 引擎层概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
 - `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代。
-- `background_refinement` 字段已淘汰（lifecycle/branch_diff 已不再使用；graph/search 兼容路径中仍存在，后续待所有工具接入三态终局模型后移除）。
+- `background_refinement` 字段已淘汰，不进入 MCP 公共响应。
 
 #### 10.1.11 Focus Runtime 与 Lazy 的关系
 
@@ -842,7 +842,7 @@ analysis response
 - **入口层只做编排**：CLI、TUI、MCP 只解释参数、处理锁、进度、后台任务和用户可见错误。dirty check、stale cleanup、capability upgrade、precision downgrade guard、resolution、graph build 和 summary build 都必须走 engine/filesync/service 层的共享入口。
 - **抽取层 helper 只承载机械一致性**：`languages::shared` 可以统一 `TextRange`、deterministic ID、`ScopeDef`、`BindingDef`、`ReferenceUse`、常见 `DataNode` 默认字段和 call-expression 查找。语言语义差异、特殊 AST 形状、return/callsite/field 规则必须留在各语言 adapter；禁止回到大型 `GenericExtractor`。
 - **trait 默认实现只表达真正相同的规则**：如 `LanguageRuleKinds::validate_rule` 这类跨语言完全一致的校验可以进入 trait default；只要某语言的 rule kind、pattern、metadata 或展示名语义不同，就必须在 registry 中显式覆盖，而不是在默认实现里堆条件分支。
-- **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 的 tool 响应必须通过 `AnalysisEnvelope` 等共享 builder 注入 `analysis`（含 `scope`/`summary`/`basis`/`retry_after_ms`）、`coverage_counts`、`gaps`（GapRecord 数组）、`query_id` 和 `QuerySnapshot`。`precision_tier`、`hint`、`lazy_diagnostics`、`partial_result`、`analysis.state`、`analysis.next_action` 等字段不应出现在公共响应中。`background_refinement` 结构体仍存在于代码中以兼容 graph/search 的非终态路径（通过 `with_background_refinement()` 注入），lifecycle/branch_diff 已不再使用，后续待所有工具接入三态终局模型后移除。需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
+- **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 的 tool 响应必须通过 `AnalysisEnvelope` 等共享 builder 注入 `analysis`（含 `scope`/`summary`/`basis`/`retry_after_ms`）、`coverage_counts`、`gaps`（GapRecord 数组）、`query_id` 和 `QuerySnapshot`。`precision_tier`、`hint`、`lazy_diagnostics`、`partial_result`、`background_refinement`、`analysis.unit`、`analysis.coverage`、`analysis.missing`、`analysis.state`、`analysis.next_action` 等字段不应出现在公共响应中；可操作建议进入稳定的 `error` 或 `message` 字段。需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
 - **public facade 改造以目标 API 为准**：快速原型期允许 breaking change。`atlas-engine` re-export 应保持调用者 ergonomics，但不得为了旧调用方式保留 wrapper、别名或过渡 API。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
 - **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
 - **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
