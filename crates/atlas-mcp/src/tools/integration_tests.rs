@@ -34,7 +34,7 @@ fn open_python_example_store() -> Arc<Store> {
 
 fn python_example_router() -> ToolRouter {
     let store = open_python_example_store();
-    let mut router = ToolRouter::new_empty(store, python_example_root());
+    let router = ToolRouter::new_empty(store, python_example_root());
     router
         .ensure_graph_initialized()
         .expect("Failed to init graph");
@@ -98,7 +98,7 @@ fn status_has_required_fields() {
 
 #[test]
 fn search_scope_filters() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "def", "scope": "spiders", "analysis": "manifest"}),
@@ -115,7 +115,7 @@ fn search_scope_filters() {
 
 #[test]
 fn search_nonexistent_returns_zero() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "ZZZNonExistentXYZZY", "scope": ".", "analysis": "manifest"}),
@@ -126,7 +126,7 @@ fn search_nonexistent_returns_zero() {
 
 #[test]
 fn search_empty_query_is_error() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, _err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "", "scope": ".", "analysis": "manifest"}),
@@ -150,7 +150,7 @@ fn search_empty_query_is_error() {
 
 #[test]
 fn graph_nonexistent_symbol() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, err) =
         router.handle_callers(&json!({"symbol": "NonExistent_XYZ123", "direction": "incoming"}));
     if err {
@@ -168,7 +168,7 @@ fn graph_nonexistent_symbol() {
 
 #[test]
 fn domain_rules_list_has_rules() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, err) = router.handle_atlas_domain_rules(&json!({"action": "list"}));
     assert!(!err, "domain_rules error: {s}");
     let r = parse_json(&s);
@@ -181,7 +181,7 @@ fn domain_rules_list_has_rules() {
 
 #[test]
 fn tasks_has_tasks_field() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let (s, err) = router.handle_tasks(&json!({}));
     assert!(!err, "tasks error: {s}");
     let r = parse_json(&s);
@@ -224,7 +224,7 @@ fn list_fp_annotations_does_not_panic() {
 
 #[test]
 fn handlers_no_panic_empty_args() {
-    let mut router = python_example_router();
+    let router = python_example_router();
     let router2 = python_example_router();
 
     let read_only: Vec<(&str, Box<dyn Fn() -> (String, bool)>)> = vec![
@@ -282,7 +282,7 @@ mod focus_tests {
 
     fn focus_router(project_root: &Path) -> ToolRouter {
         let store = fresh_focus_store();
-        let mut router = ToolRouter::new_empty(store, project_root.to_path_buf());
+        let router = ToolRouter::new_empty(store, project_root.to_path_buf());
         router.init_focus();
         router
     }
@@ -290,7 +290,7 @@ mod focus_tests {
     #[test]
     fn focus_bootstrap_completes_and_prepares_query() {
         let root = python_example_root();
-        let mut router = focus_router(&root);
+        let router = focus_router(&root);
 
         let intent = atlas_engine::QueryIntent::Calls {
             symbol_name: "WikipediaSpider".into(),
@@ -331,7 +331,7 @@ mod focus_tests {
     /// underlying DB already has a full index (focus not needed).
     #[test]
     fn focus_analysis_envelope_has_fields() {
-        let mut router = python_example_router(); // has manifest-indexed symbols
+        let router = python_example_router(); // has manifest-indexed symbols
         router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Calls {
@@ -369,7 +369,7 @@ mod focus_tests {
     /// manifest index.  Focus analysis envelope is optional (full-index DB may skip it).
     #[test]
     fn focus_search_returns_results() {
-        let mut router = python_example_router(); // has manifest-indexed symbols
+        let router = python_example_router(); // has manifest-indexed symbols
         router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Search {
@@ -409,7 +409,7 @@ mod focus_tests {
         // and pick one with non-zero callees (outgoing edges are more
         // predictable than incoming callers).
         let full_store = open_python_example_store(); // full-indexed DB
-        let mut full_router = ToolRouter::new_empty(full_store, root.clone());
+        let full_router = ToolRouter::new_empty(full_store, root.clone());
         full_router
             .ensure_graph_initialized()
             .expect("full graph init");
@@ -563,7 +563,7 @@ mod focus_tests {
         };
         focus_store.upsert_file(&file_info).expect("upsert_file");
 
-        let mut focus_router = ToolRouter::new_empty(focus_store.clone(), root.clone());
+        let focus_router = ToolRouter::new_empty(focus_store.clone(), root.clone());
         focus_router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Calls {
@@ -806,7 +806,7 @@ mod focus_tests {
     /// crash or produce unexpected errors.
     #[test]
     fn focus_multiple_queries_stable() {
-        let mut router = python_example_router(); // has manifest-indexed symbols
+        let router = python_example_router(); // has manifest-indexed symbols
         router.init_focus();
 
         // Trigger focus bootstrap for one symbol (may be None if full index)
@@ -981,7 +981,7 @@ public class ElasticsearchException extends RuntimeException {
         // INTO files (via write_file_facts), which cascade-deletes any
         // pre-inserted symbols referencing this file_id.  We therefore
         // insert our symbols AFTER focus preparation.
-        let mut router = ToolRouter::new_empty(store.clone(), temp_dir);
+        let router = ToolRouter::new_empty(store.clone(), temp_dir);
         router.init_focus();
 
         let primary_qname = "org.elasticsearch.ElasticsearchException";

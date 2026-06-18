@@ -39,7 +39,7 @@ fn open_router(project_root: &std::path::Path) -> ToolRouter {
     let store = Store::open_db(&db_path)
         .unwrap_or_else(|e| panic!("Failed to open DB at {:?}: {}", db_path, e));
     let store = std::sync::Arc::new(store);
-    let mut router = ToolRouter::new_empty(store, project_root.to_path_buf());
+    let router = ToolRouter::new_empty(store, project_root.to_path_buf());
     router
         .ensure_graph_initialized()
         .unwrap_or_else(|e| panic!("Failed to init graph for {:?}: {}", project_root, e));
@@ -316,7 +316,7 @@ fn e2e_focus_runtime_python_example() {
 
     let store =
         std::sync::Arc::new(Store::open_db(&db_path).expect("Failed to open python_example DB"));
-    let mut router = ToolRouter::new_empty(store, python_root.clone());
+    let router = ToolRouter::new_empty(store, python_root.clone());
     router
         .ensure_graph_initialized()
         .expect("Failed to init graph");

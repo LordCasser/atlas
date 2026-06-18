@@ -38,7 +38,7 @@ void foo(void) {
 
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let mut router = ToolRouter::new_empty(store, temp_dir.to_path_buf());
+    let router = ToolRouter::new_empty(store, temp_dir.to_path_buf());
     router.init_focus();
     router
 }
@@ -66,6 +66,30 @@ fn call_tool(router: &mut ToolRouter, name: &str, args: &Value) -> (Value, bool)
     };
     let is_error = result.is_error.unwrap_or(false);
     (parsed, is_error)
+}
+
+#[test]
+fn public_guidance_uses_error_or_message_without_hint_field() {
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    let mut router = ToolRouter::new_empty(store, std::path::PathBuf::from("/tmp"));
+
+    let cases = [
+        ("search", json!({"query": "target"})),
+        ("resume_query", json!({"query_id": "expired"})),
+        ("domain_rules", json!({"action": "learn"})),
+    ];
+    for (tool, args) in cases {
+        let (response, _) = call_tool(&mut router, tool, &args);
+        assert!(
+            response.get("hint").is_none(),
+            "{tool} must not expose the retired hint field: {response}"
+        );
+        assert!(
+            response.get("error").is_some() || response.get("message").is_some(),
+            "{tool} should retain actionable guidance in error or message: {response}"
+        );
+    }
 }
 
 fn seed_persistent_symbol(
@@ -209,7 +233,12 @@ fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
         "cold calls query should return a bounded graph response: {resp:.500}",
     );
     assert_eq!(resp["analysis"]["scope"], "local");
-    assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+    assert!(
+        resp["analysis"]["retry_after_ms"]
+            .as_u64()
+            .is_some_and(|ms| ms > 0 && ms <= 60_000),
+        "cold calls query should expose a bounded focus ETA: {resp:.500}"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -270,7 +299,8 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
         resp.get("subject").is_none(),
         "explore must not return a dossier for a symbol outside the requested scope: {resp:.500}"
     );
-    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
+    assert!(resp.get("background_refinement").is_none());
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -309,13 +339,8 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
             .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
         "unscoped cold explore should expose bounded candidate files: {resp:.500}",
     );
-    assert!(
-        resp["background_refinement"]["job_count"]
-            .as_u64()
-            .is_some_and(|count| count > 0),
-        "unscoped cold explore with candidate files should enqueue background focus: {resp:.500}",
-    );
-    assert_eq!(resp["background_refinement"]["retry_after_ms"], 2000);
+    assert!(resp.get("background_refinement").is_none());
+    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -370,9 +395,8 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
                     .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
                 "{tool} should expose bounded candidate files while unresolved: {resp:.500}",
             );
-            // Phase 1.5: retryable_symbol_not_found_response no longer
-            // emits background_refinement; the retry contract is in the
-            // flat retry_after_ms field and the analysis block.
+            // Retry guidance lives in the flat retry_after_ms field and the
+            // analysis block; legacy background_refinement is not emitted.
             assert_eq!(
                 resp["retry_after_ms"], 8000,
                 "{tool} should expose flat retry_after_ms while building: {resp:.500}",
@@ -385,15 +409,22 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
                 "{tool} should have analysis scope for local materialized result: {resp:.500}",
             );
             assert!(
-                resp["analysis"]["retry_after_ms"].as_u64().is_some_and(|ms| ms > 0),
+                resp["analysis"]["retry_after_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| ms > 0),
                 "{tool} should carry retry_after_ms in the analysis block: {resp:.500}",
             );
-            // background_refinement may be present via the build() fallback
-            // when partial_result + retry_after_ms are both set, but we do not
-            // assert a specific state because the new protocol puts guidance
-            // into the analysis block.
+            assert!(
+                resp.get("background_refinement").is_none(),
+                "{tool} should not expose legacy background_refinement: {resp:.500}",
+            );
         }
-        assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+        assert!(
+            resp["analysis"]["retry_after_ms"]
+                .as_u64()
+                .is_some_and(|ms| ms > 0 && ms <= 60_000),
+            "{tool} should expose a bounded focus ETA: {resp:.500}"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -443,10 +474,7 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
         );
         // Phase 1.5: background_refinement removed — the flat retry_after_ms
         // field carries the retry contract instead.
-        assert_eq!(
-            resp["retry_after_ms"], 8000,
-            "{tool}: {resp:.500}"
-        );
+        assert_eq!(resp["retry_after_ms"], 8000, "{tool}: {resp:.500}");
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -496,10 +524,7 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
         );
         // Phase 1.5: background_refinement removed — the flat retry_after_ms
         // field carries the retry contract instead.
-        assert_eq!(
-            resp["retry_after_ms"], 8000,
-            "{tool}: {resp:.500}"
-        );
+        assert_eq!(resp["retry_after_ms"], 8000, "{tool}: {resp:.500}");
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -711,8 +736,8 @@ fn handler_open_project_uses_persistent_store_without_storage_mode() {
 }
 
 #[test]
-fn handler_search_queues_background_refinement_for_cold_scope() {
-    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_bg_refine");
+fn handler_search_reports_retry_for_cold_scope() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_retry_cold_scope");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
@@ -739,13 +764,8 @@ fn handler_search_queues_background_refinement_for_cold_scope() {
         "cold search should return a bounded result, got: {resp:.300}"
     );
     assert!(
-        resp.get("background_refinement").is_some(),
-        "cold bounded search should queue background refinement: {resp:.300}"
-    );
-    assert_eq!(
-        resp["background_refinement"]["retry_after_ms"].as_u64(),
-        Some(2000),
-        "response should tell clients when to retry/resume: {resp:.300}"
+        resp.get("background_refinement").is_none(),
+        "cold bounded search should not expose legacy background_refinement: {resp:.300}"
     );
     assert!(
         resp["analysis"].get("retry_after_ms").is_some(),
@@ -762,8 +782,8 @@ fn handler_search_queues_background_refinement_for_cold_scope() {
 }
 
 #[test]
-fn handler_search_partial_hit_without_deferred_ids_still_queues_background_refinement() {
-    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_bg_refine_single_hit");
+fn handler_search_partial_hit_without_deferred_ids_reports_retry() {
+    let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_retry_single_hit");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
@@ -792,13 +812,8 @@ fn handler_search_partial_hit_without_deferred_ids_still_queues_background_refin
     );
     assert_eq!(resp["coverage"]["state"], "partial");
     assert!(
-        resp.get("background_refinement").is_some(),
-        "partial search with hits should still queue background refinement: {resp:.300}"
-    );
-    assert_eq!(
-        resp["background_refinement"]["retry_after_ms"].as_u64(),
-        Some(2000),
-        "partial search should tell clients when retry/resume may improve coverage: {resp:.300}"
+        resp.get("background_refinement").is_none(),
+        "partial search should not expose legacy background_refinement: {resp:.300}"
     );
     assert_ne!(
         resp["precision"]["coverage"], "repo_complete",
@@ -839,10 +854,9 @@ fn handler_search_partial_no_hit_tells_client_to_retry() {
     );
     assert_eq!(resp["coverage"]["state"], "partial");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
-    assert_eq!(
-        resp["background_refinement"]["retry_after_ms"].as_u64(),
-        Some(2000),
-        "partial no-hit search should tell clients when to retry: {resp:.300}"
+    assert!(
+        resp.get("background_refinement").is_none(),
+        "partial no-hit search should not expose legacy background_refinement: {resp:.300}"
     );
     assert_ne!(
         resp["precision"]["coverage"], "repo_complete",
@@ -989,7 +1003,7 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+    let router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
     // These should return bounded retryable responses because the symbol does
@@ -1029,7 +1043,7 @@ fn fp_dispatches_unknown_field_returns_error() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+    let router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
     let result = router.call_tool(
@@ -1062,7 +1076,7 @@ fn handler_non_graph_tools_no_panic() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+    let router = ToolRouter::new_empty(store, dir.path().to_path_buf());
 
     // Overlay + task tools — no graph needed, fast.
     let tools: &[(&str, Value)] = &[
@@ -1114,7 +1128,7 @@ fn concurrent_tool_calls_do_not_deadlock() {
     )
     .expect("write main.c");
 
-    let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
+    let router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
 
     router.init_focus();
 
@@ -1132,7 +1146,7 @@ fn concurrent_tool_calls_do_not_deadlock() {
             let router = Arc::clone(&router);
             thread::spawn(move || {
                 for _ in 0..3 {
-                    let mut r = router.lock().expect("lock");
+                    let r = router.lock().expect("lock");
                     let ctx = ToolCallContext::empty();
                     // ── Cover different mutex paths ─────────────────
                     //   symbol detail → search_engine() + store queries
@@ -1184,7 +1198,7 @@ fn all_registered_tools_accept_minimal_args() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("main.c"), "int foo(void) { return 0; }\n").unwrap();
 
-    let mut router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
+    let router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
     router.init_focus();

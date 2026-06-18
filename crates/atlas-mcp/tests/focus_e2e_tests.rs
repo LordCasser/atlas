@@ -213,7 +213,7 @@ fn focus_calls_query_intent_works() {
     let project_root = temp_dir.path().to_path_buf();
 
     create_temp_c_project(&project_root);
-    let mut router = setup_router(&project_root);
+    let router = setup_router(&project_root);
 
     // Initialize focus runtime. No MCP index call is allowed; the focus
     // query below must discover and prepare the relevant project slice.
