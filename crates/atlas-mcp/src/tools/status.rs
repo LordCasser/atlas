@@ -29,30 +29,6 @@ impl ToolRouter {
             .read_index_mode()
             .unwrap_or_else(|_| "unknown".to_string());
 
-        let index_hint = if stats.total_files == 0 {
-            Some(
-                "No project facts have been materialized in this store yet. Use scoped queries such as search(query, scope) to trigger focus-driven extraction; explicit full indexing is available only through the CLI `atlas index` command.",
-            )
-        } else {
-            None
-        };
-
-        let next_action = if stats.total_files == 0 {
-            Some(json!({
-                "tool": "search",
-                "args": { "query": "symbol or function name", "scope": "project-relative directory or file" },
-                "reason": "MCP uses scoped focus queries to materialize only the code needed for the current investigation. Run CLI `atlas index` outside MCP only when you want an explicit project-wide cache."
-            }))
-        } else if index_mode == "manifest" {
-            Some(json!({
-                "tool": "search",
-                "args": { "query": "symbol or function name", "scope": "project-relative directory or file" },
-                "reason": "The project is in lazy mode. Use scoped queries; small scopes are structurally parsed on demand, large scopes remain manifest-level and ask you to narrow."
-            }))
-        } else {
-            None
-        };
-
         // Build per-language capability summary for languages present in the project.
         let mut lang_caps = Vec::new();
         let mut sorted_langs: Vec<&(String, i64)> = stats.files_by_language.iter().collect();
@@ -181,8 +157,6 @@ impl ToolRouter {
                     })).collect::<Vec<_>>(),
                     "lazy_dataflow": lazy_dataflow,
                     "active_extraction_jobs": active_jobs.len(),
-                    "hint": index_hint,
-                    "next_action": next_action,
                 },
                 "database": {
                     "sqlite_version": stats.sqlite_version,
@@ -294,7 +268,13 @@ fn compiled_features() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use atlas_engine::Store;
+    use serde_json::Value;
+
+    use crate::tools::ToolRouter;
 
     #[test]
     fn status_lazy_dataflow_includes_has_dataflow() {
@@ -312,5 +292,21 @@ mod tests {
         assert_eq!(st, 0);
         assert_eq!(mn, 0);
         assert_eq!(cfg, 0);
+    }
+
+    #[test]
+    fn status_response_omits_legacy_guidance_fields() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let (body, is_error) = router.handle_status();
+
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert!(value.get("next_action").is_none(), "{value}");
+        assert!(value["index"].get("next_action").is_none(), "{value}");
+        assert!(value.get("hint").is_none(), "{value}");
+        assert!(value["index"].get("hint").is_none(), "{value}");
     }
 }

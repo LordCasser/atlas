@@ -692,9 +692,7 @@ impl ToolRouter {
         }
 
         // Lazy structural response with focus-aware envelope
-        let lr = lr
-            .with_lazy_warnings(focus_warnings)
-            .with_partial_result(!has_full_index);
+        let lr = lr.with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
         } else {
@@ -836,9 +834,7 @@ impl ToolRouter {
         }
 
         // Lazy structural response with focus-aware envelope
-        let lr = lr
-            .with_lazy_warnings(focus_warnings)
-            .with_partial_result(!has_full_index);
+        let lr = lr.with_lazy_warnings(focus_warnings);
         let lr = if let Some(ref result) = focus_result {
             crate::tools::apply_focus_result_to_lr(lr, result)
         } else {
@@ -1506,8 +1502,7 @@ impl ToolRouter {
 
             let lr = lr
                 .with_root_warnings(root_warnings)
-                .with_lazy_warnings(lazy_warnings)
-                .with_partial_result(false);
+                .with_lazy_warnings(lazy_warnings);
             let lr = if let Some(ref result) = focus_result {
                 crate::tools::apply_focus_result_to_lr(lr, result)
             } else {
@@ -1605,7 +1600,7 @@ impl ToolRouter {
                 "message": &message, "frontier": frontier_nodes,
             });
 
-            // Add candidates and hint when symbols are ambiguous
+            // Add candidates and disambiguation guidance when symbols are ambiguous.
             if from_ids.len() > 1 || to_ids.len() > 1 {
                 if from_ids.len() > 1 {
                     let from_candidates: Vec<serde_json::Value> = from_ids
@@ -1627,15 +1622,14 @@ impl ToolRouter {
                         resp["to_candidates"] = json!(to_candidates);
                     }
                 }
-                resp["hint"] = json!(
-                    "Use a SymbolSelector object (e.g. {\"qualified_name\": \"...\", \"file_path\": \"...\"}) to disambiguate. symbol_ref from search/symbol results can be reused directly."
-                );
+                resp["message"] = json!(format!(
+                    "{message}\nUse a SymbolSelector object (for example, {{\"qualified_name\": \"...\", \"file_path\": \"...\"}}) to disambiguate; symbol_ref from search or symbol results can be reused directly."
+                ));
             }
 
             let lr = lr
                 .with_root_warnings(root_warnings)
-                .with_lazy_warnings(no_path_warnings)
-                .with_partial_result(!is_manual_full);
+                .with_lazy_warnings(no_path_warnings);
             let lr = if let Some(ref result) = focus_result {
                 crate::tools::apply_focus_result_to_lr(lr, result)
             } else {
@@ -1802,7 +1796,6 @@ impl ToolRouter {
                 let mut resp = json!({
                     "symbol": qname,
                     "status": "building",
-                    "partial_result": true,
                     "message": "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this explore request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region.",
                 });
                 if !suggestions.is_empty() {
@@ -1826,37 +1819,17 @@ impl ToolRouter {
                 if !candidate_files.is_empty() {
                     resp["candidate_files"] = json!(candidate_files);
                 };
-                let (refinement_state, refinement_description) = if background_jobs.is_empty() {
-                    (
-                        "pending",
-                        "candidate discovery did not find a bounded local file yet; retry after focus bootstrap has warmed more inventory",
-                    )
+                let summary = if background_jobs.is_empty() {
+                    "explore returned a bounded unresolved result; retry after focus bootstrap has warmed more inventory"
                 } else {
-                    (
-                        "queued",
-                        "background scoped analysis is preparing local explore facts",
-                    )
+                    "explore returned a bounded unresolved result; background scoped analysis is preparing local symbol facts"
                 };
                 return lr
                     .with_is_error(false)
-                    .with_partial_result(true)
                     .with_analysis_scope("local".into())
-                    .with_analysis_summary(
-                        "explore returned a bounded unresolved result; background scoped analysis is preparing local symbol facts"
-                            .into(),
-                    )
+                    .with_analysis_summary(summary.into())
                     .with_analysis_basis(vec!["manifest".into(), "structural".into()])
-                    .with_analysis_missing(vec![
-                        "symbol_resolution".into(),
-                        "repo_complete".into(),
-                    ])
                     .with_analysis_retry_after_ms(2000)
-                    .with_background_refinement(
-                        refinement_state,
-                        Some(background_jobs.len()),
-                        2000,
-                        refinement_description,
-                    )
                     .build(resp, self);
             }
         };
@@ -2302,7 +2275,6 @@ impl ToolRouter {
             "total_reached": total_reached,
             "shown": total_shown,
             "truncated": truncated,
-            "partial_result": truncated,
             "bfs_limit": 1000,
             "file_groups": grouped,
             "edge_kinds_used": edge_kinds_used,
@@ -2427,7 +2399,7 @@ mod tests {
     fn graph_refresh_observes_external_store_changes_immediately() {
         let store = test_store();
         let _sid_a = insert_test_symbol(&store, "a.ts", "a");
-        let mut router = test_router(store.clone());
+        let router = test_router(store.clone());
         router.ensure_graph_initialized().unwrap();
 
         let sid_b = insert_test_symbol(&store, "b.ts", "b");
@@ -2548,7 +2520,7 @@ mod tests {
                 status: atlas_engine::ParseStatus::Success,
             })
             .unwrap();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({}));
         assert!(is_error, "expected error for missing symbol, got: {resp}");
     }
@@ -2556,7 +2528,7 @@ mod tests {
     #[test]
     fn test_handle_impact_invalid_edge_kind_string() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "anything",
             "edge_kinds": ["nonexistent_edge"]
@@ -2576,7 +2548,7 @@ mod tests {
     #[test]
     fn test_handle_impact_mixed_wildcard_returns_error() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "anything",
             "edge_kinds": ["*", "calls"]
@@ -2591,7 +2563,7 @@ mod tests {
     #[test]
     fn test_handle_impact_edge_kinds_not_array() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "anything",
             "edge_kinds": "calls"
@@ -2605,7 +2577,7 @@ mod tests {
     #[test]
     fn test_handle_impact_direction_defaults_to_outgoing() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         // Symbol won't exist, but argument parsing happens before resolve_qname
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "nonexistent"
@@ -2621,7 +2593,7 @@ mod tests {
     #[test]
     fn test_handle_impact_accepts_outgoing_direction() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "nonexistent",
             "direction": "outgoing"
@@ -2637,7 +2609,7 @@ mod tests {
     #[test]
     fn test_handle_impact_accepts_incoming_direction() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "nonexistent",
             "direction": "incoming"
@@ -2651,7 +2623,7 @@ mod tests {
     #[test]
     fn test_handle_impact_accepts_both_direction() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "nonexistent",
             "direction": "both"
@@ -2666,7 +2638,7 @@ mod tests {
     fn test_handle_impact_with_direction_param() {
         // Verify that direction="both" is accepted and processed without error
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "test_func",
             "direction": "both",
@@ -2683,7 +2655,7 @@ mod tests {
     #[test]
     fn test_handle_impact_invalid_direction_returns_error() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "anything",
             "direction": "sideways"
@@ -2736,7 +2708,7 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_impact(&json!({"symbol": "main"}));
         assert!(!is_error, "expected success, got error: {resp_str}");
@@ -2798,7 +2770,7 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) =
             router.handle_impact(&json!({"symbol": "f", "direction": "both"}));
@@ -2843,7 +2815,7 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callees(&json!({"symbol": "g"}));
         assert!(!is_error, "expected success, got: {resp_str}");
@@ -2886,7 +2858,7 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "h"}));
         assert!(!is_error, "expected success, got: {resp_str}");
@@ -2909,7 +2881,7 @@ mod tests {
         insert_test_call_edge(&store, shared_caller, target_a);
         insert_test_call_edge(&store, shared_caller, target_b);
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "target"}));
@@ -2955,7 +2927,7 @@ mod tests {
     fn explore_unique_symbol_returns_dossier() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "test.ts", "myfunc");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "myfunc"}));
         assert!(!is_error, "expected success, got error: {resp_str}");
@@ -2973,7 +2945,7 @@ mod tests {
         insert_test_symbol(&store, "a.ts", "shared_func");
         insert_test_symbol(&store, "b.ts", "shared_func");
         insert_test_symbol(&store, "c.ts", "shared_func");
-        let mut router = test_router(store);
+        let router = test_router(store);
         // Ambiguous path returns early; graph init not needed
         let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "shared_func"}));
         assert!(!is_error, "expected not an error, got: {resp_str}");
@@ -2990,7 +2962,7 @@ mod tests {
     fn explore_accepts_source_lines_param() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "test.ts", "myfunc2");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) =
             router.handle_explore(&json!({"symbol": "myfunc2", "source_lines": 10}));
@@ -3006,7 +2978,7 @@ mod tests {
     fn explore_accepts_evidence_limit_param() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "test.ts", "myfunc3");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) =
             router.handle_explore(&json!({"symbol": "myfunc3", "evidence_limit": 5}));
@@ -3019,7 +2991,7 @@ mod tests {
     #[test]
     fn explore_not_found_returns_retryable_partial_response() {
         let store = test_store();
-        let mut router = test_router(store);
+        let router = test_router(store);
         let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "missing_func"}));
         assert!(
             !is_error,
@@ -3028,7 +3000,7 @@ mod tests {
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(resp["status"], json!("building"));
         assert_eq!(resp["analysis"]["retry_after_ms"], json!(2000));
-        assert_eq!(resp["background_refinement"]["retry_after_ms"], json!(2000));
+        assert!(resp.get("background_refinement").is_none());
     }
 
     // ── ambiguity candidate tests ──────────────────────────────────────
@@ -3137,7 +3109,7 @@ mod tests {
         // Only 1 of 4 pairs has a path: from_sid0 → to_sid0
         insert_test_call_edge(&store, from_sid0, to_sid0);
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         // Plain string qnames (not SymbolSelectors)
@@ -3238,12 +3210,38 @@ mod tests {
     }
 
     #[test]
+    fn path_ambiguous_no_path_uses_message_without_hint_field() {
+        let store = test_store();
+        insert_test_symbol(&store, "src/a.ts", "sender");
+        insert_test_symbol(&store, "src/b.ts", "sender");
+        insert_test_symbol(&store, "src/c.ts", "receiver");
+        insert_test_symbol(&store, "src/d.ts", "receiver");
+
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+        let (response, is_error) = router.handle_path(&json!({
+            "from": "sender",
+            "to": "receiver"
+        }));
+        assert!(!is_error, "expected bounded no-path response: {response}");
+
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(response.get("hint").is_none(), "{response}");
+        assert!(
+            response["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("SymbolSelector")),
+            "disambiguation guidance should remain in message: {response}"
+        );
+    }
+
+    #[test]
     fn path_not_found_target_reports_unresolved_call_hint() {
         let store = test_store();
         let from_id = insert_test_symbol(&store, "src/a.ts", "sender");
         insert_unresolved_call_reference(&store, from_id, "copy_from_user");
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         let (resp, is_error) = router.handle_path(&json!({
@@ -3413,7 +3411,7 @@ mod tests {
     fn calls_dispatch_wildcard_edge_kinds_routes_to_callgraph() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "a.ts", "a.a");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         // Explicit empty edge_kinds [] means wildcard → should route to callgraph
@@ -3432,7 +3430,7 @@ mod tests {
     fn calls_dispatch_custom_edge_kinds_routes_to_callgraph() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "a.ts", "a.a");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         // Custom edge_kinds → should route to callgraph
@@ -3451,7 +3449,7 @@ mod tests {
     fn calls_dispatch_default_edges_routes_to_specific_handler() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "a.ts", "a.a");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
@@ -3468,7 +3466,7 @@ mod tests {
     fn calls_dispatch_both_direction_routes_to_callgraph() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "a.ts", "a.a");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
@@ -3485,7 +3483,7 @@ mod tests {
     fn calls_dispatch_depth_gt_1_routes_to_callgraph() {
         let store = test_store();
         let _sid = insert_test_symbol(&store, "a.ts", "a.a");
-        let mut router = test_router(store);
+        let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
 
         let dispatch = crate::tools::resolve_calls_dispatch(&serde_json::json!({
@@ -3526,7 +3524,7 @@ mod tests {
                 status: atlas_engine::ParseStatus::Success,
             })
             .unwrap();
-        let mut router = test_router(store);
+        let router = test_router(store);
         // After construction, focus_runtime is always present (no Option wrapper).
         let mode = router.project().query_runtime.detect_index_mode();
         assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
@@ -3578,7 +3576,7 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
 
-        let mut router = test_router(store);
+        let router = test_router(store);
         // Simulate a full index so prepare_focus_query returns early
         // without focus data — the equivalent of the old "no focus" path.
         let signature = router.project().store.index_signature().unwrap_or_default();

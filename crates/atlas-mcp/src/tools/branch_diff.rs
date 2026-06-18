@@ -74,8 +74,6 @@ fn apply_branch_diff_analysis(
             }
 
             lr.with_analysis_scope("local".into())
-                .with_analysis_unit("function".into())
-                .with_analysis_coverage("boundary_partial".into())
                 .with_analysis_basis(basis)
                 .with_analysis_summary(
                     "Branch diff used the focused function context; nearby semantic facts are still being expanded."
@@ -85,8 +83,6 @@ fn apply_branch_diff_analysis(
         }
         BranchDiffAnalysisMode::SemanticUnavailable => {
             lr.with_analysis_scope("local".into())
-                .with_analysis_unit("function".into())
-                .with_analysis_coverage("function_complete".into())
                 .with_analysis_basis(vec!["cfg".into()])
                 .with_gap_records(vec![GapRecord {
                     scope: "current function".into(),
@@ -100,8 +96,6 @@ fn apply_branch_diff_analysis(
         }
         BranchDiffAnalysisMode::SemanticReady => lr
             .with_analysis_scope("local".into())
-            .with_analysis_unit("function".into())
-            .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into(), "dataflow".into(), "effects".into()])
             .with_gap_records(vec![])
             .with_analysis_summary(
@@ -109,8 +103,6 @@ fn apply_branch_diff_analysis(
             ),
         BranchDiffAnalysisMode::CfgOnly => lr
             .with_analysis_scope("local".into())
-            .with_analysis_unit("function".into())
-            .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into()])
             .with_gap_records(vec![])
             .with_analysis_summary("Branch diff used complete focused function CFG effects.".into()),
@@ -360,6 +352,15 @@ mod tests {
         serde_json::from_str(&text).unwrap()
     }
 
+    fn assert_public_analysis_schema(value: &serde_json::Value) {
+        for retired in ["unit", "coverage", "missing", "state", "next_action"] {
+            assert!(
+                value["analysis"].get(retired).is_none(),
+                "retired analysis field {retired} must be absent: {value}"
+            );
+        }
+    }
+
     fn lazy_window(capability_mask: CapabilityMask, pending: bool) -> LazyWindow {
         let seed_unit = AnalysisUnit::from_function(
             FileId::default(),
@@ -393,10 +394,8 @@ mod tests {
     fn cfg_only_branch_diff_is_function_complete() {
         let value = analysis_json_for(BranchDiffAnalysisMode::CfgOnly);
         assert_eq!(value["analysis"]["scope"], "local");
-        assert_eq!(value["analysis"]["unit"], "function");
-        assert_eq!(value["analysis"]["coverage"], "function_complete");
         assert_eq!(value["analysis"]["basis"], json!(["cfg"]));
-        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
+        assert_public_analysis_schema(&value);
         assert!(value["analysis"].get("retry_after_ms").is_none());
         assert!(value.get("work").is_none(), "work must not be public");
     }
@@ -411,15 +410,12 @@ mod tests {
 
         let value = analysis_json_for(mode);
         assert_eq!(value["analysis"]["scope"], "local");
-        assert_eq!(value["analysis"]["unit"], "function");
-        assert_eq!(value["analysis"]["coverage"], "function_complete");
         assert_eq!(
             value["analysis"]["basis"],
             json!(["cfg", "dataflow", "effects"])
         );
-        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
+        assert_public_analysis_schema(&value);
         assert!(value["analysis"].get("retry_after_ms").is_none());
-        assert!(value["analysis"].get("missing").is_none(), "missing should be absent (replaced by gaps)");
         assert!(value.get("work").is_none(), "work must not be public");
     }
 
@@ -436,16 +432,21 @@ mod tests {
 
         let value = analysis_json_for(mode);
         assert_eq!(value["analysis"]["scope"], "local");
-        assert_eq!(value["analysis"]["unit"], "function");
-        assert_eq!(value["analysis"]["coverage"], "boundary_partial");
         assert_eq!(
             value["analysis"]["basis"],
             json!(["cfg", "dataflow", "effects"])
         );
+        assert_public_analysis_schema(&value);
         // Non-terminal response must NOT include gaps
-        assert!(value.get("gaps").is_none(), "gaps must not appear in non-terminal response");
+        assert!(
+            value.get("gaps").is_none(),
+            "gaps must not appear in non-terminal response"
+        );
         assert_eq!(value["analysis"]["retry_after_ms"], 8000);
-        assert!(value.get("partial_result").is_none(), "partial_result must not be set");
+        assert!(
+            value.get("partial_result").is_none(),
+            "partial_result must not be set"
+        );
         assert!(value.get("work").is_none(), "work must not be public");
     }
 
@@ -456,14 +457,16 @@ mod tests {
 
         let value = analysis_json_for(mode);
         assert_eq!(value["analysis"]["scope"], "local");
-        assert_eq!(value["analysis"]["unit"], "function");
-        assert_eq!(value["analysis"]["coverage"], "function_complete");
+        assert_public_analysis_schema(&value);
         let gaps = value["gaps"].as_array().expect("gaps should be present");
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0]["scope"], "current function");
         assert_eq!(gaps[0]["reason"], "no_dataflow");
         assert!(
-            gaps[0]["detail"].as_str().unwrap().contains("Dataflow refinement failed"),
+            gaps[0]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("Dataflow refinement failed"),
         );
         assert!(value["analysis"].get("retry_after_ms").is_none());
         assert!(value.get("work").is_none(), "work must not be public");
@@ -513,9 +516,8 @@ mod tests {
     #[test]
     fn semantic_branch_diff_missing_is_descriptive() {
         // SemanticBoundary is non-terminal → gaps must NOT appear
-        let value = analysis_json_for(BranchDiffAnalysisMode::SemanticBoundary {
-            has_dataflow: true,
-        });
+        let value =
+            analysis_json_for(BranchDiffAnalysisMode::SemanticBoundary { has_dataflow: true });
         assert!(
             value.get("gaps").is_none(),
             "gaps must not appear in non-terminal SemanticBoundary response"

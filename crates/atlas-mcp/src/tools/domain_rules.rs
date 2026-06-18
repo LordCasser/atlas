@@ -157,7 +157,7 @@ impl ToolRouter {
                 let resp = json!({
                     "ok": true,
                     "candidates": filtered,
-                    "hint": "Review candidates and use 'domain_rules' (action='add') to approve. Learned rules are not automatically applied.",
+                    "message": "Review candidates and use domain_rules(action='add') to approve them; learned rules are not applied automatically.",
                 });
                 (
                     serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),

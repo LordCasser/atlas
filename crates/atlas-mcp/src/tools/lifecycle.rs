@@ -4,7 +4,7 @@
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
-use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
+use super::analysis_envelope::AnalysisEnvelope;
 use super::{ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
@@ -203,8 +203,6 @@ impl ToolRouter {
         if result.partial {
             lr = lr
                 .with_analysis_scope("local".into())
-                .with_analysis_unit("function".into())
-                .with_analysis_coverage("boundary_partial".into())
                 .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
                 .with_analysis_summary(format!(
                     "Partial lifecycle analysis: {} transitions found, final state={}, {} suspicious point(s).",
@@ -216,158 +214,10 @@ impl ToolRouter {
         } else {
             lr = lr
                 .with_analysis_scope("local".into())
-                .with_analysis_unit("function".into())
-                .with_analysis_coverage("function_complete".into())
                 .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
                 .with_gap_records(vec![])
                 .with_analysis_summary("Lifecycle analysis used CFG and domain rules.".into());
         }
         lr.with_is_error(false).build(resp, self)
-    }
-}
-
-/// Build specific gap descriptions from the lifecycle result.
-/// Each gap identifies WHAT is actually missing in the partial analysis.
-fn build_lifecycle_gaps(result: &atlas_engine::analysis::FieldLifecycleResult) -> Vec<GapRecord> {
-    let scope = format!("function {}", result.function_qname);
-    let mut gaps: Vec<GapRecord> = Vec::new();
-    if result.transitions.is_empty() {
-        gaps.push(GapRecord {
-            scope: scope.clone(),
-            reason: "no_transitions".into(),
-            detail: "No state transitions were found for the given field path. The field may not participate in any allocation/free operations within this function.".into(),
-        });
-    }
-    if result.final_state == atlas_engine::analysis::FieldState::Unknown {
-        gaps.push(GapRecord {
-            scope: scope.clone(),
-            reason: "incomplete_cfg".into(),
-            detail: "The final state of the field could not be determined. The CFG path may be incomplete due to unresolved calls or missing dataflow facts.".into(),
-        });
-    }
-    if result.suspicious_points.is_empty() {
-        gaps.push(GapRecord {
-            scope: scope.clone(),
-            reason: "no_domain_rules".into(),
-            detail: "No ownership-rule matches were applied. Domain rules for this language/pattern may need to be configured.".into(),
-        });
-    }
-    gaps
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use atlas_engine::analysis::{
-        EvidenceLevel, FieldLifecycleResult, FieldState, FieldTransition, SuspiciousPoint,
-    };
-
-    #[test]
-    fn gaps_when_transitions_empty_contains_lifecycle_transitions() {
-        let result = FieldLifecycleResult {
-            field_path: "ptr".into(),
-            function_qname: "foo".into(),
-            transitions: vec![],
-            final_state: FieldState::Assigned,
-            suspicious_points: vec![],
-            partial: true,
-            evidence_level: EvidenceLevel::Incomplete,
-            exit_state: None,
-        };
-        let gaps = build_lifecycle_gaps(&result);
-        assert!(
-            gaps.iter().any(|g| g.reason == "no_transitions"),
-            "expected no_transitions gap, got: {gaps:?}"
-        );
-        assert!(
-            gaps[0].scope.contains("foo"),
-            "expected scope to contain function name, got: {gaps:?}"
-        );
-    }
-
-    #[test]
-    fn gaps_when_final_state_unknown_contains_lifecycle_end_state() {
-        let result = FieldLifecycleResult {
-            field_path: "ptr".into(),
-            function_qname: "foo".into(),
-            transitions: vec![],
-            final_state: FieldState::Unknown,
-            suspicious_points: vec![],
-            partial: true,
-            evidence_level: EvidenceLevel::Incomplete,
-            exit_state: None,
-        };
-        let gaps = build_lifecycle_gaps(&result);
-        assert!(
-            gaps.iter().any(|g| g.reason == "incomplete_cfg"),
-            "expected incomplete_cfg gap, got: {gaps:?}"
-        );
-    }
-
-    #[test]
-    fn gaps_when_suspicious_points_empty_contains_lifecycle_analysis() {
-        let result = FieldLifecycleResult {
-            field_path: "ptr".into(),
-            function_qname: "foo".into(),
-            transitions: vec![],
-            final_state: FieldState::Assigned,
-            suspicious_points: vec![],
-            partial: true,
-            evidence_level: EvidenceLevel::Incomplete,
-            exit_state: None,
-        };
-        let gaps = build_lifecycle_gaps(&result);
-        assert!(
-            gaps.iter().any(|g| g.reason == "no_domain_rules"),
-            "expected no_domain_rules gap, got: {gaps:?}"
-        );
-    }
-
-    #[test]
-    fn gaps_when_all_present_contains_all_three() {
-        let result = FieldLifecycleResult {
-            field_path: "ptr".into(),
-            function_qname: "foo".into(),
-            transitions: vec![],
-            final_state: FieldState::Unknown,
-            suspicious_points: vec![],
-            partial: true,
-            evidence_level: EvidenceLevel::Incomplete,
-            exit_state: None,
-        };
-        let gaps = build_lifecycle_gaps(&result);
-        assert_eq!(gaps.len(), 3, "expected all three gaps, got: {gaps:?}");
-        assert!(gaps.iter().any(|g| g.reason == "no_transitions"));
-        assert!(gaps.iter().any(|g| g.reason == "incomplete_cfg"));
-        assert!(gaps.iter().any(|g| g.reason == "no_domain_rules"));
-    }
-
-    #[test]
-    fn gaps_when_result_is_rich_produces_empty_gaps() {
-        // When transitions exist, final_state is known, and suspicious_points exist,
-        // there should be no gaps (analysis is as complete as it can be).
-        let result = FieldLifecycleResult {
-            field_path: "ptr".into(),
-            function_qname: "foo".into(),
-            transitions: vec![FieldTransition {
-                from_state: FieldState::Unknown,
-                to_state: FieldState::Assigned,
-                node_id: atlas_engine::CfgNodeId::default(),
-                node_line: 10,
-                effect: None,
-                branch_frames: vec![],
-            }],
-            final_state: FieldState::Assigned,
-            suspicious_points: vec![SuspiciousPoint {
-                line: 10,
-                kind: atlas_engine::analysis::SuspiciousKind::MissingFree,
-                message: "test".into(),
-            }],
-            partial: true,
-            evidence_level: EvidenceLevel::Incomplete,
-            exit_state: None,
-        };
-        let gaps = build_lifecycle_gaps(&result);
-        assert!(gaps.is_empty(), "expected no gaps, got: {gaps:?}");
     }
 }

@@ -38,7 +38,7 @@ impl ToolRouter {
             None => {
                 return (
                     serde_json::to_string(
-                        &json!({"error": "query not found or expired", "hint": "Query snapshots expire after 5 minutes of inactivity. Re-run the original tool to create a fresh snapshot."}),
+                        &json!({"error": "query not found or expired; query snapshots expire 5 minutes after creation, so re-run the original tool to create a fresh snapshot"}),
                     )
                     .unwrap(),
                     true,
@@ -58,43 +58,6 @@ impl ToolRouter {
             s.status = QueryStatus::Refining;
         }
 
-        // Re-run lazy extraction for the snapshot's window to pick up newly
-        // cached data. The extraction services skip already-cached units.
-        if let Some(ref window) = snapshot.lazy_window {
-            let intent = window
-                .seed_unit
-                .symbol_id
-                .and_then(|sid| self.project().store.find_symbol_by_id(&sid).ok().flatten())
-                .map(|sym| atlas_engine::QueryIntent::Calls {
-                    symbol_name: sym.name.clone(),
-                    file_id: Some(sym.file_id),
-                    symbol_id: None,
-                    direction: None,
-                    depth: None,
-                });
-            let (_, focus_warnings) = self.prepare_focus_query(intent);
-            for w in focus_warnings {
-                tracing::warn!("Focus pre-warm warning (resume): {w}");
-            }
-
-            // Re-trigger dataflow extraction for each function-scoped unit
-            // in the lazy window, so re-dispatched handlers see fresh
-            // dataflow results. Top-level units (symbol_id is None) are
-            // skipped because LazyDataflowService only supports
-            // function-level dataflow via `ensure_for_function`.
-            for unit in &window.units {
-                if let Some(ref sid) = unit.symbol_id {
-                    if let Err(e) = self
-                        .project()
-                        .analysis_runtime
-                        .ensure_dataflow_for_function(sid, None)
-                    {
-                        tracing::warn!("Lazy dataflow re-trigger failed for {:?}: {e:#}", sid);
-                    }
-                }
-            }
-        }
-
         // Trigger graph refresh so re-dispatched handler sees fresh data.
         if let Err(e) = self.maybe_refresh_graph() {
             tracing::warn!("Graph refresh in resume handler failed: {e:#}");
@@ -102,6 +65,7 @@ impl ToolRouter {
 
         // Copy query_id before snapshot moves
         let original_query_id = query_id.to_string();
+        let replay_router = ToolRouter::for_resume(self.project(), snapshot.focus_result.clone());
 
         // Re-dispatch to original handler using unified parameter names.
         // NOTE: Old snapshots with 'symbol_name'/'from_name'/'to_name' fields
@@ -115,10 +79,10 @@ impl ToolRouter {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 match kind {
-                    "point" => self.handle_trace_point(&super::ToolCallContext::empty(), &snapshot.tool_args),
-                    "variable" => self.handle_trace_variable(&snapshot.tool_args),
-                    "forward" => self.handle_trace_forward(&snapshot.tool_args),
-                    "callers" => self.handle_trace_caller_path(&snapshot.tool_args),
+                    "point" => replay_router.handle_trace_point(&super::ToolCallContext::empty(), &snapshot.tool_args),
+                    "variable" => replay_router.handle_trace_variable(&snapshot.tool_args),
+                    "forward" => replay_router.handle_trace_forward(&snapshot.tool_args),
+                    "callers" => replay_router.handle_trace_caller_path(&snapshot.tool_args),
                     _ => return (
                         serde_json::to_string(
                             &json!({"error": format!("resume not supported for trace kind '{}'", kind)}),
@@ -128,9 +92,9 @@ impl ToolRouter {
                 }
             }
             "calls" => match resolve_calls_dispatch(&snapshot.tool_args) {
-                CallsDispatch::CallGraph(call_args) => self.handle_callgraph(&call_args),
-                CallsDispatch::Callers => self.handle_callers(&snapshot.tool_args),
-                CallsDispatch::Callees => self.handle_callees(&snapshot.tool_args),
+                CallsDispatch::CallGraph(call_args) => replay_router.handle_callgraph(&call_args),
+                CallsDispatch::Callers => replay_router.handle_callers(&snapshot.tool_args),
+                CallsDispatch::Callees => replay_router.handle_callees(&snapshot.tool_args),
                 CallsDispatch::Error(e) => (e, true),
             },
             "symbol" => {
@@ -140,9 +104,9 @@ impl ToolRouter {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 match view {
-                    "detail" | "" => self.handle_symbol_detail(&snapshot.tool_args),
-                    "context" => self.handle_context(&super::ToolCallContext::empty(), &snapshot.tool_args),
-                    "usages" => self.handle_usages(&snapshot.tool_args),
+                    "detail" | "" => replay_router.handle_symbol_detail(&snapshot.tool_args),
+                    "context" => replay_router.handle_context(&super::ToolCallContext::empty(), &snapshot.tool_args),
+                    "usages" => replay_router.handle_usages(&snapshot.tool_args),
                     _ => return (
                         serde_json::to_string(
                             &json!({"error": format!("resume not supported for symbol view '{}'", view)}),
@@ -151,12 +115,14 @@ impl ToolRouter {
                     ),
                 }
             }
-            "search" => self.handle_search(&super::ToolCallContext::empty(), &snapshot.tool_args),
-            "path" => self.handle_path(&snapshot.tool_args),
-            "explore" => self.handle_explore(&snapshot.tool_args),
-            "impact" => self.handle_impact(&snapshot.tool_args),
-            "lifecycle" => self.handle_lifecycle(&snapshot.tool_args),
-            "branch_diff" => self.handle_branch_diff(&snapshot.tool_args),
+            "search" => {
+                replay_router.handle_search(&super::ToolCallContext::empty(), &snapshot.tool_args)
+            }
+            "path" => replay_router.handle_path(&snapshot.tool_args),
+            "explore" => replay_router.handle_explore(&snapshot.tool_args),
+            "impact" => replay_router.handle_impact(&snapshot.tool_args),
+            "lifecycle" => replay_router.handle_lifecycle(&snapshot.tool_args),
+            "branch_diff" => replay_router.handle_branch_diff(&snapshot.tool_args),
             _ => {
                 return (
                     serde_json::to_string(
@@ -170,8 +136,20 @@ impl ToolRouter {
 
         // Patch response: keep original query_id so the client can correlate,
         // and add a `resumed_from` field to indicate this is a resume.
-        let patched =
-            Self::patch_resume_response(&resp_str, &original_query_id).unwrap_or(resp_str);
+        let (patched, remains_partial, generated_query_id) =
+            Self::patch_resume_response(&resp_str, &original_query_id)
+                .unwrap_or((resp_str, false, None));
+
+        if let Some(generated_query_id) = generated_query_id {
+            if generated_query_id != original_query_id {
+                self.project()
+                    .job_runtime
+                    .query_snapshots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&generated_query_id);
+            }
+        }
 
         // Mark as Ready if the re-run completed successfully
         if let Some(s) = self
@@ -182,7 +160,11 @@ impl ToolRouter {
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(&original_query_id)
         {
-            s.status = QueryStatus::Ready;
+            s.status = if remains_partial {
+                QueryStatus::Partial
+            } else {
+                QueryStatus::Ready
+            };
         }
 
         (patched, is_error)
@@ -190,10 +172,56 @@ impl ToolRouter {
 
     /// Patch a handler response to return the original query_id (not the
     /// one the handler generated internally) and add a `resumed_from` field.
-    fn patch_resume_response(resp_str: &str, original_query_id: &str) -> Option<String> {
+    fn patch_resume_response(
+        resp_str: &str,
+        original_query_id: &str,
+    ) -> Option<(String, bool, Option<String>)> {
         let mut resp: Value = serde_json::from_str(resp_str).ok()?;
+        let generated_query_id = resp
+            .get("query_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let remains_partial = resp
+            .get("analysis")
+            .and_then(|analysis| analysis.get("retry_after_ms"))
+            .is_some();
         resp["query_id"] = json!(original_query_id);
         resp["resumed_from"] = json!(original_query_id);
-        serde_json::to_string_pretty(&resp).ok()
+        Some((
+            serde_json::to_string_pretty(&resp).ok()?,
+            remains_partial,
+            generated_query_id,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn patch_resume_response_preserves_partial_state_and_generated_id() {
+        let response = json!({
+            "query_id": "q_generated",
+            "analysis": {"retry_after_ms": 5000},
+            "result": "partial"
+        })
+        .to_string();
+
+        let (patched, remains_partial, generated) =
+            ToolRouter::patch_resume_response(&response, "q_original").unwrap();
+        let patched: Value = serde_json::from_str(&patched).unwrap();
+        assert!(remains_partial);
+        assert_eq!(generated.as_deref(), Some("q_generated"));
+        assert_eq!(patched["query_id"], "q_original");
+        assert_eq!(patched["resumed_from"], "q_original");
+    }
+
+    #[test]
+    fn patch_resume_response_marks_terminal_without_retry() {
+        let response = json!({"query_id": "q_generated", "result": "ready"}).to_string();
+        let (_, remains_partial, _) =
+            ToolRouter::patch_resume_response(&response, "q_original").unwrap();
+        assert!(!remains_partial);
     }
 }

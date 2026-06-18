@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use atlas_engine::{Investigation, InvestigationFocus, LazyWindow};
+use atlas_engine::{Investigation, InvestigationFocus};
 use serde_json::Value;
 
 /// TTL for query snapshots before they expire (default 5 minutes).
@@ -18,7 +18,9 @@ pub(crate) struct QuerySnapshot {
     pub query_id: String,
     pub tool_name: String,
     pub tool_args: Value,
-    pub lazy_window: Option<LazyWindow>,
+    /// Focus state captured by the original query. Its tracker remains live
+    /// so resume can observe completion without scheduling new closures.
+    pub focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
     pub created_at: Instant,
     pub status: QueryStatus,
 }
@@ -174,7 +176,7 @@ mod tests {
             query_id: "q_test".into(),
             tool_name: "trace".into(),
             tool_args: serde_json::json!({"line": 1}),
-            lazy_window: None,
+            focus_result: None,
             created_at: std::time::Instant::now(),
             status: QueryStatus::Partial,
         };
@@ -193,7 +195,7 @@ mod tests {
             query_id: "q_old".into(),
             tool_name: "trace".into(),
             tool_args: serde_json::json!({}),
-            lazy_window: None,
+            focus_result: None,
             created_at: std::time::Instant::now() - Duration::from_secs(400),
             status: QueryStatus::Ready,
         };

@@ -506,7 +506,7 @@ mod tests {
         assert!(!edges_before.is_empty(), "edge should exist before delete");
 
         // Delete via ToolRouter's handle_delete_fp_annotation
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let args = json!({"annotation_id": ann_id});
         let (result, is_error) = router.handle_delete_fp_annotation(&args);
         assert!(!is_error, "delete should succeed: {result}");

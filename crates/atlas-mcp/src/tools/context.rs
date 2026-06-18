@@ -193,14 +193,7 @@ impl ToolRouter {
                 })
             }
         } else {
-            view.subject_source.as_ref().map(|s| {
-                json!({
-                    "lines": s.lines,
-                    "start_line": s.start_line,
-                    "total_lines": s.total_lines,
-                    "truncated": s.truncated,
-                })
-            })
+            None
         };
 
         // ── caller_details ─────────────────────────────────────────────
@@ -626,7 +619,7 @@ mod tests {
             20,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = super::super::ToolCallContext::empty();
@@ -685,7 +678,7 @@ mod tests {
             100,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = super::super::ToolCallContext::empty();
@@ -706,6 +699,49 @@ mod tests {
         assert!(resp["ambiguous"].is_null());
         assert!(resp["subject"].is_object());
         assert!(resp["subject"]["qualified_name"].as_str() == Some("crate.process"));
+    }
+
+    #[test]
+    fn context_include_code_false_omits_subject_source() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_dir.path().join("a.ts"),
+            "function exists() {\n  return 1;\n}\n",
+        )
+        .unwrap();
+
+        let store = test_store();
+        let file_a = register_test_file(&store, "a.ts");
+        insert_test_symbol(
+            &store,
+            file_a,
+            "exists",
+            "exists",
+            atlas_engine::SymbolKind::Function,
+            1,
+        );
+
+        let router = ToolRouter::new_empty(store, temp_dir.path().to_path_buf());
+        router.ensure_graph_initialized().unwrap();
+        let ctx = super::super::ToolCallContext::empty();
+
+        let args = serde_json::json!({"symbol": "exists", "includeCode": false});
+        let (resp_str, is_error) = router.handle_context(&ctx, &args);
+        assert!(!is_error, "expected no error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).expect("valid JSON");
+        assert!(
+            resp.get("subject_source").is_none(),
+            "includeCode=false must not emit subject_source: {resp_str}"
+        );
+
+        let args = serde_json::json!({"symbol": "exists", "includeCode": true});
+        let (resp_str, is_error) = router.handle_context(&ctx, &args);
+        assert!(!is_error, "expected no error, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).expect("valid JSON");
+        assert!(
+            resp.get("subject_source").is_some(),
+            "includeCode=true should emit subject_source: {resp_str}"
+        );
     }
 
     #[test]
@@ -731,7 +767,7 @@ mod tests {
             1,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = super::super::ToolCallContext::empty();
@@ -772,7 +808,7 @@ mod tests {
             1,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = super::super::ToolCallContext::empty();

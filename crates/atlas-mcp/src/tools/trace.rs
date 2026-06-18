@@ -132,9 +132,7 @@ impl ToolRouter {
 
         let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        lr.with_partial_result(resp.partial_result)
-            .with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_variable(&self, args: &serde_json::Value) -> (String, bool) {
@@ -252,9 +250,7 @@ impl ToolRouter {
 
         let resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
 
-        lr.with_partial_result(resp.partial_result)
-            .with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_caller_path(&self, args: &serde_json::Value) -> (String, bool) {
@@ -402,9 +398,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_partial_result(resp.partial_result)
-            .with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 
     pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
@@ -655,9 +649,7 @@ impl ToolRouter {
             }
         }
 
-        lr.with_partial_result(resp.partial_result)
-            .with_is_error(is_error)
-            .build(resp_value, self)
+        lr.with_is_error(is_error).build(resp_value, self)
     }
 }
 
@@ -797,7 +789,7 @@ mod tests {
         let sid = insert_symbol(&store, f, "func", "func.func", SymbolKind::Function);
         let hex = sid.to_hex();
 
-        let mut router = new_router(store);
+        let router = new_router(store);
         let args = serde_json::json!({"symbol": hex});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
         assert!(
@@ -812,7 +804,7 @@ mod tests {
     #[test]
     fn trace_variable_missing_file_returns_error() {
         let store = test_store();
-        let mut router = new_router(store);
+        let router = new_router(store);
 
         let args = serde_json::json!({
             "file_path": "nonexistent.ts",
@@ -827,7 +819,7 @@ mod tests {
     fn trace_variable_missing_position_returns_error() {
         let store = test_store();
         let _f = register_file(&store, "test.ts");
-        let mut router = new_router(store);
+        let router = new_router(store);
 
         let args = serde_json::json!({
             "file_path": "test.ts",
@@ -839,7 +831,7 @@ mod tests {
     #[test]
     fn trace_callers_empty_symbol_returns_error() {
         let store = test_store();
-        let mut router = new_router(store);
+        let router = new_router(store);
 
         let args = serde_json::json!({"symbol": ""});
         let (_resp_str, is_error) = router.handle_trace_caller_path(&args);
@@ -849,7 +841,7 @@ mod tests {
     #[test]
     fn trace_forward_empty_params_returns_error() {
         let store = test_store();
-        let mut router = new_router(store);
+        let router = new_router(store);
 
         let args = serde_json::json!({"from": "a", "to": ""});
         let (_resp_str, is_error) = router.handle_trace_forward(&args);
@@ -863,7 +855,7 @@ mod tests {
         let from_id = insert_symbol(&store, file, "sender", "sender", SymbolKind::Function);
         insert_unresolved_call_reference(&store, from_id, "copy_from_user");
 
-        let mut router = new_router(store);
+        let router = new_router(store);
         let args = serde_json::json!({"from": "sender", "to": "copy_from_user"});
         let (resp, is_error) = router.handle_trace_forward(&args);
 

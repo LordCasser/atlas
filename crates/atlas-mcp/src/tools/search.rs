@@ -48,7 +48,7 @@ fn search_public_precision(engine_precision: &Precision, search_is_partial: bool
     Precision {
         coverage: CoverageTier::Partial {
             gaps: vec![KnownGap::BudgetExhausted {
-                strategy: "scoped_search_background_refinement".to_string(),
+                strategy: "scoped_search_focus_warming".to_string(),
                 remaining: 0,
             }],
         },
@@ -100,9 +100,8 @@ impl ToolRouter {
                 return (
                     serde_json::to_string_pretty(&json!({
                         "ok": false,
-                        "error": "search requires a non-empty scope",
+                        "error": "search requires a non-empty project-relative scope such as \"src\", \"kernel/sched\", or \"drivers/net\"; without scope, search does not perform extraction or follow-up parsing",
                         "query": query,
-                        "hint": "Pass a project-relative directory or file path such as \"src\", \"kernel/sched\", or \"drivers/net\". Without scope, search does not perform extraction or follow-up parsing."
                     }))
                     .unwrap_or_else(|e| e.to_string()),
                     true,
@@ -203,7 +202,6 @@ impl ToolRouter {
                 "error": msg,
                 "query": query,
                 "scope": scope,
-                "hint": "Run 'atlas index' to build a full index, or narrow the scope to a directory with indexed files.",
             });
             let lr = AnalysisEnvelope::new("search", args).with_is_error(true);
             return lr.build(error_body, self);
@@ -256,21 +254,6 @@ impl ToolRouter {
         };
         response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
         response["capability_mask"] = json!(engine_resp.capability_mask.bits());
-        if !background_jobs.is_empty() {
-            response["background_refinement"] = json!({
-                "state": "queued",
-                "job_count": background_jobs.len(),
-                "retry_after_ms": 2000,
-                "description": "background focus warming is parsing the remaining hot files"
-            });
-        } else if search_is_partial {
-            response["background_refinement"] = json!({
-                "state": "pending",
-                "job_count": 0,
-                "retry_after_ms": 2000,
-                "description": "coverage is partial; retry after the focus runtime has had a chance to warm this area"
-            });
-        }
         // Map Precision → public precision contract.
         // Unavailable (Manifest + Low) means no data at all → omit the field entirely.
         if !engine_resp.precision.is_unavailable() || search_is_partial {
@@ -290,7 +273,6 @@ impl ToolRouter {
             let search_has_hits = !hits.is_empty();
             let background_queued = !background_jobs.is_empty();
             lr = lr
-                .with_partial_result(true)
                 .with_analysis_scope("local".into())
                 .with_analysis_summary(if search_has_hits {
                     if background_queued {
@@ -306,13 +288,11 @@ impl ToolRouter {
                     "scoped search returned no matches in the bounded foreground pass; retry after background focus warming"
                         .into()
                 })
-                .with_analysis_basis(vec!["manifest".into(), "structural".into()])
-                .with_analysis_missing(vec!["repo_complete".into()]);
+                .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
             lr = lr.with_analysis_retry_after_ms(2000);
         }
         if !search_is_partial {
             lr = lr
-                .with_partial_result(false)
                 .with_analysis_scope("local".into())
                 .with_analysis_summary("scoped search coverage is complete".into());
         }
