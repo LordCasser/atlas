@@ -50,12 +50,4 @@ impl GraphProvider for ClosureGraphProvider {
         self.state_ref()
             .build_context_for_symbol(sid, include_file_peers)
     }
-
-    fn node_count(&self) -> usize {
-        self.state_ref().node_count()
-    }
-
-    fn edge_count(&self) -> usize {
-        self.state_ref().edge_count()
-    }
 }

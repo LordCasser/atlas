@@ -83,11 +83,10 @@ impl QueryRuntime {
 
         // 3. Lock FocusRuntime and prepare.
         //
-        // NOTE: the Mutex is held across the synchronous closure build, which
-        // may take hundreds of ms.  This is safe because the MCP server
-        // processes requests serially (Mutex<ToolRouter> + stdio transport).
-        // If concurrent request handling is introduced, replace with async
-        // coordination (e.g. tokio::sync::Mutex or an owning guard pattern).
+        // The Mutex is held across the synchronous closure build so foreground
+        // focus writes for one project remain ordered. Async handlers run this
+        // blocking work on dedicated worker threads; unrelated store and graph
+        // queries do not acquire this lock.
         let mut runtime = self.focus_runtime.lock().unwrap();
         match runtime.prepare(intent) {
             Ok(result) => (Some(result), vec![]),

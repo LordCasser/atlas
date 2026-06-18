@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn detect_and_set_mode_respects_store() {
-        let mut gr = create_test_graph_runtime();
+        let gr = create_test_graph_runtime();
         // Clone store to avoid simultaneous mutable+immutable borrow.
         let store = gr.store.clone();
         gr.detect_and_set_mode(&store);
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn precision_info_full_canonical() {
-        let mut gr = create_test_graph_runtime();
+        let gr = create_test_graph_runtime();
         *gr.mode.lock().unwrap() = GraphMode::FullCanonical;
         let info = gr.precision_info();
         assert_eq!(info.mode, GraphMode::FullCanonical);
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn ensure_initialized_sets_up_search_engine() {
-        let mut gr = create_test_graph_runtime();
+        let gr = create_test_graph_runtime();
         let result = gr.ensure_initialized();
         assert!(result.is_ok(), "ensure_initialized should succeed");
         let gs_opt = gr.provider().graph_snapshot();
@@ -241,14 +241,12 @@ mod tests {
 
     #[test]
     fn provider_trait_contract_holds() {
-        let mut gr = create_test_graph_runtime();
+        let gr = create_test_graph_runtime();
         {
             let p = gr.provider();
             assert!(!p.is_initialized());
             assert!(p.graph_snapshot().is_none());
             assert!(p.graph_snapshot().is_none());
-            assert_eq!(p.node_count(), 0);
-            assert_eq!(p.edge_count(), 0);
         }
 
         gr.ensure_initialized().unwrap();
@@ -265,7 +263,7 @@ mod tests {
 
     #[test]
     fn graph_stale_after_bump() {
-        let mut gr = create_test_graph_runtime();
+        let gr = create_test_graph_runtime();
         let initial_gen = gr.last_graph_generation.load(Ordering::Relaxed);
         gr.invalidation
             .graph_generation

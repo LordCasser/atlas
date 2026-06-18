@@ -70,12 +70,11 @@
 //!
 //! # Concurrency Model
 //!
-//! - **ToolRouter** is protected by a single `Mutex<ToolRouter>` held by `AtlasMcpService`.
-//!   Only one request executes at a time per MCP session.
+//! - **ToolRouter** is immutable orchestration state. Async requests create lightweight routers
+//!   over the same `Arc<ActiveProject>` and execute concurrently under `TaskManager`'s semaphore.
 //! - **engine** (`Mutex<Engine>`) is only accessed from trace handlers — held briefly.
-//! - **focus_runtime** (`Mutex<FocusRuntime>`) is owned by `query_runtime` and
-//!   accessed from `query_runtime.prepare()` and the background scheduler
-//!   (independent thread, separate lock).
+//! - **focus_runtime** (`Mutex<FocusRuntime>`) serializes foreground closure preparation per
+//!   active project. Other store reads and graph snapshot queries remain concurrent.
 //! - **graph_runtime.state** holds a `RwLock<Arc<GraphEngine>>` — readers share the snapshot.
 //! - **RuntimeInvalidation** counters (`AtomicU64`) are lock-free for fast-path invalidation.
 //! - **Background tasks** (graph rebuild, focus scheduler) use `std::thread::spawn`

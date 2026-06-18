@@ -60,6 +60,7 @@ impl GraphState {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
     pub(crate) fn symbol_count(&self) -> usize {
         self.search
             .lock()
@@ -225,13 +226,5 @@ impl GraphProvider for GraphState {
         include_file_peers: bool,
     ) -> Option<Result<ContextView, anyhow::Error>> {
         self.with_context(|c| c.build_context_for_symbol(sid, include_file_peers))
-    }
-
-    fn node_count(&self) -> usize {
-        self.symbol_count()
-    }
-
-    fn edge_count(&self) -> usize {
-        GraphState::edge_count(self)
     }
 }

@@ -18,10 +18,4 @@ pub(crate) trait GraphProvider {
         sid: &SymbolId,
         include_file_peers: bool,
     ) -> Option<Result<ContextView, anyhow::Error>>;
-
-    /// Total symbols in the graph, or 0 if not yet built.
-    fn node_count(&self) -> usize;
-
-    /// Total edges in the graph.
-    fn edge_count(&self) -> usize;
 }
