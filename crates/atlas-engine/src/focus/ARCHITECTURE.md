@@ -39,5 +39,6 @@ FocusRuntime owns semantic locality only: hot regions, bounded foreground
 closures, background expansion, and eviction priority for analysis work. LRU can
 reprioritize or evict hot-region metadata, but it must not be used as a second
 source of truth for indexed facts. Query tools should read and write through the
-active project store and report precision/partial-refinement state rather than
-which physical cache layer served a result.
+active project store. MCP responses expose pending refinement through
+`analysis.retry_after_ms` and terminal limitations through `gaps`; internal
+precision and physical cache state are not part of the public query contract.

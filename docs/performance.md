@@ -170,9 +170,9 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | **T1.2: cleanup transaction wrapping** | Single transaction for stale file cleanup (was 3N+1 transactions) | Atomic cleanup, no partial state |
 | **Deferred index creation (bulk-load)** | Drop all non-PK indexes before write, recreate after. FTS rebuilt at Phase 10. | 25.81s → 18.82s (−27%) |
 | **S6 exact direct target selection** | Resolve exact global name target inside `GlobalSymbolIndex` without cloning/sorting candidate Vec or running `NameMatcher` again | Kept after Elasticsearch short-window validation; full-run gain still TBD |
-| **P4: COUNT(*) progress load** | Replace `find_unresolved_references()` full Vec materialization with index-only `COUNT(*)` — leverages existing partial index `idx_references_unresolved` | progress_total_load_ms: 39ms → 5ms (−87.2%); ES-scale: estimated ~20s → <1ms |
+| **P4: COUNT(*) progress load** | Replace `find_unresolved_references()` full Vec materialization with index-only `COUNT(*)` — leverages existing partial index `idx_references_unresolved` | progress_total_load_ms: 39ms → 5ms (−87.2%); large-project impact not yet measured |
 | **P5: shared `get_all_symbols()`** | Single `get_all_symbols()` call shared between `GlobalSymbolIndex::build()` and `GraphBuilder` symbol_override; `ResolutionSession::build_from_symbols()` + `resolve_all_parallel_with_symbols()` API | session_build_ms: 17ms → 8ms (−52.9%); graph_symbol_load_ms: 11ms → 9ms (−18.2%) |
-| **P6: import-scoped S6 pre-filtering** | `GlobalSymbolIndex::find_exact_name_target_in_scope` prioritises candidates from files reachable via the current file's import graph before falling back to global scan; `ResolutionContext::preferred_file_ids` populated from `store.find_files_by_path_prefix` per import | 0 correctness regression (identical resolved_refs & edges_built); slight overhead on Rust projects (+22ms context build); expected gain on import-heavy TS/Java monorepos with high-fanout names |
+| **P6: import-scoped S6 pre-filtering** | `GlobalSymbolIndex::find_exact_name_target_in_scope` prioritises candidates from files reachable via the current file's import graph before falling back to global scan; relative imports use importer-aware module resolution and aliases expand before path lookup | 0 correctness regression (identical resolved_refs & edges_built); slight overhead on Rust projects (+22ms context build); expected gain on import-heavy TS/Java monorepos with high-fanout names |
 
 ### Rejected Optimizations (verified regression)
 
@@ -216,7 +216,7 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 
 | Optimization | Wall Impact | Cumulative Impact | Mechanism |
 |-------------|-------------|-------------------|-----------|
-| **P4: COUNT(\*) progress load** | −87.2% progress materialization | ES-scale: ~20s → <1ms | Leverages existing `idx_references_unresolved` partial index for index-only scan |
+| **P4: COUNT(\*) progress load** | −87.2% progress materialization | Large-project impact not yet measured | Leverages existing `idx_references_unresolved` partial index for index-only scan |
 | **P5: shared `get_all_symbols()`** | −52.9% session build | Eliminates 1 redundant symbols DB load | `GlobalSymbolIndex::build_from_symbols()` + `ResolutionSession::build_from_symbols()` + `resolve_all_parallel_with_symbols()` API |
 | **P6: import-scoped S6 pre-filtering** | +9.2% total (Rust project) | Expected gain on import-heavy TS/Java monorepos | `ResolutionContext::preferred_file_ids` built from `import.module → find_files_by_path_prefix`; gated at candidate count >= 50 |
 
