@@ -306,7 +306,7 @@ impl FocusRuntime {
             project_root: project_root.clone(),
             bootstrap: BootstrapManager::new(store.clone(), project_root.clone()),
             scheduler: Arc::new(std::sync::Mutex::new(
-                FocusScheduler::new(store).with_job_tracker(Arc::clone(&job_tracker))
+                FocusScheduler::new(store).with_job_tracker(Arc::clone(&job_tracker)),
             )),
             closure_engine: None,
             started: AtomicBool::new(false),

@@ -195,7 +195,12 @@ impl FocusScheduler {
                 match s.engine.take() {
                     Some(engine) => {
                         if let Some(job) = s.pop_next_job() {
-                            Some((engine, job, Arc::clone(&s.coordinator), s.job_tracker.clone()))
+                            Some((
+                                engine,
+                                job,
+                                Arc::clone(&s.coordinator),
+                                s.job_tracker.clone(),
+                            ))
                         } else {
                             s.engine = Some(engine);
                             None
@@ -206,9 +211,8 @@ impl FocusScheduler {
             };
 
             if let Some((engine, job, coordinator, tracker)) = work {
-                let result = Self::process_detached_job(
-                    &engine, job, &coordinator, tracker.as_deref(),
-                );
+                let result =
+                    Self::process_detached_job(&engine, job, &coordinator, tracker.as_deref());
                 {
                     let mut s = scheduler.lock().unwrap();
                     s.engine = Some(engine);

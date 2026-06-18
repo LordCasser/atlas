@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 /// Tracks completion of background focus closure-building jobs.
 ///
@@ -43,10 +43,7 @@ impl JobTracker {
         if job_ids.is_empty() {
             return true;
         }
-        let completed = self
-            .completed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
         job_ids.iter().all(|id| completed.contains(id))
     }
 
@@ -55,10 +52,7 @@ impl JobTracker {
         if job_ids.is_empty() {
             return 0;
         }
-        let completed = self
-            .completed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
         job_ids.iter().filter(|id| !completed.contains(*id)).count()
     }
 
@@ -76,19 +70,22 @@ impl JobTracker {
     /// Returns baseline 5000ms when no completed samples yet.
     /// Capped at 60000ms (1 minute).
     pub fn eta_ms(&self, pending_ids: &[String]) -> u64 {
-        let pending = self.pending_count(pending_ids) as u64;
+        self.pending_count_and_eta_ms(pending_ids).1
+    }
+
+    /// Snapshot the pending count and ETA against the same completion state.
+    pub fn pending_count_and_eta_ms(&self, job_ids: &[String]) -> (usize, u64) {
+        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = job_ids.iter().filter(|id| !completed.contains(*id)).count();
         if pending == 0 {
-            return 0;
+            return (0, 0);
         }
-        let times = self
-            .build_times
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let times = self.build_times.lock().unwrap_or_else(|e| e.into_inner());
         if times.is_empty() {
-            return (5000 * pending).min(60000);
+            return (pending, (5000 * pending as u64).min(60000));
         }
         let avg: u64 = times.iter().sum::<u64>() / times.len() as u64;
-        (avg * pending).min(60000)
+        (pending, (avg * pending as u64).min(60000))
     }
 }
 
@@ -155,7 +152,10 @@ mod tests {
         tracker.mark_done("cl_1");
 
         assert!(!tracker.are_all_done(&["cl_1".to_string(), "cl_unknown".to_string()]));
-        assert_eq!(tracker.pending_count(&["cl_1".to_string(), "cl_unknown".to_string()]), 1);
+        assert_eq!(
+            tracker.pending_count(&["cl_1".to_string(), "cl_unknown".to_string()]),
+            1
+        );
     }
 
     #[test]
