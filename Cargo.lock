@@ -142,6 +142,7 @@ dependencies = [
  "indicatif",
  "ratatui",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

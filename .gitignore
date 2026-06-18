@@ -10,6 +10,7 @@ examples/
 codegraph/
 .cursor/
 .codegraph/
+codebase-memory-mcp/
 
 .env*
 *.log
