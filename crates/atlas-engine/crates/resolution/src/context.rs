@@ -478,12 +478,6 @@ pub struct ResolutionContext {
     /// ScopeId → parent ScopeId (for scope-tree walking).
     pub scope_parents: HashMap<ScopeId, ScopeId>,
 
-    /// FileIds of files that are reachable via this file's import statements.
-    /// Populated during [`ResolutionContext::build()`] by resolving each
-    /// import's module path against the store's file table.  Used by S6
-    /// (project-wide name search) to prioritize symbols from imported modules
-    /// before falling back to a global scan.
-    pub preferred_file_ids: HashSet<FileId>,
 }
 
 impl ResolutionContext {
@@ -533,22 +527,6 @@ impl ResolutionContext {
             }
         }
 
-        // ── Build preferred file set from imports ──────────────────────────
-        // Resolve each import's module path to concrete file(s) in the store
-        // so S6 can prioritize symbols from imported modules before falling
-        // back to a global scan.
-        let mut preferred_file_ids: HashSet<FileId> = HashSet::new();
-        for import in &imports {
-            if import.module.is_empty() {
-                continue;
-            }
-            if let Ok(matching_files) = store.find_files_by_path_prefix(&import.module) {
-                for finfo in matching_files {
-                    preferred_file_ids.insert(finfo.file_id);
-                }
-            }
-        }
-
         // Pre-index imports by name for O(1) Strategy 5 filtering.
         let mut imports_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, import) in imports.iter().enumerate() {
@@ -574,7 +552,6 @@ impl ResolutionContext {
             symbols_by_qname,
             scopes_by_id,
             scope_parents,
-            preferred_file_ids,
         })
     }
 

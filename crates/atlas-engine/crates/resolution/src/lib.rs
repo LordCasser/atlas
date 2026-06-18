@@ -11,7 +11,7 @@
 //! Cross-module invariant: references are NEVER deleted — resolution updates
 //! their `resolved` field in place but leaves the record intact.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -97,6 +97,7 @@ fn resolve_one_core(
     name_matcher: &NameMatcher,
     global_index: Option<&GlobalSymbolIndex>,
     proximity_file_id: Option<FileId>,
+    file_scope_cache: &std::sync::Mutex<HashMap<FileId, HashSet<FileId>>>,
 ) -> Option<ResolvedTarget> {
     // Strategies 1-5: shared implementation
     if let Some(result) =
@@ -105,18 +106,26 @@ fn resolve_one_core(
         return Some(result);
     }
 
-    // Strategy 6: Project-wide name search + fuzzy fallback
+    // Strategy 6: Project-wide name search with import-scoped pre-filtering
     {
         let _timer = StrategyTimer::new(&S6_TIME_NS);
         if let Some(idx) = global_index {
-            // Scoped query: when the file has imports, prefer symbols from
-            // imported modules first, then fall back to a global scan.  This
-            // avoids O(candidates) iterations for high-fan-out generic names.
-            let exact = if !ctx.preferred_file_ids.is_empty() {
+            // Compute per-file preferred scope (reuses ImportResolver infra)
+            let preferred = {
+                let mut cache = file_scope_cache.lock().unwrap();
+                cache
+                    .entry(reference.file_id)
+                    .or_insert_with(|| {
+                        import_resolver.collect_imported_file_ids(&ctx.imports)
+                    })
+                    .clone()
+            };
+
+            let exact = if !preferred.is_empty() {
                 idx.find_exact_name_target_in_scope(
                     &reference.name,
                     proximity_file_id,
-                    &ctx.preferred_file_ids,
+                    &preferred,
                 )
             } else {
                 idx.find_exact_name_target(&reference.name, proximity_file_id)
@@ -440,10 +449,12 @@ impl ResolutionSession {
         refs: &[(FileId, Vec<ReferenceUse>)], // Single-element batch for this file
     ) -> anyhow::Result<Vec<(ReferenceUse, ResolvedTarget)>> {
         let mut results = Vec::new();
+        let file_scope_cache =
+            std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
         for (file_id, references) in refs {
             let ctx = ResolutionContext::build(store, *file_id)?;
             for reference in references {
-                if let Some(target) = self.resolve_one(reference, &ctx) {
+                if let Some(target) = self.resolve_one(reference, &ctx, &file_scope_cache) {
                     results.push((reference.clone(), target));
                 }
             }
@@ -458,10 +469,11 @@ impl ResolutionSession {
         &self,
         references: &[ReferenceUse],
         ctx: &ResolutionContext,
+        file_scope_cache: &std::sync::Mutex<HashMap<FileId, HashSet<FileId>>>,
     ) -> Vec<(ReferenceUse, ResolvedTarget)> {
         let mut results = Vec::with_capacity(references.len());
         for reference in references {
-            if let Some(target) = self.resolve_one(reference, ctx) {
+            if let Some(target) = self.resolve_one(reference, ctx, file_scope_cache) {
                 results.push((reference.clone(), target));
             }
         }
@@ -473,6 +485,7 @@ impl ResolutionSession {
         &self,
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
+        file_scope_cache: &std::sync::Mutex<HashMap<FileId, HashSet<FileId>>>,
     ) -> Option<ResolvedTarget> {
         resolve_one_core(
             reference,
@@ -481,6 +494,7 @@ impl ResolutionSession {
             &self.name_matcher,
             Some(&self.global_index),
             Some(ctx.file.file_id),
+            file_scope_cache,
         )
     }
 
@@ -612,6 +626,9 @@ impl ReferenceResolver {
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500;
 
+        let file_scope_cache =
+            std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
+
         for (file_id, refs) in &by_file {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
@@ -622,7 +639,7 @@ impl ReferenceResolver {
             };
 
             for reference in refs {
-                match self.resolve_one(reference, &ctx) {
+                match self.resolve_one(reference, &ctx, &file_scope_cache) {
                     Some(target) => {
                         pending_resolutions.push((reference.id, target.clone()));
                         all_resolved.push((reference.clone(), target.clone()));
@@ -1026,6 +1043,11 @@ impl ReferenceResolver {
             }
         });
 
+        // Per-file cache: avoid recomputing imported-file scope for every S6
+        // reference in the same file.
+        let file_scope_cache: std::sync::Mutex<HashMap<FileId, HashSet<FileId>>> =
+            std::sync::Mutex::new(HashMap::new());
+
         // Step B: pure-memory parallel resolution — send results to channel.
         let step_b_span = tracing::info_span!(
             target: "atlas_resolve",
@@ -1036,11 +1058,12 @@ impl ReferenceResolver {
         let mc = &matched_counter;
         let scanned = &scanned_counter;
         let dirty_done = &dirty_files_done_counter;
+        let fsc = &file_scope_cache;
 
         // Resolve dirty files' refs with full context (6 strategies)
         let t_dirty = Instant::now();
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
-            let results = session.resolve_refs_in_ctx(refs, ctx);
+            let results = session.resolve_refs_in_ctx(refs, ctx, fsc);
             let count = results.len() as u64;
             mc.fetch_add(count, Ordering::Relaxed);
             let scanned_total =
@@ -1453,6 +1476,7 @@ impl ReferenceResolver {
         &self,
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
+        file_scope_cache: &std::sync::Mutex<HashMap<FileId, HashSet<FileId>>>,
     ) -> Option<ResolvedTarget> {
         resolve_one_core(
             reference,
@@ -1461,6 +1485,7 @@ impl ReferenceResolver {
             &self.name_matcher,
             self.global_index.as_ref(),
             None,
+            file_scope_cache,
         )
     }
 }

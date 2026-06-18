@@ -8,7 +8,7 @@
 //! 3. Look up candidates by qualified name
 //! 4. Fallback: search by imported name
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use db::Store;
 use types::*;
@@ -348,6 +348,42 @@ impl ImportResolver {
         results
     }
 
+    /// Collect all project FileIds reachable through a file's import statements.
+    ///
+    /// For each import, resolves the module path using the same infrastructure as
+    /// [`resolve_import`]: path_alias expansion, relative path resolution (via
+    /// `store.find_files_by_path_prefix` which handles the DB-level lookup).
+    /// Returns only FileIds — no symbol-level resolution.
+    ///
+    /// This is designed for S6 candidate-set reduction: for a file F with imports,
+    /// S6 can prioritise symbols from these reachable files before falling back
+    /// to the global index.
+    pub fn collect_imported_file_ids(&self, imports: &[ImportDef]) -> HashSet<FileId> {
+        let mut file_ids = HashSet::new();
+        for import in imports {
+            if import.module.is_empty() {
+                continue;
+            }
+            // Resolve the module path using the same alias infrastructure as
+            // resolve_import. For path-aliased imports (e.g. @lib/builder), this
+            // expands the alias. Non-aliased modules pass through unchanged.
+            let resolved_module = if self.path_alias.has_aliases() {
+                self.path_alias
+                    .resolve(&import.module)
+                    .unwrap_or_else(|| import.module.clone())
+            } else {
+                import.module.clone()
+            };
+            // Look up files matching the resolved module path prefix.
+            if let Ok(files) = self.store.find_files_by_path_prefix(&resolved_module) {
+                for f in files {
+                    file_ids.insert(f.file_id);
+                }
+            }
+        }
+        file_ids
+    }
+
     /// Generate candidate qualified names from an import definition.
     ///
     /// P2: Uses PathAliasResolver to rewrite the module path before
@@ -427,7 +463,7 @@ impl ImportResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
     /// Minimal SymbolDef for unit tests (range fields set to zero).
     fn test_symbol(file_id: FileId, name: &str, kind: SymbolKind) -> SymbolDef {
@@ -925,5 +961,153 @@ mod tests {
         // Second call: cache hit → same result without DB query
         let r2 = resolver.resolve_import(&import).unwrap();
         assert_eq!(r1, r2);
+    }
+
+    // ── collect_imported_file_ids tests ───────────────────────────────────
+
+    #[test]
+    fn collect_imported_file_ids_empty_imports_returns_empty() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let resolver = ImportResolver::new(store);
+
+        let result = resolver.collect_imported_file_ids(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn collect_imported_file_ids_resolves_path_alias() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        // Register a file reachable via the aliased path
+        let lib_file = FileId::generate("src/lib/builder.ts");
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: lib_file,
+                    path: "src/lib/builder.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![],
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Path alias: @lib/* → src/lib/*
+        let mut paths = HashMap::new();
+        paths.insert("@lib/*".to_string(), vec!["src/lib/*".to_string()]);
+        let path_alias = PathAliasResolver {
+            base_url: None,
+            paths,
+        };
+        let resolver = ImportResolver::with_path_alias(store, path_alias);
+
+        // import from '@lib/builder' — should resolve via alias
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "@lib/builder",
+                None,
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "@lib/builder".to_string(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        let file_ids = resolver.collect_imported_file_ids(&[import]);
+        assert!(
+            file_ids.contains(&lib_file),
+            "aliased import should resolve to lib_file"
+        );
+    }
+
+    #[test]
+    fn collect_imported_file_ids_normal_module_path() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        // Register a file reachable by a normal path prefix
+        let utils_file = FileId::generate("lib/utils.ts");
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: utils_file,
+                    path: "lib/utils.ts".to_string(),
+                    language: Language::TypeScript,
+                    content_hash: "abc".to_string(),
+                    status: types::enums::ParseStatus::Success,
+                },
+                symbols: vec![],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let resolver = ImportResolver::new(store);
+
+        // import from 'lib/utils' — prefix matches the stored path
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "lib/utils",
+                None,
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: "lib/utils".to_string(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        let file_ids = resolver.collect_imported_file_ids(&[import]);
+        assert!(
+            file_ids.contains(&utils_file),
+            "normal module path should resolve to utils_file"
+        );
+    }
+
+    #[test]
+    fn collect_imported_file_ids_skips_empty_modules() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let resolver = ImportResolver::new(store);
+
+        let import = ImportDef {
+            id: ImportId::generate(
+                &FileId::generate("main.ts"),
+                ImportKind::Import.as_str(),
+                "",
+                None,
+                0,
+            ),
+            file_id: FileId::generate("main.ts"),
+            kind: ImportKind::Import,
+            module: String::new(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: false,
+            range: Default::default(),
+        };
+
+        let result = resolver.collect_imported_file_ids(&[import]);
+        assert!(result.is_empty());
     }
 }
