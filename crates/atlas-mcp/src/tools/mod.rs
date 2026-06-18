@@ -139,45 +139,41 @@ pub(crate) fn apply_focus_result_to_lr(
         return lr;
     }
 
+    lr = lr.with_focus_result(result.clone());
+
     // Always inject coverage distribution from FocusResult
     if let Some(ref counts) = result.coverage_counts {
         lr = lr.with_coverage_counts(counts.clone());
     }
 
-    // Always inject known gaps (for terminal display)
-    if !result.gaps.is_empty() {
-        lr = lr.with_gaps(result.gaps.clone());
-    }
-
-    // Determine terminality: are all background jobs done?
-    let is_terminal = result
+    let pending = result
         .job_tracker
         .as_ref()
-        .map(|tracker| tracker.are_all_done(&result.pending_closure_ids))
-        .unwrap_or(true); // no tracker = assume terminal
+        .map(|tracker| tracker.pending_count_and_eta_ms(&result.pending_closure_ids));
 
-    if is_terminal {
+    if pending.is_none_or(|(count, _)| count == 0) {
         // Terminal: result is ready to use
-        lr = lr
+        let mut lr = lr
             .with_analysis_scope("local".to_string())
             .with_analysis_summary(
                 "Focus analysis complete: all background jobs have finished.".to_string(),
             )
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+        if !result.gaps.is_empty() {
+            lr = lr.with_gaps(result.gaps.clone());
+        }
+        lr
     } else {
         // Non-terminal: background jobs are still running
-        let pending = result.pending_closure_ids.len();
+        let (pending, retry_after_ms) = pending.expect("non-terminal result has tracker status");
         lr = lr
             .with_analysis_scope("local".to_string())
             .with_analysis_summary(format!(
                 "Focus analysis still expanding: {pending} background job(s) remaining.",
             ))
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
-        // Set retry guidance — client should poll resume_query after 8s
-        lr = lr.with_analysis_retry_after_ms(8000);
+        lr.with_analysis_retry_after_ms(retry_after_ms)
     }
-
-    lr
 }
 
 // -------------------------------------------------------------------
@@ -188,6 +184,7 @@ pub(crate) fn apply_focus_result_to_lr(
 pub struct ToolRouter {
     pub(crate) project: ProjectSlot,
     tools: Vec<Tool>,
+    replay_focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
 }
 
 impl ToolRouter {
@@ -209,6 +206,7 @@ impl ToolRouter {
         let router = Self {
             project: ProjectSlot::new(Some(active)), // already Arc<ActiveProject>
             tools: make_all_tools(),
+            replay_focus_result: None,
         };
         router.init_focus();
         router
@@ -222,6 +220,7 @@ impl ToolRouter {
         let router = Self {
             project: ProjectSlot::new(Some(active)), // already Arc<ActiveProject>
             tools: make_all_tools(),
+            replay_focus_result: None,
         };
         router.init_focus();
         router
@@ -235,6 +234,7 @@ impl ToolRouter {
         Self {
             project: ProjectSlot::new(None),
             tools: make_all_tools(),
+            replay_focus_result: None,
         }
     }
 
@@ -246,6 +246,18 @@ impl ToolRouter {
         Self {
             project: ProjectSlot::new(Some(project)),
             tools: Vec::new(),
+            replay_focus_result: None,
+        }
+    }
+
+    fn for_resume(
+        project: Arc<ActiveProject>,
+        focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
+    ) -> Self {
+        Self {
+            project: ProjectSlot::new(Some(project)),
+            tools: Vec::new(),
+            replay_focus_result: focus_result,
         }
     }
 
@@ -409,6 +421,10 @@ impl ToolRouter {
         Option<atlas_engine::focus::runtime::FocusResult>,
         Vec<String>,
     ) {
+        if let Some(result) = self.replay_focus_result.as_ref() {
+            return (Some(result.clone()), vec![]);
+        }
+
         let project = self.project();
         // 1. Full index already exists — no focus needed.
         if project.query_runtime.has_full_index(&project.store) {
@@ -549,7 +565,6 @@ impl ToolRouter {
                     .into(),
             )
             .with_analysis_basis(vec!["manifest".into(), "structural".into()])
-            .with_analysis_missing(vec!["symbol_resolution".into(), "repo_complete".into()])
             .with_analysis_retry_after_ms(8000)
             .build(resp, self)
     }
@@ -1270,7 +1285,7 @@ fn make_symbol_tools() -> Vec<Tool> {
         },
         Tool {
             name: "symbol".into(),
-            description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, signature, and caller/callee summaries (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, dependencies, and precision tier. view='usages' returns reference usages. Default view is 'detail'.".into(),
+            description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, signature, and caller/callee summaries (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, and dependencies. view='usages' returns reference usages. Default view is 'detail'.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1561,12 +1576,12 @@ fn make_task_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "tasks".into(),
-            description: "List focus/lazy extraction jobs and poll async task results. Without arguments, lists all active jobs. Use query_id to filter refinement work triggered by a specific query. Use task_id to poll an async task's current state (from tools that return partial_result: true).".into(),
+            description: "List focus/lazy extraction jobs and poll async task results. Without arguments, lists all active jobs. Use query_id to filter refinement work triggered by a specific query. Use task_id to poll an async task's current state from an async timeout response.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query_id": { "type": "string", "description": "Optional query_id to filter jobs." },
-                    "task_id": { "type": "string", "description": "Optional async task ID. When provided, returns the task's current state (status, result, progress). Task IDs are returned by async tools with partial_result: true." },
+                    "task_id": { "type": "string", "description": "Optional async task ID. When provided, returns the task's current state (status, result, progress). Task IDs are returned by async tool timeout responses." },
                 })),
                 required: None,
             },
@@ -1642,13 +1657,8 @@ impl ToolRouter {
                 serde_json::to_string_pretty(&json!({
                     "state": "not_open",
                     "active_project": null,
-                    "next_action": {
-                        "tool": "project",
-                        "args": {
-                            "action": "open",
-                            "project_path": "absolute project path"
-                        }
-                    }
+                    "open_required": true,
+                    "message": "Open a project before using code-analysis tools."
                 }))
                 .unwrap_or_else(|e| e.to_string()),
                 false,
@@ -2302,7 +2312,6 @@ fn manifest_analysis_value() -> Value {
     json!({
         "scope": "local",
         "basis": ["manifest"],
-        "missing": [],
         "summary": "Manifest file dependency facts are available for this file.",
     })
 }
@@ -2656,7 +2665,7 @@ mod tests {
         let store = test_store();
         // In-memory store with no index → read_index_mode returns empty/default,
         // which is not a rich index mode → FocusPartial.
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         assert_eq!(
@@ -2682,7 +2691,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         assert_eq!(
@@ -2700,7 +2709,7 @@ mod tests {
     fn graph_init_error_propagates_in_call_tool() {
         // Store without schema → GraphEngine::from_store will fail
         let store = Store::open_in_memory().unwrap();
-        let mut router = ToolRouter::new_empty(Arc::new(store), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(Arc::new(store), PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"symbol": "foo.bar"});
         let result = router.call_tool(&ctx, "calls", &args);
@@ -2722,7 +2731,7 @@ mod tests {
     #[test]
     fn call_tool_without_graph_init_for_non_graph_tool() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         assert!(
             !router
                 .project()
@@ -2855,7 +2864,7 @@ mod tests {
         let store = test_store();
         register_test_file(&store, "test.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
 
         let args = serde_json::json!({
             "file_path": "test.ts",
@@ -2883,7 +2892,7 @@ mod tests {
         let store = test_store();
         register_test_file(&store, "test.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
 
         let args = serde_json::json!({
             "file_path": "test.ts",
@@ -2916,7 +2925,7 @@ mod tests {
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -2946,7 +2955,7 @@ mod tests {
             Some("(arg: string): void"),
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -2970,7 +2979,7 @@ mod tests {
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -2996,7 +3005,7 @@ mod tests {
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3075,7 +3084,7 @@ mod tests {
         );
         assert_eq!(resp["analysis"]["scope"].as_str(), Some("local"));
         assert_eq!(resp["analysis"]["basis"], serde_json::json!(["manifest"]));
-        assert_eq!(resp["analysis"]["missing"], serde_json::json!([]));
+        assert!(resp["analysis"].get("missing").is_none());
     }
 
     #[test]
@@ -3096,7 +3105,7 @@ mod tests {
         // Import: B imports from a.ts
         insert_test_import(&store, file_b, "a.ts", "foo");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3143,7 +3152,7 @@ mod tests {
         // Import: A imports from b.ts
         insert_test_import(&store, file_a, "b.ts", "bar");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3181,7 +3190,7 @@ mod tests {
         insert_test_import(&store, file_b, "a.ts", "foo");
         insert_test_import(&store, file_a, "b.ts", "bar");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3201,7 +3210,7 @@ mod tests {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3230,7 +3239,7 @@ mod tests {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3250,7 +3259,7 @@ mod tests {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         // Omit analysis parameter — should default to manifest
@@ -3270,7 +3279,7 @@ mod tests {
         let store = test_store();
         let _file_a = register_test_file(&store, "a.ts");
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3308,7 +3317,7 @@ mod tests {
         insert_test_edge(&store, sym_c, sym_a);
 
         // No imports — edge-based deps only
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -3448,7 +3457,7 @@ mod tests {
         );
         insert_test_edge(&store, caller_id, callee_id);
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"symbol": "callee_func"});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
@@ -3496,7 +3505,7 @@ mod tests {
             atlas_engine::SymbolKind::Method,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"symbol": "turn"});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
@@ -3536,7 +3545,7 @@ mod tests {
         );
         insert_test_edge(&store, from_id, to_id);
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"from": "from_func", "to": "to_func"});
         let (resp_str, is_error) = router.handle_trace_forward(&args);
 
@@ -3582,7 +3591,7 @@ mod tests {
         );
         insert_test_edge(&store, from_id, reachable_id);
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"from": "from_func", "to": "to_func"});
         let (resp_str, is_error) = router.handle_trace_forward(&args);
 
@@ -3632,7 +3641,7 @@ mod tests {
         );
         // No edge between them
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"from": "from_func", "to": "to_func"});
         let (resp_str, is_error) = router.handle_trace_forward(&args);
 
@@ -3669,7 +3678,7 @@ mod tests {
             atlas_engine::SymbolKind::Function,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({
             "file_path": "test.ts",
             "line": 1,
@@ -3710,7 +3719,7 @@ mod tests {
         insert_test_symbol_with_qname(&store, file_id, sym_name, "my_func", kind);
         let hex_id = sym_id.to_hex();
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let args = serde_json::json!({"symbol": hex_id});
         let (resp_str, is_error) = router.handle_trace_caller_path(&args);
 
@@ -4028,7 +4037,7 @@ mod tests {
             80, // (start_line, start_col, end_line, end_col) 0-based
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4068,7 +4077,7 @@ mod tests {
             80,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4105,7 +4114,7 @@ mod tests {
             80,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4146,7 +4155,7 @@ mod tests {
             80,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4189,7 +4198,7 @@ mod tests {
             80,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4236,7 +4245,7 @@ mod tests {
             80,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let ctx = ToolCallContext::empty();
@@ -4284,7 +4293,7 @@ mod tests {
             atlas_engine::SymbolKind::Function,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
 
         let args = serde_json::json!({
             "symbol": {
@@ -4326,7 +4335,7 @@ mod tests {
             atlas_engine::SymbolKind::Function,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
 
         let args = serde_json::json!({
             "symbol": "Foo.Foo"
@@ -4356,7 +4365,7 @@ mod tests {
             atlas_engine::SymbolKind::Function,
         );
 
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         let args = serde_json::json!({
@@ -4382,7 +4391,7 @@ mod tests {
     #[test]
     fn init_focus_sets_up_runtime() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         // After construction, focus_runtime is always present (no Option wrapper).
         let mode = router.project().query_runtime.detect_index_mode();
         // In an empty store, detect_index_mode should return Focus.
@@ -4399,7 +4408,7 @@ mod tests {
     fn focus_runtime_initialized_on_activate_project() {
         let store = test_store();
         let store2 = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let mode_before = router.project().query_runtime.detect_index_mode();
         assert_eq!(mode_before, atlas_engine::focus::runtime::IndexMode::Focus);
 
@@ -4413,7 +4422,7 @@ mod tests {
     #[test]
     fn init_focus_shares_lazy_dataflow_service() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         // FocusRuntime is always present (no Option wrapper).
         // The shared_lazy_dataflow field is not publicly accessible,
         // but we can verify that prepare_focus_query works correctly.
@@ -4458,14 +4467,17 @@ mod tests {
         use std::sync::Arc;
 
         // ── Helper: build JSON from FocusResult ──
-        fn build_json(result: &atlas_engine::focus::runtime::FocusResult) -> serde_json::Value {
+        fn build_json(
+            result: &atlas_engine::focus::runtime::FocusResult,
+        ) -> (serde_json::Value, QuerySnapshot) {
             let lr = AnalysisEnvelope::new("test_tool", &serde_json::json!({}));
             let lr = apply_focus_result_to_lr(lr, result);
             let mock = MockSnapshotStore {
                 snapshots: Mutex::new(Vec::new()),
             };
             let (json_str, _is_error) = lr.build(serde_json::json!({"result": "ok"}), &mock);
-            serde_json::from_str(&json_str).unwrap()
+            let snapshot = mock.snapshots.lock().unwrap().pop().unwrap();
+            (serde_json::from_str(&json_str).unwrap(), snapshot)
         }
 
         // ── Case 1: Terminal — job_tracker is None → assume all done ──
@@ -4476,7 +4488,10 @@ mod tests {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
-                gaps: vec![],
+                gaps: vec![atlas_engine::structs::KnownGap::BudgetExhausted {
+                    strategy: "test_pending".to_string(),
+                    remaining: 1,
+                }],
                 pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
                 closure_id: None,
                 seed_symbol_id: None,
@@ -4486,7 +4501,8 @@ mod tests {
                 job_tracker: None,
             };
 
-            let resp = build_json(&result);
+            let (resp, snapshot) = build_json(&result);
+            assert!(snapshot.focus_result.is_some());
 
             assert!(
                 resp.get("work").is_none(),
@@ -4497,10 +4513,18 @@ mod tests {
                 serde_json::json!(["manifest", "structural"])
             );
             // Terminal case: no retry_after_ms, no partial_result, no missing
-            assert!(resp["analysis"].get("retry_after_ms").is_none(),
-                "terminal should not have retry_after_ms: {resp}");
-            assert!(resp.get("partial_result").is_none(),
-                "terminal should not have partial_result: {resp}");
+            assert!(
+                resp["analysis"].get("retry_after_ms").is_none(),
+                "terminal should not have retry_after_ms: {resp}"
+            );
+            assert!(
+                resp.get("partial_result").is_none(),
+                "terminal should not have partial_result: {resp}"
+            );
+            assert!(
+                resp["gaps"].as_array().is_some_and(|gaps| gaps.len() == 1),
+                "terminal response should retain permanent gaps: {resp}"
+            );
         }
 
         // ── Case 2: Non-terminal — tracker says jobs are pending ──
@@ -4515,7 +4539,10 @@ mod tests {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
-                gaps: vec![],
+                gaps: vec![atlas_engine::structs::KnownGap::BudgetExhausted {
+                    strategy: "test_pending".to_string(),
+                    remaining: 1,
+                }],
                 pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
                 closure_id: None,
                 seed_symbol_id: None,
@@ -4525,21 +4552,129 @@ mod tests {
                 job_tracker: Some(Arc::new(tracker)),
             };
 
-            let resp = build_json(&result);
+            let (resp, snapshot) = build_json(&result);
+            let stored = snapshot.focus_result.expect("focus result stored");
+            assert_eq!(stored.pending_closure_ids, result.pending_closure_ids);
+            assert!(Arc::ptr_eq(
+                stored.job_tracker.as_ref().unwrap(),
+                result.job_tracker.as_ref().unwrap()
+            ));
 
             assert!(
                 resp.get("work").is_none(),
                 "work must not be public: {resp}"
             );
-            assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+            assert_eq!(resp["analysis"]["retry_after_ms"], 5000);
+            assert_eq!(
+                resp["analysis"]["summary"],
+                "Focus analysis still expanding: 1 background job(s) remaining."
+            );
+            assert!(
+                resp.get("gaps").is_none(),
+                "non-terminal response must suppress transient gaps: {resp}"
+            );
             assert_eq!(
                 resp["analysis"]["basis"],
                 serde_json::json!(["manifest", "structural"])
             );
             // Non-terminal: no partial_result in the new protocol
-            assert!(resp.get("partial_result").is_none(),
-                "non-terminal should not set partial_result in new protocol: {resp}");
+            assert!(
+                resp.get("partial_result").is_none(),
+                "non-terminal should not set partial_result in new protocol: {resp}"
+            );
         }
+    }
+
+    #[test]
+    fn resume_router_reuses_focus_result_without_preparing_new_work() {
+        use atlas_engine::focus::job_tracker::JobTracker;
+        use std::sync::Arc;
+
+        let store = test_store();
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let tracker = Arc::new(JobTracker::new());
+        let expected = atlas_engine::focus::runtime::FocusResult {
+            mode: atlas_engine::focus::runtime::IndexMode::Focus,
+            precision: None,
+            gaps: vec![],
+            pending_closure_ids: vec!["existing_job".into()],
+            closure_id: Some("existing_closure".into()),
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: vec![],
+            coverage_counts: None,
+            job_tracker: Some(Arc::clone(&tracker)),
+        };
+        let replay = ToolRouter::for_resume(router.project(), Some(expected.clone()));
+        let intent = atlas_engine::QueryIntent::Calls {
+            symbol_name: "target".into(),
+            file_id: None,
+            symbol_id: None,
+            direction: Some("outgoing".into()),
+            depth: None,
+        };
+
+        let (actual, warnings) = replay.prepare_focus_query(Some(intent));
+        let actual = actual.expect("replay focus result");
+        assert!(warnings.is_empty());
+        assert_eq!(actual.pending_closure_ids, expected.pending_closure_ids);
+        assert!(Arc::ptr_eq(actual.job_tracker.as_ref().unwrap(), &tracker));
+    }
+
+    #[test]
+    fn resume_query_converges_without_creating_another_snapshot() {
+        use crate::tools::query_snapshot::QueryStatus;
+        use atlas_engine::focus::job_tracker::JobTracker;
+        use std::sync::Arc;
+
+        let store = test_store();
+        let caller_file = register_test_file(&store, "caller.ts");
+        let callee_file = register_test_file(&store, "callee.ts");
+        insert_test_symbol(&store, caller_file, "caller");
+        insert_test_symbol(&store, callee_file, "callee");
+        let caller = SymbolId::generate(&caller_file, "typescript", "caller", "function", None);
+        let callee = SymbolId::generate(&callee_file, "typescript", "callee", "function", None);
+        insert_test_edge(&store, caller, callee);
+
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+        let tracker = Arc::new(JobTracker::new());
+        tracker.mark_done("finished_job");
+        router.store_query_snapshot(QuerySnapshot {
+            query_id: "q_original".into(),
+            tool_name: "calls".into(),
+            tool_args: serde_json::json!({
+                "symbol": "caller.caller",
+                "direction": "outgoing"
+            }),
+            focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: None,
+                gaps: vec![],
+                pending_closure_ids: vec!["finished_job".into()],
+                closure_id: Some("original_closure".into()),
+                seed_symbol_id: Some(caller),
+                seed_file_id: Some(caller_file),
+                built_files: vec![caller_file, callee_file],
+                coverage_counts: None,
+                job_tracker: Some(tracker),
+            }),
+            created_at: std::time::Instant::now(),
+            status: QueryStatus::Partial,
+        });
+
+        let (response, is_error) =
+            router.handle_resume_query(&serde_json::json!({"query_id": "q_original"}));
+        assert!(!is_error, "{response}");
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["query_id"], "q_original");
+        assert_eq!(response["total_callees"], 1);
+        assert!(response["analysis"].get("retry_after_ms").is_none());
+
+        let project = router.project();
+        let snapshots = project.job_runtime.query_snapshots.lock().unwrap();
+        assert_eq!(snapshots.len(), 1, "temporary replay snapshot leaked");
+        assert_eq!(snapshots["q_original"].status, QueryStatus::Ready);
     }
 
     // ── Contract-based dispatch tests ────────────────────────────────────
@@ -4647,7 +4782,7 @@ mod tests {
 
         let store = test_store();
         let tmp = std::env::temp_dir();
-        let mut router = ToolRouter::new_empty(store, tmp);
+        let router = ToolRouter::new_empty(store, tmp);
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "nonexistent_tool", &json!({}));
         assert!(
@@ -4733,7 +4868,7 @@ mod tests {
     #[test]
     fn e2e_project_lifecycle_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
         // action=open is ProjectLifecycle; missing project_path will error
         // but the contract routing itself should work.
@@ -4751,7 +4886,7 @@ mod tests {
     #[test]
     fn e2e_status_read_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
 
         // action=status → StatusRead
@@ -4780,7 +4915,7 @@ mod tests {
     #[test]
     fn e2e_graph_query_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         // Graph must be initialized before SemanticGraphQuery tools can query.
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
@@ -4809,7 +4944,7 @@ mod tests {
     #[test]
     fn e2e_store_query_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized(); // "symbol" requires graph
         let ctx = ToolCallContext::empty();
 
@@ -4837,7 +4972,7 @@ mod tests {
     #[test]
     fn e2e_semantic_analysis_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
 
         // lifecycle → SemanticAnalysis(CfgDataflowDomainRules)
@@ -4864,7 +4999,7 @@ mod tests {
     #[test]
     fn e2e_overlay_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
 
         // domain_rules list → OverlayRead
@@ -4902,7 +5037,7 @@ mod tests {
     #[test]
     fn e2e_task_control_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
 
         // tasks → TaskControl
@@ -4929,7 +5064,7 @@ mod tests {
     #[test]
     fn e2e_trace_query_contract_routes_correctly() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
 
@@ -4948,7 +5083,7 @@ mod tests {
     #[test]
     fn e2e_ctx_forwarding_does_not_panic() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
 
@@ -4977,7 +5112,7 @@ mod tests {
     #[test]
     fn e2e_unknown_tool_falls_back_to_status_read() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({});
         let result = router.call_tool(&ctx, "nonexistent_tool", &args);
@@ -5000,7 +5135,7 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"symbol": "test_func.test_func"});
@@ -5018,7 +5153,7 @@ mod tests {
     #[test]
     fn does_not_inject_precision_for_non_graph_tools() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
         let args = serde_json::json!({"action": "list"});
@@ -5038,7 +5173,7 @@ mod tests {
     fn graph_tool_missing_symbol_returns_error() {
         let store = test_store();
         let tmp = tempfile::tempdir().unwrap();
-        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
+        let router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "calls", &serde_json::json!({}));
         assert!(
@@ -5056,7 +5191,7 @@ mod tests {
     fn lifecycle_missing_field_returns_error() {
         let store = test_store();
         let tmp = tempfile::tempdir().unwrap();
-        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
+        let router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "lifecycle", &serde_json::json!({"symbol": "malloc"}));
         let text = extract_text(&result);
@@ -5074,7 +5209,7 @@ mod tests {
     fn branch_diff_missing_symbol_returns_error() {
         let store = test_store();
         let tmp = tempfile::tempdir().unwrap();
-        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
+        let router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let ctx = ToolCallContext::empty();
         let result = router.call_tool(&ctx, "branch_diff", &serde_json::json!({}));
         assert!(
@@ -5092,7 +5227,7 @@ mod tests {
     fn symbol_tool_routes_all_views_correctly() {
         let store = test_store();
         let tmp = tempfile::tempdir().unwrap();
-        let mut router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
+        let router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
         let _ = router.ensure_graph_initialized();
         let ctx = ToolCallContext::empty();
 
@@ -5152,7 +5287,7 @@ mod tests {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let _ = router.ensure_graph_initialized();
         // Override mode to FullCanonical — graph precision injection should skip.
         *router.project().graph_runtime.mode.lock().unwrap() = GraphMode::FullCanonical;
@@ -5177,7 +5312,7 @@ mod tests {
     #[test]
     fn maybe_refresh_skips_when_generation_unchanged() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         // Record initial generation — graph is fresh after construction.
@@ -5205,7 +5340,7 @@ mod tests {
     fn maybe_refresh_bumps_generation_after_lazy_writes() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
-        let mut router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         router.ensure_graph_initialized().unwrap();
 
         // Pre-populate lazy_refresh_queue with a dummy file_id.
@@ -5244,7 +5379,7 @@ mod tests {
     #[test]
     fn graph_refresh_with_empty_batch_is_noop() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
         let node_before = router.project().graph_runtime.state.symbol_count();
@@ -5271,7 +5406,7 @@ mod tests {
     #[test]
     fn graph_refresh_after_external_store_write_updates_graph() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
         let node_before = router.project().graph_runtime.state.symbol_count();
@@ -5304,7 +5439,7 @@ mod tests {
     #[test]
     fn graph_refresh_preserves_existing_edges() {
         let store = test_store();
-        let mut router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp/test"));
         router.ensure_graph_initialized().unwrap();
 
         let file_id = register_test_file(&store, "src/test.ts");

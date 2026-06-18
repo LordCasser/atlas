@@ -7,16 +7,10 @@
 
 use std::collections::HashMap;
 
-#[cfg(test)]
-use atlas_engine::structs::CoverageTier;
 use atlas_engine::structs::KnownGap;
-use atlas_engine::structs::Precision;
-#[cfg(test)]
-use atlas_engine::structs::SemanticConfidence;
 use serde::Serialize;
 use serde_json::json;
 
-use super::analysis_response::precision_to_view;
 use super::query_snapshot::{QuerySnapshot, QueryStatus};
 
 /// Optional project-wide capability statistics populated from the DB.
@@ -65,11 +59,7 @@ pub(crate) struct AnalysisEnvelope {
     tool_args: serde_json::Value,
     root_warnings: Vec<String>,
     lazy_warnings: Vec<String>,
-    status: Option<QueryStatus>,
     is_error_override: Option<bool>,
-    partial_result: bool,
-    /// Focus-aware precision (from new type system).
-    precision: Option<Precision>,
     /// Distribution of results by coverage tier.
     coverage_counts: Option<HashMap<String, usize>>,
     /// Known gaps in analysis completeness.
@@ -78,32 +68,18 @@ pub(crate) struct AnalysisEnvelope {
     analysis_scope: Option<String>,
     /// Explicitly set analysis summary (from focus path).
     analysis_summary: Option<String>,
-    /// Local analysis unit this response covers, e.g. "function".
-    analysis_unit: Option<String>,
-    /// Public coverage label for the analysis unit.
-    analysis_coverage: Option<String>,
     /// Capabilities or facts this response actually used.
     analysis_basis: Option<Vec<String>>,
-    /// Capabilities or facts missing from a stronger answer.
-    analysis_missing: Option<Vec<String>>,
     /// Suggested delay before retrying/resuming this query.
     analysis_retry_after_ms: Option<u64>,
     /// Structured gap records for the response envelope (MCP v2 format).
     gap_records: Option<Vec<GapRecord>>,
-    /// Explicit background refinement status for partial focus responses.
-    background_refinement: Option<BackgroundRefinement>,
+    /// Original focus state retained for terminal-aware resume replay.
+    focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
     /// Project-level index statistics for non-focus full-index responses.
     capability_stats: Option<CapabilityStats>,
     /// Project-level index snapshot (file/symbol/edge counts, index mode).
     project_stats: Option<ProjectStats>,
-}
-
-#[derive(Debug, Clone)]
-struct BackgroundRefinement {
-    state: String,
-    job_count: Option<usize>,
-    retry_after_ms: u64,
-    description: String,
 }
 
 /// A known gap in the current analysis — what is missing and why.
@@ -130,21 +106,15 @@ impl AnalysisEnvelope {
             tool_args: tool_args.clone(),
             root_warnings: Vec::new(),
             lazy_warnings: Vec::new(),
-            status: None,
             is_error_override: None,
-            partial_result: false,
-            precision: None,
             coverage_counts: None,
             known_gaps: None,
             analysis_scope: None,
             analysis_summary: None,
-            analysis_unit: None,
-            analysis_coverage: None,
             analysis_basis: None,
-            analysis_missing: None,
             analysis_retry_after_ms: None,
             gap_records: None,
-            background_refinement: None,
+            focus_result: None,
             capability_stats: None,
             project_stats: None,
         }
@@ -175,18 +145,6 @@ impl AnalysisEnvelope {
         self
     }
 
-    /// Mark that the result is partial (affects snapshot status).
-    pub fn with_partial_result(mut self, partial: bool) -> Self {
-        self.partial_result = partial;
-        self
-    }
-
-    /// Set the new Precision (focus-aware).
-    pub fn with_precision(mut self, precision: Precision) -> Self {
-        self.precision = Some(precision);
-        self
-    }
-
     /// Set coverage distribution counts.
     pub fn with_coverage_counts(mut self, counts: HashMap<String, usize>) -> Self {
         self.coverage_counts = Some(counts);
@@ -211,27 +169,9 @@ impl AnalysisEnvelope {
         self
     }
 
-    /// Set the local unit this analysis response covers.
-    pub fn with_analysis_unit(mut self, unit: String) -> Self {
-        self.analysis_unit = Some(unit);
-        self
-    }
-
-    /// Set the coverage label for the analysis unit.
-    pub fn with_analysis_coverage(mut self, coverage: String) -> Self {
-        self.analysis_coverage = Some(coverage);
-        self
-    }
-
     /// Set the facts/capabilities used for this response.
     pub fn with_analysis_basis(mut self, basis: Vec<String>) -> Self {
         self.analysis_basis = Some(basis);
-        self
-    }
-
-    /// Set the facts/capabilities missing from a stronger response.
-    pub fn with_analysis_missing(mut self, missing: Vec<String>) -> Self {
-        self.analysis_missing = Some(missing);
         self
     }
 
@@ -241,27 +181,14 @@ impl AnalysisEnvelope {
         self
     }
 
-    /// Set structured gap records (MCP v2 format).
-    /// Replaces `with_analysis_missing` for tools that provide structured gaps.
-    pub fn with_gap_records(mut self, gaps: Vec<GapRecord>) -> Self {
-        self.gap_records = Some(gaps);
+    pub fn with_focus_result(mut self, result: atlas_engine::focus::runtime::FocusResult) -> Self {
+        self.focus_result = Some(result);
         self
     }
 
-    /// Set explicit background refinement metadata.
-    pub fn with_background_refinement(
-        mut self,
-        state: impl Into<String>,
-        job_count: Option<usize>,
-        retry_after_ms: u64,
-        description: impl Into<String>,
-    ) -> Self {
-        self.background_refinement = Some(BackgroundRefinement {
-            state: state.into(),
-            job_count,
-            retry_after_ms,
-            description: description.into(),
-        });
+    /// Set structured gap records.
+    pub fn with_gap_records(mut self, gaps: Vec<GapRecord>) -> Self {
+        self.gap_records = Some(gaps);
         self
     }
 
@@ -332,15 +259,6 @@ impl AnalysisEnvelope {
             if let Some(ref basis) = self.analysis_basis {
                 analysis["basis"] = serde_json::to_value(basis).unwrap_or(json!([]));
             }
-            if let Some(ref unit) = self.analysis_unit {
-                analysis["unit"] = json!(unit);
-            }
-            if let Some(ref coverage) = self.analysis_coverage {
-                analysis["coverage"] = json!(coverage);
-            }
-            if let Some(ref missing) = self.analysis_missing {
-                analysis["missing"] = serde_json::to_value(missing).unwrap_or(json!([]));
-            }
             if let Some(retry_after_ms) = self.analysis_retry_after_ms {
                 analysis["retry_after_ms"] = json!(retry_after_ms);
             }
@@ -374,61 +292,35 @@ impl AnalysisEnvelope {
             }
         }
 
-        if self.partial_result {
-            body["partial_result"] = json!(true);
-            if body.get("background_refinement").is_none() {
-                if let Some(ref refinement) = self.background_refinement {
-                    body["background_refinement"] = json!({
-                        "state": refinement.state,
-                        "job_count": refinement.job_count,
-                        "retry_after_ms": refinement.retry_after_ms,
-                        "description": refinement.description
-                    });
-                } else if let Some(retry_after_ms) = self.analysis_retry_after_ms {
-                    body["background_refinement"] = json!({
-                        "state": "pending",
-                        "job_count": null,
-                        "retry_after_ms": retry_after_ms,
-                        "description": "background focus refinement is continuing for this partial result"
-                    });
-                }
-            }
-        }
-
-        // 5. Inject focus-aware precision (new type system)
-        if let Some(ref p) = self.precision {
-            let view = precision_to_view(p);
-            body["precision"] = serde_json::to_value(view).unwrap_or(json!(null));
-        }
-
-        // 6. Inject coverage distribution counts
+        // 5. Inject coverage distribution counts
         if let Some(ref counts) = self.coverage_counts {
             body["coverage_counts"] = serde_json::to_value(counts).unwrap_or(json!({}));
         }
 
-        // 7. Inject known gaps
-        if let Some(ref gaps) = self.known_gaps {
-            body["gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
-        }
-
-        // 7b. Inject structured gap records (MCP v2 format)
-        if let Some(ref records) = self.gap_records {
-            if !records.is_empty() {
-                body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
+        // Gaps describe permanent terminal limitations. While retry guidance
+        // is present, pending work can still change the result.
+        if self.analysis_retry_after_ms.is_none() {
+            if let Some(ref gaps) = self.known_gaps {
+                body["gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
+            }
+            if let Some(ref records) = self.gap_records {
+                if !records.is_empty() {
+                    body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
+                }
             }
         }
 
         // 8. Store snapshot
-        let status = self.status.unwrap_or(if self.partial_result {
+        let status = if self.analysis_retry_after_ms.is_some() {
             QueryStatus::Partial
         } else {
             QueryStatus::Ready
-        });
+        };
         store.store_query_snapshot(QuerySnapshot {
             query_id: self.query_id,
             tool_name: self.tool_name,
             tool_args: stored_args.clone(),
-            lazy_window: None,
+            focus_result: self.focus_result.clone(),
             created_at: std::time::Instant::now(),
             status,
         });
@@ -505,46 +397,6 @@ mod tests {
     // ── Focus envelope tests ───────────────────────────────────────────
 
     #[test]
-    fn test_lazy_response_with_precision() {
-        let args = json!({"symbol": "test_fn"});
-        let lr = AnalysisEnvelope::new("test_tool", &args)
-            .with_precision(Precision {
-                coverage: CoverageTier::ClosureComplete {
-                    closure_id: "c1".into(),
-                },
-                confidence: SemanticConfidence::High,
-            })
-            .with_is_error(false);
-
-        let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &MockStore::new());
-
-        assert!(!is_err);
-        assert!(
-            json_str.contains("\"precision\""),
-            "should contain precision field"
-        );
-        // PrecisionView uses public labels: coverage=local_complete, confidence=high
-        assert!(
-            json_str.contains("local_complete"),
-            "ClosureComplete should map to public label 'local_complete'"
-        );
-        assert!(
-            json_str.contains("high"),
-            "confidence should be serialized as 'high'"
-        );
-        // closure_id MUST NOT leak
-        assert!(
-            !json_str.contains("\"closure_id\""),
-            "closure_id must not leak into MCP response"
-        );
-        assert!(
-            !json_str.contains("\"c1\""),
-            "internal closure_id value must not leak"
-        );
-    }
-
-    #[test]
     fn test_lazy_response_with_coverage_counts() {
         let args = json!({"symbol": "test_fn"});
         let mut counts = HashMap::new();
@@ -571,6 +423,7 @@ mod tests {
 
     #[test]
     fn test_lazy_response_with_gaps() {
+        let store = MockStore::new();
         let args = json!({"symbol": "test_fn"});
         let gaps = vec![KnownGap::UnresolvedImport {
             from: "foo.c".into(),
@@ -582,13 +435,18 @@ mod tests {
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
-        let (json_str, is_err) = lr.build(body, &MockStore::new());
+        let (json_str, is_err) = lr.build(body, &store);
 
         assert!(!is_err);
         assert!(json_str.contains("\"gaps\""), "should contain gaps field");
         assert!(
             json_str.contains("UnresolvedImport"),
             "should contain the gap variant"
+        );
+        assert_eq!(
+            store.snapshots.lock().unwrap()[0].status,
+            QueryStatus::Ready,
+            "permanent gaps are terminal when no retry is pending"
         );
     }
 
@@ -635,27 +493,30 @@ mod tests {
     }
 
     #[test]
-    fn test_partial_response_emits_explicit_background_refinement() {
+    fn test_partial_response_uses_analysis_retry_without_legacy_fields() {
         let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("calls", &args)
-            .with_partial_result(true)
             .with_analysis_scope("local".into())
             .with_analysis_summary("building analysis".into())
             .with_analysis_retry_after_ms(2000)
-            .with_background_refinement(
-                "queued",
-                Some(3),
-                2000,
-                "background focus refinement is continuing",
-            )
+            .with_gap_records(vec![GapRecord {
+                scope: "pending".into(),
+                reason: "temporary".into(),
+                detail: "must not escape before terminal state".into(),
+            }])
             .with_is_error(false);
         let body = json!({"ok": true});
         let (json_str, _) = lr.build(body, &store);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(v["background_refinement"]["state"], "queued");
-        assert_eq!(v["background_refinement"]["job_count"], 3);
-        assert_eq!(v["background_refinement"]["retry_after_ms"], 2000);
+        assert_eq!(v["analysis"]["retry_after_ms"], 2000);
+        assert!(v.get("partial_result").is_none());
+        assert!(v.get("background_refinement").is_none());
+        assert!(v.get("gaps").is_none());
+        assert_eq!(
+            store.snapshots.lock().unwrap()[0].status,
+            QueryStatus::Partial
+        );
     }
 
     #[test]
@@ -665,10 +526,7 @@ mod tests {
         let lr = AnalysisEnvelope::new("explore", &args)
             .with_analysis_scope("local".into())
             .with_analysis_summary("custom summary".into())
-            .with_analysis_unit("function".into())
-            .with_analysis_coverage("function_complete".into())
             .with_analysis_basis(vec!["cfg".into()])
-            .with_analysis_missing(vec!["dataflow".into()])
             .with_analysis_retry_after_ms(2000)
             .with_is_error(false);
         let body = json!({"ok": true});
@@ -676,15 +534,15 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(v["analysis"]["scope"], "local");
         assert_eq!(v["analysis"]["summary"], "custom summary");
-        assert_eq!(v["analysis"]["unit"], "function");
-        assert_eq!(v["analysis"]["coverage"], "function_complete");
         assert_eq!(v["analysis"]["basis"], json!(["cfg"]));
-        assert_eq!(v["analysis"]["missing"], json!(["dataflow"]));
         assert_eq!(v["analysis"]["retry_after_ms"], 2000);
+        for retired in ["unit", "coverage", "missing", "state", "next_action"] {
+            assert!(
+                v["analysis"].get(retired).is_none(),
+                "retired analysis field {retired} must be absent"
+            );
+        }
         assert!(v.get("work").is_none());
-        // state and next_action must not be present
-        assert!(v["analysis"].get("state").is_none(), "state field must be absent");
-        assert!(v["analysis"].get("next_action").is_none(), "next_action field must be absent");
     }
 
     #[test]
@@ -694,10 +552,6 @@ mod tests {
         counts.insert("repo_complete".to_string(), 5usize);
 
         let lr = AnalysisEnvelope::new("test_tool", &args)
-            .with_precision(Precision {
-                coverage: CoverageTier::RepoComplete,
-                confidence: SemanticConfidence::Certain,
-            })
             .with_coverage_counts(counts)
             .with_gaps(vec![KnownGap::UnresolvedImport {
                 from: "a.c".into(),
@@ -709,7 +563,6 @@ mod tests {
         let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
-        assert!(json_str.contains("precision"), "should contain precision");
         assert!(
             json_str.contains("coverage_counts"),
             "should contain coverage_counts"
@@ -754,10 +607,7 @@ mod tests {
         let (json_str, is_err) = lr.build(body, &MockStore::new());
 
         assert!(!is_err);
-        assert!(
-            json_str.contains("\"gaps\""),
-            "should contain gaps key"
-        );
+        assert!(json_str.contains("\"gaps\""), "should contain gaps key");
         // Parse and verify structure
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         let gaps = v["gaps"].as_array().unwrap();

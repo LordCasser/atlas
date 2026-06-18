@@ -227,22 +227,7 @@ impl ServerHandler for AtlasMcpService {
                 {
                     let task_state = self.task_mgr.poll(task_id);
                     let response = match task_state {
-                        Some(state) => {
-                            json!({
-                                "task_id": state.id,
-                                "tool": state.tool_name,
-                                "status": format!("{:?}", state.status).to_lowercase(),
-                                "result": state.result,
-                                "is_error": state.is_error,
-                                "progress_pct": state.progress_pct,
-                                "progress_msg": state.progress_msg,
-                                "poll_count": state.poll_count,
-                                "next_poll_after_ms": state.next_poll_after_ms(),
-                                "created_at_ms": state.created_at.elapsed().as_millis(),
-                                "started_after_ms": state.started_at.map(|t| t.elapsed().as_millis()),
-                                "completed_after_ms": state.completed_at.map(|t| t.elapsed().as_millis()),
-                            })
-                        }
+                        Some(state) => task_poll_response(&state),
                         None => {
                             json!({
                                 "task_id": task_id,
@@ -342,29 +327,8 @@ impl AtlasMcpService {
         let task_id = task_mgr.register(tool_name);
         let task_id_for_response = task_id.clone();
 
-        // Build immediate response with polling instructions
         let backoff = BackoffConfig::default();
-        let next_poll = backoff.initial_ms;
-        let response = json!({
-            "task_id": task_id_for_response,
-            "partial_result": true,
-            "tool": tool_name,
-            "status": "accepted",
-            "poll": {
-                "interval_ms": next_poll,
-                "backoff": {
-                    "strategy": "exponential",
-                    "initial_ms": backoff.initial_ms,
-                    "max_ms": backoff.max_ms,
-                    "multiplier": backoff.multiplier,
-                    "jitter_ms": backoff.jitter_ms
-                }
-            },
-            "next_action": {
-                "tool": "tasks",
-                "args": {"task_id": task_id_for_response}
-            }
-        });
+        let response = async_accepted_response(&task_id_for_response, tool_name, &backoff);
 
         // Clone what the spawned task needs
         let task_mgr_for_worker = Arc::clone(task_mgr);
@@ -435,6 +399,63 @@ impl AtlasMcpService {
     }
 }
 
+fn async_accepted_response(
+    task_id: &str,
+    tool_name: &str,
+    backoff: &BackoffConfig,
+) -> serde_json::Value {
+    let next_poll = backoff.initial_ms;
+    json!({
+        "task_id": task_id,
+        "tool": tool_name,
+        "status": "accepted",
+        "retry_after_ms": next_poll,
+        "poll": {
+            "interval_ms": next_poll,
+            "backoff": {
+                "strategy": "exponential",
+                "initial_ms": backoff.initial_ms,
+                "max_ms": backoff.max_ms,
+                "multiplier": backoff.multiplier,
+                "jitter_ms": backoff.jitter_ms
+            }
+        }
+    })
+}
+
+fn task_poll_response(state: &TaskState) -> serde_json::Value {
+    let now = std::time::Instant::now();
+    let queue_duration = state
+        .started_at
+        .unwrap_or(now)
+        .saturating_duration_since(state.created_at);
+    let run_duration = state.started_at.map(|started| {
+        state
+            .completed_at
+            .unwrap_or(now)
+            .saturating_duration_since(started)
+    });
+    let result = state.result.as_deref().map(|raw| {
+        serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+    });
+
+    json!({
+        "task_id": state.id,
+        "tool": state.tool_name,
+        "status": format!("{:?}", state.status).to_lowercase(),
+        "result": result,
+        "is_error": state.is_error,
+        "progress_pct": state.progress_pct,
+        "progress_msg": state.progress_msg,
+        "poll_count": state.poll_count,
+        "next_poll_after_ms": state.next_poll_after_ms(),
+        "age_ms": now.saturating_duration_since(state.created_at).as_millis(),
+        "queue_duration_ms": queue_duration.as_millis(),
+        "run_duration_ms": run_duration.map(|duration| duration.as_millis()),
+    })
+}
+
 fn sync_wait_timeout() -> std::time::Duration {
     let millis = std::env::var("ATLAS_MCP_SYNC_WAIT_MS")
         .ok()
@@ -455,10 +476,7 @@ async fn wait_for_task_completion(
             .into_iter()
             .find(|state| state.id == task_id)
         {
-            if matches!(
-                state.status,
-                TaskStatus::Completed | TaskStatus::Failed
-            ) {
+            if matches!(state.status, TaskStatus::Completed | TaskStatus::Failed) {
                 return Some(state);
             }
         }
@@ -518,6 +536,36 @@ mod tests {
     use super::tools::task_manager::TaskStatus;
 
     #[test]
+    fn task_poll_response_uses_durations_and_structured_result() {
+        let created_at = std::time::Instant::now() - Duration::from_millis(50);
+        let started_at = created_at + Duration::from_millis(10);
+        let completed_at = started_at + Duration::from_millis(20);
+        let state = super::TaskState {
+            id: "task_1".into(),
+            tool_name: "calls".into(),
+            status: TaskStatus::Completed,
+            created_at,
+            started_at: Some(started_at),
+            completed_at: Some(completed_at),
+            result: Some(json!({"callees": ["target"]}).to_string()),
+            is_error: Some(false),
+            progress_pct: None,
+            progress_msg: None,
+            poll_count: 1,
+            backoff_config: super::BackoffConfig::default(),
+        };
+
+        let response = super::task_poll_response(&state);
+        assert_eq!(response["queue_duration_ms"], 10);
+        assert_eq!(response["run_duration_ms"], 20);
+        assert!(response["age_ms"].as_u64().is_some_and(|age| age >= 50));
+        assert_eq!(response["result"]["callees"], json!(["target"]));
+        for retired in ["created_at_ms", "started_after_ms", "completed_after_ms"] {
+            assert!(response.get(retired).is_none(), "{response}");
+        }
+    }
+
+    #[test]
     fn unopened_server_can_be_constructed() {
         let _server = super::McpServer::new_unopened();
     }
@@ -566,5 +614,18 @@ mod tests {
             mgr.poll(&task_id).unwrap().status,
             TaskStatus::Pending
         ));
+    }
+
+    #[test]
+    fn async_accepted_response_uses_retry_contract_without_legacy_fields() {
+        let body =
+            super::async_accepted_response("task_123", "calls", &super::BackoffConfig::default());
+
+        assert_eq!(body["task_id"], "task_123");
+        assert_eq!(body["tool"], "calls");
+        assert_eq!(body["status"], "accepted");
+        assert_eq!(body["retry_after_ms"], body["poll"]["interval_ms"]);
+        assert!(body.get("partial_result").is_none());
+        assert!(body.get("next_action").is_none());
     }
 }
