@@ -115,18 +115,12 @@ fn resolve_one_core(
                 let mut cache = file_scope_cache.lock().unwrap();
                 cache
                     .entry(reference.file_id)
-                    .or_insert_with(|| {
-                        import_resolver.collect_imported_file_ids(&ctx.imports)
-                    })
+                    .or_insert_with(|| import_resolver.collect_imported_file_ids(&ctx.imports))
                     .clone()
             };
 
             let exact = if !preferred.is_empty() {
-                idx.find_exact_name_target_in_scope(
-                    &reference.name,
-                    proximity_file_id,
-                    &preferred,
-                )
+                idx.find_exact_name_target_in_scope(&reference.name, proximity_file_id, &preferred)
             } else {
                 idx.find_exact_name_target(&reference.name, proximity_file_id)
             };
@@ -397,10 +391,7 @@ impl ResolutionSession {
     /// Avoids a duplicate `get_all_symbols()` call when the caller already
     /// holds the symbol list. The store is still needed for ImportResolver
     /// and the file → parent directory map in GlobalSymbolIndex.
-    pub fn build_from_symbols(
-        store: Arc<Store>,
-        symbols: &[SymbolDef],
-    ) -> anyhow::Result<Self> {
+    pub fn build_from_symbols(store: Arc<Store>, symbols: &[SymbolDef]) -> anyhow::Result<Self> {
         Ok(Self {
             global_index: Arc::new(GlobalSymbolIndex::build_from_symbols(symbols, &store)?),
             import_resolver: Arc::new(ImportResolver::new(store.clone())),
@@ -449,8 +440,7 @@ impl ResolutionSession {
         refs: &[(FileId, Vec<ReferenceUse>)], // Single-element batch for this file
     ) -> anyhow::Result<Vec<(ReferenceUse, ResolvedTarget)>> {
         let mut results = Vec::new();
-        let file_scope_cache =
-            std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
+        let file_scope_cache = std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
         for (file_id, references) in refs {
             let ctx = ResolutionContext::build(store, *file_id)?;
             for reference in references {
@@ -626,8 +616,7 @@ impl ReferenceResolver {
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500;
 
-        let file_scope_cache =
-            std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
+        let file_scope_cache = std::sync::Mutex::new(HashMap::<FileId, HashSet<FileId>>::new());
 
         for (file_id, refs) in &by_file {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
