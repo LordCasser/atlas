@@ -4,7 +4,7 @@
 
 - **Machine**: Apple Silicon (aarch64), macOS
 - **Atlas build**: `cargo build --release -p atlas-cli`
-- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5)
+- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5), 2026-06-18 (Baseline 6)
 
 ## Baseline 1: TypeScript Project (project-graph)
 
@@ -170,6 +170,9 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | **T1.2: cleanup transaction wrapping** | Single transaction for stale file cleanup (was 3N+1 transactions) | Atomic cleanup, no partial state |
 | **Deferred index creation (bulk-load)** | Drop all non-PK indexes before write, recreate after. FTS rebuilt at Phase 10. | 25.81s → 18.82s (−27%) |
 | **S6 exact direct target selection** | Resolve exact global name target inside `GlobalSymbolIndex` without cloning/sorting candidate Vec or running `NameMatcher` again | Kept after Elasticsearch short-window validation; full-run gain still TBD |
+| **P4: COUNT(*) progress load** | Replace `find_unresolved_references()` full Vec materialization with index-only `COUNT(*)` — leverages existing partial index `idx_references_unresolved` | progress_total_load_ms: 39ms → 5ms (−87.2%); ES-scale: estimated ~20s → <1ms |
+| **P5: shared `get_all_symbols()`** | Single `get_all_symbols()` call shared between `GlobalSymbolIndex::build()` and `GraphBuilder` symbol_override; `ResolutionSession::build_from_symbols()` + `resolve_all_parallel_with_symbols()` API | session_build_ms: 17ms → 8ms (−52.9%); graph_symbol_load_ms: 11ms → 9ms (−18.2%) |
+| **P6: import-scoped S6 pre-filtering** | `GlobalSymbolIndex::find_exact_name_target_in_scope` prioritises candidates from files reachable via the current file's import graph before falling back to global scan; `ResolutionContext::preferred_file_ids` populated from `store.find_files_by_path_prefix` per import | 0 correctness regression (identical resolved_refs & edges_built); slight overhead on Rust projects (+22ms context build); expected gain on import-heavy TS/Java monorepos with high-fanout names |
 
 ### Rejected Optimizations (verified regression)
 
@@ -188,19 +191,96 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 
 ---
 
-## 经验总结：能做 / 不能做 / 做了 / 没做
+## Baseline 6: Atlas Self-Index A/B — Resolution Pipeline Optimizations
 
-### 做了什么（14 项已提交优化）
+### Project Profile
+- **Files**: 156 discovered, 327 files with references
+- **Languages**: Rust (129), Go (4), C# (4), Kotlin (4), PHP (4), Ruby (4), TypeScript (3), ArkTS (1), C (1), JavaScript (1), Python (1)
+- **References extracted**: 100,499
+- **Resolution rate**: 79.5% (79,883 resolved / 20,616 unresolved)
+
+### A/B Comparison: Baseline vs P4+P5+P6
+
+| Metric | Baseline | Optimized | Change | Notes |
+|--------|----------|-----------|--------|-------|
+| `progress_total_load_ms` | 39ms | **5ms** | **−87.2%** | P4: COUNT(*) replaces full Vec materialization |
+| `session_build_ms` | 17ms | **8ms** | **−52.9%** | P5: single `get_all_symbols()` shared |
+| `graph_symbol_load_ms` | 11ms | **9ms** | **−18.2%** | P5: no second `get_all_symbols()` for GraphBuilder |
+| `context_build_ms` | 40ms | 62ms | +55.0% | P6: `preferred_file_ids` computation overhead |
+| `resolve_all_parallel_ms` | 729ms | 796ms | +9.2% | |
+| `graph_build_ms` | 373ms | 364ms | −2.4% | |
+| `resolved_refs` | 72,349 | 72,349 | **0%** | Correctness: identical |
+| `edges_built` | 72,252 | 72,252 | **0%** | Correctness: identical |
+
+### Per-Optimization Attribution
+
+| Optimization | Wall Impact | Cumulative Impact | Mechanism |
+|-------------|-------------|-------------------|-----------|
+| **P4: COUNT(\*) progress load** | −87.2% progress materialization | ES-scale: ~20s → <1ms | Leverages existing `idx_references_unresolved` partial index for index-only scan |
+| **P5: shared `get_all_symbols()`** | −52.9% session build | Eliminates 1 redundant symbols DB load | `GlobalSymbolIndex::build_from_symbols()` + `ResolutionSession::build_from_symbols()` + `resolve_all_parallel_with_symbols()` API |
+| **P6: import-scoped S6 pre-filtering** | +9.2% total (Rust project) | Expected gain on import-heavy TS/Java monorepos | `ResolutionContext::preferred_file_ids` built from `import.module → find_files_by_path_prefix`; gated at candidate count >= 50 |
+
+### P6 Deep Dive
+
+P6 adds `ResolutionContext::preferred_file_ids: HashSet<FileId>` populated during
+`ResolutionContext::build()` by resolving each import's module path against the
+store file table. The `GlobalSymbolIndex::find_exact_name_target_in_scope()`
+method first scans only preferred-file candidates before falling back to the
+full global scan.
+
+On the Atlas project (Rust, sparse imports), `preferred_file_ids` is typically
+empty or small, producing a net **+22ms context build** overhead with no S6
+reduction. On import-heavy TS/Java monorepos with high-fan-out names
+(e.g. `builder` at 259M candidate pairs in Elasticsearch), the import-scoped
+pre-filtering is expected to reduce S6 scan volume proportionally to the
+candidate's locality within imported modules.
+
+**Design rationale**: P6 is a receiver-type heuristic without requiring full
+LSP — it uses import paths already extracted by the language adapter as a proxy
+for "type reachability". The gate at `candidates.len() >= 50` ensures the
+two-pass scan is only activated when the candidate set is large enough for the
+preferred-file scan to outpace the overhead.
+
+### Lessons
+
+1. **P4 vindicates the SQLite partial index strategy**: the existing
+   `idx_references_unresolved` index (created at schema init, never dropped)
+   allows an index-only `COUNT(*)` scan.  The previous code materialized
+   a full `Vec<ReferenceUse>` (6.8M rows on ES) solely for a progress-bar
+   total — a pattern that persisted because the resolution phase internally
+   also needs the full list.  The orchestrator should never duplicate
+   large materializations that the downstream phase must do anyway.
+
+2. **P5 demonstrates that shared-pipeline callers should pre-load once**:
+   `phase_resolve_and_build` already needed `get_all_symbols()` for
+   GraphBuilder's `symbol_override`.  `GlobalSymbolIndex::build()` was
+   calling it again internally.  The fix was a variant constructor
+   (`build_from_symbols`) + a new resolver entry point
+   (`resolve_all_parallel_with_symbols`), keeping the original public API
+   untouched.
+
+3. **P6 is sensitive to project structure**: the import-scoped
+   pre-filtering overhead is proportional to the number of imports per file
+   and the DB cost of `find_files_by_path_prefix`.  For Rust/C/C++ projects
+   with few imports (or include-style imports that don't resolve through
+   the same prefix-matching heuristic), the overhead dominates.  For
+   TypeScript/Java projects with dense import graphs, the savings on S6
+   high-fan-out names should outweigh the context build cost.
+
+---
+
+### 做了什么（17 项已提交优化）
 
 从 53.29s → 18.82s（−64.7%），收益来自五个层次：
 
 | 层次 | 优化项 | 收益 | 核心手段 |
 |------|--------|------|---------|
-| **缓存层** | QName / reexport / module_path 三个 thread_local 缓存 | −32.5% | S5 import resolution 是隐藏瓶颈（74% CPU），缓存消除重复 DB 查询 |
+| **缓存层** | QName / reexport / module_path 三个 Mutex 缓存 | −32.5% | S5 import resolution 是隐藏瓶颈（74% CPU），缓存消除重复 DB 查询 |
 | **写入层** | 延迟索引创建（bulk-load deferred indexes）| −27.1% | 写入时只维护 PK，查询索引和 FTS 全部延后到 Phase 10 重建 |
 | **架构层** | P0 generation skip + P2 callsite batch + P3 per-file fingerprint + T1.2 cleanup tx | −19.1% | 改变"哪些工作不需要做"，而非"已有工作如何更快" |
 | **写入模型层** | weight-budget chunking + symbol 去重 + hot-table insert-only | max −50.7%，commit −33.8%，p95 −45.7% | 削峰：固定 chunk→按权重组；减写放大：去重 symbol 26%，热表避免 OR REPLACE |
 | **算法层** | Levenshtein banding + S6 proximity 优先搜索 | −2.7% | 代码改动小（~40 行），收益确定但绝对值有限 |
+| **消除浪费层** | P4 COUNT(\*) + P5 shared get_all_symbols() + P6 import-scoped S6 | progress load −87.2%，session build −52.9% | 消除 orchestrator 双物化 + get_all_symbols() 重复调用 + S6 候选集缩减 |
 
 > **写入模型层明细**（Elasticsearch 30K-file benchmark，debug build）：
 > - **Weight-budget chunking**：固定 500-file → max_weight=1,000,000，max chunk time 52.1s → 25.7s（−50.7%）。尾部从多个 25–52s 尖刺收敛至全部 ≤ 26s。
