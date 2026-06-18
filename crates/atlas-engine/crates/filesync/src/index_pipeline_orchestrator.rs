@@ -426,7 +426,7 @@ impl IndexPipeline {
                 let unresolved_total = self
                     .store
                     .count_unresolved_references()
-                    .map(|count| {
+                    .inspect(|&count| {
                         let elapsed_ms = t_count.elapsed().as_millis() as u64;
                         info!(
                             target: "atlas_sync",
@@ -434,7 +434,6 @@ impl IndexPipeline {
                             unresolved_refs = count,
                             "sync.progress_total_load"
                         );
-                        count
                     })
                     .unwrap_or(0);
 
