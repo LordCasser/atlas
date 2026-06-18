@@ -38,6 +38,9 @@ pub struct GlobalSymbolIndex {
     /// FileId → parent directory path (without trailing '/'). Built once from
     /// the store's file table to enable directory-proximity scoring.
     file_parent_dir: HashMap<FileId, String>,
+    /// Files under explicit test/spec directories. Project-wide heuristic
+    /// fallback must not connect production references to these symbols.
+    test_file_ids: HashSet<FileId>,
 
     // ── Per-session caches ──────────────────────────────────────────────
     /// Cached fuzzy-search results keyed by (lower_name, max_distance).
@@ -76,10 +79,14 @@ impl GlobalSymbolIndex {
 
         // Build file_id → parent directory map from the store's file table.
         let mut file_parent_dir: HashMap<FileId, String> = HashMap::new();
+        let mut test_file_ids = HashSet::new();
         if let Ok(files) = store.list_files() {
             for f in &files {
                 if let Some(parent) = Path::new(&f.path).parent() {
                     file_parent_dir.insert(f.file_id, parent.to_string_lossy().to_string());
+                }
+                if is_explicit_test_path(&f.path) {
+                    test_file_ids.insert(f.file_id);
                 }
             }
         }
@@ -90,6 +97,7 @@ impl GlobalSymbolIndex {
             by_name,
             by_id,
             file_parent_dir,
+            test_file_ids,
             fuzzy_cache: Mutex::new(HashMap::new()),
             proximity_cache: Mutex::new(HashMap::new()),
         })
@@ -117,6 +125,9 @@ impl GlobalSymbolIndex {
         let mut best_case_insensitive: Option<(usize, usize, &SymbolDef)> = None;
 
         for (order, sym) in candidates.iter().enumerate() {
+            if !self.is_allowed_global_candidate(file_id, sym.file_id) {
+                continue;
+            }
             let tier = match file_id {
                 Some(_) => proximity_tier(ref_parent, self.file_parent_dir.get(&sym.file_id)),
                 None => 0,
@@ -182,16 +193,19 @@ impl GlobalSymbolIndex {
             if !preferred_file_ids.contains(&sym.file_id) {
                 continue;
             }
+            if !self.is_allowed_global_candidate(file_id, sym.file_id) {
+                continue;
+            }
             let tier = match file_id {
                 Some(_) => proximity_tier(ref_parent, self.file_parent_dir.get(&sym.file_id)),
                 None => 0,
             };
-            if sym.name == name {
-                if best_exact_in_scope.is_none_or(|(best_tier, best_order, _)| {
+            if sym.name == name
+                && best_exact_in_scope.is_none_or(|(best_tier, best_order, _)| {
                     tier < best_tier || (tier == best_tier && order < best_order)
-                }) {
-                    best_exact_in_scope = Some((tier, order, sym));
-                }
+                })
+            {
+                best_exact_in_scope = Some((tier, order, sym));
             }
         }
 
@@ -208,6 +222,16 @@ impl GlobalSymbolIndex {
 
         // Pass 2: no match in preferred files — fall back to the global scan.
         self.find_exact_name_target(name, file_id)
+    }
+
+    fn is_allowed_global_candidate(
+        &self,
+        source_file_id: Option<FileId>,
+        candidate_file_id: FileId,
+    ) -> bool {
+        source_file_id.is_none_or(|source| {
+            self.test_file_ids.contains(&source) || !self.test_file_ids.contains(&candidate_file_id)
+        })
     }
 
     /// Find symbols by exact name, sorted by directory proximity to the
@@ -417,6 +441,17 @@ impl GlobalSymbolIndex {
     }
 }
 
+fn is_explicit_test_path(path: &str) -> bool {
+    Path::new(path).components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|name| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "test" | "tests" | "testing" | "selftests" | "spec" | "__tests__"
+            )
+        })
+    })
+}
+
 /// Compute a proximity score for candidate sorting during name search.
 ///
 /// 0 = same parent directory (strong signal: same module/package).
@@ -477,7 +512,6 @@ pub struct ResolutionContext {
 
     /// ScopeId → parent ScopeId (for scope-tree walking).
     pub scope_parents: HashMap<ScopeId, ScopeId>,
-
 }
 
 impl ResolutionContext {
@@ -646,9 +680,13 @@ mod tests {
         let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
         let mut lower_names = Vec::with_capacity(symbols.len());
-        let file_parent_dir = file_parent_dir
+        let file_parent_dir: HashMap<FileId, String> = file_parent_dir
             .into_iter()
             .map(|(file_id, parent)| (file_id, parent.to_string()))
+            .collect();
+        let test_file_ids = file_parent_dir
+            .iter()
+            .filter_map(|(file_id, parent)| is_explicit_test_path(parent).then_some(*file_id))
             .collect();
 
         for sym in &symbols {
@@ -664,6 +702,7 @@ mod tests {
             by_name,
             by_id,
             file_parent_dir,
+            test_file_ids,
             fuzzy_cache: Mutex::new(HashMap::new()),
             proximity_cache: Mutex::new(HashMap::new()),
         }
@@ -707,5 +746,42 @@ mod tests {
 
         assert_eq!(matched.symbol_id, near.id);
         assert_eq!(matched.confidence, Confidence::certain());
+    }
+
+    #[test]
+    fn exact_name_target_does_not_connect_production_to_test_symbol() {
+        let test_symbol = test_symbol("preempt_disable", "tools/testing/preempt_lock.c");
+        let production_file = FileId::generate("kernel/sched/core.c");
+        let index = test_index(
+            vec![test_symbol],
+            [
+                (production_file, "kernel/sched"),
+                (
+                    FileId::generate("tools/testing/preempt_lock.c"),
+                    "tools/testing",
+                ),
+            ],
+        );
+
+        assert!(
+            index
+                .find_exact_name_target("preempt_disable", Some(production_file))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_name_target_allows_test_to_test_symbol() {
+        let target = test_symbol("helper", "tests/helper.ts");
+        let test_caller = FileId::generate("tests/caller.ts");
+        let index = test_index(
+            vec![target.clone()],
+            [(target.file_id, "tests"), (test_caller, "tests")],
+        );
+
+        let matched = index
+            .find_exact_name_target("helper", Some(test_caller))
+            .unwrap();
+        assert_eq!(matched.symbol_id, target.id);
     }
 }
