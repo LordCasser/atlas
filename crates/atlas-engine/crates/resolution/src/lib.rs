@@ -114,7 +114,7 @@ fn resolve_one_core(
                 S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
                 return Some(matched);
             }
-            if !should_run_fuzzy_fallback(&reference.name) {
+            if !should_run_fuzzy_fallback_for_reference(reference) {
                 return None;
             }
             // Try fuzzy-with-proximity before full global scan.
@@ -291,6 +291,13 @@ fn should_run_fuzzy_fallback(name: &str) -> bool {
     is_valid_identifier(name)
 }
 
+fn should_run_fuzzy_fallback_for_reference(reference: &ReferenceUse) -> bool {
+    if reference.kind == ReferenceKind::Call {
+        return false;
+    }
+    should_run_fuzzy_fallback(&reference.name)
+}
+
 /// Returns true if `name` looks like a valid code identifier
 /// (`[a-zA-Z_$][a-zA-Z0-9_$]*`). Characters outside this set cannot
 /// match any symbol name via edit distance.
@@ -462,7 +469,7 @@ impl ResolutionSession {
             S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
             return Some(matched);
         }
-        if should_run_fuzzy_fallback(&reference.name) {
+        if should_run_fuzzy_fallback_for_reference(reference) {
             let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
             if !fuzzy.is_empty() {
                 if let Some(matched) =
@@ -1300,7 +1307,7 @@ impl ReferenceResolver {
                     }
                 }
 
-                if !should_run_fuzzy_fallback(&reference.name) {
+                if !should_run_fuzzy_fallback_for_reference(reference) {
                     return None;
                 }
 
@@ -1556,6 +1563,36 @@ mod tests {
         assert!(should_run_fuzzy_fallback("_private"));
         assert!(should_run_fuzzy_fallback("$event"));
         assert!(!should_run_fuzzy_fallback("7zip")); // starts with digit
+    }
+
+    #[test]
+    fn call_references_skip_edit_distance_fuzzy_fallback() {
+        let file_id = FileId::generate("test.c");
+        let name = "inet_iif".to_string();
+        let reference = ReferenceUse {
+            id: ReferenceId::generate(&file_id, None, 0, 8, &name, ReferenceKind::Call),
+            file_id,
+            source_symbol: None,
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: name.clone(),
+            name,
+            receiver: None,
+            arity: None,
+            range: TextRange {
+                start_byte: 0,
+                end_byte: 8,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 8,
+            },
+            binding_id: None,
+            resolved: None,
+        };
+
+        assert!(should_run_fuzzy_fallback(&reference.name));
+        assert!(!should_run_fuzzy_fallback_for_reference(&reference));
     }
 
     /// Verify that `scope_and_tier` returns snake_case strings that match
