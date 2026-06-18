@@ -314,30 +314,23 @@ impl ClosureEngine {
         // Commit: atomic visibility switch
         self.commit_closure(closure_id)?;
 
-        // Build scoped graph edges from closure resolutions.
-        // FocusGraphBuilder reads from reference_resolutions (is_visible=1)
-        // and routes edges via EdgeConflictPolicy.
-        if Instant::now() < deadline {
-            let stats = self
-                .graph_builder
-                .build_for_closure(closure_id, last_generation)?;
-            if stats.candidate_count > 0 {
-                self.store
-                    .make_candidate_edges_visible(closure_id, last_generation)?;
-            }
-            tracing::debug!(
-                closure_id = %closure_id,
-                edges_built = stats.stats.edges_built,
-                edges_written = stats.stats.edges_written,
-                candidate_count = stats.candidate_count,
-                "FocusGraphBuilder completed"
-            );
-        } else {
-            closure.record_gap(KnownGap::BudgetExhausted {
-                strategy: "graph_build_time_budget".to_string(),
-                remaining: closure.files.len(),
-            });
+        // Materializing the already-resolved closure is part of committing a
+        // usable result, not optional expansion. Skipping it at the deadline
+        // leaves extracted symbols visible but their call graph empty.
+        let stats = self
+            .graph_builder
+            .build_for_closure(closure_id, last_generation)?;
+        if stats.candidate_count > 0 {
+            self.store
+                .make_candidate_edges_visible(closure_id, last_generation)?;
         }
+        tracing::debug!(
+            closure_id = %closure_id,
+            edges_built = stats.stats.edges_built,
+            edges_written = stats.stats.edges_written,
+            candidate_count = stats.candidate_count,
+            "FocusGraphBuilder completed"
+        );
 
         Ok(closure)
     }

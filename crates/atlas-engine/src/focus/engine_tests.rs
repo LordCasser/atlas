@@ -460,6 +460,51 @@ fn test_build_closure_time_budget_records_gap() {
 }
 
 #[test]
+fn test_time_budget_still_materializes_seed_call_edges() {
+    let store = test_store();
+    let caller_file = insert_file_structural_complete(&store, "src/caller.c");
+    let callee_file = insert_file_structural_complete(&store, "src/callee.c");
+    let caller = insert_function_symbol(&store, caller_file, "caller");
+    let callee = insert_function_symbol(&store, callee_file, "callee");
+    let reference = make_unresolved_reference(
+        caller_file,
+        Some(caller),
+        types::ReferenceKind::Call,
+        "callee",
+        10,
+        16,
+    );
+    store.insert_references(&[reference]).unwrap();
+
+    let engine = test_engine(store.clone());
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: caller_file,
+            language: Language::C,
+        },
+        strategies: vec![],
+        budget: WindowBudget {
+            max_time_ms: 0,
+            ..WindowBudget::default()
+        },
+        language: Language::C,
+        max_iterations: 1,
+    };
+
+    engine
+        .build_closure(&window, "test-time-budget-materializes-edges")
+        .expect("build_closure should succeed");
+
+    let edges = store.find_edges_by_source(&caller).unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.kind == types::EdgeKind::Calls && edge.target == callee),
+        "committed seed resolutions must be materialized even after expansion budget expires"
+    );
+}
+
+#[test]
 fn test_build_closure_records_gap_on_missing_file() {
     let store = test_store();
     // Do NOT insert any files — store is empty, identify the seed by Symbol
