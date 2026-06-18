@@ -350,9 +350,8 @@ impl ImportResolver {
 
     /// Collect all project FileIds reachable through a file's import statements.
     ///
-    /// For each import, resolves the module path using the same infrastructure as
-    /// [`resolve_import`]: path_alias expansion, relative path resolution (via
-    /// `store.find_files_by_path_prefix` which handles the DB-level lookup).
+    /// For each import, resolves relative modules from the importing file and
+    /// expands configured path aliases before looking up project files.
     /// Returns only FileIds — no symbol-level resolution.
     ///
     /// This is designed for S6 candidate-set reduction: for a file F with imports,
@@ -364,9 +363,18 @@ impl ImportResolver {
             if import.module.is_empty() {
                 continue;
             }
-            // Resolve the module path using the same alias infrastructure as
-            // resolve_import. For path-aliased imports (e.g. @lib/builder), this
-            // expands the alias. Non-aliased modules pass through unchanged.
+            if import.is_relative {
+                if let Ok(files) = self
+                    .store
+                    .resolve_relative_module(&import.file_id, &import.module)
+                {
+                    file_ids.extend(files.into_iter().map(|file| file.file_id));
+                }
+                continue;
+            }
+
+            // For path-aliased imports (e.g. @lib/builder), expand the alias.
+            // Non-aliased modules pass through unchanged.
             let resolved_module = if self.path_alias.has_aliases() {
                 self.path_alias
                     .resolve(&import.module)
@@ -463,7 +471,7 @@ impl ImportResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     /// Minimal SymbolDef for unit tests (range fields set to zero).
     fn test_symbol(file_id: FileId, name: &str, kind: SymbolKind) -> SymbolDef {
@@ -1030,6 +1038,57 @@ use std::collections::{HashMap, HashSet};
             file_ids.contains(&lib_file),
             "aliased import should resolve to lib_file"
         );
+    }
+
+    #[test]
+    fn collect_imported_file_ids_resolves_relative_module_from_importer() {
+        let store = std::sync::Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let source_file = FileId::generate("src/main.ts");
+        let imported_file = FileId::generate("src/lib/helper.ts");
+        for (file_id, path) in [
+            (source_file, "src/main.ts"),
+            (imported_file, "src/lib/helper.ts"),
+        ] {
+            store
+                .insert_file_facts(&FileFacts {
+                    file: FileInfo {
+                        file_id,
+                        path: path.to_string(),
+                        language: Language::TypeScript,
+                        content_hash: "abc".to_string(),
+                        status: types::enums::ParseStatus::Success,
+                    },
+                    symbols: vec![],
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+
+        let resolver = ImportResolver::new(store);
+        let import = ImportDef {
+            id: ImportId::generate(
+                &source_file,
+                ImportKind::Import.as_str(),
+                "./lib/helper",
+                None,
+                0,
+            ),
+            file_id: source_file,
+            kind: ImportKind::Import,
+            module: "./lib/helper".to_string(),
+            imported_name: String::new(),
+            local_name: None,
+            alias: None,
+            is_wildcard: false,
+            is_relative: true,
+            range: Default::default(),
+        };
+
+        let file_ids = resolver.collect_imported_file_ids(&[import]);
+        assert_eq!(file_ids.len(), 1);
+        assert!(file_ids.contains(&imported_file));
     }
 
     #[test]

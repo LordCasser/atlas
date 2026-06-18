@@ -191,15 +191,11 @@ impl Store {
             .unwrap_or_default();
 
         // Resolve relative path against source directory
-        let resolved = std::path::Path::new(&source_dir)
-            .join(relative_module)
-            .to_string_lossy()
-            .to_string();
+        let resolved = normalize_joined_project_path(&source_dir, relative_module);
 
         // Normalize and build LIKE pattern (handles extension variations:
         // "lib" → matches "lib.ts", "lib/index.ts", "lib.js", etc.)
-        let normalized = resolved.replace('\\', "/");
-        let pattern = format!("{}%", escape_like(&normalized));
+        let pattern = format!("{}%", escape_like(&resolved));
 
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
@@ -209,6 +205,25 @@ impl Store {
         let rows = stmt.query_map(rusqlite::params![pattern], row_to_file_info)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+}
+
+fn normalize_joined_project_path(source_dir: &str, relative_module: &str) -> String {
+    use std::path::{Component, Path, PathBuf};
+
+    let relative_module = relative_module.replace('\\', "/");
+    let joined = Path::new(source_dir).join(relative_module.trim_start_matches('/'));
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    normalized.to_string_lossy().replace('\\', "/")
 }
 
 /// Normalize a scope path for database lookups.  `"."` (project root)
@@ -246,4 +261,25 @@ fn dominant_language_from_counts(rows: Vec<(String, i64)>) -> anyhow::Result<Opt
         return Ok(None);
     }
     Ok(Language::from_str(lang))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_joined_project_path;
+
+    #[test]
+    fn relative_module_path_is_normalized_lexically() {
+        assert_eq!(
+            normalize_joined_project_path("src", "./lib/helper"),
+            "src/lib/helper"
+        );
+        assert_eq!(
+            normalize_joined_project_path("src/barrel", "../lib/helper"),
+            "src/lib/helper"
+        );
+        assert_eq!(
+            normalize_joined_project_path("src", "../../../include/api"),
+            "include/api"
+        );
+    }
 }
