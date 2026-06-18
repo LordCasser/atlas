@@ -961,21 +961,22 @@ pub fn phase_resolve_and_build(
         invalidate_ms = t_inval.elapsed().as_millis() as u64;
     }
 
+    // ── Symbol pre-load (shared between resolution and graph building) ──
+    let t_symbols = Instant::now();
+    let all_symbols = store.get_all_symbols()?;
+    let graph_symbol_load_ms = t_symbols.elapsed().as_millis() as u64;
+
     // ── Resolution ──
     let t_resolve = Instant::now();
     let mut resolver = ReferenceResolver::with_path_alias(store.clone(), path_alias);
     let (resolved_refs, res_stats) = resolver
-        .resolve_all_parallel(store.clone(), progress, None)
+        .resolve_all_parallel_with_symbols(store.clone(), &all_symbols, progress, None)
         .context("Reference resolution failed")?;
     let resolve_all_parallel_ms = t_resolve.elapsed().as_millis() as u64;
 
-    // ── Symbol pre-load ──
-    let t_symbols = Instant::now();
-    let symbol_map: HashMap<SymbolId, SymbolDef> = store
-        .get_all_symbols()
-        .map(|syms| syms.into_iter().map(|s| (s.id, s)).collect())
-        .unwrap_or_default();
-    let graph_symbol_load_ms = t_symbols.elapsed().as_millis() as u64;
+    // ── Build symbol_map from pre-loaded symbols (no second DB query) ──
+    let symbol_map: HashMap<SymbolId, SymbolDef> =
+        all_symbols.into_iter().map(|s| (s.id, s)).collect();
 
     // ── Edge building ──
     let t_build = Instant::now();

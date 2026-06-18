@@ -68,6 +68,18 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Count unresolved references via index-only scan (O(1) for the partial
+    /// index `idx_references_unresolved`).
+    pub fn count_unresolved_references(&self) -> anyhow::Result<u64> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM \"references\" WHERE resolved_symbol_id IS NULL",
+        )?;
+        stmt.query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c as u64)
+            .map_err(Into::into)
+    }
+
     /// Find unresolved call references inside a source symbol.
     ///
     /// These are calls whose callee token was extracted but could not be

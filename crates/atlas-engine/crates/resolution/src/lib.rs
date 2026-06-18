@@ -109,7 +109,19 @@ fn resolve_one_core(
     {
         let _timer = StrategyTimer::new(&S6_TIME_NS);
         if let Some(idx) = global_index {
-            if let Some(matched) = idx.find_exact_name_target(&reference.name, proximity_file_id) {
+            // Scoped query: when the file has imports, prefer symbols from
+            // imported modules first, then fall back to a global scan.  This
+            // avoids O(candidates) iterations for high-fan-out generic names.
+            let exact = if !ctx.preferred_file_ids.is_empty() {
+                idx.find_exact_name_target_in_scope(
+                    &reference.name,
+                    proximity_file_id,
+                    &ctx.preferred_file_ids,
+                )
+            } else {
+                idx.find_exact_name_target(&reference.name, proximity_file_id)
+            };
+            if let Some(matched) = exact {
                 S6_COUNT.fetch_add(1, Ordering::Relaxed);
                 S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
                 return Some(matched);
@@ -371,6 +383,22 @@ impl ResolutionSession {
         })
     }
 
+    /// Build the session with a pre-loaded symbol slice.
+    ///
+    /// Avoids a duplicate `get_all_symbols()` call when the caller already
+    /// holds the symbol list. The store is still needed for ImportResolver
+    /// and the file → parent directory map in GlobalSymbolIndex.
+    pub fn build_from_symbols(
+        store: Arc<Store>,
+        symbols: &[SymbolDef],
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            global_index: Arc::new(GlobalSymbolIndex::build_from_symbols(symbols, &store)?),
+            import_resolver: Arc::new(ImportResolver::new(store.clone())),
+            name_matcher: Arc::new(NameMatcher::new()),
+        })
+    }
+
     /// Build with path alias support.
     pub fn build_with_alias(
         store: Arc<Store>,
@@ -378,6 +406,19 @@ impl ResolutionSession {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             global_index: Arc::new(GlobalSymbolIndex::build(&store)?),
+            import_resolver: Arc::new(ImportResolver::with_path_alias(store.clone(), path_alias)),
+            name_matcher: Arc::new(NameMatcher::new()),
+        })
+    }
+
+    /// Build with path alias support and pre-loaded symbols.
+    pub fn build_with_alias_from_symbols(
+        store: Arc<Store>,
+        path_alias: PathAliasResolver,
+        symbols: &[SymbolDef],
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            global_index: Arc::new(GlobalSymbolIndex::build_from_symbols(symbols, &store)?),
             import_resolver: Arc::new(ImportResolver::with_path_alias(store.clone(), path_alias)),
             name_matcher: Arc::new(NameMatcher::new()),
         })
@@ -627,6 +668,37 @@ impl ReferenceResolver {
         progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
         _on_progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        self.resolve_all_parallel_impl(store, None, progress_mutex, _on_progress)
+    }
+
+    /// Like [`resolve_all_parallel`], but uses pre-loaded symbols for the
+    /// global index instead of calling `store.get_all_symbols()` internally.
+    ///
+    /// This avoids a duplicate DB query when the caller already holds the
+    /// symbol list (e.g. for shared use with `GraphBuilder::symbol_override`).
+    pub fn resolve_all_parallel_with_symbols(
+        &mut self,
+        store: Arc<Store>,
+        symbols: &[SymbolDef],
+        progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
+        _on_progress: Option<&dyn Fn(u64, u64)>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        self.resolve_all_parallel_impl(store, Some(symbols), progress_mutex, _on_progress)
+    }
+
+    /// Shared implementation of parallel resolution.
+    ///
+    /// `symbols` is an optional pre-loaded slice of project symbols.
+    /// When `Some`, the global index is built from the slice instead of
+    /// calling `store.get_all_symbols()`. When `None`, the session loads
+    /// symbols from the store as usual.
+    fn resolve_all_parallel_impl(
+        &mut self,
+        store: Arc<Store>,
+        symbols: Option<&[SymbolDef]>,
+        progress_mutex: Option<&std::sync::Arc<std::sync::Mutex<types::progress::ProgressState>>>,
+        _on_progress: Option<&dyn Fn(u64, u64)>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let mut telemetry = ResolutionTelemetry::default();
 
         if let Some(mutex) = progress_mutex {
@@ -638,7 +710,10 @@ impl ReferenceResolver {
 
         // Build shared session
         let t0 = Instant::now();
-        let session = ResolutionSession::build(store.clone())?;
+        let session = match symbols {
+            Some(syms) => ResolutionSession::build_from_symbols(store.clone(), syms)?,
+            None => ResolutionSession::build(store.clone())?,
+        };
         telemetry.session_build_ms = t0.elapsed().as_millis() as u64;
 
         // Load all unresolved references, grouped by file

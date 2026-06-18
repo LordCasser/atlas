@@ -419,21 +419,20 @@ impl IndexPipeline {
                     detail: Some("skipped (no changes)".into()),
                 });
             } else {
-                // Get unresolved count for progress total (materializes full Vec).
-                // NOTE: resolve_all_parallel calls find_unresolved_references()
-                // again internally — for large projects this doubles memory/time.
+                // Count unresolved references via index-only COUNT (avoids
+                // materializing the full Vec<ReferenceUse> that
+                // resolve_all_parallel also queries internally).
                 let t_count = Instant::now();
                 let unresolved_total = self
                     .store
-                    .find_unresolved_references()
-                    .map(|refs| {
-                        let count = refs.len() as u64;
+                    .count_unresolved_references()
+                    .map(|count| {
                         let elapsed_ms = t_count.elapsed().as_millis() as u64;
                         info!(
                             target: "atlas_sync",
                             progress_total_load_ms = elapsed_ms,
                             unresolved_refs = count,
-                            "sync.progress_total_load (duplicate materialization)"
+                            "sync.progress_total_load"
                         );
                         count
                     })

@@ -54,11 +54,20 @@ impl GlobalSymbolIndex {
     /// Build the global index from all symbols in the store.
     pub fn build(store: &Store) -> anyhow::Result<Self> {
         let symbols = store.get_all_symbols()?;
+        Self::build_from_symbols(&symbols, store)
+    }
+
+    /// Build the global index from a pre-loaded slice of symbols.
+    ///
+    /// Avoids a duplicate `get_all_symbols()` call when the caller already has
+    /// the symbol list (e.g. shared between resolution and graph building).
+    /// The store is still needed for the file → parent directory map.
+    pub fn build_from_symbols(symbols: &[SymbolDef], store: &Store) -> anyhow::Result<Self> {
         let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
         let mut lower_names: Vec<String> = Vec::with_capacity(symbols.len());
 
-        for sym in &symbols {
+        for sym in symbols {
             by_id.insert(sym.id, sym.clone());
             let key = sym.name.to_lowercase();
             lower_names.push(key.clone());
@@ -76,7 +85,7 @@ impl GlobalSymbolIndex {
         }
 
         Ok(Self {
-            symbols,
+            symbols: symbols.to_vec(),
             lower_names,
             by_name,
             by_id,
@@ -143,6 +152,62 @@ impl GlobalSymbolIndex {
             strategy: ResolutionStrategy::NameOnly,
             provenance: Provenance::Heuristic,
         })
+    }
+
+    /// Same as [`find_exact_name_target`], but prioritizes candidates within
+    /// `preferred_file_ids`.  When the candidate set is small (< 50) or the
+    /// preferred set is empty this delegates straight to the original method
+    /// with zero overhead.  Otherwise it scans only preferred files first;
+    /// if an exact match is found there the global scan is skipped entirely.
+    pub fn find_exact_name_target_in_scope(
+        &self,
+        name: &str,
+        file_id: Option<FileId>,
+        preferred_file_ids: &HashSet<FileId>,
+    ) -> Option<ResolvedTarget> {
+        let candidates = self.by_name.get(&name.to_lowercase())?;
+
+        // When the candidate set is tiny or the preferred set is empty, fall
+        // back to the original logic immediately — the overhead of a two-pass
+        // scan outweighs any benefit.
+        if candidates.len() < 50 || preferred_file_ids.is_empty() {
+            return self.find_exact_name_target(name, file_id);
+        }
+
+        let ref_parent = file_id.and_then(|fid| self.file_parent_dir.get(&fid));
+
+        // Pass 1: only scan candidates that live in a preferred file.
+        let mut best_exact_in_scope: Option<(usize, usize, &SymbolDef)> = None;
+        for (order, sym) in candidates.iter().enumerate() {
+            if !preferred_file_ids.contains(&sym.file_id) {
+                continue;
+            }
+            let tier = match file_id {
+                Some(_) => proximity_tier(ref_parent, self.file_parent_dir.get(&sym.file_id)),
+                None => 0,
+            };
+            if sym.name == name {
+                if best_exact_in_scope.is_none_or(|(best_tier, best_order, _)| {
+                    tier < best_tier || (tier == best_tier && order < best_order)
+                }) {
+                    best_exact_in_scope = Some((tier, order, sym));
+                }
+            }
+        }
+
+        // Exact match found within preferred files → return immediately,
+        // bypassing the full O(candidates) global scan.
+        if let Some((_tier, _order, sym)) = best_exact_in_scope {
+            return Some(ResolvedTarget {
+                symbol_id: sym.id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::NameOnly,
+                provenance: Provenance::Heuristic,
+            });
+        }
+
+        // Pass 2: no match in preferred files — fall back to the global scan.
+        self.find_exact_name_target(name, file_id)
     }
 
     /// Find symbols by exact name, sorted by directory proximity to the
@@ -412,6 +477,13 @@ pub struct ResolutionContext {
 
     /// ScopeId → parent ScopeId (for scope-tree walking).
     pub scope_parents: HashMap<ScopeId, ScopeId>,
+
+    /// FileIds of files that are reachable via this file's import statements.
+    /// Populated during [`ResolutionContext::build()`] by resolving each
+    /// import's module path against the store's file table.  Used by S6
+    /// (project-wide name search) to prioritize symbols from imported modules
+    /// before falling back to a global scan.
+    pub preferred_file_ids: HashSet<FileId>,
 }
 
 impl ResolutionContext {
@@ -461,6 +533,22 @@ impl ResolutionContext {
             }
         }
 
+        // ── Build preferred file set from imports ──────────────────────────
+        // Resolve each import's module path to concrete file(s) in the store
+        // so S6 can prioritize symbols from imported modules before falling
+        // back to a global scan.
+        let mut preferred_file_ids: HashSet<FileId> = HashSet::new();
+        for import in &imports {
+            if import.module.is_empty() {
+                continue;
+            }
+            if let Ok(matching_files) = store.find_files_by_path_prefix(&import.module) {
+                for finfo in matching_files {
+                    preferred_file_ids.insert(finfo.file_id);
+                }
+            }
+        }
+
         // Pre-index imports by name for O(1) Strategy 5 filtering.
         let mut imports_by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, import) in imports.iter().enumerate() {
@@ -486,6 +574,7 @@ impl ResolutionContext {
             symbols_by_qname,
             scopes_by_id,
             scope_parents,
+            preferred_file_ids,
         })
     }
 
