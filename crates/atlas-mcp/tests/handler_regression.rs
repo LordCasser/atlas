@@ -771,12 +771,7 @@ fn handler_search_reports_retry_for_cold_scope() {
         resp["analysis"].get("retry_after_ms").is_some(),
         "analysis block should carry retry_after_ms: {resp:.300}"
     );
-    if resp["coverage"]["state"] == "partial" {
-        assert_ne!(
-            resp["precision"]["coverage"], "repo_complete",
-            "partial search must not advertise repo-complete precision: {resp:.300}"
-        );
-    }
+    assert!(resp.get("precision").is_none());
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -815,10 +810,7 @@ fn handler_search_partial_hit_without_deferred_ids_reports_retry() {
         resp.get("background_refinement").is_none(),
         "partial search should not expose legacy background_refinement: {resp:.300}"
     );
-    assert_ne!(
-        resp["precision"]["coverage"], "repo_complete",
-        "partial search must not advertise repo-complete precision: {resp:.300}"
-    );
+    assert!(resp.get("precision").is_none());
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -858,10 +850,7 @@ fn handler_search_partial_no_hit_tells_client_to_retry() {
         resp.get("background_refinement").is_none(),
         "partial no-hit search should not expose legacy background_refinement: {resp:.300}"
     );
-    assert_ne!(
-        resp["precision"]["coverage"], "repo_complete",
-        "partial no-hit search must not advertise repo-complete precision: {resp:.300}"
-    );
+    assert!(resp.get("precision").is_none());
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

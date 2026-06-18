@@ -214,7 +214,7 @@ impl AnalysisEnvelope {
     /// - `warnings` (merged root + lazy, only when non-empty)
     /// - `query_id`
     /// - `analysis` block
-    /// - `precision`, `coverage_counts`, `gaps` (when set)
+    /// - `coverage_counts`, `gaps` (when set)
     pub fn build(self, body: serde_json::Value, store: &impl SnapshotStore) -> (String, bool) {
         let args = self.tool_args.clone();
         self.build_with_args(body, &args, store)

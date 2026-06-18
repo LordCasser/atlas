@@ -587,12 +587,17 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let resolution = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::Aggregate,
-            Some("incoming".to_string()),
-            None,
-        ) {
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: None,
+            direction: Some("incoming".to_string()),
+            depth: None,
+        });
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+
+        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
+        {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -620,14 +625,6 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
 
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: None,
-            symbol_id: None,
-            direction: Some("incoming".to_string()),
-            depth: None,
-        });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
         let has_full_index = {
             let active = self.project();
             active.query_runtime.has_full_index(&active.store)
@@ -712,12 +709,17 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let resolution = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::Aggregate,
-            Some("outgoing".to_string()),
-            None,
-        ) {
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: None,
+            direction: Some("outgoing".to_string()),
+            depth: None,
+        });
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+
+        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
+        {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -745,21 +747,6 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
 
-        // Lazy structural: prepare focus query for graph edges
-        let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
-        for &id in &symbol_ids {
-            if let Some(sym) = self.project().store.find_symbol_by_id(&id).ok().flatten() {
-                file_ids_set.insert(sym.file_id);
-            }
-        }
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: file_ids_set.iter().next().copied(),
-            symbol_id: None,
-            direction: Some("outgoing".to_string()),
-            depth: None,
-        });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
         let has_full_index = {
             let active = self.project();
             active.query_runtime.has_full_index(&active.store)
@@ -866,12 +853,17 @@ impl ToolRouter {
         } else {
             Some(direction.to_string())
         };
-        let resolution = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::Aggregate,
-            retry_direction,
-            Some(depth),
-        ) {
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: None,
+            direction: retry_direction,
+            depth: Some(depth),
+        });
+        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+
+        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
+        {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -899,29 +891,6 @@ impl ToolRouter {
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
-
-        // Lazy structural: ensure graph edges exist before querying.
-        let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
-        for &id in &symbol_ids {
-            if let Some(sym) = self.project().store.find_symbol_by_id(&id).ok().flatten() {
-                file_ids_set.insert(sym.file_id);
-            }
-        }
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: file_ids_set.iter().next().copied(),
-            symbol_id: None,
-            direction: {
-                let d = get_str(args, "direction");
-                if d.is_empty() {
-                    None
-                } else {
-                    Some(d.to_string())
-                }
-            },
-            depth: Some(depth),
-        });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
         let lazy_warnings = focus_warnings;
 
         let project = self.project();
@@ -1191,12 +1160,6 @@ impl ToolRouter {
         // structural data before path finding. A cold focus project may lack
         // the intra-file call edges that BFS needs to discover a path.
         let (_roots, root_warnings) = self.include_roots_from_args(args);
-        let mut file_ids_set: HashSet<atlas_engine::FileId> = HashSet::new();
-        for id in from_ids.iter().chain(to_ids.iter()) {
-            if let Some(sym) = self.project().store.find_symbol_by_id(id).ok().flatten() {
-                file_ids_set.insert(sym.file_id);
-            }
-        }
         let intent = Some(atlas_engine::QueryIntent::Path {
             from_name: from_qname.to_string(),
             to_name: to_qname.to_string(),
@@ -1727,6 +1690,17 @@ impl ToolRouter {
             SymbolInput::Selector(sel)
                 if sel.file_path.as_deref().is_some_and(|p| !p.trim().is_empty())
         );
+        let prepared_focus = if scope.is_none() && has_file_hint {
+            Some(
+                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Explore {
+                    symbol_name: qname.to_string(),
+                    file_id: self.resolve_selector_file_id(&input),
+                    symbol_id: None,
+                })),
+            )
+        } else {
+            None
+        };
 
         // Resolve with UniqueOrCandidates policy.
         let resolution = if let Some(scope) = scope {
@@ -1744,12 +1718,7 @@ impl ToolRouter {
                 Err(e) => return (e, true),
             }
         } else {
-            match self.resolve_graph_symbol_with_focus_retry(
-                &input,
-                SymbolResolutionPolicy::UniqueOrCandidates,
-                None,
-                None,
-            ) {
+            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::UniqueOrCandidates) {
                 Ok(r) => r,
                 Err(e) => return (e, true),
             }
@@ -1856,12 +1825,13 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sym.id));
 
         // Lazy structural: prepare focus query for graph edges
-        let intent = Some(atlas_engine::QueryIntent::Explore {
-            symbol_name: qname.to_string(),
-            file_id: Some(sym.file_id),
-            symbol_id: None,
+        let (focus_result, focus_warnings) = prepared_focus.unwrap_or_else(|| {
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Explore {
+                symbol_name: qname.to_string(),
+                file_id: Some(sym.file_id),
+                symbol_id: None,
+            }))
         });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
 
         let (store_clone, root_clone) = {
             let active = self.project();
@@ -1912,6 +1882,9 @@ impl ToolRouter {
 
         let mut resp_value =
             serde_json::to_value(&dossier).unwrap_or_else(|e| json!({"error": e.to_string()}));
+        if let Some(response) = resp_value.as_object_mut() {
+            response.remove("precisionTier");
+        }
 
         // Include resolution metadata when resolved
         if let Some(ref resolved) = resolved_opt {
@@ -2029,7 +2002,6 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("impact", args);
 
-        // Lazy structural: prepare focus query for impact analysis
         let intent = Some(atlas_engine::QueryIntent::Impact {
             symbol_name: qname.to_string(),
             depth: Some(depth),
@@ -2780,7 +2752,7 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_callees_response_has_warnings_and_precision() {
+    fn test_handle_callees_response_omits_internal_precision() {
         let store = test_store();
         let fid = FileId::generate("test.ts");
         store
@@ -2819,11 +2791,12 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callees(&json!({"symbol": "g"}));
         assert!(!is_error, "expected success, got: {resp_str}");
-        let _resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp.get("precision").is_none());
     }
 
     #[test]
-    fn test_handle_callers_response_has_warnings_and_precision() {
+    fn test_handle_callers_response_omits_internal_precision() {
         let store = test_store();
         let fid = FileId::generate("test.ts");
         store
@@ -2862,7 +2835,8 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
         let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "h"}));
         assert!(!is_error, "expected success, got: {resp_str}");
-        let _resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp.get("precision").is_none());
     }
 
     /// Verify `handle_callers` deduplicates when aggregating multiple
@@ -2936,6 +2910,10 @@ mod tests {
             resp.get("subject").is_some(),
             "response should have 'subject' field, got keys: {:?}",
             resp.as_object().map(|o| o.keys().collect::<Vec<_>>())
+        );
+        assert!(
+            resp.get("precisionTier").is_none(),
+            "explore must not expose internal precision tier: {resp}"
         );
     }
 

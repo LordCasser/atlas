@@ -9,7 +9,6 @@
 //!
 //! # Public API
 //! - `ensure_initialized()`: build graph snapshot from DB (idempotent)
-//! - `precision_info()`: return GraphPrecision { mode, edge_count }
 //! - `provider()`: return &dyn GraphProvider — sole entry point for graph queries
 //! - `is_graph_stale()` / `mark_graph_fresh()`: generation-based staleness tracking
 //!
@@ -45,17 +44,6 @@ pub enum GraphMode {
     /// Focus/closure mode: edges may be partial, lower-confidence.
     /// The graph may contain both canonical edges and closure-based edges.
     FocusPartial,
-}
-
-/// Precision information about the current graph snapshot.
-#[derive(Debug, Clone)]
-pub struct GraphPrecision {
-    /// The graph mode (canonical vs partial).
-    pub mode: GraphMode,
-    /// Whether the graph has been initialized at all.
-    pub initialized: bool,
-    /// Total edge count in the current snapshot (approximate).
-    pub edge_count: usize,
 }
 
 // ── GraphRuntime ────────────────────────────────────────────────────────
@@ -159,15 +147,6 @@ impl GraphRuntime {
         };
     }
 
-    /// Return precision metadata about the current graph.
-    pub fn precision_info(&self) -> GraphPrecision {
-        GraphPrecision {
-            mode: *self.mode.lock().unwrap(),
-            initialized: self.state.is_initialized(),
-            edge_count: self.state.edge_count(),
-        }
-    }
-
     /// Returns the graph provider for the current scope.
     ///
     /// Dispatches based on [`GraphMode`]:
@@ -202,29 +181,12 @@ mod tests {
     }
 
     #[test]
-    fn precision_info_reflects_mode() {
-        let gr = create_test_graph_runtime();
-        let info = gr.precision_info();
-        assert_eq!(info.mode, GraphMode::FocusPartial);
-        assert!(!info.initialized);
-        assert_eq!(info.edge_count, 0);
-    }
-
-    #[test]
     fn detect_and_set_mode_respects_store() {
         let gr = create_test_graph_runtime();
         // Clone store to avoid simultaneous mutable+immutable borrow.
         let store = gr.store.clone();
         gr.detect_and_set_mode(&store);
         assert_eq!(*gr.mode.lock().unwrap(), GraphMode::FocusPartial);
-    }
-
-    #[test]
-    fn precision_info_full_canonical() {
-        let gr = create_test_graph_runtime();
-        *gr.mode.lock().unwrap() = GraphMode::FullCanonical;
-        let info = gr.precision_info();
-        assert_eq!(info.mode, GraphMode::FullCanonical);
     }
 
     #[test]

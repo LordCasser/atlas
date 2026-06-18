@@ -52,6 +52,7 @@ impl GraphState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn edge_count(&self) -> usize {
         self.search
             .lock()

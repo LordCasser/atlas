@@ -26,6 +26,7 @@ use std::sync::atomic::Ordering;
 
 use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
 use crate::tools::query_snapshot::QuerySnapshot;
+#[cfg(test)]
 use crate::tools::runtime::graph_runtime::GraphMode;
 use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
 
@@ -101,7 +102,6 @@ pub(crate) const MAX_FILE_PATH_LENGTH: usize = 4096;
 
 pub(crate) mod active_project;
 pub(crate) mod analysis_envelope;
-pub(crate) mod analysis_response;
 pub(crate) mod annotations;
 pub(crate) mod atlas_jobs;
 pub(crate) mod branch_diff;
@@ -569,27 +569,6 @@ impl ToolRouter {
             .build(resp, self)
     }
 
-    /// Inject graph edge provenance into the response JSON when the graph
-    /// was built from a partial/closure-based index (FocusPartial mode).
-    ///
-    /// Focus precision from lazy extraction takes priority when present
-    /// (AnalysisEnvelope may overwrite this with per-query coverage data).
-    pub(crate) fn inject_graph_precision(&self, resp: &mut serde_json::Value) {
-        let precision = self.project().graph_runtime.precision_info();
-        if precision.mode == GraphMode::FocusPartial {
-            // Only inject graph-level precision if no per-query (focus) precision
-            // is already present. Focus precision provides richer per-query
-            // coverage detail that should not be overwritten.
-            if resp.get("precision").is_none() {
-                resp["precision"] = json!({
-                    "mode": "focus_partial",
-                    "initialized": precision.initialized,
-                    "edge_count": precision.edge_count,
-                });
-            }
-        }
-    }
-
     /// Rebuild the graph snapshot from the store if the index signature changed.
     fn rebuild_if_signature_changed(&self, reason: &str) -> anyhow::Result<()> {
         let project = self.project();
@@ -819,7 +798,7 @@ impl ToolRouter {
             }
         }
 
-        let (mut result, is_error) = match contract {
+        let (result, is_error) = match contract {
             ToolContract::ProjectLifecycle => self.handle_project(arguments),
             ToolContract::StatusRead => self.dispatch_status_read(ctx, name, arguments),
             ToolContract::SemanticGraphQuery(_) => self.dispatch_graph_query(ctx, name, arguments),
@@ -831,18 +810,6 @@ impl ToolRouter {
             }
             ToolContract::TaskControl => self.dispatch_task_control(ctx, name, arguments),
         };
-
-        // Phase 9: Auto-inject graph precision for SemanticGraphQuery tools.
-        // This replaces the 8 manual inject_graph_precision() calls that were
-        // scattered across graph.rs and context.rs.  Focus precision (per-query
-        // coverage data from lazy extraction) takes priority — graph precision
-        // is only injected when no per-query precision exists.
-        if !is_error && matches!(contract, ToolContract::SemanticGraphQuery(_)) {
-            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&result) {
-                self.inject_graph_precision(&mut val);
-                result = serde_json::to_string_pretty(&val).unwrap_or(result);
-            }
-        }
 
         // Wrap long results with truncation warning
         let text = truncate(&result, 25000);
@@ -5128,10 +5095,8 @@ mod tests {
         );
     }
 
-    // ── Phase 9: auto-inject graph precision for SemanticGraphQuery tools ─
-
     #[test]
-    fn auto_injects_graph_precision_for_semantic_graph_query() {
+    fn semantic_graph_query_does_not_expose_internal_precision() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         insert_test_symbol(&store, file_id, "test_func");
@@ -5142,11 +5107,9 @@ mod tests {
         let result = router.call_tool(&ctx, "calls", &args);
         let text = extract_text(&result);
         let val: serde_json::Value = serde_json::from_str(&text).unwrap();
-        // Precision should be present: either graph precision (focus_partial)
-        // or per-query focus precision from lazy extraction. Both are valid.
         assert!(
-            val.get("precision").is_some(),
-            "should inject graph precision for graph tools, got: {text}"
+            val.get("precision").is_none(),
+            "graph tools must not expose internal precision: {text}"
         );
     }
 
@@ -5280,31 +5243,6 @@ mod tests {
                 || t3.contains("not available"),
             "symbol view=usages should not panic, got: {t3}"
         );
-    }
-
-    #[test]
-    fn does_not_inject_precision_when_full_canonical() {
-        let store = test_store();
-        let file_id = register_test_file(&store, "test.ts");
-        insert_test_symbol(&store, file_id, "test_func");
-        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
-        let _ = router.ensure_graph_initialized();
-        // Override mode to FullCanonical — graph precision injection should skip.
-        *router.project().graph_runtime.mode.lock().unwrap() = GraphMode::FullCanonical;
-        let ctx = ToolCallContext::empty();
-        let args = serde_json::json!({"symbol": "test_func.test_func"});
-        let result = router.call_tool(&ctx, "calls", &args);
-        let text = extract_text(&result);
-        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
-        // Graph precision (mode=focus_partial) must NOT be present.
-        // Focus precision (coverage/confidence) from lazy extraction may still
-        // be present — that's a separate concern.
-        if let Some(prec) = val.get("precision") {
-            assert!(
-                prec.get("mode").is_none() || prec["mode"] != "focus_partial",
-                "should NOT inject graph precision for FullCanonical, got: {text}"
-            );
-        }
     }
 
     // ── Phase 21a: maybe_refresh_graph cooldown ────────────────────────

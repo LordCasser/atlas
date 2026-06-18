@@ -18,15 +18,23 @@ impl ToolRouter {
             Ok(inp) => inp,
             Err(e) => return (e, true),
         };
-        let resolution = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::BestEffortSingle,
-            None,
-            None,
-        ) {
-            Ok(r) => r,
-            Err(e) => return (e, true),
+        let symbol_display = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
+        let (focus_opt, focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: symbol_display.clone(),
+                direction: None,
+                depth: None,
+                file_id: self.resolve_selector_file_id(&input),
+                symbol_id: None,
+            }));
+        let resolution =
+            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+                Ok(r) => r,
+                Err(e) => return (e, true),
+            };
         let sid = match resolution {
             SymbolResolution::Single { symbol_id, .. } => symbol_id,
             SymbolResolution::Ambiguous { candidates, .. } => candidates[0].symbol_id,
@@ -51,26 +59,10 @@ impl ToolRouter {
             .active_investigation
             .clone();
 
-        // Resolve symbol display name early so it's available for both the
-        // focus intent and the response "symbol" field.
-        let symbol_display = match &input {
-            SymbolInput::Name(s) => s.clone(),
-            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
-        };
-
-        // Prepare focus query to inject coverage / closure provenance.
-        // Uses Calls intent with the resolved symbol_id so the focus engine
-        // can locate the seed and build structural coverage data.  (P1-F7)
-        let (focus_opt, _focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
-                symbol_name: symbol_display.clone(),
-                direction: None,
-                depth: None,
-                file_id: None,
-                symbol_id: Some(sid),
-            }));
-
         let mut lr = AnalysisEnvelope::new("symbol", args);
+        if !focus_warnings.is_empty() {
+            lr = lr.with_lazy_warnings(focus_warnings);
+        }
 
         let refs = match self.project().store.find_references_by_symbol(&sid) {
             Ok(r) => r,

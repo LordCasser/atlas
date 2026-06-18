@@ -289,22 +289,27 @@ impl ToolRouter {
             );
         }
 
-        let mut lazy_warnings = Vec::new();
-
         let mut lr = AnalysisEnvelope::new("trace", args);
+        let (focus_result, lazy_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: symbol_str.to_string(),
+                file_id: self.resolve_selector_file_id(&input),
+                symbol_id: None,
+                direction: Some("incoming".to_string()),
+                depth: Some(max_depth),
+            }));
+        if let Some(ref result) = focus_result {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+        }
 
         // Unified symbol resolution — BestEffortSingle always picks one symbol.
-        let resolution = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::BestEffortSingle,
-            Some("incoming".to_string()),
-            Some(max_depth),
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                return (format!("Symbol resolution error: {e}"), true);
-            }
-        };
+        let resolution =
+            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
+                Ok(r) => r,
+                Err(e) => {
+                    return (format!("Symbol resolution error: {e}"), true);
+                }
+            };
         let (target_id, resolved_symbol) = match resolution {
             SymbolResolution::Single {
                 symbol_id,
@@ -352,21 +357,6 @@ impl ToolRouter {
 
         // Update investigation with the target symbol
         self.update_investigation(InvestigationFocus::Symbol(target_id));
-        // Ensure structural data for this symbol's file
-        if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&target_id) {
-            let (focus_result, focus_warnings) =
-                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
-                    symbol_name: sym.name.clone(),
-                    file_id: Some(sym.file_id),
-                    symbol_id: None,
-                    direction: None,
-                    depth: None,
-                }));
-            if let Some(ref result) = focus_result {
-                lr = crate::tools::apply_focus_result_to_lr(lr, result);
-            }
-            lazy_warnings = focus_warnings;
-        }
         let resp = self
             .project()
             .engine

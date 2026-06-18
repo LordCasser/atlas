@@ -14,11 +14,9 @@ use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
-use atlas_engine::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
-use crate::tools::analysis_response::precision_to_view;
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
@@ -39,21 +37,6 @@ struct SearchHit {
     file: String,
     line: u32,
     layer: String,
-}
-
-fn search_public_precision(engine_precision: &Precision, search_is_partial: bool) -> Precision {
-    if !search_is_partial {
-        return engine_precision.clone();
-    }
-    Precision {
-        coverage: CoverageTier::Partial {
-            gaps: vec![KnownGap::BudgetExhausted {
-                strategy: "scoped_search_focus_warming".to_string(),
-                remaining: 0,
-            }],
-        },
-        confidence: engine_precision.confidence.max(SemanticConfidence::Medium),
-    }
 }
 
 impl ToolRouter {
@@ -254,15 +237,6 @@ impl ToolRouter {
         };
         response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
         response["capability_mask"] = json!(engine_resp.capability_mask.bits());
-        // Map Precision → public precision contract.
-        // Unavailable (Manifest + Low) means no data at all → omit the field entirely.
-        if !engine_resp.precision.is_unavailable() || search_is_partial {
-            let public_precision =
-                search_public_precision(&engine_resp.precision, search_is_partial);
-            response["precision"] =
-                serde_json::to_value(precision_to_view(&public_precision)).unwrap_or(json!(null));
-        }
-
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
         let mut lr = AnalysisEnvelope::new("search", args)
@@ -594,29 +568,5 @@ impl ToolRouter {
             "error": hint,
             "candidates": candidates_json,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn partial_search_public_precision_never_reports_repo_complete() {
-        let public_precision = search_public_precision(&Precision::best(), true);
-        assert!(matches!(
-            public_precision.coverage,
-            CoverageTier::Partial { .. }
-        ));
-        assert_eq!(public_precision.confidence, SemanticConfidence::Certain);
-    }
-
-    #[test]
-    fn complete_search_public_precision_preserves_engine_precision() {
-        let public_precision = search_public_precision(&Precision::best(), false);
-        assert!(matches!(
-            public_precision.coverage,
-            CoverageTier::RepoComplete
-        ));
     }
 }

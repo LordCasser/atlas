@@ -36,14 +36,24 @@ impl ToolRouter {
 
         let mut lr = AnalysisEnvelope::new("lifecycle", args);
         let query_id = lr.query_id().to_string();
+        let (focus_result, focus_warnings) =
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: symbol.clone(),
+                file_id: self.resolve_selector_file_id(&input),
+                symbol_id: None,
+                direction: None,
+                depth: None,
+            }));
+        if let Some(ref result) = focus_result {
+            lr = crate::tools::apply_focus_result_to_lr(lr, result);
+        }
+        if !focus_warnings.is_empty() {
+            lr = lr.with_lazy_warnings(focus_warnings);
+        }
 
         // Resolve symbol to SymbolId
-        let sid = match self.resolve_graph_symbol_with_focus_retry(
-            &input,
-            SymbolResolutionPolicy::BestEffortSingle,
-            None,
-            None,
-        ) {
+        let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)
+        {
             Ok(SymbolResolution::Single { symbol_id, .. }) => symbol_id,
             Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
                 return super::format_ambiguous_error(&candidates, &symbol);
@@ -62,24 +72,6 @@ impl ToolRouter {
             }
             Err(e) => return (e, true),
         };
-
-        // Ensure structural data is available (may trigger lazy extraction)
-        if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&sid) {
-            let (focus_result, focus_warnings) =
-                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
-                    symbol_name: sym.name.clone(),
-                    file_id: Some(sym.file_id),
-                    symbol_id: None,
-                    direction: None,
-                    depth: None,
-                }));
-            if let Some(ref result) = focus_result {
-                lr = crate::tools::apply_focus_result_to_lr(lr, result);
-            }
-            if !focus_warnings.is_empty() {
-                lr = lr.with_lazy_warnings(focus_warnings);
-            }
-        }
 
         // Load CFG nodes for this function, with lazy CFG fallback
         let store = self.project().store.clone();

@@ -151,9 +151,7 @@ fn focus_context_triggers_lazy_extraction() {
             // Valid states: "building", "usable_partial", "ready"
             // All are acceptable — focus may have completed or be in progress
         }
-        if let Some(precision) = ctx_resp.get("precision") {
-            eprintln!("Focus precision: {precision}");
-        }
+        assert!(ctx_resp.get("precision").is_none());
     }
 
     // 4. Second call — verify no crash (cache/refresh behavior)
