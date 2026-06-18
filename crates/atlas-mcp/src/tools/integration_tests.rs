@@ -565,24 +565,52 @@ mod focus_tests {
 
         let focus_router = ToolRouter::new_empty(focus_store.clone(), root.clone());
         focus_router.init_focus();
+        focus_router
+            .ensure_graph_initialized()
+            .expect("initialize empty focus graph");
 
-        let intent = atlas_engine::QueryIntent::Calls {
-            symbol_name: symbol_name.clone(),
-            file_id: Some(seed_file_id),
-            symbol_id: None,
-            direction: None,
-            depth: None,
-        };
-
-        let (focus_opt, warnings) = focus_router.prepare_focus_query(Some(intent));
+        // Enter through the cold calls handler. It must prepare one focus
+        // closure, make its graph writes visible, and eventually terminate.
+        let (cold_response, cold_error) = focus_router.handle_calls(&json!({
+            "symbol": {"qualified_name": symbol_name, "file_path": gt.file},
+            "direction": "outgoing",
+        }));
+        assert!(!cold_error, "cold focus calls failed: {cold_response}");
+        let mut cold_calls = parse_json(&cold_response);
+        for _ in 0..100 {
+            if cold_calls["analysis"].get("retry_after_ms").is_none() {
+                break;
+            }
+            let query_id = cold_calls["query_id"]
+                .as_str()
+                .expect("retryable calls response must carry query_id");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let (resumed, resume_error) =
+                focus_router.handle_resume_query(&json!({"query_id": query_id}));
+            assert!(!resume_error, "resume_query failed: {resumed}");
+            cold_calls = parse_json(&resumed);
+        }
         assert!(
-            focus_opt.is_some(),
-            "Focus prepare failed for {symbol_name}. Warnings: {warnings:?}\n\
-             The bootstrap may not have discovered the file. \
-             Check that examples/python_example/ source files exist."
+            cold_calls["analysis"].get("retry_after_ms").is_none(),
+            "cold focus calls did not converge: {cold_calls}"
+        );
+        assert!(
+            cold_calls["total_callees"].as_u64().unwrap_or(0) > 0,
+            "terminal cold focus response lost materialized call edges: {cold_calls}"
         );
 
-        let focus_result = focus_opt.unwrap();
+        let query_id = cold_calls["query_id"]
+            .as_str()
+            .expect("calls response must carry query_id");
+        let focus_result = focus_router
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get(query_id)
+            .and_then(|snapshot| snapshot.focus_result.clone())
+            .expect("calls snapshot must retain its focus result");
         println!(
             "Focus: mode={:?}, built_files={}, precision={:?}",
             focus_result.mode,
@@ -595,9 +623,6 @@ mod focus_tests {
             atlas_engine::focus::runtime::IndexMode::Focus,
             "Expected Focus mode"
         );
-
-        // After prepare_focus_query, refresh the graph.
-        let _ = focus_router.ensure_graph_initialized();
 
         // ── Phase 3: Multi-dimensional comparison ──────────────────────
 
@@ -655,7 +680,24 @@ mod focus_tests {
                 }
                 println!("  [B] Focus callees returned error: {msg:.200} (acceptable)");
             } else {
-                let focus_callee = parse_json(&focus_resp);
+                let mut focus_callee = parse_json(&focus_resp);
+                for _ in 0..100 {
+                    if focus_callee["analysis"].get("retry_after_ms").is_none() {
+                        break;
+                    }
+                    let query_id = focus_callee["query_id"]
+                        .as_str()
+                        .expect("retryable calls response must carry query_id");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    let (resumed, resume_error) =
+                        focus_router.handle_resume_query(&json!({"query_id": query_id}));
+                    assert!(!resume_error, "resume_query failed: {resumed}");
+                    focus_callee = parse_json(&resumed);
+                }
+                assert!(
+                    focus_callee["analysis"].get("retry_after_ms").is_none(),
+                    "focus calls response did not converge: {focus_callee}"
+                );
                 if focus_callee
                     .get("is_error")
                     .and_then(|v| v.as_bool())
