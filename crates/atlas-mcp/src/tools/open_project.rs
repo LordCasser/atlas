@@ -37,6 +37,20 @@ impl ToolRouter {
     pub(crate) fn handle_open_project(&self, args: &serde_json::Value) -> (String, bool) {
         match prepare_project(args) {
             Ok(prepared) => {
+                let starts_new_session = self
+                    .project
+                    .get()
+                    .map(|active| active.root != prepared.project_root)
+                    .unwrap_or(true);
+                if starts_new_session && let Err(e) = prepared.store.reset_focus_session_state() {
+                    let error =
+                        open_error(&format!("Failed to reset stale focus session state: {e:#}"));
+                    return (
+                        serde_json::to_string_pretty(&error)
+                            .unwrap_or_else(|serialize_error| serialize_error.to_string()),
+                        true,
+                    );
+                }
                 let result = serde_json::to_string_pretty(&prepared.result)
                     .unwrap_or_else(|e| e.to_string());
                 self.activate_project(prepared.project_root, prepared.store);

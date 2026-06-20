@@ -7,7 +7,7 @@ use std::sync::Arc;
 fn bench_call_tool_dispatch(c: &mut Criterion) {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
-    let mut router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
+    let router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
     let ctx = ToolCallContext::empty();
 
     c.bench_function("dispatch_project_status", |b| {

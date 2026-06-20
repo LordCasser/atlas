@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -13,29 +12,6 @@ use super::runtime::{
     invalidation::RuntimeInvalidation, job_runtime::JobRuntime, overlay_runtime::OverlayRuntime,
     query_runtime::QueryRuntime, store_query_runtime::StoreQueryRuntime,
 };
-
-/// State for background sync coordination.
-///
-/// Shared between the MCP request path (probe + overlay gate) and
-/// the background sync thread.
-#[derive(Debug)]
-pub struct SyncState {
-    /// True while a background sync is in progress.
-    /// Overlay mutations check this before writing.
-    pub in_progress: AtomicBool,
-    /// Unix epoch seconds of the last filesystem change probe.
-    /// Used to enforce cooldown between probes.
-    pub last_probe: AtomicU64,
-}
-
-impl SyncState {
-    pub fn new() -> Self {
-        Self {
-            in_progress: AtomicBool::new(false),
-            last_probe: AtomicU64::new(0),
-        }
-    }
-}
 
 /// The active project aggregate.
 ///
@@ -55,7 +31,6 @@ pub struct ActiveProject {
     pub overlay_runtime: OverlayRuntime,
     pub store_query_runtime: StoreQueryRuntime,
     pub job_runtime: JobRuntime,
-    pub sync_state: Arc<SyncState>,
 }
 
 impl ActiveProject {
@@ -92,39 +67,9 @@ impl ActiveProject {
             overlay_runtime: OverlayRuntime::new(store.clone(), invalidation),
             store_query_runtime,
             job_runtime: JobRuntime::new(),
-            sync_state: Arc::new(SyncState::new()),
             engine: Mutex::new(engine),
             store,
             root,
         }))
-    }
-}
-
-#[cfg(test)]
-mod sync_state_tests {
-    use super::*;
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn sync_state_initial_values() {
-        let state = SyncState::new();
-        assert!(!state.in_progress.load(Ordering::Relaxed));
-        assert_eq!(state.last_probe.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn sync_state_toggle() {
-        let state = SyncState::new();
-        state.in_progress.store(true, Ordering::Relaxed);
-        assert!(state.in_progress.load(Ordering::Relaxed));
-        state.in_progress.store(false, Ordering::Relaxed);
-        assert!(!state.in_progress.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn sync_state_last_probe_update() {
-        let state = SyncState::new();
-        state.last_probe.store(42, Ordering::Relaxed);
-        assert_eq!(state.last_probe.load(Ordering::Relaxed), 42);
     }
 }

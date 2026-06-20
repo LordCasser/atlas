@@ -207,15 +207,6 @@ impl ServerHandler for AtlasMcpService {
         let mode = execution_mode(&contract);
 
         async move {
-            // ── Layer 1 probe: detect external file changes ─────────
-            // Non-blocking: checks cooldown, detects changes via git/DB,
-            // spawns background sync if needed. Safe to call without
-            // project for StatusRead tools (probe returns early if no
-            // project or no full index).
-            if self.router.project.is_active() {
-                self.router.probe_external_changes_if_due();
-            }
-
             // ── Special case: tasks tool with task_id ──────────────────
             // Handled here because TaskManager lives at the service level,
             // not inside ToolRouter.
@@ -294,7 +285,10 @@ impl ServerHandler for AtlasMcpService {
             tracing::info!(parent: &_span, "request handled");
             let result = Ok(Self::to_rmcp_result(tool_result));
 
-            // Wait for the progress notification task to finish (receiver dropped).
+            // Close the request-scoped sender before awaiting the forwarder.
+            // Otherwise a sync request carrying a progress token waits forever
+            // for a receiver that cannot observe channel closure.
+            drop(ctx);
             if let Some(handle) = _progress_task {
                 let _ = handle.await;
             }

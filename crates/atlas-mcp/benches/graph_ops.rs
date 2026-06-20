@@ -9,7 +9,7 @@ fn bench_graph_init(c: &mut Criterion) {
 
     c.bench_function("graph_initialize_empty", |b| {
         b.iter(|| {
-            let mut router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
+            let router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
             router.ensure_graph_initialized().unwrap();
         })
     });
@@ -18,7 +18,7 @@ fn bench_graph_init(c: &mut Criterion) {
 fn bench_maybe_refresh_noop(c: &mut Criterion) {
     let store = Arc::new(Store::open_in_memory().unwrap());
     store.init_schema().unwrap();
-    let mut router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
+    let router = ToolRouter::new_empty(store.clone(), "/tmp/bench".into());
     router.ensure_graph_initialized().unwrap();
 
     // Ensure last_signature_check is in cooldown window
