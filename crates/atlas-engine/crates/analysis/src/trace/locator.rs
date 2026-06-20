@@ -49,7 +49,10 @@ impl Locator {
         let resolved_symbol = match &reference {
             Some(r) => match &r.resolved {
                 Some(rt) => store.find_symbol_by_id(&rt.symbol_id)?,
-                None => None,
+                None => match store.find_latest_visible_reference_target(&r.id)? {
+                    Some(symbol_id) => store.find_symbol_by_id(&symbol_id)?,
+                    None => None,
+                },
             },
             None => None,
         };

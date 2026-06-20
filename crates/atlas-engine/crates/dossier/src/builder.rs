@@ -5,7 +5,7 @@
 //! file context, and recommended next queries.
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::traits::{FileFactsRepository, RelationRepository, SourceRepository, SymbolRepository};
 use super::types::*;
@@ -380,7 +380,6 @@ fn build_relation_groups(
     warnings: &mut Vec<String>,
 ) -> RelationGroups {
     let non_call_kinds: &[InternalRelationKind] = &[
-        InternalRelationKind::References,
         InternalRelationKind::Implements,
         InternalRelationKind::Extends,
         InternalRelationKind::Instantiates,
@@ -412,13 +411,17 @@ fn build_relation_groups(
 
     // Group by InternalRelationKind
     let mut grouped: HashMap<InternalRelationKind, Vec<RelationEntry>> = HashMap::new();
+    let mut seen_peers = HashSet::new();
 
     for ev in all_evidence {
-        // For relation evidence, the "other" symbol is the one that is NOT
-        // the subject. Since we don't have the subject ID here, we use
-        // target_id as the peer (works for most relation types where the
-        // subject is the source of the relation).
-        let peer_id = ev.target_id;
+        let peer_id = if ev.source_id == *symbol_id {
+            ev.target_id
+        } else {
+            ev.source_id
+        };
+        if !seen_peers.insert((ev.relation_kind, peer_id)) {
+            continue;
+        }
         let peer_sym = match sym_repo.get_symbol_by_id(&peer_id).ok().flatten() {
             Some(s) => s,
             None => continue,
@@ -511,7 +514,6 @@ fn build_relation_groups(
         })
     };
 
-    let references_type = take_group(InternalRelationKind::References);
     let implements = take_group(InternalRelationKind::Implements);
     let extends = take_group(InternalRelationKind::Extends);
     let instantiates = take_group(InternalRelationKind::Instantiates);
@@ -532,7 +534,6 @@ fn build_relation_groups(
     }
 
     RelationGroups {
-        references_type,
         implements,
         extends,
         instantiates,
@@ -563,6 +564,8 @@ fn build_file_context(
                     vec!["*".to_string()]
                 } else if let Some(alias) = &imp.alias {
                     vec![alias.clone()]
+                } else if imp.imported_name.is_empty() {
+                    Vec::new()
                 } else {
                     vec![imp.imported_name.clone()]
                 }
@@ -669,7 +672,8 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use types::{
-        Confidence, FileId, ImportDef, Language, SymbolDef, SymbolId, SymbolKind, TextRange,
+        Confidence, FileId, ImportDef, ImportId, ImportKind, Language, SymbolDef, SymbolId,
+        SymbolKind, TextRange,
     };
 
     use super::super::traits::{
@@ -1055,6 +1059,33 @@ mod tests {
     }
 
     #[test]
+    fn file_context_does_not_serialize_empty_import_symbol() {
+        let file = fid("src/main.c");
+        let sym = make_symbol("main", "main", sid(&file, "main", "function"), file);
+        let sym_repo = MockSymbolRepo::new();
+        let file_repo = MockFileFactsRepo::new();
+        file_repo.imports.borrow_mut().insert(
+            file,
+            vec![ImportDef {
+                id: ImportId::generate(&file, "include", "linux/kernel.h", None, 0),
+                file_id: file,
+                kind: ImportKind::Include,
+                module: "linux/kernel.h".into(),
+                imported_name: String::new(),
+                local_name: None,
+                is_wildcard: false,
+                is_relative: false,
+                range: tr(0, 0, 0, 0),
+                alias: None,
+            }],
+        );
+
+        let context = build_file_context(&sym, "src/main.c", &sym_repo, &file_repo, 12).unwrap();
+        assert_eq!(context.imports.len(), 1);
+        assert!(context.imports[0].symbols.is_empty());
+    }
+
+    #[test]
     fn build_ambiguous_returns_correct_candidates() {
         let candidates = vec![
             SymbolCandidate {
@@ -1253,6 +1284,62 @@ mod tests {
         assert_eq!(dossier.call_evidence.outgoing.total, 1);
         assert_eq!(dossier.call_evidence.outgoing.examples.len(), 1);
         assert_eq!(dossier.call_evidence.outgoing.examples[0].symbol.name, "h");
+    }
+
+    #[test]
+    fn semantic_relations_use_opposite_endpoint_and_deduplicate_examples() {
+        let file = fid("src/subject.ts");
+        let subject_id = sid(&file, "Subject.run", "function");
+        let subject = make_symbol("run", "Subject.run", subject_id, file);
+        let peer_file = fid("src/peer.ts");
+        let peer_id = sid(&peer_file, "Peer", "class");
+        let mut peer = make_symbol("Peer", "Peer", peer_id, peer_file);
+        peer.kind = SymbolKind::Class;
+
+        let sym_repo = MockSymbolRepo::new();
+        sym_repo.add_symbol(subject.clone());
+        sym_repo.add_symbol(peer);
+        sym_repo.add_file(file, "src/subject.ts");
+        sym_repo.add_file(peer_file, "src/peer.ts");
+
+        let evidence = RelationEvidence {
+            source_id: peer_id,
+            target_id: subject_id,
+            relation_kind: InternalRelationKind::Implements,
+            file_id: peer_file,
+            range: tr(0, 0, 0, 0),
+            confidence: Confidence::new(0.9),
+        };
+        let rel_repo = MockRelationRepo::new();
+        rel_repo
+            .incoming
+            .borrow_mut()
+            .insert(subject_id, vec![evidence.clone(), evidence]);
+        rel_repo.inc_counts.borrow_mut().insert(
+            subject_id,
+            HashMap::from([(InternalRelationKind::Implements, 2)]),
+        );
+
+        let dossier = ExploreDossierBuilder::build(
+            &subject,
+            "src/subject.ts",
+            &sym_repo,
+            &rel_repo,
+            &MockFileFactsRepo::new(),
+            &MockSourceRepo::new(),
+            &default_request(),
+            "exact".into(),
+        )
+        .unwrap();
+
+        let implementations = dossier.relation_groups.implements.as_ref().unwrap();
+        assert_eq!(implementations.total, 2);
+        assert_eq!(implementations.examples.len(), 1);
+        assert_eq!(implementations.examples[0].symbol.qualified_name, "Peer");
+        let json = serde_json::to_value(dossier.relation_groups).unwrap();
+        assert!(json.get("implements").is_some());
+        assert!(json.get("references").is_none());
+        assert!(json.get("referencesType").is_none());
     }
 
     #[test]

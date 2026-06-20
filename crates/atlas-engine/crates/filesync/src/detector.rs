@@ -96,11 +96,7 @@ pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
         }
     }
 
-    if changes.is_empty() {
-        None
-    } else {
-        Some(changes)
-    }
+    Some(changes)
 }
 
 pub(crate) fn is_supported_source_path(path: &Path) -> bool {
@@ -232,6 +228,20 @@ mod tests {
         };
         assert_eq!(changes.total(), 2);
         assert!(!changes.is_empty());
+    }
+
+    #[test]
+    fn clean_git_repository_does_not_fall_back_to_hash_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let changes = detect_git_changes(dir.path()).expect("git status should be authoritative");
+        assert!(changes.is_empty());
     }
 
     #[test]

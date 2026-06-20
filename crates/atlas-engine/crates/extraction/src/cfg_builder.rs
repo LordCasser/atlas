@@ -969,7 +969,7 @@ impl CfgContext<'_> {
         let if_node = &children[idx];
 
         // 1. Create Branch node, connect from previous
-        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte, None);
+        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte, Some(if_node));
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &branch_id, CfgEdgeKind::Normal);
         }
@@ -1060,7 +1060,7 @@ impl CfgContext<'_> {
         let loop_node = &children[idx];
 
         // 1. Create Loop node, connect from previous
-        let loop_id = self.add_node(CfgNodeKind::Loop, start_byte, None);
+        let loop_id = self.add_node(CfgNodeKind::Loop, start_byte, Some(loop_node));
         if let Some(prev) = self.prev_node_id.take() {
             self.add_edge(&prev, &loop_id, CfgEdgeKind::Normal);
         }
@@ -1470,7 +1470,9 @@ mod tests {
 
     #[test]
     fn test_cfg_builder_if_else() {
-        let source = "function check(x: number) { if (x > 0) { return 1; } else { return -1; } }";
+        let source = r#"function check(x: number) {
+  if (x > 0) { return 1; } else { return -1; }
+}"#;
         let (tree, source_bytes) = parse_ts(source);
         let (func_node, func_id) = find_function(&tree, &source_bytes);
 
@@ -1480,5 +1482,11 @@ mod tests {
         let has_join = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join);
         assert!(has_branch, "Expected Branch node for if/else");
         assert!(has_join, "Expected Join node for if/else");
+        let branch = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Branch)
+            .unwrap();
+        assert_eq!(branch.stmt_range.start_line, 1);
     }
 }

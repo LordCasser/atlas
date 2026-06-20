@@ -157,9 +157,6 @@ pub struct PeerSymbol {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelationGroups {
-    /// Type reference relations (e.g. variable type annotations).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub references_type: Option<RelationGroup>,
     /// Interface/trait implementation relations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub implements: Option<RelationGroup>,
