@@ -160,7 +160,7 @@ impl FocusGraphBuilder {
                 EdgeResolution::Replace => {
                     // Write as canonical edge
                     let confidence = semantic_confidence_to_f32(&incoming_precision.confidence);
-                    let provenance = build_focus_provenance(closure_id, generation, &res);
+                    let provenance = build_focus_provenance(closure_id, generation, res);
 
                     let mut edge = RawEdge::new(
                         EdgeId::generate(

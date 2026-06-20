@@ -174,9 +174,9 @@ fn test_detect_focus_with_only_manifest_extraction() {
     store
         .upsert_file_extraction_state(
             &file_id,
-            &types::layer::MANIFEST,
+            types::layer::MANIFEST,
             "abc123",
-            &types::status::COMPLETE,
+            types::status::COMPLETE,
             CapabilityMask::default(),
         )
         .unwrap();

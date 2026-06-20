@@ -893,7 +893,7 @@ fn insert_inventory_candidate(
         Ok(metadata) if metadata.is_file() => metadata,
         _ => return Ok(None),
     };
-    let language = Language::from_path(Path::new(rel_path)).unwrap_or_else(|| Language::default());
+    let language = Language::from_path(Path::new(rel_path)).unwrap_or_default();
     let mtime = metadata
         .modified()
         .ok()

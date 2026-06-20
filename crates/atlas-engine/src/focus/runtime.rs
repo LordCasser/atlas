@@ -837,7 +837,7 @@ impl FocusRuntime {
             let sym = self
                 .store
                 .find_symbol_by_id(sym_id)?
-                .with_context(|| format!("Symbol not found: {:?}", sym_id))?;
+                .with_context(|| format!("Symbol not found: {sym_id:?}"))?;
             let seed = FocusSeed::Symbol {
                 name: sym.name.clone(),
                 kind: Some(sym.kind),

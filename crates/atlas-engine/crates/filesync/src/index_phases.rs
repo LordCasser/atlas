@@ -1241,8 +1241,7 @@ mod tests {
             .expect("query PRAGMA synchronous");
         assert_eq!(
             sync_val, 1,
-            "synchronous should be NORMAL (1) after bulk-write guard drops, got {}",
-            sync_val
+            "synchronous should be NORMAL (1) after bulk-write guard drops, got {sync_val}"
         );
 
         let fk_val: i32 = store
@@ -1250,8 +1249,7 @@ mod tests {
             .expect("query PRAGMA foreign_keys");
         assert_eq!(
             fk_val, 1,
-            "foreign_keys should be ON (1) after bulk-write guard drops, got {}",
-            fk_val
+            "foreign_keys should be ON (1) after bulk-write guard drops, got {fk_val}"
         );
     }
 
@@ -1269,7 +1267,7 @@ mod tests {
         // boundary at least once.
         let mut paths = Vec::new();
         for i in 0..60 {
-            let name = format!("file_{:03}.ts", i);
+            let name = format!("file_{i:03}.ts");
             std::fs::write(
                 dir.path().join(&name),
                 format!("export const x_{i} = {i};\n"),
@@ -1316,7 +1314,7 @@ mod tests {
 
         let mut paths = Vec::new();
         for i in 0..20 {
-            let name = format!("file_{:03}.ts", i);
+            let name = format!("file_{i:03}.ts");
             std::fs::write(
                 dir.path().join(&name),
                 format!("export const x_{i} = {i};\n"),
@@ -1356,7 +1354,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut paths = Vec::new();
         for i in 0..5 {
-            let name = format!("f_{:03}.ts", i);
+            let name = format!("f_{i:03}.ts");
             std::fs::write(
                 dir.path().join(&name),
                 format!("export const x_{i} = {i};\n"),

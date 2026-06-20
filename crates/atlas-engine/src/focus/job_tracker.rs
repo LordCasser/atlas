@@ -193,7 +193,7 @@ mod tests {
         // We need many pending to exceed cap
         let mut ids = Vec::new();
         for i in 0..10 {
-            ids.push(format!("cl_{}", i));
+            ids.push(format!("cl_{i}"));
         }
         // avg=50000, pending=10, uncapped=500000 → capped to 60000
         assert_eq!(tracker.eta_ms(&ids), 60000);

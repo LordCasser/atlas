@@ -1384,10 +1384,7 @@ mod tests {
 
         // Edge 0 has location — non-NULL
         let row = stmt
-            .query_row(
-                params![edges[0].id],
-                |row| Ok(row.get::<_, Option<i64>>(0)?),
-            )
+            .query_row(params![edges[0].id], |row| row.get::<_, Option<i64>>(0))
             .unwrap();
         assert!(
             row.is_some(),

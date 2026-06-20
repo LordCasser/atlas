@@ -532,6 +532,7 @@ impl ClosurePlanner {
 /// Distinguishes local from system includes per the C standard:
 /// - `#include "..."` → always relative (searches including file's directory first)
 /// - `#include <...>` → never relative (system/library include paths)
+///
 /// Compiled once, then reused for every scanned C file. Avoids per-call
 /// re-compilation of a static regex pattern.
 static QUOTE_INCLUDE_RE: LazyLock<Regex> =

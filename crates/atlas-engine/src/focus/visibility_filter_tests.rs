@@ -369,7 +369,7 @@ fn test_rust_pub_crate_same_crate_visible() {
     let filter = RustVisibilityFilter;
     let context = VisibilityContext {
         from_file: other_fid,
-        from_crate_root: Some(dir.clone()),
+        from_crate_root: Some(dir),
         target_crate_root: Some(dir),
     };
     assert!(

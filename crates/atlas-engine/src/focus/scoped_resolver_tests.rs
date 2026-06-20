@@ -317,7 +317,7 @@ fn test_make_resolutions_visible() {
 
     // Now visible
     let visible = store
-        .get_visible_resolution(&ref_to_greet.id.as_bytes().to_vec(), "cl_visible")
+        .get_visible_resolution(ref_to_greet.id.as_bytes().as_ref(), "cl_visible")
         .unwrap();
     assert_eq!(visible.len(), 1);
     assert!(visible[0].is_visible);

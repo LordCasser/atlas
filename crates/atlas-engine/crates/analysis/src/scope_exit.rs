@@ -487,8 +487,7 @@ mod tests {
             SemanticEffectKind::Free { callee, .. } => {
                 assert!(
                     callee.contains("<scope-exit>"),
-                    "callee should contain <scope-exit> prefix, got: {}",
-                    callee
+                    "callee should contain <scope-exit> prefix, got: {callee}"
                 );
             }
             _ => panic!("expected Free effect"),
@@ -554,8 +553,7 @@ mod tests {
             SemanticEffectKind::Free { callee, .. } => {
                 assert!(
                     callee.contains("<block-exit>"),
-                    "callee should contain <block-exit> prefix, got: {}",
-                    callee
+                    "callee should contain <block-exit> prefix, got: {callee}"
                 );
             }
             _ => panic!("expected Free effect"),
@@ -747,8 +745,7 @@ mod tests {
             SemanticEffectKind::Free { callee, .. } => {
                 assert!(
                     callee.contains("<block-exit>"),
-                    "callee should contain <block-exit> prefix, got: {}",
-                    callee
+                    "callee should contain <block-exit> prefix, got: {callee}"
                 );
             }
             _ => panic!("expected Free effect"),
@@ -862,8 +859,7 @@ mod tests {
             SemanticEffectKind::Free { callee, .. } => {
                 assert!(
                     callee.contains("<block-exit>"),
-                    "callee should contain <block-exit> prefix, got: {}",
-                    callee
+                    "callee should contain <block-exit> prefix, got: {callee}"
                 );
             }
             _ => panic!("expected Free effect"),

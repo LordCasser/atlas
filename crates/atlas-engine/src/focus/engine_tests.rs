@@ -2375,8 +2375,7 @@ fn test_graph_builder_preserves_existing_edges() {
     for id_a in &edge_ids_after_a {
         assert!(
             edges_after_b.iter().any(|e| e.id == *id_a),
-            "edge {:?} from closure A must survive closure B (EdgeConflictPolicy::Keep)",
-            id_a
+            "edge {id_a:?} from closure A must survive closure B (EdgeConflictPolicy::Keep)"
         );
     }
 

@@ -143,11 +143,10 @@ impl VisibilityFilter for TypeScriptVisibilityFilter {
         if symbol.exported {
             return true;
         }
-        match symbol.visibility {
-            Some(Visibility::Public) => true,
-            Some(Visibility::Protected) => true,
-            _ => false,
-        }
+        matches!(
+            symbol.visibility,
+            Some(Visibility::Public) | Some(Visibility::Protected)
+        )
     }
 
     fn language(&self) -> Language {
@@ -252,9 +251,9 @@ impl VisibilityFilterRegistry {
 
         // Permissive fallback for all remaining languages
         for lang in Language::all() {
-            if !filters.contains_key(&lang) {
-                filters.insert(lang, Box::new(PermissiveVisibilityFilter::new(lang)));
-            }
+            filters
+                .entry(lang)
+                .or_insert_with(|| Box::new(PermissiveVisibilityFilter::new(lang)));
         }
 
         Self { filters }

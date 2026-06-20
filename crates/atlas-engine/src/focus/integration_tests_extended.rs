@@ -218,7 +218,7 @@ mod tests {
     /// Verify the edge conflict resolution chain:
     /// 1. Certain edge → Low confidence incoming → Keep (Certain immutable)
     /// 2. Certain edge → High confidence incoming → Keep (Certain immutable)
-    /// Certain edges are never overwritable regardless of incoming coverage.
+    ///    Certain edges are never overwritable regardless of incoming coverage.
     #[test]
     fn test_e2e_edge_conflict_chain() {
         let certain_existing = Precision {

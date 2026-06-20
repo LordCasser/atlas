@@ -163,10 +163,7 @@ fn assert_canonical_edge_exists(
         .unwrap();
     assert!(
         edge.is_some(),
-        "expected canonical edge {:?} -> {:?} ({:?}), but none found",
-        source,
-        target,
-        kind
+        "expected canonical edge {source:?} -> {target:?} ({kind:?}), but none found"
     );
 }
 
@@ -177,10 +174,7 @@ fn assert_no_canonical_edge(store: &Store, source: &SymbolId, target: &SymbolId,
         .unwrap();
     assert!(
         edge.is_none(),
-        "expected NO canonical edge {:?} -> {:?} ({:?}), but one was found",
-        source,
-        target,
-        kind
+        "expected NO canonical edge {source:?} -> {target:?} ({kind:?}), but one was found"
     );
 }
 

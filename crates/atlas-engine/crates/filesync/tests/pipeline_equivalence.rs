@@ -648,8 +648,7 @@ export function multiply(a: number, b: number): number {\n\
             .any(|(id_b, hash_b)| id_a == id_b && hash_a == hash_b);
         assert!(
             found,
-            "missing summary match for file {:?} hash {}",
-            id_a, hash_a
+            "missing summary match for file {id_a:?} hash {hash_a}"
         );
     }
 
@@ -751,9 +750,7 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
         .unwrap_or(0);
     assert!(
         gen2 > gen1,
-        "resolution generation should be bumped after second run (gen1={}, gen2={})",
-        gen1,
-        gen2,
+        "resolution generation should be bumped after second run (gen1={gen1}, gen2={gen2})",
     );
 
     // The config hash stored after second run should match the new config.
