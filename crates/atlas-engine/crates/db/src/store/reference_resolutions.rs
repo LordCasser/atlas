@@ -219,10 +219,20 @@ impl Store {
     ) -> anyhow::Result<Vec<ClosureResolution>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT reference_id, target_symbol_id, coverage_tier, semantic_confidence,
-                    resolution_strategy, resolution_scope, provenance
-             FROM reference_resolutions
-             WHERE closure_id = ?1 AND is_visible = 1 AND target_symbol_id IS NOT NULL",
+            "WITH latest AS (
+                 SELECT reference_id, MAX(id) AS id
+                 FROM reference_resolutions
+                 WHERE closure_id = ?1
+                   AND is_visible = 1
+                   AND target_symbol_id IS NOT NULL
+                 GROUP BY reference_id
+             )
+             SELECT current.reference_id, current.target_symbol_id,
+                    current.coverage_tier, current.semantic_confidence,
+                    current.resolution_strategy, current.resolution_scope,
+                    current.provenance
+             FROM latest
+             JOIN reference_resolutions current ON current.id = latest.id",
         )?;
         let rows = stmt.query_map(params![closure_id], |row| {
             Ok(ClosureResolution {
@@ -298,6 +308,33 @@ impl Store {
         )?;
         let rows = stmt.query_map(
             params![closure_id, target_symbol_id, reference_kind],
+            |row| row.get(0),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Get source symbols that call any target defined in a file within a
+    /// closure. This is the batched counterpart to per-symbol incoming graph
+    /// expansion and reads staged rows during fixed-point planning.
+    pub fn get_callers_for_target_file_in_closure(
+        &self,
+        closure_id: &str,
+        target_file_id: &FileId,
+        reference_kind: ReferenceKind,
+    ) -> anyhow::Result<Vec<Vec<u8>>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT r.source_symbol
+             FROM reference_resolutions rr
+             JOIN \"references\" r ON rr.reference_id = r.reference_id
+             JOIN symbols target ON rr.target_symbol_id = target.symbol_id
+             WHERE rr.closure_id = ?1
+               AND target.file_id = ?2
+               AND r.kind = ?3
+               AND r.source_symbol IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(
+            params![closure_id, target_file_id, reference_kind.as_str()],
             |row| row.get(0),
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

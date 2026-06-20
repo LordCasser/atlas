@@ -1026,6 +1026,12 @@ impl SymbolReader for Store {
     fn find_references_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ReferenceUse>> {
         Store::find_references_by_file(self, file_id)
     }
+    fn find_latest_visible_reference_target(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> anyhow::Result<Option<SymbolId>> {
+        Store::find_latest_visible_reference_target(self, reference_id)
+    }
     fn find_scopes_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<ScopeDef>> {
         Store::find_scopes_by_file(self, file_id)
     }
@@ -1415,6 +1421,38 @@ mod tests {
         assert_eq!(unresolved_calls.len(), 1);
         assert_eq!(unresolved_calls[0].id, call_ref.id);
         assert_eq!(unresolved_calls[0].name, "copy_from_user");
+
+        store.insert_closure_generation("cl_resolved_call").unwrap();
+        store
+            .insert_reference_resolution(
+                call_ref.id.as_bytes(),
+                "cl_resolved_call",
+                1,
+                "closure_reachable",
+                Some(other.id.as_bytes()),
+                "closure_complete",
+                "high",
+                "exact_match",
+                Some("focus_closure"),
+            )
+            .unwrap();
+        store
+            .make_resolutions_visible("cl_resolved_call", 1)
+            .unwrap();
+
+        assert!(
+            store
+                .find_unresolved_call_references_by_source(&src.id)
+                .unwrap()
+                .is_empty(),
+            "visible closure resolutions must not also appear as unresolved calls"
+        );
+        assert_eq!(
+            store
+                .find_latest_visible_reference_target(&call_ref.id)
+                .unwrap(),
+            Some(other.id)
+        );
     }
 
     #[test]
@@ -2138,6 +2176,89 @@ mod tests {
         assert_eq!(
             layer.1, "new_hash",
             "layer content_hash should match the new hash"
+        );
+    }
+
+    #[test]
+    fn missing_file_extraction_state_returns_none() {
+        let store = test_store();
+        let file_id = FileId::generate("src/missing.c");
+
+        assert_eq!(
+            store
+                .get_file_extraction_state(&file_id, "structural")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_call_owner_detection_ignores_global_calls() {
+        let store = test_store();
+        let file_id = FileId::generate("src/test.c");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/test.c".into(),
+                language: Language::C,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let mut function = test_symbol(file_id, "run", SymbolKind::Function);
+        function.range.start_byte = 100;
+        function.range.end_byte = 200;
+        let mut fallback = test_symbol(file_id, "global_state", SymbolKind::Struct);
+        fallback.range.start_byte = 10;
+        fallback.range.end_byte = 20;
+        store
+            .insert_symbols(&[function.clone(), fallback.clone()])
+            .unwrap();
+
+        let call_reference = |start_byte| {
+            let range = TextRange {
+                start_byte,
+                end_byte: start_byte + 6,
+                ..Default::default()
+            };
+            ReferenceUse {
+                id: ReferenceId::generate(
+                    &file_id,
+                    Some(&fallback.id),
+                    range.start_byte,
+                    range.end_byte,
+                    "helper",
+                    ReferenceKind::Call,
+                ),
+                file_id,
+                source_symbol: Some(fallback.id),
+                scope_id: None,
+                kind: ReferenceKind::Call,
+                text: "helper".into(),
+                name: "helper".into(),
+                receiver: None,
+                arity: None,
+                range,
+                binding_id: None,
+                resolved: None,
+            }
+        };
+
+        store.insert_references(&[call_reference(300)]).unwrap();
+        assert!(
+            !store
+                .file_has_non_callable_call_reference_sources(&file_id)
+                .unwrap(),
+            "a global macro call has no callable owner and must not trigger rebuilding"
+        );
+
+        store.insert_references(&[call_reference(150)]).unwrap();
+        assert!(
+            store
+                .file_has_non_callable_call_reference_sources(&file_id)
+                .unwrap(),
+            "a call inside a function owned by a struct is stale"
         );
     }
 

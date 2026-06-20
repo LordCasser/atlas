@@ -92,13 +92,45 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
             "{REFERENCE_SELECT_NO_WHERE} \
-             WHERE source_symbol = ?1 AND kind = ?2 AND resolved_symbol_id IS NULL"
+             WHERE source_symbol = ?1 AND kind = ?2 AND resolved_symbol_id IS NULL \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM reference_resolutions rr \
+                   WHERE rr.reference_id = \"references\".reference_id \
+                     AND rr.is_visible = 1 \
+                     AND rr.target_symbol_id IS NOT NULL \
+               )"
         ))?;
         let rows = stmt.query_map(
             params![source_symbol, ReferenceKind::Call.as_str()],
             row_to_reference,
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Return the newest visible closure-scoped target for a reference.
+    pub fn find_latest_visible_reference_target(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> anyhow::Result<Option<SymbolId>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT target_symbol_id
+             FROM reference_resolutions
+             WHERE reference_id = ?1
+               AND is_visible = 1
+               AND target_symbol_id IS NOT NULL
+             ORDER BY id DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![reference_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let bytes: Vec<u8> = row.get(0)?;
+        let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+            anyhow::anyhow!("invalid target_symbol_id length in reference_resolutions")
+        })?;
+        Ok(Some(SymbolId::from_bytes(bytes)))
     }
 
     /// Update the resolved target of a specific reference.
@@ -222,6 +254,35 @@ impl Store {
                 SELECT reference_id FROM "references" WHERE file_id = ?1
             )"#,
             params![file_id],
+        )?;
+        Ok(count)
+    }
+
+    /// Delete previously materialized focus edges for references resolved by
+    /// this closure. A later closure may select a better target for the same
+    /// reference; retaining the older edge would expose both as canonical.
+    pub fn delete_superseded_focus_edges(&self, closure_id: &str) -> anyhow::Result<usize> {
+        let conn = self.lock();
+        let count = conn.execute(
+            r#"WITH latest AS (
+                   SELECT reference_id, MAX(id) AS id
+                   FROM reference_resolutions
+                   WHERE closure_id = ?1
+                     AND is_visible = 1
+                     AND target_symbol_id IS NOT NULL
+                   GROUP BY reference_id
+               )
+               DELETE FROM symbol_edges
+               WHERE provenance = 'focus_closure'
+                 AND ref_id IN (SELECT reference_id FROM latest)
+                 AND NOT EXISTS (
+                     SELECT 1
+                     FROM latest
+                     JOIN reference_resolutions current ON current.id = latest.id
+                     WHERE latest.reference_id = symbol_edges.ref_id
+                       AND current.target_symbol_id = symbol_edges.target
+                 )"#,
+            params![closure_id],
         )?;
         Ok(count)
     }

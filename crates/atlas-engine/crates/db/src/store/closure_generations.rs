@@ -21,6 +21,20 @@ pub struct ClosureGeneration {
 }
 
 impl Store {
+    /// Clear focus control-plane facts from an earlier MCP session.
+    /// Query snapshots and in-flight jobs are process-local, while canonical
+    /// graph/source facts have already been materialized elsewhere.
+    pub fn reset_focus_session_state(&self) -> anyhow::Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM symbol_edge_candidates", [])?;
+        tx.execute("DELETE FROM reference_resolutions", [])?;
+        tx.execute("DELETE FROM closure_coverage", [])?;
+        tx.execute("DELETE FROM closure_generations", [])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Insert a new closure generation in 'building' state.
     pub fn insert_closure_generation(&self, closure_id: &str) -> anyhow::Result<()> {
         let conn = self.lock();
@@ -116,6 +130,38 @@ impl Store {
             counts.insert(state, count as usize);
         }
         Ok(counts)
+    }
+
+    /// Retain only the newest committed focus closures and atomically remove
+    /// their transient coverage, scoped-resolution, and candidate-edge facts.
+    /// Canonical graph edges have already been materialized and do not depend
+    /// on these rows.
+    pub fn prune_committed_closures(&self, retain: usize) -> anyhow::Result<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let old_closures = r#"
+            SELECT closure_id
+            FROM closure_generations
+            WHERE state = 'committed'
+            ORDER BY COALESCE(committed_at, created_at) DESC, rowid DESC
+            LIMIT -1 OFFSET ?1
+        "#;
+        for table in [
+            "symbol_edge_candidates",
+            "reference_resolutions",
+            "closure_coverage",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE closure_id IN ({old_closures})"),
+                params![retain as i64],
+            )?;
+        }
+        let deleted = tx.execute(
+            &format!("DELETE FROM closure_generations WHERE closure_id IN ({old_closures})"),
+            params![retain as i64],
+        )?;
+        tx.commit()?;
+        Ok(deleted)
     }
 }
 

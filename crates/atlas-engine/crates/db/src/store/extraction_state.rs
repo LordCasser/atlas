@@ -4,7 +4,7 @@
 //! extraction state queries, plus lazy dataflow persistence helpers.
 
 use super::Store;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use tracing::debug_span;
 use types::*;
 
@@ -28,20 +28,11 @@ impl Store {
             "SELECT status, content_hash FROM extraction_state
              WHERE file_id = ?1 AND unit_id IS NULL AND layer = ?2",
         )?;
-        let result: Option<(String, String)> = stmt
+        let result = stmt
             .query_row(params![file_id, layer], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
-            .map_err(|e| {
-                tracing::warn!(
-                    ?e,
-                    %file_id,
-                    %layer,
-                    "Failed to query file extraction state, returning None"
-                );
-                e
-            })
-            .ok();
+            .optional()?;
         Ok(result)
     }
 
@@ -198,7 +189,14 @@ impl Store {
                WHERE r.file_id = ?1
                  AND r.kind = 'call'
                  AND f.language IN ('c', 'cpp')
-                 AND s.kind NOT IN ('function', 'method', 'constructor')"#,
+                 AND s.kind NOT IN ('function', 'method', 'constructor')
+                 AND EXISTS (
+                     SELECT 1 FROM symbols owner
+                     WHERE owner.file_id = r.file_id
+                       AND owner.kind IN ('function', 'method', 'constructor')
+                       AND r.range_start_byte >= owner.range_start_byte
+                       AND r.range_start_byte < owner.range_end_byte
+                 )"#,
             params![file_id],
             |row| row.get(0),
         )?;

@@ -443,3 +443,37 @@ fn test_resolution_coverage_tier_variants() {
         );
     }
 }
+
+#[test]
+fn test_closure_materialization_uses_latest_visible_resolution_per_reference() {
+    let store = test_store();
+    let ref_id = make_ref_id("changing_target");
+    let old_target = vec![1_u8; 32];
+    let new_target = vec![2_u8; 32];
+    store.insert_closure_generation("cl_latest").unwrap();
+
+    for (generation, target) in [(0, &old_target), (1, &new_target)] {
+        store
+            .insert_reference_resolution(
+                &ref_id,
+                "cl_latest",
+                generation,
+                "boundary",
+                Some(target),
+                "boundary",
+                "certain",
+                "name_only",
+                None,
+            )
+            .unwrap();
+        store
+            .make_resolutions_visible("cl_latest", generation)
+            .unwrap();
+    }
+
+    let materialized = store
+        .get_visible_resolutions_for_closure("cl_latest")
+        .unwrap();
+    assert_eq!(materialized.len(), 1);
+    assert_eq!(materialized[0].target_symbol_id, new_target);
+}

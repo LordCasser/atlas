@@ -48,6 +48,10 @@ pub trait SymbolReader {
     fn find_symbols_by_name(&self, name: &str) -> Result<Vec<SymbolDef>>;
 
     fn find_references_by_file(&self, file_id: &FileId) -> Result<Vec<ReferenceUse>>;
+    fn find_latest_visible_reference_target(
+        &self,
+        reference_id: &ReferenceId,
+    ) -> Result<Option<SymbolId>>;
     fn find_scopes_by_file(&self, file_id: &FileId) -> Result<Vec<ScopeDef>>;
     fn find_imports_by_file(&self, file_id: &FileId) -> Result<Vec<ImportDef>>;
 
