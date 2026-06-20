@@ -296,14 +296,8 @@ impl Precision {
 
 /// Compute precision for lazy dataflow extraction.
 pub fn dataflow_precision(available: usize, planned: usize, budget_exceeded: bool) -> Precision {
-    if planned == 0 {
+    if planned == 0 || available == 0 {
         Precision::worst()
-    } else if available == 0 {
-        if budget_exceeded {
-            Precision::worst()
-        } else {
-            Precision::worst()
-        }
     } else if budget_exceeded || available < planned {
         Precision {
             coverage: CoverageTier::Boundary {

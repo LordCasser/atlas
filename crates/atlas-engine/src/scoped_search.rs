@@ -233,7 +233,8 @@ impl ScopedSearchService {
             scope_file_count = inventory_scope_count;
             inventory_backed = true;
             warnings.push(
-                "Using focus file inventory because no manifest index exists yet".to_string(),
+                "Using focus file inventory for files not yet present in indexed file facts"
+                    .to_string(),
             );
         }
 

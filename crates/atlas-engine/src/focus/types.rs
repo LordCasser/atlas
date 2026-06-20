@@ -113,12 +113,6 @@ impl WindowBudget {
             max_iterations: 1,
         }
     }
-
-    /// Check if this budget can absorb the given additions.
-    pub fn can_absorb(&self, additions: &[FileId]) -> bool {
-        // Stub — will be implemented in T6 with actual time/file tracking
-        additions.len() <= self.max_files
-    }
 }
 
 // ---------------------------------------------------------------------------

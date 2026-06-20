@@ -348,6 +348,17 @@ impl LazyStructuralService {
         self.ensure_structural_for_files(&[*file_id], token)
     }
 
+    /// Ensure structural facts for a file owned by a focus closure. The
+    /// closure engine performs scoped resolution and graph materialization,
+    /// so this path must not also invoke the repo-wide incremental resolver.
+    pub fn ensure_structural_for_file_in_closure(
+        &self,
+        file_id: &FileId,
+        token: Option<&dyn CancelCheck>,
+    ) -> Result<EnsureStructuralResult> {
+        self.ensure_structural_for_files_impl(&[*file_id], token, false)
+    }
+
     /// Ensure a bounded set of files has structural facts.
     ///
     /// Query frontends use this when the user has narrowed work to a specific
@@ -541,6 +552,15 @@ impl LazyStructuralService {
         file_ids: &[FileId],
         token: Option<&dyn CancelCheck>,
     ) -> Result<EnsureStructuralResult> {
+        self.ensure_structural_for_files_impl(file_ids, token, true)
+    }
+
+    fn ensure_structural_for_files_impl(
+        &self,
+        file_ids: &[FileId],
+        token: Option<&dyn CancelCheck>,
+        build_global_graph: bool,
+    ) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
         let mut result = EnsureStructuralResult {
             files_built: 0,
@@ -579,7 +599,7 @@ impl LazyStructuralService {
             }
         }
 
-        if !result.built_file_ids.is_empty() {
+        if build_global_graph && !result.built_file_ids.is_empty() {
             self.incremental_resolve_and_build(&result.built_file_ids)?;
         }
 
@@ -1219,13 +1239,23 @@ mod tests {
         let svc = LazyStructuralService::new(store.clone(), None);
         let fid = FileId::generate("net/ipv4/tcp_ipv4.c");
         let hash = "abc123";
-        let range = TextRange {
-            start_byte: 0,
-            end_byte: 10,
+        let enum_range = TextRange {
+            start_byte: 20,
+            end_byte: 30,
             start_line: 0,
             start_column: 0,
             end_line: 0,
             end_column: 10,
+        };
+        let function_range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            ..Default::default()
+        };
+        let call_range = TextRange {
+            start_byte: 40,
+            end_byte: 50,
+            ..Default::default()
         };
         let enum_id = SymbolId::generate(
             &fid,
@@ -1242,8 +1272,36 @@ mod tests {
             symbol_path: vec!["tcp_tw_status".to_string()],
             file_id: fid,
             language: Language::C,
-            range,
-            name_range: range,
+            range: enum_range,
+            name_range: enum_range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: layer::STRUCTURAL.to_string(),
+        };
+        let function_id = SymbolId::generate(
+            &fid,
+            Language::C.as_str(),
+            "tcp_v4_rcv",
+            SymbolKind::Function.as_str(),
+            None,
+        );
+        let function_symbol = SymbolDef {
+            id: function_id,
+            kind: SymbolKind::Function,
+            name: "tcp_v4_rcv".to_string(),
+            qualified_name: "tcp_v4_rcv".to_string(),
+            symbol_path: vec!["tcp_v4_rcv".to_string()],
+            file_id: fid,
+            language: Language::C,
+            range: function_range,
+            name_range: function_range,
             signature: None,
             visibility: None,
             exported: false,
@@ -1260,8 +1318,8 @@ mod tests {
             id: ReferenceId::generate(
                 &fid,
                 Some(&enum_id),
-                range.start_byte,
-                range.end_byte,
+                call_range.start_byte,
+                call_range.end_byte,
                 &call_text,
                 ReferenceKind::Call,
             ),
@@ -1273,7 +1331,7 @@ mod tests {
             name: call_text,
             receiver: None,
             arity: None,
-            range,
+            range: call_range,
             binding_id: None,
             resolved: None,
         };
@@ -1287,7 +1345,7 @@ mod tests {
                     content_hash: hash.to_string(),
                     status: ParseStatus::Success,
                 },
-                symbols: vec![enum_symbol],
+                symbols: vec![enum_symbol, function_symbol],
                 references: vec![call_ref],
                 ..Default::default()
             })

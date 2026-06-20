@@ -719,3 +719,87 @@ fn test_visibility_filter_rust_private() {
         "internal_helper (private) should NOT be resolved from crate_b (visibility filter)"
     );
 }
+
+#[test]
+fn test_scoped_exact_fallback_excludes_test_and_non_callable_targets() {
+    let store = test_store();
+    let production_id = FileId::generate("net/socket.c");
+    let production_target = make_symbol(
+        production_id,
+        "kernel_listen",
+        "kernel_listen",
+        SymbolKind::Function,
+        Language::C,
+        None,
+    );
+    store
+        .insert_file_facts(&make_file_facts(
+            production_id,
+            "net/socket.c",
+            Language::C,
+            vec![production_target.clone()],
+            vec![],
+        ))
+        .unwrap();
+
+    let test_id = FileId::generate("tools/testing/selftests/bpf/kernel.c");
+    let test_target = make_symbol(
+        test_id,
+        "kernel_listen",
+        "kernel_listen",
+        SymbolKind::Function,
+        Language::C,
+        None,
+    );
+    store
+        .insert_file_facts(&make_file_facts(
+            test_id,
+            "tools/testing/selftests/bpf/kernel.c",
+            Language::C,
+            vec![test_target],
+            vec![],
+        ))
+        .unwrap();
+
+    let source_id = FileId::generate("net/smc/af_smc.c");
+    let caller = make_symbol(
+        source_id,
+        "smc_listen",
+        "smc_listen",
+        SymbolKind::Function,
+        Language::C,
+        None,
+    );
+    let misleading_variable = make_symbol(
+        source_id,
+        "kernel_listen",
+        "kernel_listen_variable",
+        SymbolKind::Variable,
+        Language::C,
+        None,
+    );
+    let reference = make_reference(
+        source_id,
+        "kernel_listen",
+        Some(caller.id),
+        ReferenceKind::Call,
+    );
+    store
+        .insert_file_facts(&make_file_facts(
+            source_id,
+            "net/smc/af_smc.c",
+            Language::C,
+            vec![caller, misleading_variable],
+            vec![reference],
+        ))
+        .unwrap();
+
+    insert_closure_generation(&store, "cl_production_fallback");
+    let mut resolver = ReferenceResolver::new(store.clone());
+    let (resolved, _) = resolver
+        .resolve_for_closure("cl_production_fallback", 0, &[source_id], None)
+        .unwrap();
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].1.symbol_id, production_target.id);
+}

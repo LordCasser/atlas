@@ -117,17 +117,3 @@ fn test_focus_seed_equality() {
     };
     assert_eq!(a, b);
 }
-
-#[test]
-fn test_budget_can_absorb() {
-    let budget = WindowBudget::default();
-    let additions: Vec<FileId> = (0..10)
-        .map(|i| FileId::generate(&format!("file_{i}.rs")))
-        .collect();
-    assert!(budget.can_absorb(&additions));
-
-    let too_many: Vec<FileId> = (0..31)
-        .map(|i| FileId::generate(&format!("file_{i}.rs")))
-        .collect();
-    assert!(!budget.can_absorb(&too_many));
-}

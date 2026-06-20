@@ -47,6 +47,29 @@ use crate::lazy_structural::{EnsureStructuralResult, LazyStructuralService};
 
 use super::types::{ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow};
 
+const RETAINED_COMMITTED_CLOSURES: usize = 16;
+
+fn required_resolution_kinds(strategies: &[ClosureStrategy]) -> HashSet<ReferenceKind> {
+    let mut kinds = HashSet::new();
+    for strategy in strategies {
+        match strategy {
+            ClosureStrategy::CallGraph { .. } => {
+                kinds.insert(ReferenceKind::Call);
+            }
+            ClosureStrategy::TypeGraph { .. } => {
+                kinds.extend([
+                    ReferenceKind::Usage,
+                    ReferenceKind::TypeReference,
+                    ReferenceKind::Inheritance,
+                    ReferenceKind::Implementation,
+                ]);
+            }
+            ClosureStrategy::ImportNeighborhood { .. } | ClosureStrategy::SameDirectory => {}
+        }
+    }
+    kinds
+}
+
 /// Engine for building focus closures around a user's seed.
 ///
 /// Implements bounded fixed-point iteration: plan → extract → resolve → plan
@@ -98,6 +121,8 @@ impl ClosureEngine {
 
         let mut closure = FocusClosure::new(&window.seed);
         let mut iteration: u32 = 0;
+        let mut expanded_files: usize = 0;
+        let resolution_kinds = required_resolution_kinds(&window.strategies);
 
         // Phase 1: locate and extract seed file(s)
         let seed_files = self.locate_seed(&window.seed)?;
@@ -115,6 +140,12 @@ impl ClosureEngine {
                 break;
             }
             let result = self.extract_file(file_id)?;
+            tracing::debug!(
+                closure_id,
+                file_id = %file_id,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "focus seed structural facts ready"
+            );
             closure.mark_extracted(*file_id, &result.precision);
 
             // Populate closure symbols from the extracted file so graph-based
@@ -149,15 +180,22 @@ impl ClosureEngine {
             let visibility_filter = self.build_visibility_filter(&closure.files);
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
                 visibility_filter.as_deref();
-            self.resolver.borrow_mut().resolve_for_closure(
+            self.resolver.borrow_mut().resolve_for_closure_kinds(
                 closure_id,
                 0, // generation 0 = seed resolution
                 &seed_files,
                 filter_ref,
+                Some(&resolution_kinds),
             )?;
             for f in &seed_files {
                 previously_resolved.insert(*f);
             }
+            tracing::debug!(
+                closure_id,
+                reference_kinds = resolution_kinds.len(),
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "focus seed scoped resolution complete"
+            );
         }
 
         // Phase 2: pre-compute TypeGraph expansion (single-pass, not iterative).
@@ -207,18 +245,37 @@ impl ClosureEngine {
             } else {
                 self.plan_additions(&window.strategies, &closure, closure_id)?
             };
+            tracing::debug!(
+                closure_id,
+                iteration,
+                additions = additions.len(),
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "focus expansion plan ready"
+            );
 
             if additions.is_empty() {
                 break; // fixed point reached
             }
 
-            // Budget check
-            if !window.budget.can_absorb(&additions) || additions.len() > window.budget.max_files {
+            // Consume as much of the deterministic plan as the remaining file
+            // budget permits. Rejecting an oversized plan wholesale leaves a
+            // useful closure stuck at its seed even though capacity remains.
+            let remaining_capacity = window.budget.max_files.saturating_sub(expanded_files);
+            if remaining_capacity == 0 {
                 closure.record_gap(KnownGap::BudgetExhausted {
                     strategy: format!("iteration {iteration}"),
                     remaining: additions.len(),
                 });
                 break;
+            }
+            let mut additions = additions;
+            let budget_truncated = additions.len() > remaining_capacity;
+            if budget_truncated {
+                closure.record_gap(KnownGap::BudgetExhausted {
+                    strategy: format!("iteration {iteration}"),
+                    remaining: additions.len() - remaining_capacity,
+                });
+                additions.truncate(remaining_capacity);
             }
 
             // Filter: only files not already visited
@@ -230,6 +287,7 @@ impl ClosureEngine {
             if new_files.is_empty() {
                 break;
             }
+            expanded_files += new_files.len();
 
             // Extract new files using LazyStructuralService
             let generation = iteration as i64;
@@ -242,7 +300,16 @@ impl ClosureEngine {
                     });
                     break;
                 }
+                let file_started_at = Instant::now();
                 let result = self.extract_file(file_id)?;
+                tracing::debug!(
+                    closure_id,
+                    iteration,
+                    file_id = %file_id,
+                    file_elapsed_ms = file_started_at.elapsed().as_millis() as u64,
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "focus expansion structural facts ready"
+                );
                 closure.mark_extracted(*file_id, &result.precision);
 
                 // Populate closure symbols from the extracted file
@@ -271,13 +338,20 @@ impl ClosureEngine {
                 .copied()
                 .collect();
             if !truly_new.is_empty() {
-                self.resolver.borrow_mut().resolve_for_closure(
-                    closure_id, generation, &truly_new,
+                self.resolver.borrow_mut().resolve_for_closure_kinds(
+                    closure_id,
+                    generation,
+                    &truly_new,
                     None, // no visibility filter during incremental resolution
+                    Some(&resolution_kinds),
                 )?;
                 for f in &truly_new {
                     previously_resolved.insert(*f);
                 }
+            }
+
+            if budget_truncated {
+                break;
             }
 
             // Termination check
@@ -298,11 +372,12 @@ impl ClosureEngine {
             let visibility_filter = self.build_visibility_filter(&closure.files);
             let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
                 visibility_filter.as_deref();
-            self.resolver.borrow_mut().resolve_for_closure(
+            self.resolver.borrow_mut().resolve_for_closure_kinds(
                 closure_id,
                 last_generation,
                 &closure_files,
                 filter_ref,
+                Some(&resolution_kinds),
             )?;
         } else if !closure_files.is_empty() {
             closure.record_gap(KnownGap::BudgetExhausted {
@@ -324,6 +399,8 @@ impl ClosureEngine {
             self.store
                 .make_candidate_edges_visible(closure_id, last_generation)?;
         }
+        self.store
+            .prune_committed_closures(RETAINED_COMMITTED_CLOSURES)?;
         tracing::debug!(
             closure_id = %closure_id,
             edges_built = stats.stats.edges_built,
@@ -473,19 +550,20 @@ impl ClosureEngine {
         }
 
         let mut result: HashSet<FileId> = HashSet::new();
-        let ref_kind = ReferenceKind::Call.as_str();
 
         let do_outgoing = matches!(direction, Direction::Outgoing | Direction::Both);
         let do_incoming = matches!(direction, Direction::Incoming | Direction::Both);
 
         if do_outgoing {
-            for sym_id in &closure.symbols {
-                let targets = self.store.get_resolved_targets_for_symbol_in_closure(
-                    closure_id,
-                    sym_id.as_bytes(),
-                    ref_kind,
-                )?;
-                for target_blob in &targets {
+            for file_id in &closure.files {
+                let targets = self
+                    .store
+                    .get_resolved_targets_for_file_and_kinds_in_closure(
+                        closure_id,
+                        file_id,
+                        &[ReferenceKind::Call],
+                    )?;
+                for (target_blob, _) in &targets {
                     if target_blob.len() == 32 {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(target_blob);
@@ -501,11 +579,11 @@ impl ClosureEngine {
         }
 
         if do_incoming {
-            for sym_id in &closure.symbols {
-                let callers = self.store.get_callers_for_symbol_in_closure(
+            for file_id in &closure.files {
+                let callers = self.store.get_callers_for_target_file_in_closure(
                     closure_id,
-                    sym_id.as_bytes(),
-                    ref_kind,
+                    file_id,
+                    ReferenceKind::Call,
                 )?;
                 for source_blob in &callers {
                     if source_blob.len() == 32 {
@@ -587,9 +665,10 @@ impl ClosureEngine {
             }
         }
 
-        // Dedup
-        additions.sort();
-        additions.dedup();
+        // Dedup without sorting: strategy order expresses semantic priority
+        // (e.g. imports before call-graph expansion for C/C++ visibility).
+        let mut seen = HashSet::new();
+        additions.retain(|file_id| seen.insert(*file_id));
         additions.retain(|f| !closure.visited.contains(f));
 
         Ok(additions)
@@ -602,7 +681,7 @@ impl ClosureEngine {
         let budget = LazyBudget::structural();
         let result = self
             .lazy_structural
-            .ensure_structural_for_file(file_id, Some(&budget))?;
+            .ensure_structural_for_file_in_closure(file_id, Some(&budget))?;
         Ok(result)
     }
 

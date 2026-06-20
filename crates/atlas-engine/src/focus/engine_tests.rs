@@ -18,7 +18,7 @@ use crate::LazyDataflowService;
 use crate::lazy_structural::{CandidateProvider, LazyStructuralService};
 
 use super::engine::ClosureEngine;
-use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
+use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
@@ -420,6 +420,40 @@ fn test_build_closure_budget_exhausted() {
 }
 
 #[test]
+fn test_build_closure_truncates_oversized_plan_to_budget() {
+    let store = test_store();
+    let seed_id = insert_file_structural_complete(&store, "src/main.c");
+    insert_file_structural_complete(&store, "src/other.c");
+    insert_file_structural_complete(&store, "src/another.c");
+    let engine = test_engine(store);
+
+    let closure = engine
+        .build_closure(
+            &FocusWindow {
+                seed: FocusSeed::File {
+                    file_id: seed_id,
+                    language: Language::C,
+                },
+                strategies: vec![ClosureStrategy::SameDirectory],
+                budget: WindowBudget {
+                    max_files: 1,
+                    ..WindowBudget::default()
+                },
+                language: Language::C,
+                max_iterations: 3,
+            },
+            "test-budget-truncation",
+        )
+        .unwrap();
+
+    assert_eq!(closure.files.len(), 2, "seed plus one planned file");
+    assert!(closure.gaps.iter().any(|gap| matches!(
+        gap,
+        types::structs::KnownGap::BudgetExhausted { remaining: 1, .. }
+    )));
+}
+
+#[test]
 fn test_build_closure_time_budget_records_gap() {
     let store = test_store();
     let seed_id = insert_file_structural_complete(&store, "src/main.c");
@@ -482,7 +516,10 @@ fn test_time_budget_still_materializes_seed_call_edges() {
             file_id: caller_file,
             language: Language::C,
         },
-        strategies: vec![],
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Outgoing,
+            depth: 1,
+        }],
         budget: WindowBudget {
             max_time_ms: 0,
             ..WindowBudget::default()
@@ -2492,15 +2529,17 @@ fn test_visibility_filter_c_static_excluded() {
 
     let engine = test_engine(store.clone());
 
-    // Build closure: seed on file_a. No strategies needed — the resolver
-    // uses the global symbol index (strategy 6) which includes all symbols
-    // in the store regardless of closure membership.
+    // Build a call-graph closure so call references are included in the
+    // strategy-derived scoped resolution set.
     let window = FocusWindow {
         seed: FocusSeed::File {
             file_id: file_a,
             language: Language::C,
         },
-        strategies: vec![],
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Outgoing,
+            depth: 1,
+        }],
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2583,7 +2622,10 @@ fn test_visibility_filter_rust_private_excluded() {
             file_id: file_a,
             language: Language::Rust,
         },
-        strategies: vec![],
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Outgoing,
+            depth: 1,
+        }],
         budget: WindowBudget::default(),
         language: Language::Rust,
         max_iterations: 3,
@@ -2634,7 +2676,10 @@ fn test_visibility_filter_public_visible() {
             file_id: file_a,
             language: Language::C,
         },
-        strategies: vec![],
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Outgoing,
+            depth: 1,
+        }],
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,

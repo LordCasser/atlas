@@ -24,9 +24,23 @@ should expand that region instead of treating it as an unrelated cold request.
 Expansion is always queued as background work unless an existing foreground
 budget explicitly covers it.
 
+Only refinement jobs returned in `FocusResult.pending_closure_ids` may be
+queued by a query. Files already covered by the foreground closure must not be
+fanned out into untracked per-file prewarm closures. Closure-scoped resolution,
+coverage, and candidate-edge rows are transient materialization facts; the
+store clears previous-session control-plane rows when MCP activates a project,
+then retains the newest 16 committed closures within the active session. Older
+rows are removed after their canonical graph edges have been written.
+
 Scheduler queues execute work, but they do not decide region strategy. Region
 state, boundary detection, and expansion policy belong in `FocusRuntime` so MCP
 tools get a single control-plane entry point.
+
+Bootstrap may populate an empty store, but it must not start project-wide work
+when persistent file inventory or source facts already exist. Closure resolution
+uses indexed exact-name lookup for its local fallback; it must not build the
+project-wide in-memory symbol index. Import scope, source path classification,
+and proximity roots are computed once per source file, not once per reference.
 
 ## Store Boundary
 

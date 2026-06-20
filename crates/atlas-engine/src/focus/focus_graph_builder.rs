@@ -73,6 +73,11 @@ impl FocusGraphBuilder {
             });
         }
 
+        // A reference has one canonical resolution within a committed focus
+        // view. Remove focus-derived targets selected by older closures before
+        // materializing this closure; repository-complete edges are preserved.
+        self.store.delete_superseded_focus_edges(closure_id)?;
+
         let mut canonical_edges: Vec<RawEdge> = Vec::new();
         let mut candidate_rows: Vec<CandidateEdge> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
@@ -172,6 +177,7 @@ impl FocusGraphBuilder {
                         provenance,
                     );
                     edge.ref_id = Some(reference.id);
+                    edge.location = Some(reference.range);
                     edge.resolved_by = Some(
                         ResolutionStrategy::from_str(&res.resolution_strategy)
                             .unwrap_or(ResolutionStrategy::ExactMatch),

@@ -72,6 +72,19 @@ impl BootstrapManager {
             return; // already started
         }
 
+        // Persistent project facts are already the discovery source of truth.
+        // Re-running Tier0 over the whole tree on the first query performs
+        // tens of thousands of tiny inventory writes and starves foreground
+        // SQLite readers. Scoped queries enrich these facts on demand; an
+        // explicit CLI sync/index owns project-wide refresh.
+        let has_persistent_facts = self.store.file_inventory_count().unwrap_or(0) > 0
+            || self.store.count_files().unwrap_or(0) > 0;
+        if has_persistent_facts {
+            self.tier0_complete.store(true, Ordering::SeqCst);
+            self.tier1_hot_complete.store(true, Ordering::SeqCst);
+            return;
+        }
+
         let store = Arc::clone(&self.store);
         let project_root = self.project_root.clone();
         let running = Arc::clone(&self.running);

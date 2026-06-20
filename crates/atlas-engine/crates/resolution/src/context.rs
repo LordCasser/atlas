@@ -166,10 +166,9 @@ impl GlobalSymbolIndex {
     }
 
     /// Same as [`find_exact_name_target`], but prioritizes candidates within
-    /// `preferred_file_ids`.  When the candidate set is small (< 50) or the
-    /// preferred set is empty this delegates straight to the original method
-    /// with zero overhead.  Otherwise it scans only preferred files first;
-    /// if an exact match is found there the global scan is skipped entirely.
+    /// `preferred_file_ids`. When the preferred set is empty this delegates to
+    /// the original method. Otherwise it scans preferred files first; if an
+    /// exact match is found there the global scan is skipped entirely.
     pub fn find_exact_name_target_in_scope(
         &self,
         name: &str,
@@ -178,10 +177,10 @@ impl GlobalSymbolIndex {
     ) -> Option<ResolvedTarget> {
         let candidates = self.by_name.get(&name.to_lowercase())?;
 
-        // When the candidate set is tiny or the preferred set is empty, fall
-        // back to the original logic immediately — the overhead of a two-pass
-        // scan outweighs any benefit.
-        if candidates.len() < 50 || preferred_file_ids.is_empty() {
+        // Import scope is a correctness signal, not a large-candidate
+        // optimization. Even two same-named symbols can belong to unrelated
+        // modules, so never bypass a non-empty preferred set.
+        if preferred_file_ids.is_empty() {
             return self.find_exact_name_target(name, file_id);
         }
 
@@ -441,7 +440,7 @@ impl GlobalSymbolIndex {
     }
 }
 
-fn is_explicit_test_path(path: &str) -> bool {
+pub(crate) fn is_explicit_test_path(path: &str) -> bool {
     Path::new(path).components().any(|component| {
         component.as_os_str().to_str().is_some_and(|name| {
             matches!(
@@ -457,7 +456,7 @@ fn is_explicit_test_path(path: &str) -> bool {
 /// 0 = same parent directory (strong signal: same module/package).
 /// 1 = same top-level directory component (weak signal: same subsystem).
 /// 2 = unrelated directory trees (minimum signal).
-fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&String>) -> usize {
+pub(crate) fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&String>) -> usize {
     match (ref_parent, sym_parent) {
         (Some(r), Some(s)) => {
             if r == s {
@@ -746,6 +745,31 @@ mod tests {
 
         assert_eq!(matched.symbol_id, near.id);
         assert_eq!(matched.confidence, Confidence::certain());
+    }
+
+    #[test]
+    fn exact_name_target_honors_small_preferred_scope() {
+        let imported = test_symbol("run", "include/api/run.ts");
+        let nearby = test_symbol("run", "src/local/run.ts");
+        let ref_file = FileId::generate("src/local/caller.ts");
+        let index = test_index(
+            vec![nearby, imported.clone()],
+            [
+                (imported.file_id, "include/api"),
+                (FileId::generate("src/local/run.ts"), "src/local"),
+                (ref_file, "src/local"),
+            ],
+        );
+
+        let matched = index
+            .find_exact_name_target_in_scope(
+                "run",
+                Some(ref_file),
+                &HashSet::from([imported.file_id]),
+            )
+            .unwrap();
+
+        assert_eq!(matched.symbol_id, imported.id);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use db::Store;
+use types::FileId;
 
 use super::bootstrap::BootstrapManager;
 
@@ -173,6 +174,33 @@ fn test_bootstrap_tier0_noop_when_already_done() {
     assert!(mgr.is_minimum_ready());
     // Count should still be 1 (no duplicate)
     assert_eq!(store.file_inventory_count().unwrap(), 1);
+}
+
+#[test]
+fn test_bootstrap_skips_project_wide_work_for_persistent_inventory() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    write_file(&root, "already_known.c", "void known(void) {}");
+    write_file(&root, "must_not_be_discovered.c", "void hidden(void) {}");
+
+    let store = test_store();
+    let known_id = FileId::generate("already_known.c");
+    store
+        .insert_file_inventory(&known_id, "already_known.c", "c", 0, 20, 0, 0)
+        .unwrap();
+    let mut manager = BootstrapManager::new(store.clone(), Some(root));
+
+    manager.start();
+
+    assert!(manager.is_minimum_ready());
+    assert!(manager.is_tier1_hot_complete());
+    assert_eq!(store.file_inventory_count().unwrap(), 1);
+    assert!(
+        store
+            .find_file_inventory_by_path("must_not_be_discovered.c")
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ── Test 7: ensure_minimum_ready blocks ────────────────────────────────────

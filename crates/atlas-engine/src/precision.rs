@@ -3,12 +3,7 @@ use types::structs::{CoverageTier, Precision, SemanticConfidence, SymbolTier};
 /// Compute the precision for structural lazy extraction.
 pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) -> Precision {
     if built == 0 && cached == 0 {
-        if budget_exceeded {
-            // budget exceeded before any file was built
-            Precision::worst()
-        } else {
-            Precision::worst()
-        }
+        Precision::worst()
     } else if budget_exceeded {
         if built == 0 {
             // budget exceeded before any file was built (but some were cached)

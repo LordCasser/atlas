@@ -218,7 +218,56 @@ fn test_build_for_closure_creates_canonical_edges() {
         "canonical edges should be written"
     );
     assert_canonical_edge_exists(&store, &caller.id, &target.id, EdgeKind::Calls);
+    let edge = store
+        .find_edge_by_source_target_kind(&caller.id, &target.id, &EdgeKind::Calls)
+        .unwrap()
+        .unwrap();
+    assert_eq!(edge.location, Some(test_range()));
     assert_eq!(result.candidate_count, 0, "no candidates for Certain");
+}
+
+#[test]
+fn test_new_closure_replaces_superseded_focus_target() {
+    let store = test_store();
+    let file_id = test_file_id();
+    let caller = test_symbol(file_id, "caller", SymbolKind::Function);
+    let old_target = test_symbol(file_id, "oldTarget", SymbolKind::Function);
+    let new_target = test_symbol(file_id, "newTarget", SymbolKind::Function);
+    insert_symbols(
+        &store,
+        &[caller.clone(), old_target.clone(), new_target.clone()],
+    );
+    insert_closures(&store, &["cl_old", "cl_new"]);
+    let ref_id = insert_reference(&store, caller.id, "target", ReferenceKind::Call);
+
+    insert_visible_resolution(
+        &store,
+        "cl_old",
+        1,
+        &ref_id,
+        &old_target.id,
+        "boundary",
+        "certain",
+        "name_only",
+    );
+    let builder = FocusGraphBuilder::new(store.clone());
+    builder.build_for_closure("cl_old", 1).unwrap();
+    assert_canonical_edge_exists(&store, &caller.id, &old_target.id, EdgeKind::Calls);
+
+    insert_visible_resolution(
+        &store,
+        "cl_new",
+        1,
+        &ref_id,
+        &new_target.id,
+        "boundary",
+        "certain",
+        "name_only",
+    );
+    builder.build_for_closure("cl_new", 1).unwrap();
+
+    assert_no_canonical_edge(&store, &caller.id, &old_target.id, EdgeKind::Calls);
+    assert_canonical_edge_exists(&store, &caller.id, &new_target.id, EdgeKind::Calls);
 }
 
 // ── T2: Medium confidence → candidate edges ─────────────────────────────────

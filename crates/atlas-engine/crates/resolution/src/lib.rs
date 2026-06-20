@@ -24,7 +24,7 @@ use types::progress::ProgressPhase;
 use types::*;
 
 use self::builtins::BuiltinFilter;
-use self::context::{GlobalSymbolIndex, ResolutionContext};
+use self::context::{GlobalSymbolIndex, ResolutionContext, is_explicit_test_path, proximity_tier};
 use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
@@ -193,7 +193,10 @@ pub(crate) fn resolve_strategies_1_through_5(
     {
         let _timer = StrategyTimer::new(&S2_TIME_NS);
         if let Some(scope_id) = reference.scope_id {
-            if let Some(sym) = ctx.lookup_scoped(scope_id, &reference.name) {
+            if let Some(sym) = ctx
+                .lookup_scoped(scope_id, &reference.name)
+                .filter(|sym| scoped_kind_is_compatible(reference.kind, sym.kind))
+            {
                 S2_COUNT.fetch_add(1, Ordering::Relaxed);
                 return Some(ResolvedTarget {
                     symbol_id: sym.id,
@@ -213,7 +216,10 @@ pub(crate) fn resolve_strategies_1_through_5(
                 if let Some(container) = source.container {
                     if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
                         if let Some(scope) = container_sym.scope_id {
-                            if let Some(sym) = ctx.lookup_scoped(scope, &reference.name) {
+                            if let Some(sym) = ctx
+                                .lookup_scoped(scope, &reference.name)
+                                .filter(|sym| scoped_kind_is_compatible(reference.kind, sym.kind))
+                            {
                                 S3_COUNT.fetch_add(1, Ordering::Relaxed);
                                 return Some(ResolvedTarget {
                                     symbol_id: sym.id,
@@ -232,7 +238,11 @@ pub(crate) fn resolve_strategies_1_through_5(
     // Strategy 4: Same-file exact match
     {
         let _timer = StrategyTimer::new(&S4_TIME_NS);
-        let same_file = ctx.find_in_file_by_name(&reference.name);
+        let same_file = ctx
+            .find_in_file_by_name(&reference.name)
+            .into_iter()
+            .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
+            .collect::<Vec<_>>();
         if let Some(matched) =
             name_matcher.best_match(&same_file, &reference.name, Confidence::certain())
         {
@@ -259,8 +269,13 @@ pub(crate) fn resolve_strategies_1_through_5(
                     if let Ok(chain_candidates) =
                         import_resolver.resolve_through_reexports(import, candidates)
                     {
+                        let compatible = chain_candidates
+                            .iter()
+                            .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
+                            .cloned()
+                            .collect::<Vec<_>>();
                         if matches_by_alias {
-                            if let Some(first) = chain_candidates.first() {
+                            if let Some(first) = compatible.first() {
                                 S5_COUNT.fetch_add(1, Ordering::Relaxed);
                                 return Some(ResolvedTarget {
                                     symbol_id: first.id,
@@ -271,7 +286,7 @@ pub(crate) fn resolve_strategies_1_through_5(
                             }
                         }
                         if let Some(matched) = name_matcher.best_match(
-                            &chain_candidates,
+                            &compatible,
                             &reference.name,
                             Confidence::certain(),
                         ) {
@@ -311,6 +326,22 @@ fn should_run_fuzzy_fallback_for_reference(reference: &ReferenceUse) -> bool {
         return false;
     }
     should_run_fuzzy_fallback(&reference.name)
+}
+
+fn scoped_kind_is_compatible(reference_kind: ReferenceKind, symbol_kind: SymbolKind) -> bool {
+    if reference_kind != ReferenceKind::Call {
+        return true;
+    }
+    matches!(
+        symbol_kind,
+        SymbolKind::Function
+            | SymbolKind::Method
+            | SymbolKind::Constructor
+            | SymbolKind::Class
+            | SymbolKind::Struct
+            | SymbolKind::Interface
+            | SymbolKind::Trait
+    )
 }
 
 /// Returns true if `name` looks like a valid code identifier
@@ -1248,18 +1279,37 @@ impl ReferenceResolver {
         closure_files: &[FileId],
         visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
+        self.resolve_for_closure_kinds(
+            closure_id,
+            generation,
+            closure_files,
+            visibility_filter,
+            None,
+        )
+    }
+
+    /// Closure-scoped resolution restricted to reference kinds required by
+    /// the active graph strategies. `None` preserves the explicit full
+    /// resolver behavior; an empty set performs no reference work.
+    pub fn resolve_for_closure_kinds(
+        &mut self,
+        closure_id: &str,
+        generation: i64,
+        closure_files: &[FileId],
+        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+        reference_kinds: Option<&HashSet<ReferenceKind>>,
+    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
         for fid in closure_files {
             for r in self.store.find_references_by_file(fid)? {
+                if reference_kinds.is_some_and(|kinds| !kinds.contains(&r.kind)) {
+                    continue;
+                }
                 by_file.entry(r.file_id).or_default().push(r);
             }
         }
 
         let total_refs: usize = by_file.values().map(|v| v.len()).sum();
-
-        if self.global_index.is_none() {
-            self.global_index = Some(GlobalSymbolIndex::build(&self.store)?);
-        }
 
         let mut stats = ResolutionStats {
             total_refs,
@@ -1267,6 +1317,8 @@ impl ReferenceResolver {
         };
 
         let mut resolved_pairs: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+        let mut scoped_candidate_cache: HashMap<String, Vec<SymbolDef>> = HashMap::new();
+        let mut scoped_file_path_cache: HashMap<FileId, String> = HashMap::new();
         let mut batch: Vec<(
             String,
             i64,
@@ -1288,9 +1340,23 @@ impl ReferenceResolver {
                     continue;
                 }
             };
+            let preferred = self.import_resolver.collect_imported_file_ids(&ctx.imports);
+            let source_is_test = is_explicit_test_path(&ctx.file.path);
+            let source_parent = std::path::Path::new(&ctx.file.path)
+                .parent()
+                .map(|path| path.to_string_lossy().to_string());
 
             for reference in refs {
-                let target = self.resolve_one_scoped(reference, &ctx, visibility_filter);
+                let target = self.resolve_one_scoped(
+                    reference,
+                    &ctx,
+                    visibility_filter,
+                    &preferred,
+                    source_is_test,
+                    source_parent.as_ref(),
+                    &mut scoped_candidate_cache,
+                    &mut scoped_file_path_cache,
+                );
                 match target {
                     Some(target) => {
                         let (resolution_scope, coverage_tier) = scope_and_tier(&target);
@@ -1354,6 +1420,11 @@ impl ReferenceResolver {
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
         visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+        preferred: &HashSet<FileId>,
+        source_is_test: bool,
+        source_parent: Option<&String>,
+        candidate_cache: &mut HashMap<String, Vec<SymbolDef>>,
+        file_path_cache: &mut HashMap<FileId, String>,
     ) -> Option<ResolvedTarget> {
         // Strategies 1-5: shared with resolve_one_core, no visibility filter needed
         if let Some(result) = resolve_strategies_1_through_5(
@@ -1365,80 +1436,63 @@ impl ReferenceResolver {
             return Some(result);
         }
 
-        // Strategy 6: Project-wide name search + fuzzy fallback
-        // Apply visibility filter: exclude symbols not visible from the reference's file.
+        // Strategy 6: indexed exact-name lookup with closure-local caching.
+        // Focus queries must not build a GlobalSymbolIndex over every project
+        // symbol. Ambiguous fuzzy evidence remains unresolved in local mode.
         {
             let _timer = StrategyTimer::new(&S6_TIME_NS);
-            if let Some(idx) = self.global_index.as_ref() {
-                // Try exact match first
-                if let Some(matched) = idx.find_exact_name_target(&reference.name, None) {
-                    if let Some(filter) = visibility_filter {
-                        if let Some(sym) = idx.get(&matched.symbol_id) {
-                            if !filter(sym, reference.file_id) {
-                                // Not visible — skip this match, let next strategy try
-                            } else {
-                                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                                return Some(matched);
-                            }
-                        } else {
-                            // Symbol not in index (shouldn't happen) — accept the match
-                            S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                            S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                            return Some(matched);
-                        }
-                    } else {
-                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                        S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return Some(matched);
+            let candidates = candidate_cache
+                .entry(reference.name.clone())
+                .or_insert_with(|| {
+                    self.store
+                        .find_symbols_by_name(&reference.name)
+                        .unwrap_or_default()
+                });
+            let mut ranked = candidates
+                .iter()
+                .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
+                .filter(|symbol| {
+                    visibility_filter.is_none_or(|filter| filter(symbol, reference.file_id))
+                })
+                .filter_map(|symbol| {
+                    let candidate_path = file_path_cache
+                        .entry(symbol.file_id)
+                        .or_insert_with(|| {
+                            self.store
+                                .get_file(&symbol.file_id)
+                                .ok()
+                                .flatten()
+                                .map(|file| file.path)
+                                .unwrap_or_default()
+                        })
+                        .clone();
+                    if candidate_path.is_empty()
+                        || (!source_is_test && is_explicit_test_path(&candidate_path))
+                    {
+                        return None;
                     }
-                }
-
-                if !should_run_fuzzy_fallback_for_reference(reference) {
-                    return None;
-                }
-
-                // Fuzzy search
-                let fuzzy = idx.fuzzy_search(&reference.name, 2);
-                if !fuzzy.is_empty() {
-                    if let Some(filter) = visibility_filter {
-                        let filtered: Vec<SymbolDef> = fuzzy
-                            .into_iter()
-                            .filter(|s| filter(s, reference.file_id))
-                            .collect();
-                        if !filtered.is_empty() {
-                            if let Some(matched) = self.name_matcher.best_match(
-                                &filtered,
-                                &reference.name,
-                                Confidence::new(0.4),
-                            ) {
-                                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                                S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
-                                return Some(ResolvedTarget {
-                                    symbol_id: matched.symbol_id,
-                                    confidence: matched.confidence,
-                                    strategy: ResolutionStrategy::FuzzyMatch,
-                                    provenance: Provenance::Heuristic,
-                                });
-                            }
-                        }
-                    } else {
-                        if let Some(matched) = self.name_matcher.best_match(
-                            &fuzzy,
-                            &reference.name,
-                            Confidence::new(0.4),
-                        ) {
-                            S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                            S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
-                            return Some(ResolvedTarget {
-                                symbol_id: matched.symbol_id,
-                                confidence: matched.confidence,
-                                strategy: ResolutionStrategy::FuzzyMatch,
-                                provenance: Provenance::Heuristic,
-                            });
-                        }
-                    }
-                }
+                    let candidate_parent = std::path::Path::new(&candidate_path)
+                        .parent()
+                        .map(|path| path.to_string_lossy().to_string());
+                    Some((
+                        usize::from(!preferred.is_empty() && !preferred.contains(&symbol.file_id)),
+                        proximity_tier(source_parent, candidate_parent.as_ref()),
+                        candidate_path,
+                        symbol.qualified_name.clone(),
+                        symbol.id,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_unstable();
+            if let Some((_, _, _, _, symbol_id)) = ranked.into_iter().next() {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
+                    symbol_id,
+                    confidence: Confidence::certain(),
+                    strategy: ResolutionStrategy::NameOnly,
+                    provenance: Provenance::Heuristic,
+                });
             }
         }
         MISS_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1629,6 +1683,59 @@ mod tests {
     use graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
     use types::FileFacts;
+
+    #[test]
+    fn closure_resolution_does_not_build_the_project_wide_symbol_index() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let mut resolver = ReferenceResolver::new(store);
+
+        resolver
+            .resolve_for_closure("test_closure", 0, &[], None)
+            .unwrap();
+
+        assert!(resolver.global_index.is_none());
+    }
+
+    #[test]
+    fn project_resolution_builds_the_global_index_for_unimported_cross_file_calls() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let frontend = create_frontend(Language::C).unwrap();
+        let target_id = FileId::generate("target.c");
+        let caller_id = FileId::generate("caller.c");
+        let target = extract_file(
+            &frontend,
+            target_id,
+            &PathBuf::from("target.c"),
+            "void external_fn(void) {}",
+            "target",
+        )
+        .unwrap();
+        let caller = extract_file(
+            &frontend,
+            caller_id,
+            &PathBuf::from("caller.c"),
+            "void caller(void) { external_fn(); }",
+            "caller",
+        )
+        .unwrap();
+        store.insert_file_facts(&target).unwrap();
+        store.insert_file_facts(&caller).unwrap();
+
+        let target_symbol = target
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "external_fn")
+            .unwrap();
+        let mut resolver = ReferenceResolver::new(store);
+        let (resolved, _) = resolver.resolve_all().unwrap();
+
+        assert!(resolver.global_index.is_some());
+        assert!(resolved.iter().any(|(reference, resolved_target)| {
+            reference.name == "external_fn" && resolved_target.symbol_id == target_symbol.id
+        }));
+    }
 
     #[test]
     fn short_names_skip_edit_distance_fuzzy_fallback() {
