@@ -666,6 +666,14 @@ int top_function(void) {
         resp3.get("gaps").is_none(),
         "search should not merge focus closure gaps: {resp3:.300}"
     );
+    assert!(
+        resp3.get("capability_mask").is_none(),
+        "search must not expose internal capability bits: {resp3:.300}"
+    );
+    assert!(
+        resp3.get("triggered_lazy").is_none(),
+        "search must not expose lazy implementation state: {resp3:.300}"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -711,7 +719,8 @@ fn handler_open_project_uses_persistent_store_without_storage_mode() {
         "project status should succeed: {status_resp:.500}"
     );
     assert!(
-        status_resp["project"].get("storage").is_none(),
+        status_resp["project"].get("storage").is_none()
+            && status_resp["diagnostics"].get("storage_mode").is_none(),
         "status response must not expose a storage mode: {status_resp:.500}"
     );
 
@@ -736,7 +745,7 @@ fn handler_open_project_uses_persistent_store_without_storage_mode() {
 }
 
 #[test]
-fn handler_search_reports_retry_for_cold_scope() {
+fn handler_search_reports_terminal_gap_for_cold_scope() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_retry_cold_scope");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -767,17 +776,15 @@ fn handler_search_reports_retry_for_cold_scope() {
         resp.get("background_refinement").is_none(),
         "cold bounded search should not expose legacy background_refinement: {resp:.300}"
     );
-    assert!(
-        resp["analysis"].get("retry_after_ms").is_some(),
-        "analysis block should carry retry_after_ms: {resp:.300}"
-    );
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp["gaps"][0]["reason"], "closure_boundary");
     assert!(resp.get("precision").is_none());
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
-fn handler_search_partial_hit_without_deferred_ids_reports_retry() {
+fn handler_search_partial_hit_without_tracker_reports_terminal_gap() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_retry_single_hit");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -811,13 +818,14 @@ fn handler_search_partial_hit_without_deferred_ids_reports_retry() {
         "partial search should not expose legacy background_refinement: {resp:.300}"
     );
     assert!(resp.get("precision").is_none());
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp["gaps"][0]["reason"], "closure_boundary");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
-fn handler_search_partial_no_hit_tells_client_to_retry() {
+fn handler_search_partial_no_hit_reports_terminal_gap() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_no_hit_retry");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -842,10 +850,11 @@ fn handler_search_partial_no_hit_tells_client_to_retry() {
     );
     assert!(
         !err,
-        "partial cold no-hit search should return retryable partial response: {resp:.300}"
+        "partial cold no-hit search should return a bounded terminal response: {resp:.300}"
     );
     assert_eq!(resp["coverage"]["state"], "partial");
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp["gaps"][0]["reason"], "closure_boundary");
     assert!(
         resp.get("background_refinement").is_none(),
         "partial no-hit search should not expose legacy background_refinement: {resp:.300}"

@@ -629,6 +629,8 @@ Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"�
 
 `query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，创建后 TTL 为 5 分钟；快照保存原 tool 参数及本次 `FocusResult` 的 live `JobTracker`。`resume_query(query_id)` 复用该 focus 状态重放查询，不重新调度 closure，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
+语义图查询重放前必须把快照中的 `FocusResult.built_files` 重新加入增量 graph refresh queue。后台 focus 可能在初始响应后替换同一文件的最终 facts；仅比较计数/秒级时间戳的 index signature 不能可靠发现这种等量替换。
+
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
 #### 10.1.10 统一对外分析认知界面
@@ -684,7 +686,7 @@ else:
 
 **`gaps` 字段结构**：`[{scope, reason, detail}]`，每个 gap 描述一个分析缺口：
 - `scope`：缺失范围（符号限定名或文件路径）
-- `reason`：机器可读原因码（`no_dataflow`、`no_cfg`、`no_transitions`、`closure_boundary`、`incomplete_cfg`、`no_domain_rules`、`symbol_resolution`、`repo_complete`）
+- `reason`：机器可读原因码（例如 `no_dataflow`、`no_cfg`、`closure_boundary`、`budget_exhausted`、`symbol_resolution`）
 - `detail`：人类可读补充说明
 
 `gaps` 仅在终态响应中出现。非终态不暴露瞬时缺口，避免 Agent 误判为终态而早停。
@@ -704,7 +706,7 @@ else:
 **约束**：
 
 - 引擎层概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
-- `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代。
+- 非 trace 工具的 `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代；trace 内层 frozen contract 仍保留自己的 `partial_result`。
 - `background_refinement` 字段已淘汰，不进入 MCP 公共响应。
 
 #### 10.1.11 Focus Runtime 与 Lazy 的关系
@@ -712,7 +714,7 @@ else:
 Focus 是查询时 lazy 机制的下一代控制平面，不是新的 extraction
 pipeline。Lazy 负责按需构建 facts；Focus 负责围绕用户意图决定构建哪些
 facts、按什么顺序构建、在哪个 closure scope 中可见，以及如何声明
-analysis/retry_after_ms/gaps/work。
+analysis/retry_after_ms/gaps。
 
 长期边界：
 
@@ -731,6 +733,10 @@ analysis/retry_after_ms/gaps/work。
   `references.resolved_*` 和 repo-wide `symbol_edges`。
 - `Precision { coverage, confidence }` 是引擎内部状态，用于推导 coverage_counts
   和终态判定；不进入 public MCP contract。
+- Closure expansion 保留策略顺序并去重；C/C++ 等需要 import/include 可见性的查询先扩依赖，再扩 call graph。计划超过文件预算时按剩余容量截断并返回 `budget_exhausted` gap，不得整批拒绝而退化为 seed-only 结果。
+- 每次查询只排入 `FocusResult.pending_closure_ids` 中可追踪的 background/region-extension closure。前台已构建文件不得再逐文件排入隐藏 Recent prewarm；否则 `tasks(query_id)` 会先报告完成，而数据库仍在执行 N+1 closure fan-out。
+- `closure_coverage`、`reference_resolutions` 和 `symbol_edge_candidates` 是 graph materialization 的临时 closure facts，不是永久历史日志。新 MCP session 激活项目时整表清理上一 session 的 control-plane facts；同一 session 每次成功物化后只保留最近 16 个 committed closure。已物化的 canonical graph edge、源码事实和 MCP query snapshot 不依赖这些旧行。
+- 已有持久化 file inventory 或源码事实时，MCP bootstrap 只标记基础层 ready，不启动全项目后台扫描。Closure resolver 的本地 fallback 使用 `symbols.name` 索引，不构建 project-wide `GlobalSymbolIndex`；import scope、测试路径分类和 proximity root 必须按源文件计算一次，不得在每个 reference 上重复查询。
   `PrecisionTier` 不进入 public MCP contract。仍存在的内部使用点必须改为
   `Precision` 或局部私有 adapter，不能作为响应字段保留。
 - `JobTracker`（`crates/atlas-engine/src/focus/job_tracker.rs`）是 Focus Runtime 的
@@ -930,15 +936,18 @@ engine.prepare(params)  →  产出 query_id + 初始 result
 | MCP + progress token | 无限 | 走 `notifications/progress` | 不发生（阻塞到终态） |
 | MCP 无 progress token | THRESHOLD | 无 | 超时返回 + `analysis.retry_after_ms` |
 
+带 progress token 的同步请求在 handler 返回后必须先释放 request-scoped `ToolCallContext`（关闭 progress sender），再等待 notification forwarder 排空退出；反向顺序会让请求永久等待仍由自身持有的 sender。
+
 ## 11. Search、Context、MCP、CLI
 
 ### 11.1 Search
 - FTS5 + LIKE fallback + fuzzy matching。
 - `SearchQueryParser` 支持 `kind:`、`lang:`、`path:`、`name:` 前缀。
-- MCP `search` 始终要求 `scope` 参数；scope 同时是搜索边界和 focus 热点。返回值必须声明该 scope 内结果是 complete 还是 partial，并  通过 `analysis.retry_after_ms` 和 `tasks` 暴露后台 refinement。
+- MCP `search` 始终要求 `scope` 参数；scope 同时是搜索边界和 focus 热点。返回值必须声明该 scope 内结果是 complete 还是 partial。只有快照持有 live `JobTracker`、可由 `resume_query` 观测收敛的 refinement 才能发布 `analysis.retry_after_ms`。Search 不排队未跟踪的 focus warming；边界外覆盖统一返回终态 `closure_boundary` gap，避免后台写入阻塞后续交互式查询。
 
 ### 11.2 Context
 - 基于 symbol、callers/callees、file peers、importers/dependencies 构建 Agent context (Markdown)。
+- `symbol(view="detail")` 是 StoreFact 查询，只返回身份、位置、签名和可选源码；调用关系由 `symbol(view="context")` 或 `calls` 提供。detail 仅在显式 `includeCode=true` 且当前无源码事实时触发 structural focus。
 - `symbol(view="context")` 支持 `includeFilePeers` 布尔参数（默认 `true`），设为 `false` 时跳过 file peers 查询，适合更快、更小的响应。
 - 当符号未被索引时，`symbol(view="context")` 工具内置 lazy structural extraction（查询时按需触发完整 structural 解析）。
 - **图刷新决策**：lazy structural 写新 facts 到 DB 后，`context` handler 会在调用 context builder 前执行 `force_refresh_graph()`，确保内存图快照包含刚解析的边。这关闭了 graph init 早于 handler 自身 structural extraction 的调用流缺口。
@@ -961,7 +970,8 @@ engine.prepare(params)  →  产出 query_id + 初始 result
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - 后续请求通过 `maybe_refresh_graph()` 检测外部索引变化（`ensure_structural_for_files` / `ensure_structural_for_symbol_name` 内部已调用，handler 无需重复）。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
-- `project(action="open")` 不索引，只同步激活项目；默认 `storage="auto"`，通过只读打开候选持久化库并复用 `project(status)` 的 index mode 判断，只有状态显示存在可复用索引时才复用 `.atlas/atlas.db`，否则使用内存库。
+- `project(action="open")` 不索引，只同步激活项目并打开持久化的 `project/.atlas/atlas.db`；MCP 不暴露 storage mode。
+- MCP 查询路径不探测或同步整个工作树。磁盘文件与持久化索引的全项目同步由显式 CLI `atlas sync`/`atlas index` 负责；查询触发的 lazy extraction 只更新当前 scope/closure，并通过 `tasks`、`query_id` 和 analysis envelope 暴露状态。
 - 显式全项目索引只通过 CLI `atlas index` 执行。
 - `search` 的 `scope` 永远强制参数；scope 同时是结果边界和 focus seed，即使存在 manual full index 也不省略。
 - MCP 不支持 `background=true`；耗时提升通过 scoped focus/lazy 结果的 partial/diagnostics 和 `resume_query` 表达。

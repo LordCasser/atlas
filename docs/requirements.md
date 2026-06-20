@@ -261,9 +261,10 @@ MCP 入口必须先 `project(action="open")` 同步激活项目；open 不做全
 
 触发 lazy structural、lazy dataflow 或 lazy CFG 的 MCP 工具必须返回可解释的能力状态：
 
-- `lazy_diagnostics`：说明 structural/dataflow 是否触发、built/cached/pending、budget/partial 状态。
-- `analysis_contract`：说明当前 facts 能安全支持哪些结论、哪些结论仍不安全、下一步 refinement action。
-- 空结果或 `ok=false` 不得吞掉 lazy diagnostics；如果工具已经做过 lazy 工作，响应必须解释该工作对结果的影响。
+- `analysis`：说明 scope、basis、summary；仅在 live tracker 仍有工作时提供 `retry_after_ms`。
+- `gaps`：终态已知缺口，稳定映射为 `{scope, reason, detail}`。
+- `query_id` + `tasks` + `resume_query`：让可恢复 refinement 可观测并最终收敛。
+- 空结果或错误不得吞掉仍可恢复的 query 状态；不可恢复错误不得伪造 retry。
 - CFG/semantic 工具已经基于 CFG 产出结果时，不得同时声明 CFG 不可用。
 
 ### CLI

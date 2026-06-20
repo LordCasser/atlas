@@ -50,10 +50,10 @@ These items must be closed before V1 is considered releasable:
 - Fix any test compile failures caused by schema/type evolution; release validation cannot rely on a suite that does not compile.
 - Make shared `run_index_pipeline` authoritative for full-index cleanup: deleted files must be removed from DB state when MCP or other shared-pipeline callers re-index.
 - Make shared `run_index_pipeline(Full)` build persistent function summaries, matching CLI Full behavior.
-- Persist `summaries` capability after successful summary build so user-visible `analysis_contract` can prove inter-procedural summary availability.
+- Persist `summaries` capability after successful summary build so user-visible status and `analysis.basis` cannot overclaim inter-procedural summary availability.
 - Add explicit Manifest queries or explicit unsupported declarations for every language; Manifest must mean top-level symbols only.
 - Validate CLI `--analysis` values instead of silently falling back to Structural.
-- Align all lazy-triggering MCP tools on `analysis_contract`, including no-result trace responses and CFG-consuming tools.
+- Align all lazy-triggering MCP tools on the shared public analysis view, including no-result trace responses and CFG-consuming tools.
 
 ## 2. Completed work
 
@@ -80,7 +80,7 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 ### 2.5 Lazy UX and query recovery ✅
 
 - `CapabilityMask` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
-- Lazy MCP responses expose `analysis_contract` with safe conclusions, unsafe conclusions, capability summary, and refinement jobs.
+- Lazy MCP responses expose one shared public view: `analysis`, structured `gaps`, `query_id`, and resumable refinement state.
 - MCP query snapshots support `resume_query(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
 - Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
 - `tasks` exposes query-related lazy/background job state.
@@ -111,7 +111,7 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
 - For each language, maintain explicit limitations and confidence floors.
 - Ensure unsupported or partial trace queries return diagnostics rather than silent empty results.
 - Keep `CapabilityMask` synchronized with persisted state: `cfg` requires actual CFG facts, `dataflow` requires dataflow facts, and `summaries` requires successfully built summary tables.
-- `analysis_contract` may only advertise capabilities proven by DB state or by facts verified during the current tool call.
+- `analysis.basis` may only advertise facts proven by DB state or verified during the current tool call.
 
 ### 3.2 Path-level validation
 
@@ -121,13 +121,13 @@ Continue expanding end-to-end smoke tests for all languages.
 - Add shared-pipeline parity tests for Manifest, Structural, and Full against CLI index/sync behavior.
 - Add lazy dataflow tests for build, cache hit, full-index prebuilt cache, pending, partial, no-path trace, and CFG-consuming tool paths.
 
-### 3.3 Analysis contract consistency
+### 3.3 Public analysis view consistency
 
-- Keep all lazy-triggering MCP tools aligned on `analysis_contract`.
-- Ensure `safe_conclusions` and `unsafe_conclusions` map directly to `CapabilityMask`.
+- Keep all lazy-triggering MCP tools aligned on `analysis`, structured `gaps`, and terminal retry semantics.
+- Keep internal `CapabilityMask` details behind the public `analysis.basis` and `gaps[].reason` boundary.
 - Keep `query_id`, `resume_query`, and `tasks` behavior documented and covered by tests.
 - No MCP response may return a semantic/CFG result while its contract says that same capability is unavailable.
-- No lazy-triggered query may omit `lazy_diagnostics` solely because the final trace/search result is empty.
+- No recoverable lazy query may omit `query_id` or retry state solely because the current trace/search result is empty.
 
 ## 4. Graph and performance evolution
 
@@ -259,17 +259,17 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 | 阶段 | 内容 | 实现 |
 |------|------|------|
-| Phase 0 | Precision 替换 | MCP 响应已迁移到 `Precision { coverage, confidence }`；内部 `PrecisionTier` 在 MCP 边界转换 |
+| Phase 0 | 内部 precision 收敛 | extraction/focus 内部使用结构化 precision；MCP 公共边界不暴露内部 precision |
 | Phase 1 | Bootstrap 冷启动 | `BootstrapManager`（Tier0 文件清单/Tier0.5 指纹/Tier1 SymbolHints/Tier2 机会性 manifest） |
 | Phase 2 | FocusRuntime + QueryIntent | `QueryIntent → FocusRuntime::prepare` 统一入口；`QueryRuntime` 封装 MCP 集成 |
 | Phase 3 | ClosureEngine | 策略驱动的有限不动点闭包扩展（ImportNeighborhood/CallGraph/TypeGraph），含预算控制 |
 | Phase 4 | ScopedResolver + FocusGraphBuilder | 闭包作用域引用解析和 scoped graph overlay |
-| Phase 5 | MCP Response Envelope 统一 | `analysis`/`precision`/`coverage_counts`/`gaps`/`work` 统一 envelope |
+| Phase 5 | MCP Response Envelope 统一 | `analysis`/`coverage_counts`/`gaps`/`query_id` 统一 public view，删除 `precision`/`work` 等伪信号 |
 | Phase 6 | 旧控制平面清理 | `LazyOrchestrator`/`LazyCoordinator` 已从模块系统移除，MCP 不再使用 `ensure_structural_*` |
 
 ### 9.3 剩余工作
 
-- 长期：将内部 `PrecisionTier` 统一迁移为 `PrecisionView`，消除 MCP 边界转换函数
+- 长期：继续收敛 extraction/focus 内部 precision 类型，保持 MCP 公共边界稳定且最小。
 
 ### 9.4 不变边界
 

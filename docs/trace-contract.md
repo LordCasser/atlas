@@ -65,7 +65,11 @@ so consumers parse one shape regardless of which query was made.
 3. `ok=false` → **system error**; only possible result is `diagnostics[0].level = "error"`.
 4. `capability` is present even in partial/error cases (may be `null` for errors).
 
-MCP wrappers may add top-level fields such as `query_id`, `precision`, `lazy_diagnostics`, and `analysis_contract`. If a trace request triggered lazy structural or lazy dataflow, `lazy_diagnostics` and `analysis_contract` must be present even when `result` is empty or no path is found.
+MCP wrappers may add the shared public analysis fields `query_id`, `analysis`,
+`coverage_counts`, and `gaps`. If a trace request triggered recoverable lazy
+work, `analysis.retry_after_ms` and `query_id` must remain available even when
+`result` is empty or no path is found. Internal precision and capability-mask
+state must not leak through a second wrapper contract.
 
 ---
 
@@ -240,7 +244,10 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 - `trace(kind="forward")`: gated on `call_graph.is_supported()`.
 - `trace(kind="point")`: **always available**, regardless of capability.
 
-Capability gating is not a substitute for lazy diagnostics. A supported query can still return partial/no-result because lazy extraction was budget-limited, pending, or unable to build the needed facts; those cases must be explained through `diagnostics` plus MCP `lazy_diagnostics`.
+Capability gating is not a substitute for refinement state. A supported query
+can still return partial/no-result because lazy extraction was budget-limited,
+pending, or unable to build the needed facts; trace-specific limitations use
+`diagnostics`, while MCP refinement uses the shared `analysis` and `gaps` fields.
 
 ---
 

@@ -111,9 +111,10 @@ atlas mcp
 atlas index --analysis full
 ```
 
-> MCP reuses an existing compatible `.atlas/atlas.db` when available. Without a
-> full CLI-built index, scoped queries return complete/partial coverage metadata
-> and expose background refinement through `work` and `tasks`.
+> MCP opens `project/.atlas/atlas.db` and reuses compatible facts when available.
+> Without a full CLI-built index, scoped queries expose bounded refinement through
+> `analysis.retry_after_ms`, `query_id`, `tasks`, and `resume_query`; terminal
+> limitations are returned as structured `gaps`.
 
 ### Client configuration
 
@@ -191,11 +192,8 @@ enabled = true
 | FP dispatch (C/C++) | `fp_dispatches` |
 
 > `project(action="open")` supports switching the active project at runtime.
-> `storage: "auto"` reuses an existing compatible `.atlas/atlas.db` when
-> available, otherwise Atlas opens a zero-footprint in-memory project.
-> `storage: "memory"` keeps focus/cache/overlay writes session-local;
-> `storage: "persistent"` writes them under `project/.atlas/atlas.db`.
-> `project` activates a project but never scans or indexes the whole tree.
+> It opens the persistent `project/.atlas/atlas.db`; `project` activates a
+> project but never scans or indexes the whole tree.
 
 Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/trace-contract.md`](docs/trace-contract.md): `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, and `result`.
 

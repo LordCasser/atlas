@@ -2,7 +2,7 @@
 name: atlas
 description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26. Exposes deterministic facts through 15 MCP tools: symbol search, call-graph traversal (callers/callees, multi-hop), dependency analysis, variable provenance tracing, shortest-path between symbols, impact analysis, C/C++ field lifecycle analysis, branch-diff comparison, function-pointer dispatch annotation. Use for understanding code structure, tracing data/call flow, reviewing change impact, or building AI context from indexed codebases. Prefer over text search or filename guessing.
 license: MIT
-compatibility: Requires Rust toolchain and a local checkout of the target repository. Build with `cargo build --release -p atlas-cli --features mcp`. Index the project via CLI (`atlas index --project <repo>`) before starting MCP.
+compatibility: Requires Rust toolchain and a local checkout of the target repository. Build with `cargo build --release -p atlas-cli --features mcp`. A CLI-built index is optional; scoped MCP queries can populate the persistent project database on demand.
 metadata:
   version: "1.5.1"
   repository: https://github.com/lordcasser/atlas
@@ -24,14 +24,14 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 
 ## Requirements
 
-A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")`. **Index the project via CLI before starting MCP** — `atlas index --project <repo>` auto-initializes the schema and builds the database.
+A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")`. A CLI-built index is optional: use `atlas index --project <repo>` when a reusable project-wide cache is desired, otherwise scoped MCP queries populate `project/.atlas/atlas.db` on demand.
 
 ## Workflow
 
-1. **Confirm the index exists**
+1. **Open the project and inspect current coverage**
    - CLI: `atlas status --project <repo>` or `atlas doctor --project <repo>`
-   - MCP: `project(action="status")`
-   - If no `.atlas/atlas.db` exists, run `atlas index --project <repo>` (CLI), then restart MCP if needed.
+   - MCP: `project(action="open", project_path=<repo>)`, then `project(action="status")`
+   - A missing database is initialized by `project(open)` and populated by scoped queries. Run `atlas index --project <repo>` only when a reusable project-wide cache is desired.
 
 2. **Pick the narrowest query**
    - Symbol lookup: `search` → `symbol`
@@ -72,7 +72,7 @@ The 15 MCP tools use short names in the native server. Note: some MCP client env
 
 | Tool | Purpose | Required params | Key optional params |
 |------|---------|----------------|---------------------|
-| `project` | Open project, check status, list files | — | `action` (`open`/`status`/`files`; default `status`), `project_path` (required with `open`), `storage` (`auto`/`memory`/`persistent`), `verbose`, `limit`, `language`, `path_prefix` |
+| `project` | Open project, check status, list files | — | `action` (`open`/`status`/`files`; default `status`), `project_path` (required with `open`), `verbose`, `limit`, `language`, `path_prefix` |
 | `search` | Symbol search by name within a directory scope | `query`, `scope` | `kind` (e.g., `function`, `class`), `limit` (default 20, max 200), `include_roots` |
 | `symbol` | Symbol details, rich context, or usages | `symbol` (string or SymbolSelector) | `file_path`+`line`+`column` for position-based lookup, `view` (`detail`/`context`/`usages`; default `detail`), `includeCode`, `includeFilePeers`, `limit` (usages only), `include_roots` |
 | `calls` | Call graph: callers, callees, multi-hop | `symbol` | `direction` (`incoming`/`outgoing`/`both`; default `both`), `depth` (1-5, default 1), `limit`, `edge_kinds` (default `["calls","instantiates","implements"]`; use `["*"]` for all) |

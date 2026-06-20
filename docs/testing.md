@@ -39,8 +39,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - `run_index_pipeline(Full)`、`atlas index --analysis full`、`atlas sync --analysis full` 必须分别断言 summary tables 已构建，并且 `summaries` capability 只在 summary build 成功后出现。
 - 每种语言的 Manifest 测试必须断言只产生顶层符号。不得仅测试 query parse 成功；fixture 必须包含函数/方法内部局部定义以证明不会过度索引。
 - `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
-- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 lazy dataflow 被触发，两者都必须有 `lazy_diagnostics.dataflow` 和顶层 `analysis_contract`。
-- MCP `branch_diff` / `lifecycle` 必须覆盖 lazy CFG build 后成功分析的路径，断言 contract 不会同时声明 CFG 不可用。
+- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 lazy dataflow 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
+- MCP `branch_diff` / `lifecycle` 必须覆盖 lazy CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失。
 - CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
 
 ## 2. 测试分层
@@ -99,8 +99,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 新增 MCP 工具必须测试注册名、required schema、正常调用和错误调用。
 - 输出必须断言 bounded 行为、confidence/provenance 暴露和结构化 JSON。
 - trace/query/context 工具必须断言顶层 `capability` 对象存在。
-- 触发 lazy extraction 的 MCP 工具必须断言 `lazy_diagnostics`、`analysis_contract`、`query_id`、partial/pending diagnostics 和 retry/next_action 语义。
-- 如果工具返回 `ok=false` 但已经触发 lazy，也必须断言 lazy diagnostics 不丢失。
+- 触发 lazy extraction 的 MCP 工具必须断言 `analysis.retry_after_ms`、`query_id`、`gaps` 和 `resume_query` 的终态收敛语义；不得重新引入 `precision`、`work`、`lazy_diagnostics` 或 `analysis_contract`。
+- 如果工具返回错误但已经触发可恢复 refinement，必须保留可操作的 `query_id` 和 retry 状态；不可恢复错误不得伪造 retry。
 
 ### 2.6 端到端测试
 
@@ -153,7 +153,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 最低要求：
 - 删除代码前必须确认零生产调用点、零测试支撑用途，或明确替代路径；测试 helper 不得按死代码处理。
 - 抽取 helper 或 builder 时，必须至少覆盖一个最简单调用点和一个有分支/merge 的调用点，防止共享抽象只适用于 happy path。
-- MCP lazy response 迁移必须断言 `precision`、`hint`、`warnings`、`lazy_diagnostics`、`analysis_contract`、`query_id` 和 `resume_query` snapshot 语义没有丢失；`ok=false` 路径也不能丢 lazy diagnostics。
+- MCP lazy response 迁移必须断言已删除的 `precision`、`hint`、`work`、`lazy_diagnostics` 和 `analysis_contract` 不会重新出现，并覆盖 `analysis.retry_after_ms`、结构化 `gaps`、`query_id`、`tasks(query_id)` 和 `resume_query` snapshot 语义。
 - stable facade API 重构必须有编译级兼容验证。若旧 API 接受闭包、函数指针或常见 wrapper，新 trait/API 必须保留等价调用方式，或在文档中声明 breaking change。
 - 每个清理批次至少运行 `cargo fmt --check`、`cargo check` 和受影响 crate 的测试；如果全量 `cargo test` 存在已知失败，PR/review 必须列出具体失败测试、原因和是否与本次变更相关。
 
@@ -179,11 +179,11 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 - MCP crate 有 tool schema、routing、bounded output 测试。
 - 原有 default、mcp 组合测试继续通过。
 
-### Lazy UX / Analysis Contract ✅
+### Lazy UX / Public Analysis View ✅
 
 要求：
-- 触发 lazy extraction 的 MCP 工具必须断言 `analysis_contract` 存在。
-- `safe_conclusions` 和 `unsafe_conclusions` 不能是泛泛提示，必须能对应到具体缺失或存在的 `CapabilityMask` bit。
+- 触发 lazy extraction 的 MCP 工具必须通过统一 `analysis` 视图暴露 scope、basis、summary 和仅在可继续提升时存在的 `retry_after_ms`。
+- 终态缺口必须映射为公开 `{scope, reason, detail}`，不得直接序列化内部枚举。
 - `resume_query(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
 - `tasks(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
 - Investigation state 必须测试 symbol、position、field focus 对 related files/symbols 和 desired capabilities 的更新。
