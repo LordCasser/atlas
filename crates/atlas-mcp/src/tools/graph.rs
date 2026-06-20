@@ -587,17 +587,12 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: self.resolve_selector_file_id(&input),
-            symbol_id: None,
-            direction: Some("incoming".to_string()),
-            depth: None,
-        });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
-
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
-        {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            Some("incoming".to_string()),
+            None,
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -624,6 +619,15 @@ impl ToolRouter {
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
+
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: Some(sid),
+            direction: Some("incoming".to_string()),
+            depth: None,
+        });
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
 
         let has_full_index = {
             let active = self.project();
@@ -709,17 +713,12 @@ impl ToolRouter {
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
 
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: self.resolve_selector_file_id(&input),
-            symbol_id: None,
-            direction: Some("outgoing".to_string()),
-            depth: None,
-        });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
-
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
-        {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            Some("outgoing".to_string()),
+            None,
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -746,6 +745,15 @@ impl ToolRouter {
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
+
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: Some(sid),
+            direction: Some("outgoing".to_string()),
+            depth: None,
+        });
+        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
 
         let has_full_index = {
             let active = self.project();
@@ -805,7 +813,7 @@ impl ToolRouter {
             );
             if !has_full_index {
                 focus_warnings.push(format!(
-                    "{total_unresolved_callees} outgoing call token(s) are unresolved in the current focus closure; background refinement may resolve some of them."
+                    "{total_unresolved_callees} outgoing call token(s) remain unresolved in the current focus closure."
                 ));
             }
         }
@@ -853,17 +861,12 @@ impl ToolRouter {
         } else {
             Some(direction.to_string())
         };
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: qname.to_string(),
-            file_id: self.resolve_selector_file_id(&input),
-            symbol_id: None,
-            direction: retry_direction,
-            depth: Some(depth),
-        });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
-
-        let resolution = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::Aggregate)
-        {
+        let resolution = match self.resolve_graph_symbol_with_focus_retry(
+            &input,
+            SymbolResolutionPolicy::Aggregate,
+            retry_direction.clone(),
+            Some(depth),
+        ) {
             Ok(r) => r,
             Err(e) => return (e, true),
         };
@@ -891,7 +894,15 @@ impl ToolRouter {
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
         let lr = AnalysisEnvelope::new("calls", args);
-        let lazy_warnings = focus_warnings;
+
+        let intent = Some(atlas_engine::QueryIntent::Calls {
+            symbol_name: qname.to_string(),
+            file_id: self.resolve_selector_file_id(&input),
+            symbol_id: Some(sid),
+            direction: retry_direction,
+            depth: Some(depth),
+        });
+        let (focus_result, lazy_warnings) = self.prepare_focus_query(intent);
 
         let project = self.project();
         let graph = match project.graph_runtime.provider().graph_snapshot() {

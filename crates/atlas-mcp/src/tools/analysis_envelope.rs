@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 
-use atlas_engine::structs::KnownGap;
 use serde::Serialize;
 use serde_json::json;
 
@@ -62,8 +61,6 @@ pub(crate) struct AnalysisEnvelope {
     is_error_override: Option<bool>,
     /// Distribution of results by coverage tier.
     coverage_counts: Option<HashMap<String, usize>>,
-    /// Known gaps in analysis completeness.
-    known_gaps: Option<Vec<KnownGap>>,
     /// Explicitly set analysis scope (from focus path).
     analysis_scope: Option<String>,
     /// Explicitly set analysis summary (from focus path).
@@ -108,7 +105,6 @@ impl AnalysisEnvelope {
             lazy_warnings: Vec::new(),
             is_error_override: None,
             coverage_counts: None,
-            known_gaps: None,
             analysis_scope: None,
             analysis_summary: None,
             analysis_basis: None,
@@ -148,12 +144,6 @@ impl AnalysisEnvelope {
     /// Set coverage distribution counts.
     pub fn with_coverage_counts(mut self, counts: HashMap<String, usize>) -> Self {
         self.coverage_counts = Some(counts);
-        self
-    }
-
-    /// Set known gaps.
-    pub fn with_gaps(mut self, gaps: Vec<KnownGap>) -> Self {
-        self.known_gaps = Some(gaps);
         self
     }
 
@@ -300,9 +290,6 @@ impl AnalysisEnvelope {
         // Gaps describe permanent terminal limitations. While retry guidance
         // is present, pending work can still change the result.
         if self.analysis_retry_after_ms.is_none() {
-            if let Some(ref gaps) = self.known_gaps {
-                body["gaps"] = serde_json::to_value(gaps).unwrap_or(json!([]));
-            }
             if let Some(ref records) = self.gap_records {
                 if !records.is_empty() {
                     body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
@@ -425,13 +412,14 @@ mod tests {
     fn test_lazy_response_with_gaps() {
         let store = MockStore::new();
         let args = json!({"symbol": "test_fn"});
-        let gaps = vec![KnownGap::UnresolvedImport {
-            from: "foo.c".into(),
-            import_path: "bar.h".into(),
+        let gaps = vec![GapRecord {
+            scope: "foo.c".into(),
+            reason: "unresolved_import".into(),
+            detail: "Import 'bar.h' could not be resolved from this file.".into(),
         }];
 
         let lr = AnalysisEnvelope::new("test_tool", &args)
-            .with_gaps(gaps)
+            .with_gap_records(gaps)
             .with_is_error(false);
 
         let body = json!({"result": "ok"});
@@ -440,8 +428,8 @@ mod tests {
         assert!(!is_err);
         assert!(json_str.contains("\"gaps\""), "should contain gaps field");
         assert!(
-            json_str.contains("UnresolvedImport"),
-            "should contain the gap variant"
+            json_str.contains("unresolved_import"),
+            "should contain the stable gap reason"
         );
         assert_eq!(
             store.snapshots.lock().unwrap()[0].status,
@@ -553,9 +541,10 @@ mod tests {
 
         let lr = AnalysisEnvelope::new("test_tool", &args)
             .with_coverage_counts(counts)
-            .with_gaps(vec![KnownGap::UnresolvedImport {
-                from: "a.c".into(),
-                import_path: "b.h".into(),
+            .with_gap_records(vec![GapRecord {
+                scope: "a.c".into(),
+                reason: "unresolved_import".into(),
+                detail: "Import 'b.h' could not be resolved from this file.".into(),
             }])
             .with_is_error(false);
 

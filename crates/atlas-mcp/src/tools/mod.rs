@@ -13,7 +13,6 @@ use atlas_engine::FileId;
 use atlas_engine::SearchEngine;
 use atlas_engine::Store;
 use atlas_engine::SymbolId;
-use atlas_engine::SyncEngine;
 use atlas_engine::TraceDiagnostic;
 use std::collections::HashSet;
 use std::path::Path;
@@ -160,7 +159,7 @@ pub(crate) fn apply_focus_result_to_lr(
             )
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
         if !result.gaps.is_empty() {
-            lr = lr.with_gaps(result.gaps.clone());
+            lr = lr.with_gap_records(result.gaps.iter().map(known_gap_record).collect());
         }
         lr
     } else {
@@ -173,6 +172,73 @@ pub(crate) fn apply_focus_result_to_lr(
             ))
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
         lr.with_analysis_retry_after_ms(retry_after_ms)
+    }
+}
+
+fn known_gap_record(gap: &atlas_engine::structs::KnownGap) -> analysis_envelope::GapRecord {
+    use atlas_engine::structs::KnownGap;
+
+    let (scope, reason, detail) = match gap {
+        KnownGap::UnresolvedImport { from, import_path } => (
+            from.clone(),
+            "unresolved_import",
+            format!("Import '{import_path}' could not be resolved from this file."),
+        ),
+        KnownGap::IndirectCall { callsite, reason } => (
+            callsite.clone(),
+            "indirect_call",
+            format!("Indirect call target is unresolved: {reason}"),
+        ),
+        KnownGap::TypeOutside { type_name, ref_by } => (
+            ref_by.clone(),
+            "type_outside_closure",
+            format!("Referenced type '{type_name}' is outside the analyzed closure."),
+        ),
+        KnownGap::BudgetExhausted {
+            strategy,
+            remaining,
+        } => (
+            "focus_closure".to_string(),
+            "budget_exhausted",
+            format!("Strategy '{strategy}' stopped with {remaining} item(s) remaining."),
+        ),
+        KnownGap::ConditionalBranch {
+            symbol,
+            guard,
+            branches,
+        } => (
+            symbol.clone(),
+            "conditional_branch",
+            format!("Guard '{guard}' has {branches} branch(es) not fully covered."),
+        ),
+        KnownGap::CodeGenerationNotExpanded { at, generator } => (
+            at.clone(),
+            "code_generation_not_expanded",
+            format!("Generated code from '{generator}' was not expanded."),
+        ),
+        KnownGap::HighFanoutName {
+            name, candidates, ..
+        } => (
+            name.clone(),
+            "high_fanout_name",
+            format!("Name resolution has {candidates} candidates."),
+        ),
+        KnownGap::SymbolHintsIncomplete { name, coverage_pct } => (
+            name.clone(),
+            "symbol_hints_incomplete",
+            format!("Symbol hint coverage is {coverage_pct}%."),
+        ),
+        KnownGap::VisibilityHidden { symbol, reason } => (
+            symbol.clone(),
+            "visibility_hidden",
+            format!("Symbol is hidden from this closure: {reason}"),
+        ),
+    };
+
+    analysis_envelope::GapRecord {
+        scope,
+        reason: reason.to_string(),
+        detail,
     }
 }
 
@@ -267,113 +333,6 @@ impl ToolRouter {
         self.project
             .get()
             .expect("call_tool gate ensures project is active")
-    }
-
-    /// Probe for external file changes (full-index projects only).
-    ///
-    /// Non-blocking: checks cooldown, detects changes via git or DB hash,
-    /// and spawns a background sync thread if changes are found.
-    /// Called from `call_tool` in lib.rs before dispatch.
-    pub(crate) fn probe_external_changes_if_due(&self) {
-        let project = self.project();
-
-        // Only relevant for projects with a CLI full index
-        if !project.query_runtime.has_full_index(&project.store) {
-            return;
-        }
-
-        // Cooldown: probe at most once per 5 seconds
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last = project
-            .sync_state
-            .last_probe
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if now.saturating_sub(last) < 5 {
-            return;
-        }
-        project
-            .sync_state
-            .last_probe
-            .store(now, std::sync::atomic::Ordering::Relaxed);
-
-        // If sync already in progress, skip
-        if project
-            .sync_state
-            .in_progress
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return;
-        }
-
-        // Detect changes
-        let sync_engine = SyncEngine::new(project.store.clone(), project.root.clone());
-        match sync_engine.detect_changes() {
-            Ok(changes) if !changes.is_empty() => {
-                tracing::info!(
-                    added = changes.added.len(),
-                    modified = changes.modified.len(),
-                    deleted = changes.deleted.len(),
-                    "external file changes detected; spawning background sync"
-                );
-                self.spawn_background_sync(project, sync_engine);
-            }
-            Ok(_) => {
-                // No changes — nothing to do
-            }
-            Err(e) => {
-                tracing::warn!("change detection failed: {e:#}");
-            }
-        }
-    }
-
-    /// Spawn a background sync thread that rebuilds the graph index.
-    ///
-    /// Uses `std::thread::spawn` because `SyncEngine::sync()` is synchronous
-    /// CPU/IO work. After completion, bumps the graph generation counter
-    /// so the next graph-backed tool call picks up the new data.
-    fn spawn_background_sync(&self, project: Arc<ActiveProject>, sync_engine: SyncEngine) {
-        let sync_state = project.sync_state.clone();
-        let invalidation = project.graph_runtime.invalidation.clone();
-
-        sync_state
-            .in_progress
-            .store(true, std::sync::atomic::Ordering::Release);
-
-        std::thread::spawn(move || {
-            let start = std::time::Instant::now();
-            let sink = atlas_engine::NoopSink;
-            let mut interrupted = || false;
-
-            match sync_engine.sync(&sink, &mut interrupted) {
-                Ok(stats) => {
-                    tracing::info!(
-                        files_changed = stats.files_changed,
-                        files_reindexed = stats.files_reindexed,
-                        new_nodes = stats.new_nodes,
-                        duration_ms = start.elapsed().as_millis(),
-                        "background sync completed"
-                    );
-                    // Bump graph generation — next maybe_refresh_graph() will detect staleness
-                    invalidation
-                        .graph_generation
-                        .fetch_add(1, std::sync::atomic::Ordering::Release);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        duration_ms = start.elapsed().as_millis(),
-                        "background sync failed: {e:#}"
-                    );
-                }
-            }
-
-            sync_state
-                .in_progress
-                .store(false, std::sync::atomic::Ordering::Release);
-        });
     }
 
     /// Return the backing store.
@@ -1252,7 +1211,7 @@ fn make_symbol_tools() -> Vec<Tool> {
         },
         Tool {
             name: "symbol".into(),
-            description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, signature, and caller/callee summaries (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, and dependencies. view='usages' returns reference usages. Default view is 'detail'.".into(),
+            description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, and signature (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, and dependencies. view='usages' returns reference usages. Default view is 'detail'.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -2177,21 +2136,6 @@ impl ToolRouter {
     /// Handle `fp_dispatches` tool — dispatch by `action`.
     pub(crate) fn handle_fp_dispatches(&self, args: &Value) -> (String, bool) {
         let action = get_str(args, "action");
-        // ── Gate overlay writes during background sync ──
-        if matches!(action, "add" | "delete") {
-            let project = self.project();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while project
-                .sync_state
-                .in_progress
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                if std::time::Instant::now() > deadline {
-                    return (json!({"error": "background sync in progress, retry overlay mutation shortly"}).to_string(), true);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
         match action {
             "add" => self.handle_annotate_fp_dispatch(args),
             "list" | "" => self.handle_list_fp_annotations(),
@@ -2208,21 +2152,6 @@ impl ToolRouter {
     /// Handle `domain_rules` tool — dispatch by `action`.
     pub(crate) fn handle_domain_rules(&self, args: &Value) -> (String, bool) {
         let action = get_str(args, "action");
-        // ── Gate overlay writes during background sync ──
-        if matches!(action, "add" | "delete" | "learn") {
-            let project = self.project();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while project
-                .sync_state
-                .in_progress
-                .load(std::sync::atomic::Ordering::Acquire)
-            {
-                if std::time::Instant::now() > deadline {
-                    return (json!({"error": "background sync in progress, retry overlay mutation shortly"}).to_string(), true);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
         match action {
             "add" => self.handle_atlas_annotate(args),
             "list" | "" => self.handle_atlas_domain_rules(args),
@@ -2241,6 +2170,45 @@ impl ToolRouter {
     pub(crate) fn handle_tasks(&self, args: &Value) -> (String, bool) {
         let query_id = get_str_opt(args, "query_id");
 
+        let query = query_id.map(|qid| {
+            self.project().job_runtime.prune_expired_snapshots();
+            let snapshot = self
+                .project()
+                .job_runtime
+                .query_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(qid)
+                .cloned();
+            let Some(snapshot) = snapshot else {
+                return json!({
+                    "query_id": qid,
+                    "status": "not_found_or_expired",
+                    "pending_jobs": 0,
+                });
+            };
+
+            let (pending, retry_after_ms) = snapshot
+                .focus_result
+                .as_ref()
+                .and_then(|result| {
+                    result.job_tracker.as_ref().map(|tracker| {
+                        tracker.pending_count_and_eta_ms(&result.pending_closure_ids)
+                    })
+                })
+                .unwrap_or((0, 0));
+            let mut state = json!({
+                "query_id": qid,
+                "tool": snapshot.tool_name,
+                "status": if pending == 0 { "ready" } else { "refining" },
+                "pending_jobs": pending,
+            });
+            if pending > 0 {
+                state["retry_after_ms"] = json!(retry_after_ms);
+            }
+            state
+        });
+
         let (jobs_str, jobs_err) = self.handle_jobs();
         let atlas_args = if let Some(qid) = query_id {
             let mut m = serde_json::Map::new();
@@ -2251,10 +2219,13 @@ impl ToolRouter {
         };
         let (atlas_str, atlas_err) = self.handle_atlas_jobs(&atlas_args);
 
-        let result = json!({
+        let mut result = json!({
             "active_extraction_jobs": serde_json::from_str::<Value>(&jobs_str).unwrap_or_default(),
             "atlas_jobs": serde_json::from_str::<Value>(&atlas_str).unwrap_or_default(),
         });
+        if let Some(query) = query {
+            result["query"] = query;
+        }
         (
             serde_json::to_string_pretty(&result).unwrap_or_default(),
             jobs_err || atlas_err,
@@ -2633,7 +2604,14 @@ mod tests {
         // In-memory store with no index → read_index_mode returns empty/default,
         // which is not a rich index mode → FocusPartial.
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
+        assert!(
+            !router
+                .project()
+                .graph_runtime
+                .state
+                .graph_initialized
+                .load(Ordering::Acquire)
+        );
 
         assert_eq!(
             *router.project().graph_runtime.mode.lock().unwrap(),
@@ -2824,6 +2802,50 @@ mod tests {
         assert_eq!(jobs[0]["layer"].as_str(), Some("structural"));
     }
 
+    #[test]
+    fn tasks_query_status_uses_snapshot_job_tracker() {
+        use atlas_engine::focus::job_tracker::JobTracker;
+
+        let store = test_store();
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let tracker = Arc::new(JobTracker::new());
+        router.store_query_snapshot(QuerySnapshot {
+            query_id: "q_pending".into(),
+            tool_name: "explore".into(),
+            tool_args: serde_json::json!({"symbol": "target"}),
+            focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: None,
+                gaps: vec![],
+                pending_closure_ids: vec!["cl_pending".into()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: Some(Arc::clone(&tracker)),
+            }),
+            created_at: std::time::Instant::now(),
+            status: crate::tools::query_snapshot::QueryStatus::Partial,
+        });
+
+        let (pending, pending_err) =
+            router.handle_tasks(&serde_json::json!({"query_id": "q_pending"}));
+        assert!(!pending_err);
+        let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
+        assert_eq!(pending["query"]["status"], "refining");
+        assert_eq!(pending["query"]["pending_jobs"], 1);
+        assert_eq!(pending["query"]["retry_after_ms"], 5000);
+
+        tracker.mark_done("cl_pending");
+        let (ready, ready_err) = router.handle_tasks(&serde_json::json!({"query_id": "q_pending"}));
+        assert!(!ready_err);
+        let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(ready["query"]["status"], "ready");
+        assert_eq!(ready["query"]["pending_jobs"], 0);
+        assert!(ready["query"].get("retry_after_ms").is_none());
+    }
+
     // ── Regression: include_roots validation produces diagnostics ────
 
     #[test]
@@ -2923,7 +2945,14 @@ mod tests {
         );
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        router.ensure_graph_initialized().unwrap();
+        assert!(
+            !router
+                .project()
+                .graph_runtime
+                .state
+                .graph_initialized
+                .load(Ordering::Acquire)
+        );
 
         let args = serde_json::json!({
             "symbol": "test_func.test_func",
@@ -2937,6 +2966,17 @@ mod tests {
             resp["signature"].as_str(),
             Some("(arg: string): void"),
             "symbol detail must pass through the stored SymbolDef.signature"
+        );
+        assert!(resp.get("callers").is_none());
+        assert!(resp.get("callees").is_none());
+        assert!(
+            !router
+                .project()
+                .graph_runtime
+                .state
+                .graph_initialized
+                .load(Ordering::Acquire),
+            "symbol detail must not initialize the graph"
         );
     }
 
@@ -4492,6 +4532,10 @@ mod tests {
                 resp["gaps"].as_array().is_some_and(|gaps| gaps.len() == 1),
                 "terminal response should retain permanent gaps: {resp}"
             );
+            assert_eq!(resp["gaps"][0]["scope"], "focus_closure");
+            assert_eq!(resp["gaps"][0]["reason"], "budget_exhausted");
+            assert!(resp["gaps"][0]["detail"].is_string());
+            assert!(resp["gaps"][0].get("BudgetExhausted").is_none());
         }
 
         // ── Case 2: Non-terminal — tracker says jobs are pending ──

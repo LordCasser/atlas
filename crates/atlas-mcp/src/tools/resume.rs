@@ -8,6 +8,7 @@ use super::CallsDispatch;
 use super::ToolRouter;
 use super::query_snapshot::QueryStatus;
 use super::resolve_calls_dispatch;
+use super::tool_contract::{ToolContract, contract_for};
 use serde_json::{Value, json};
 
 impl ToolRouter {
@@ -58,9 +59,21 @@ impl ToolRouter {
             s.status = QueryStatus::Refining;
         }
 
-        // Trigger graph refresh so re-dispatched handler sees fresh data.
-        if let Err(e) = self.maybe_refresh_graph() {
-            tracing::warn!("Graph refresh in resume handler failed: {e:#}");
+        // Only graph-backed replays need a GraphSnapshot refresh. Store-fact,
+        // trace, and CFG/dataflow handlers prepare their own required state.
+        if matches!(
+            contract_for(&snapshot.tool_name, &snapshot.tool_args),
+            ToolContract::SemanticGraphQuery(_)
+        ) {
+            if let Some(ref focus_result) = snapshot.focus_result {
+                self.project()
+                    .query_runtime
+                    .lazy_refresh_queue
+                    .record_lazy_writes(&focus_result.built_files);
+            }
+            if let Err(e) = self.maybe_refresh_graph() {
+                tracing::warn!("Graph refresh in resume handler failed: {e:#}");
+            }
         }
 
         // Copy query_id before snapshot moves

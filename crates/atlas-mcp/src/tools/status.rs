@@ -82,8 +82,6 @@ impl ToolRouter {
 
         // ── SQLite cache diagnostics ──────────────────────────────────────
         let cache_stats = self.project().store.get_cache_stats().ok();
-        let storage_is_in_memory = db_path == ":memory:";
-
         let diagnostics = {
             let mut diag = json!({
                 "storage_hierarchy": {
@@ -121,16 +119,6 @@ impl ToolRouter {
                         }
                     }),
                 );
-            }
-            if storage_is_in_memory {
-                diag.as_object_mut().unwrap().insert(
-                    "storage_mode".to_string(),
-                    json!("in_memory (not persisted)"),
-                );
-            } else {
-                diag.as_object_mut()
-                    .unwrap()
-                    .insert("storage_mode".to_string(), json!("persistent"));
             }
             diag
         };

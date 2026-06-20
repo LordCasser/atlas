@@ -15,14 +15,13 @@ use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
-use super::analysis_envelope::AnalysisEnvelope;
+use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
 use super::{MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 
 use serde_json::json;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 // ── MCP response helpers ────────────────────────────────────────────────────
@@ -92,7 +91,7 @@ impl ToolRouter {
             }
         };
 
-        let (result_str, is_err) = self.handle_search_sync(
+        self.handle_search_sync(
             ctx,
             args,
             query,
@@ -102,13 +101,7 @@ impl ToolRouter {
             is_manual_full,
             include_roots,
             root_warnings,
-        );
-        // ScopedSearchService writes directly to the shared Store;
-        // refresh the graph if the store signature changed.
-        if let Err(e) = self.maybe_refresh_graph() {
-            tracing::warn!("Graph refresh after scoped search failed: {e:#}");
-        }
-        (result_str, is_err)
+        )
     }
 
     // ── handle_search_sync ────────────────────────────────────────────────
@@ -191,28 +184,6 @@ impl ToolRouter {
         }
 
         let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
-        let mut background_file_ids = engine_resp.deferred_file_ids.clone();
-        if search_is_partial && background_file_ids.is_empty() {
-            let mut seen: HashSet<FileId> = background_file_ids.iter().copied().collect();
-            for hit in &engine_resp.results {
-                if seen.insert(hit.symbol.file_id) {
-                    background_file_ids.push(hit.symbol.file_id);
-                }
-            }
-            for file_id in self
-                .project()
-                .store
-                .list_file_inventory_ids_in_scope(scope, 24)
-                .unwrap_or_default()
-            {
-                if seen.insert(file_id) {
-                    background_file_ids.push(file_id);
-                }
-            }
-        }
-        const SEARCH_BACKGROUND_FOCUS_LIMIT: usize = 4;
-        background_file_ids.truncate(SEARCH_BACKGROUND_FOCUS_LIMIT);
-        let background_jobs = self.enqueue_background_file_focus(&background_file_ids);
 
         // Build the MCP JSON response from the engine response.
         let hits: Vec<SearchHit> = engine_resp
@@ -235,8 +206,6 @@ impl ToolRouter {
                 json!({"state": "partial", "reason": reason})
             }
         };
-        response["triggered_lazy"] = json!(engine_resp.triggered_lazy);
-        response["capability_mask"] = json!(engine_resp.capability_mask.bits());
         ctx.send_progress(1.0, &format!("Search complete ({} results)", hits.len()));
 
         let mut lr = AnalysisEnvelope::new("search", args)
@@ -245,25 +214,22 @@ impl ToolRouter {
             .with_is_error(false);
         if search_is_partial {
             let search_has_hits = !hits.is_empty();
-            let background_queued = !background_jobs.is_empty();
             lr = lr
                 .with_analysis_scope("local".into())
                 .with_analysis_summary(if search_has_hits {
-                    if background_queued {
-                        "scoped search returned bounded matches; background focus warming is preparing broader coverage"
-                    } else {
-                        "scoped search returned matches from the current focus scope; full repository coverage is unavailable"
-                    }
-                        .into()
-                } else if background_queued {
-                    "scoped search returned no matches yet; background focus warming is preparing broader coverage"
+                    "scoped search returned matches from the current focus scope; full repository coverage is unavailable"
                         .into()
                 } else {
-                    "scoped search returned no matches in the bounded foreground pass; retry after background focus warming"
+                    "scoped search returned no matches in the bounded pass; full repository coverage is unavailable"
                         .into()
                 })
-                .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
-            lr = lr.with_analysis_retry_after_ms(2000);
+                .with_analysis_basis(vec!["manifest".into(), "structural".into()])
+                .with_gap_records(vec![GapRecord {
+                    scope: scope.to_string(),
+                    reason: "closure_boundary".into(),
+                    detail: "Search covered the current scoped facts, but structural coverage is incomplete for part of the scope."
+                        .into(),
+                }]);
         }
         if !search_is_partial {
             lr = lr
@@ -338,46 +304,54 @@ impl ToolRouter {
                 // Found a unique symbol on the first try
                 if let Ok(Some(s)) = self.project().store.find_symbol_by_id(&symbol_id) {
                     self.update_investigation(InvestigationFocus::Symbol(s.id));
-                    // Ensure structural data so caller/callee results
-                    // include fresh edges from lazy extraction.
-                    let (focus_result, focus_warnings) =
-                        self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                            symbol_name: qname.to_string(),
-                            file_id: Some(s.file_id),
-                            symbol_id: None,
-                        }));
-                    if let Some(ref result) = focus_result {
-                        lr = crate::tools::apply_focus_result_to_lr(lr, result);
-                    }
-                    lazy_warnings = focus_warnings;
-                    // Re-query after lazy — structural replace may have
-                    // updated symbol metadata or source ranges.
-                    sym = match self.resolve_symbol_input(
-                        &symbol_input,
-                        SymbolResolutionPolicy::UniqueOrCandidates,
-                    ) {
-                        Ok(SymbolResolution::Single {
-                            symbol_id: new_id, ..
-                        }) => self
+                    let source_missing = include_code
+                        && self
                             .project()
-                            .store
-                            .find_symbol_by_id(&new_id)
-                            .unwrap_or_default()
-                            .unwrap_or(s),
-                        Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
-                            let diag = self.file_path_diagnostic(&symbol_input);
-                            let amb_resp = Self::build_ambiguous_symbol_body(
-                                &qname,
-                                &candidates,
-                                diag.as_deref(),
-                            );
-                            return lr
-                                .with_is_error(true)
-                                .with_lazy_warnings(lazy_warnings)
-                                .build_with_args(amb_resp, args, self);
+                            .store_query_runtime
+                            .read_symbol_source(&s.id)
+                            .is_none();
+                    if source_missing {
+                        let (focus_result, focus_warnings) =
+                            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
+                                symbol_name: qname.to_string(),
+                                file_id: Some(s.file_id),
+                                symbol_id: None,
+                            }));
+                        if let Some(ref result) = focus_result {
+                            lr = crate::tools::apply_focus_result_to_lr(lr, result);
                         }
-                        _ => s,
-                    };
+                        lazy_warnings = focus_warnings;
+                        // Structural replacement may update metadata or ranges.
+                        sym = match self.resolve_symbol_input(
+                            &symbol_input,
+                            SymbolResolutionPolicy::UniqueOrCandidates,
+                        ) {
+                            Ok(SymbolResolution::Single {
+                                symbol_id: new_id, ..
+                            }) => self
+                                .project()
+                                .store
+                                .find_symbol_by_id(&new_id)
+                                .unwrap_or_default()
+                                .unwrap_or(s),
+                            Ok(SymbolResolution::Ambiguous { candidates, .. }) => {
+                                let diag = self.file_path_diagnostic(&symbol_input);
+                                let amb_resp = Self::build_ambiguous_symbol_body(
+                                    &qname,
+                                    &candidates,
+                                    diag.as_deref(),
+                                );
+                                return lr
+                                    .with_is_error(true)
+                                    .with_lazy_warnings(lazy_warnings)
+                                    .build_with_args(amb_resp, args, self);
+                            }
+                            _ => s,
+                        };
+                    } else {
+                        lazy_warnings = Vec::new();
+                        sym = s;
+                    }
                 } else {
                     let mut err = format!("Symbol not found: {qname}");
                     err.push_str(self.project().store_query_runtime.not_indexed_guidance());
@@ -450,42 +424,12 @@ impl ToolRouter {
             }
             Err(e) => return (e, true),
         };
-        if let Err(e) = self.ensure_graph_initialized() {
-            return (format!("Graph initialization error: {e:#}"), true);
-        }
-        if let Err(e) = self.force_refresh_graph() {
-            return (format!("Graph refresh error: {e:#}"), true);
-        }
-
-        // Re-acquire graph after lazy structural may have refreshed it
-        let project = self.project();
-        let graph = match project.graph_runtime.provider().graph_snapshot() {
-            Some(g) => g,
-            None => return ("Graph not initialized".to_string(), true),
-        };
-        let snap = graph.snapshot();
-
-        let caller_nodes: Vec<_> = graph
-            .callers(&sym.id)
-            .callers
-            .iter()
-            .map(|&ix| super::node_json(&self.project().store_query_runtime, snap, ix, None))
-            .collect();
-        let callee_nodes: Vec<_> = graph
-            .callees(&sym.id)
-            .callees
-            .iter()
-            .map(|&ix| super::node_json(&self.project().store_query_runtime, snap, ix, None))
-            .collect();
-
         let mut result = json!({
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
             "file": self.project().store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
-            "caller_count": caller_nodes.len(), "callee_count": callee_nodes.len(),
-            "callers": caller_nodes, "callees": callee_nodes,
         });
         if include_code {
             if let Some(src) = self
