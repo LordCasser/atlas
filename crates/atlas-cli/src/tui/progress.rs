@@ -5,7 +5,7 @@
 //! line while work is running, preserves that line on Ctrl+C, and prints normal
 //! command output below it on completion or interruption.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -28,7 +28,7 @@ pub struct TuiProgress {
 impl TuiProgress {
     /// Initialise terminal progress. Returns `None` on non-TTY stdout.
     pub fn try_init(state: Arc<Mutex<ProgressState>>) -> Option<Self> {
-        if !atty::is(atty::Stream::Stdout) {
+        if !std::io::stdout().is_terminal() {
             return None;
         }
 
