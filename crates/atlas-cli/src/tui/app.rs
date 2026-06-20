@@ -74,6 +74,7 @@ enum ToolKind {
 /// 按键交互模式（本次 UX 重新设计的核心）。
 /// - Querying：搜索栏拥有输入（无结果列表时、或用户显式想 refine query 时）。此时字母（包括 i/v/j/k）可安全输入查询。
 /// - Browsing：当有 results/subject 时，默认处于此模式。工具键（'i' impact、'v' variable-trace 等 MCP 工具）和导航（j/k/arrows）总是优先触发，不被输入吞咽。
+///
 /// 这直接解决“默认按任何按键都是输入，无法触发其他搜索模式”的问题，让 MCP 对齐的工具（impact/trace 等）在列表存在时可靠可达，同时保持打字安全性。
 /// 视觉上通过 search_bar 标题、status MODE:、results title、help 强烈暴露当前模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -166,14 +167,12 @@ impl App {
                 state: "usable_partial".into(),
                 work: "focus refinement available".into(),
                 gap_count: 1,
-                ..AnalysisHud::default()
             },
             _ => AnalysisHud {
                 precision: "manifest/unavailable".into(),
                 state: "partial".into(),
                 work: "index or search to refine".into(),
                 gap_count: 1,
-                ..AnalysisHud::default()
             },
         };
 
@@ -831,7 +830,7 @@ impl App {
                 }
             }
             JobResult::TraceChain(chain) => {
-                self.trace_chain = chain;
+                self.trace_chain = chain.map(|chain| *chain);
                 self.trace_selected = 0;
                 self.trace_scroll = 0;
                 self.screen = Screen::TraceView;
@@ -840,22 +839,22 @@ impl App {
                 self.last_tool_result = res.clone();
                 self.current_tool = ToolKind::TraceVariable;
                 if let Some(r) = &res {
-                    self.analysis_hud.work = format!("trace: {}", r);
+                    self.analysis_hud.work = format!("trace: {r}");
                 }
                 self.analysis_hud.state = "usable_partial".to_string();
                 self.analysis_hud.precision = "local (tool)".to_string();
-                tracing::info!("Trace (variable/etc) job result: {:?}", res);
+                tracing::info!("Trace (variable/etc) job result: {res:?}");
                 // In full hybrid: set current_tool = Trace, render rich result, update precision/gaps from real response.
             }
             JobResult::ImpactResult(res) => {
                 self.last_tool_result = res.clone();
                 self.current_tool = ToolKind::Impact;
                 if let Some(r) = &res {
-                    self.analysis_hud.work = format!("impact: {}", r);
+                    self.analysis_hud.work = format!("impact: {r}");
                 }
                 self.analysis_hud.state = "usable_partial".to_string();
                 self.analysis_hud.precision = "local (tool)".to_string();
-                tracing::info!("Impact job result: {:?}", res);
+                tracing::info!("Impact job result: {res:?}");
                 // Future: populate ImpactView, show in detail or dedicated, feed semantic gaps to HUD.
             }
         }
@@ -1165,7 +1164,7 @@ impl App {
                 ToolKind::TraceVariable => "trace-var",
                 ToolKind::None => "tool",
             };
-            status_additional.push_str(&format!(" | {}:{}", kind, short));
+            status_additional.push_str(&format!(" | {kind}:{short}"));
             status_additional.push_str(" [x clear]");
         }
 
@@ -1274,7 +1273,7 @@ fn render_help_popup(frame: &mut Frame, area: Rect) {
 
     // 按已批准中文 plan 重写 help：必须解释显式 Query/Browse 模式 + “其他搜索模式”如何触发 + 示例流程。
     // 这是 discoverability 的关键 affordance。
-    let lines = vec![
+    let lines = [
         "  Atlas TUI 按键模式（? 切换本帮助）                          ",
         "  核心：Querying（打字） vs Browsing（列表存在时默认，工具可用）",
         "  有结果列表时 Browsing：i=Impact(MCP) v=VarTrace x=clear   ",

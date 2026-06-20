@@ -107,7 +107,7 @@ pub enum JobResult {
         files_cached: usize,
     },
     /// Trace callers finished.  `None` when the job was cancelled or failed.
-    TraceChain(Option<CallerChain>),
+    TraceChain(Option<Box<CallerChain>>),
     /// Generic trace result (variable / point / forward etc.). Placeholder string for now;
     /// will carry rich TraceQueryResponse or view in full impl. HUD can be updated from it.
     TraceResult(Option<String>),
@@ -341,8 +341,7 @@ fn execute_job(
             // Returns evidence string for HUD and tool bar display.
             // (In full: would call engine.trace_variable and format steps/partial)
             JobResult::TraceResult(Some(format!(
-                "variable-trace (real path) for sym {:?}",
-                symbol_id
+                "variable-trace (real path) for sym {symbol_id:?}"
             )))
         }
         TuiJob::Impact {
@@ -361,7 +360,7 @@ fn execute_job(
                     depth
                 )
             } else {
-                format!("impact (simulated) depth={} for {:?}", depth, symbol_id)
+                format!("impact (simulated) depth={depth} for {symbol_id:?}")
             };
             JobResult::ImpactResult(Some(info))
         }
@@ -483,7 +482,7 @@ fn run_trace(
     }
 
     let resp = engine.trace_callers(symbol_id, depth);
-    JobResult::TraceChain(resp.result)
+    JobResult::TraceChain(resp.result.map(Box::new))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
