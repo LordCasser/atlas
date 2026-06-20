@@ -53,10 +53,9 @@ pub enum GraphMode {
 /// Provides lazy initialization and incremental refresh of the
 /// SearchEngine and ContextBuilder backed by GraphState.
 pub struct GraphRuntime {
-    /// Heap-allocated so `ClosureGraphProvider` can hold a stable raw pointer
-    /// into it.  Both providers always see identical in-memory graph state.
-    pub state: Box<GraphState>,
-    /// Closure-scoped provider that shares the same heap allocation as `state`.
+    /// Shared state used by both graph providers.
+    pub state: Arc<GraphState>,
+    /// Closure-scoped provider that shares `state`.
     closure_provider: ClosureGraphProvider,
     pub store: Arc<Store>,
     pub source_extractor: SourceExtractor,
@@ -81,14 +80,14 @@ impl GraphRuntime {
     ) -> Self {
         let last_graph_signature = store.index_signature().unwrap_or_default();
         let last_graph_generation = invalidation.graph_generation.load(Ordering::Relaxed);
-        let state = Box::new(GraphState {
+        let state = Arc::new(GraphState {
             search: Mutex::new(None),
             context: Mutex::new(None),
             graph_initialized: std::sync::atomic::AtomicBool::new(false),
             last_graph_signature: Mutex::new(last_graph_signature),
             pending_graph_rebuild: Arc::new(std::sync::Mutex::new(None)),
         });
-        let closure_provider = ClosureGraphProvider::from_box(&state);
+        let closure_provider = ClosureGraphProvider::new(Arc::clone(&state));
         Self {
             state,
             closure_provider,

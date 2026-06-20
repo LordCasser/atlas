@@ -187,7 +187,7 @@ impl GraphState {
         F: FnOnce(&SearchEngine) -> R,
     {
         let guard = self.search.lock().ok()?;
-        guard.as_ref().map(|s| f(s))
+        guard.as_ref().map(f)
     }
 
     /// Lock and access the context builder for a closure.
@@ -196,7 +196,7 @@ impl GraphState {
         F: FnOnce(&ContextBuilder) -> R,
     {
         let guard = self.context.lock().ok()?;
-        guard.as_ref().map(|c| f(c))
+        guard.as_ref().map(f)
     }
 }
 
