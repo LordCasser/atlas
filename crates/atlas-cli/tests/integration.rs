@@ -1193,31 +1193,26 @@ fn mcp_tools_are_registered() {
 
     let tools = atlas_mcp::make_all_tools();
     let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-
     assert_eq!(
-        tool_names.len(),
-        18,
-        "expected exactly 18 MCP tools, got {}",
-        tool_names.len()
+        tool_names,
+        [
+            "project",
+            "search",
+            "symbol",
+            "calls",
+            "explore",
+            "path",
+            "impact",
+            "file_dependencies",
+            "trace",
+            "lifecycle",
+            "branch_diff",
+            "domain_rules",
+            "fp_dispatches",
+            "tasks",
+            "resume_query",
+        ]
     );
-    assert!(tool_names.contains(&"project"));
-    assert!(tool_names.contains(&"index"));
-    assert!(tool_names.contains(&"search"));
-    assert!(tool_names.contains(&"symbol"));
-    assert!(tool_names.contains(&"calls"));
-    assert!(tool_names.contains(&"explore"));
-    assert!(tool_names.contains(&"path"));
-    assert!(tool_names.contains(&"impact"));
-    assert!(tool_names.contains(&"file_dependencies"));
-    assert!(tool_names.contains(&"trace"));
-    assert!(tool_names.contains(&"lifecycle"));
-    assert!(tool_names.contains(&"branch_diff"));
-    assert!(tool_names.contains(&"fp_dispatches"));
-    assert!(tool_names.contains(&"domain_rules"));
-    assert!(tool_names.contains(&"tasks"));
-    assert!(tool_names.contains(&"task_status"));
-    assert!(tool_names.contains(&"wait_for_task"));
-    assert!(tool_names.contains(&"resume_task"));
 }
 
 /// Verify that DataNodes and dataflow_edges are cascade-deleted
@@ -1478,7 +1473,7 @@ fn test_python_with_lifecycle() {
     // Assert that a Free effect exists at a BlockExit node
     let has_free_at_block_exit = cfg_nodes.iter().any(|n| {
         n.kind == atlas_engine::CfgNodeKind::BlockExit
-            && composition.node_effects.get(&n.id).map_or(false, |effs| {
+            && composition.node_effects.get(&n.id).is_some_and(|effs| {
                 effs.iter()
                     .any(|e| matches!(&e.kind, SemanticEffectKind::Free { .. }))
             })
@@ -2342,8 +2337,7 @@ class MultiDemo
             .count();
         assert!(
             free_count >= 2,
-            "Expected >= 2 Free effects at BlockExit for multiple using resources, got {}",
-            free_count
+            "Expected >= 2 Free effects at BlockExit for multiple using resources, got {free_count}"
         );
 
         // Verify all Free effects have ContextManaged style

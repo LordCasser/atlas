@@ -133,7 +133,7 @@ impl ToolRouter {
                         )
                     }
                     Some(Err(e)) => (format!("Context build error: {e}"), true),
-                    None => return ("Graph not initialized".to_string(), true),
+                    None => ("Graph not initialized".to_string(), true),
                 }
             }
             ContextResolution::Ambiguous(candidates) => {

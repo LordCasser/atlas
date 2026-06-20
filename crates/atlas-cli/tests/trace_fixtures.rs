@@ -3378,8 +3378,7 @@ fn fx_cfg_if_else_ts() {
             .count();
         assert!(
             stmt_count >= 2,
-            "expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
 
         // ── Edge assertions ──
@@ -3458,8 +3457,7 @@ fn fx_cfg_loop_ts() {
             .count();
         assert!(
             stmt_count >= 1,
-            "expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -3535,8 +3533,7 @@ fn fx_cfg_if_else_python() {
             .count();
         assert!(
             stmt_count >= 2,
-            "Python: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "Python: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
     }
 }
@@ -3588,8 +3585,7 @@ fn fx_cfg_loop_python() {
             .count();
         assert!(
             stmt_count >= 1,
-            "Python: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "Python: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -3657,8 +3653,7 @@ func testIf(x int) int {
             .count();
         assert!(
             stmt_count >= 2,
-            "Go: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "Go: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
     }
 }
@@ -3714,8 +3709,7 @@ func testLoop(x int) int {
             .count();
         assert!(
             stmt_count >= 1,
-            "Go: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "Go: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -3781,8 +3775,7 @@ fn fx_cfg_if_else_rust() {
             .count();
         assert!(
             stmt_count >= 2,
-            "Rust: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "Rust: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
     }
 }
@@ -3836,8 +3829,7 @@ fn fx_cfg_loop_rust() {
             .count();
         assert!(
             stmt_count >= 1,
-            "Rust: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "Rust: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -3920,8 +3912,7 @@ fn fx_cfg_if_else_java() {
             .count();
         assert!(
             stmt_count >= 2,
-            "Java: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "Java: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
 
         // ── Edge assertions ──
@@ -4000,8 +3991,7 @@ fn fx_cfg_loop_java() {
             .count();
         assert!(
             stmt_count >= 1,
-            "Java: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "Java: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4086,8 +4076,7 @@ fn fx_cfg_if_else_c() {
             .count();
         assert!(
             stmt_count >= 2,
-            "C: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "C: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4162,8 +4151,7 @@ fn fx_cfg_loop_c() {
             .count();
         assert!(
             stmt_count >= 1,
-            "C: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "C: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4248,8 +4236,7 @@ fn fx_cfg_if_else_cpp() {
             .count();
         assert!(
             stmt_count >= 2,
-            "C++: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "C++: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4324,8 +4311,7 @@ fn fx_cfg_loop_cpp() {
             .count();
         assert!(
             stmt_count >= 1,
-            "C++: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "C++: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4414,8 +4400,7 @@ fn fx_cfg_if_else_csharp() {
             .count();
         assert!(
             stmt_count >= 2,
-            "C#: expected >= 2 Statement nodes (body statements), got {}",
-            stmt_count
+            "C#: expected >= 2 Statement nodes (body statements), got {stmt_count}"
         );
 
         // ── Edge assertions ──
@@ -4494,8 +4479,7 @@ fn fx_cfg_loop_csharp() {
             .count();
         assert!(
             stmt_count >= 1,
-            "C#: expected >= 1 Statement node (loop body), got {}",
-            stmt_count
+            "C#: expected >= 1 Statement node (loop body), got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4573,8 +4557,7 @@ fn fx_cfg_if_else_kotlin() {
             .count();
         assert!(
             stmt_count >= 1,
-            "Kotlin: expected >= 1 Statement node, got {}",
-            stmt_count
+            "Kotlin: expected >= 1 Statement node, got {stmt_count}"
         );
 
         let mut edges = Vec::new();
@@ -4642,8 +4625,7 @@ fn fx_cfg_loop_kotlin() {
             .count();
         assert!(
             stmt_count >= 1,
-            "Kotlin: expected >= 1 Statement node, got {}",
-            stmt_count
+            "Kotlin: expected >= 1 Statement node, got {stmt_count}"
         );
 
         let mut edges = Vec::new();

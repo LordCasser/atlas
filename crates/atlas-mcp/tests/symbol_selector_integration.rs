@@ -215,16 +215,12 @@ fn resolve_single(store: &Store, input: &SymbolInput) -> SymbolResolution {
             score_gap,
         } => {
             panic!(
-                "expected Single but got Ambiguous with {} candidates (gap={})",
-                candidates.len(),
-                score_gap
+                "expected Single but got Ambiguous with {} candidates (gap={score_gap})",
+                candidates.len()
             );
         }
         SymbolResolution::NotFound { qname, suggestions } => {
-            panic!(
-                "expected Single but got NotFound for '{}'. suggestions: {suggestions:?}",
-                qname
-            );
+            panic!("expected Single but got NotFound for '{qname}'. suggestions: {suggestions:?}");
         }
     }
 }
@@ -1011,6 +1007,6 @@ fn scored_candidate_symbol_id_survives_resolution_roundtrip() {
             assert!(ids.contains(&sym2.id));
             assert_ne!(ids[0], ids[1], "distinct symbol_ids");
         }
-        other => panic!("expected Ambiguous, got {:?}", other),
+        other => panic!("expected Ambiguous, got {other:?}"),
     }
 }

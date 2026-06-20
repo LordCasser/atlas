@@ -167,7 +167,7 @@ impl TaskManager {
         state.poll_count += 1;
 
         // Check TTL for completed/failed tasks
-        if state.completed_at.map_or(false, |t| t.elapsed() > self.ttl) {
+        if state.completed_at.is_some_and(|t| t.elapsed() > self.ttl) {
             tasks.remove(task_id);
             return None;
         }
@@ -257,27 +257,27 @@ mod tests {
         // First poll: ~500ms
         state.poll_count = 0;
         let d0 = state.next_poll_after_ms();
-        assert!(d0 >= 500 && d0 <= 600, "d0={d0}");
+        assert!((500..=600).contains(&d0), "d0={d0}");
 
         // Second poll: ~1000ms
         state.poll_count = 1;
         let d1 = state.next_poll_after_ms();
-        assert!(d1 >= 1000 && d1 <= 1100, "d1={d1}");
+        assert!((1000..=1100).contains(&d1), "d1={d1}");
 
         // Third poll: ~2000ms
         state.poll_count = 2;
         let d2 = state.next_poll_after_ms();
-        assert!(d2 >= 2000 && d2 <= 2100, "d2={d2}");
+        assert!((2000..=2100).contains(&d2), "d2={d2}");
 
         // Fourth poll: ~4000ms
         state.poll_count = 3;
         let d3 = state.next_poll_after_ms();
-        assert!(d3 >= 4000 && d3 <= 4100, "d3={d3}");
+        assert!((4000..=4100).contains(&d3), "d3={d3}");
 
         // Fifth poll: capped at ~5000ms
         state.poll_count = 4;
         let d4 = state.next_poll_after_ms();
-        assert!(d4 >= 5000 && d4 <= 5100, "d4={d4}");
+        assert!((5000..=5100).contains(&d4), "d4={d4}");
     }
 
     #[test]

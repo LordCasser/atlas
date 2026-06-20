@@ -140,10 +140,10 @@ pub fn contract_for(tool_name: &str, args: &Value) -> ToolContract {
 
 /// Return true for mutation actions (add, delete, enable, disable).
 fn is_mutation(args: &Value) -> bool {
-    match args.get("action").and_then(|v| v.as_str()) {
-        Some("add") | Some("delete") | Some("enable") | Some("disable") => true,
-        _ => false,
-    }
+    matches!(
+        args.get("action").and_then(|v| v.as_str()),
+        Some("add") | Some("delete") | Some("enable") | Some("disable")
+    )
 }
 
 // ── Execution mode ──────────────────────────────────────────────────────────

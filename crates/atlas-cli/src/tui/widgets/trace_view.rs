@@ -150,7 +150,7 @@ pub fn render(
         chain.nodes_visited, chain.max_depth_reached, truncated
     );
     if !focus_note.is_empty() {
-        stats.push_str(&format!("  |  focus: {}", focus_note));
+        stats.push_str(&format!("  |  focus: {focus_note}"));
     }
     lines.push(Line::from(Span::styled(
         stats,

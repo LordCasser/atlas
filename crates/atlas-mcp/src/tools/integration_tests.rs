@@ -436,94 +436,91 @@ mod focus_tests {
         }
 
         let mut found_gt: Option<GroundTruth> = None;
-        'outer: loop {
-            for &name in &candidates {
-                // -- Symbol resolution --
-                let (sym_resp, sym_err) = full_router.handle_symbol(
-                    &ToolCallContext::empty(),
-                    &json!({"symbol": {"qualified_name": name}, "view": "detail"}),
-                );
-                if sym_err {
-                    println!("  [full] symbol {name}: error {sym_resp:.120}");
-                    continue;
-                }
-                let sym = parse_json(&sym_resp);
-                if sym
-                    .get("is_error")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    println!("  [full] symbol {name}: is_error=true");
-                    continue;
-                }
-                let kind = sym["kind"].as_str().unwrap_or("").to_string();
-                let file = sym["file"].as_str().unwrap_or("").to_string();
-                if kind.is_empty() || file.is_empty() {
-                    println!("  [full] symbol {name}: missing kind/file");
-                    continue;
-                }
+        for &name in &candidates {
+            // -- Symbol resolution --
+            let (sym_resp, sym_err) = full_router.handle_symbol(
+                &ToolCallContext::empty(),
+                &json!({"symbol": {"qualified_name": name}, "view": "detail"}),
+            );
+            if sym_err {
+                println!("  [full] symbol {name}: error {sym_resp:.120}");
+                continue;
+            }
+            let sym = parse_json(&sym_resp);
+            if sym
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                println!("  [full] symbol {name}: is_error=true");
+                continue;
+            }
+            let kind = sym["kind"].as_str().unwrap_or("").to_string();
+            let file = sym["file"].as_str().unwrap_or("").to_string();
+            if kind.is_empty() || file.is_empty() {
+                println!("  [full] symbol {name}: missing kind/file");
+                continue;
+            }
 
-                // -- Callees (outgoing) --
-                let (callee_resp, callee_err) = full_router.handle_calls(&json!({
-                    "symbol": name,
-                    "direction": "outgoing",
-                }));
-                if callee_err {
-                    println!("  [full] callees {name}: error {callee_resp:.120}");
-                    continue;
-                }
-                let callee = parse_json(&callee_resp);
-                let callee_names: Vec<String> = callee["callees"]
+            // -- Callees (outgoing) --
+            let (callee_resp, callee_err) = full_router.handle_calls(&json!({
+                "symbol": name,
+                "direction": "outgoing",
+            }));
+            if callee_err {
+                println!("  [full] callees {name}: error {callee_resp:.120}");
+                continue;
+            }
+            let callee = parse_json(&callee_resp);
+            let callee_names: Vec<String> = callee["callees"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .filter_map(|c| c["name"].as_str().map(String::from))
+                .collect();
+            let total_callees = callee["total_callees"].as_u64().unwrap_or(0);
+
+            // -- Callers (incoming) --
+            let (caller_resp, caller_err) = full_router.handle_callers(&json!({
+                "symbol": name,
+            }));
+            let caller_names: Vec<String> = if !caller_err {
+                let caller = parse_json(&caller_resp);
+                caller["callers"]
                     .as_array()
                     .unwrap_or(&vec![])
                     .iter()
                     .filter_map(|c| c["name"].as_str().map(String::from))
-                    .collect();
-                let total_callees = callee["total_callees"].as_u64().unwrap_or(0);
+                    .collect()
+            } else {
+                vec![]
+            };
+            let total_callers = if !caller_err {
+                parse_json(&caller_resp)["total_callers"]
+                    .as_u64()
+                    .unwrap_or(0)
+            } else {
+                0
+            };
 
-                // -- Callers (incoming) --
-                let (caller_resp, caller_err) = full_router.handle_callers(&json!({
-                    "symbol": name,
-                }));
-                let caller_names: Vec<String> = if !caller_err {
-                    let caller = parse_json(&caller_resp);
-                    caller["callers"]
-                        .as_array()
-                        .unwrap_or(&vec![])
-                        .iter()
-                        .filter_map(|c| c["name"].as_str().map(String::from))
-                        .collect()
-                } else {
-                    vec![]
-                };
-                let total_callers = if !caller_err {
-                    parse_json(&caller_resp)["total_callers"]
-                        .as_u64()
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
-                println!(
-                    "  [full] {name}: kind={kind}, file={file}, \
+            println!(
+                "  [full] {name}: kind={kind}, file={file}, \
                      callees={total_callees} ({callee_names:?}), \
                      callers={total_callers} ({caller_names:?})"
-                );
+            );
 
-                if total_callees > 0 {
-                    found_gt = Some(GroundTruth {
-                        symbol_name: name.to_string(),
-                        kind,
-                        file,
-                        callee_names,
-                        total_callees,
-                        caller_names,
-                        total_callers,
-                    });
-                    break 'outer;
-                }
+            if total_callees > 0 {
+                found_gt = Some(GroundTruth {
+                    symbol_name: name.to_string(),
+                    kind,
+                    file,
+                    callee_names,
+                    total_callees,
+                    caller_names,
+                    total_callers,
+                });
+                break;
             }
-            break;
         }
 
         let gt = match found_gt {
@@ -656,7 +653,7 @@ mod focus_tests {
                 focus_file.ends_with(gt_file.as_str())
                     || gt_file.ends_with(&focus_file)
                     || focus_file.contains(gt_file.as_str())
-                    || gt_file.contains(&focus_file),
+                    || gt_file.contains(focus_file),
                 "Symbol file mismatch: full=[{}], focus=[{focus_file}]",
                 gt.file,
             );
@@ -1089,7 +1086,7 @@ public class ElasticsearchException extends RuntimeException {
         insert_focus_es_edge(&store, primary_sid, callee3_sid);
 
         // Build the graph snapshot so callee queries see our edges.
-        let _ = router
+        router
             .ensure_graph_initialized()
             .expect("graph init after focus");
 

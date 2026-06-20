@@ -613,7 +613,7 @@ int top_function(void) {
     assert!(
         resp.get("error")
             .and_then(|v| v.as_str())
-            .map_or(false, |s| s.contains("scope")),
+            .is_some_and(|s| s.contains("scope")),
         "error should mention scope: {resp:.300}"
     );
 
@@ -1243,9 +1243,7 @@ fn all_registered_tools_accept_minimal_args() {
         let result = router.call_tool(&ctx, tool_name, args);
         assert!(
             !result.content.is_empty(),
-            "Tool '{}' returned empty content. Args: {}",
-            tool_name,
-            args
+            "Tool '{tool_name}' returned empty content. Args: {args}"
         );
     }
 }

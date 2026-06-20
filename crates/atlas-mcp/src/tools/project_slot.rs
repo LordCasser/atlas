@@ -20,7 +20,7 @@ impl ProjectSlot {
     pub(crate) fn get(&self) -> Result<Arc<ActiveProject>, String> {
         self.active
             .read()
-            .map_err(|e| format!("project slot lock poisoned: {}", e))?
+            .map_err(|e| format!("project slot lock poisoned: {e}"))?
             .clone()
             .ok_or_else(|| "No active project. Call project(action=\"open\") first.".to_string())
     }

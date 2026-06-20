@@ -21,12 +21,11 @@ fn discover_example_projects() -> Vec<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&examples_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                if path.join(".atlas/atlas.db").exists() {
-                    if let Ok(canonical) = path.canonicalize() {
-                        projects.push(canonical);
-                    }
-                }
+            if path.is_dir()
+                && path.join(".atlas/atlas.db").exists()
+                && let Ok(canonical) = path.canonicalize()
+            {
+                projects.push(canonical);
             }
         }
     }
@@ -37,12 +36,12 @@ fn discover_example_projects() -> Vec<PathBuf> {
 fn open_router(project_root: &std::path::Path) -> ToolRouter {
     let db_path = project_root.join(".atlas/atlas.db");
     let store = Store::open_db(&db_path)
-        .unwrap_or_else(|e| panic!("Failed to open DB at {:?}: {}", db_path, e));
+        .unwrap_or_else(|e| panic!("Failed to open DB at {db_path:?}: {e}"));
     let store = std::sync::Arc::new(store);
     let router = ToolRouter::new_empty(store, project_root.to_path_buf());
     router
         .ensure_graph_initialized()
-        .unwrap_or_else(|e| panic!("Failed to init graph for {:?}: {}", project_root, e));
+        .unwrap_or_else(|e| panic!("Failed to init graph for {project_root:?}: {e}"));
     router
 }
 

@@ -1723,11 +1723,6 @@ impl ToolRouter {
                 },
                 Err(e) => return (e, true),
             }
-        } else if !has_file_hint {
-            match self.resolve_symbol_input(&input, SymbolResolutionPolicy::UniqueOrCandidates) {
-                Ok(r) => r,
-                Err(e) => return (e, true),
-            }
         } else {
             match self.resolve_symbol_input(&input, SymbolResolutionPolicy::UniqueOrCandidates) {
                 Ok(r) => r,

@@ -181,7 +181,7 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView, fo
     if !focus_note.is_empty() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            format!("  [focus: {}]", focus_note),
+            format!("  [focus: {focus_note}]"),
             Style::default().fg(Color::Yellow),
         )));
     }

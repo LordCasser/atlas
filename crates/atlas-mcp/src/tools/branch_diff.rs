@@ -499,8 +499,8 @@ mod tests {
         }
 
         let diagnostic = resp.get("diagnostic").expect("diagnostic should exist");
-        assert_eq!(diagnostic["message"].as_str().unwrap().len() > 0, true);
-        assert_eq!(diagnostic["suggestion"].as_str().unwrap().len() > 0, true);
+        assert!(!diagnostic["message"].as_str().unwrap().is_empty());
+        assert!(!diagnostic["suggestion"].as_str().unwrap().is_empty());
     }
 
     #[test]

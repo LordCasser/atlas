@@ -1618,8 +1618,8 @@ impl ToolRouter {
         // Position-based lookup: file_path + line as alternative to 'symbol'
         let file_path = get_str(args, "file_path");
         let line_opt = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
-        if !file_path.is_empty() && line_opt.is_some() {
-            return self.handle_symbol_by_position(ctx, file_path, line_opt.unwrap(), args);
+        if let Some(line) = line_opt.filter(|_| !file_path.is_empty()) {
+            return self.handle_symbol_by_position(ctx, file_path, line, args);
         }
 
         let view = get_str(args, "view");
@@ -1854,7 +1854,7 @@ impl ToolRouter {
                 let (out, err) = self.handle_dependents(&mapped_args);
                 let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
                 let summary = if built_file_count > 0 {
-                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                    format!("Lazy-built {built_file_count} files (structural mode)")
                 } else {
                     "Full index available".into()
                 };
@@ -1873,7 +1873,7 @@ impl ToolRouter {
                 let (out, err) = self.handle_dependencies(&mapped_args);
                 let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
                 let summary = if built_file_count > 0 {
-                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                    format!("Lazy-built {built_file_count} files (structural mode)")
                 } else {
                     "Full index available".into()
                 };
@@ -1896,7 +1896,7 @@ impl ToolRouter {
                     "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
                 });
                 let summary = if built_file_count > 0 {
-                    format!("Lazy-built {} files (structural mode)", built_file_count)
+                    format!("Lazy-built {built_file_count} files (structural mode)")
                 } else {
                     "Full index available".into()
                 };
@@ -3137,7 +3137,7 @@ mod tests {
         // The edge-based dependent should also be there (from symbol_edges)
         // Both import and edge point to b.ts, deduplication should result in one entry
         assert!(
-            dep_files.len() >= 1,
+            !dep_files.is_empty(),
             "Expected at least one dependent, got: {resp_str}"
         );
     }
@@ -4446,8 +4446,7 @@ mod tests {
             warnings
                 .iter()
                 .all(|w| !w.contains("panic") && !w.contains("unwrap")),
-            "warnings should not contain panics: {:?}",
-            warnings
+            "warnings should not contain panics: {warnings:?}"
         );
     }
 
