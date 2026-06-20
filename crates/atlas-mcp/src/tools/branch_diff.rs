@@ -270,7 +270,7 @@ impl ToolRouter {
             "function": qname,
             "branch_count": diffs.len(),
             "branches": diffs.iter().map(|d| json!({
-                "line": d.branch_node_line,
+                "line": d.branch_node_line.saturating_add(1),
                 "common_field": d.common_prefix,
                 "true_path": {
                     "frees": d.path_true.frees,
@@ -472,7 +472,7 @@ mod tests {
             "function": "test_func",
             "branch_count": diffs.len(),
             "branches": diffs.iter().map(|d| json!({
-                "line": d.branch_node_line,
+                "line": d.branch_node_line.saturating_add(1),
                 "common_field": d.common_prefix,
                 "true_path": {
                     "frees": d.path_true.frees,
