@@ -27,12 +27,9 @@ use anyhow::{Context, Result};
 use db::Store;
 use types::enums::Language;
 use types::ids::{FileId, SymbolId};
-use types::structs::{
-    CapabilityMask, CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier,
-};
+use types::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier};
 
 use crate::LazyDataflowService;
-use crate::investigation::{Investigation, InvestigationFocus};
 use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazyStructuralService};
 
 use super::bootstrap::BootstrapManager;
@@ -419,34 +416,34 @@ impl FocusRuntime {
                         _ => Direction::Both,
                     };
                     vec![
+                        ClosureStrategy::ImportNeighborhood { depth: 1 },
                         ClosureStrategy::CallGraph {
                             direction: call_dir,
-                            depth: 2,
+                            depth: 1,
                         },
-                        ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ]
                 }
                 QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::CallGraph {
                         direction: Direction::Both,
-                        depth: 2,
+                        depth: 1,
                     },
                     ClosureStrategy::TypeGraph { max_depth: 1 },
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
                 QueryIntent::Explore { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::CallGraph {
                         direction: Direction::Both,
-                        depth: 2,
+                        depth: 1,
                     },
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
                 ],
                 QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ClosureStrategy::CallGraph {
                         direction: Direction::Both,
-                        depth: 3,
+                        depth: 1,
                     },
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::Impact { .. } => {
                     vec![ClosureStrategy::ImportNeighborhood { depth: 2 }]
@@ -532,27 +529,27 @@ impl FocusRuntime {
                         _ => Direction::Both,
                     };
                     vec![
+                        ClosureStrategy::ImportNeighborhood { depth: 2 },
                         ClosureStrategy::CallGraph {
                             direction: call_dir,
-                            depth: 3,
+                            depth: 1,
                         },
-                        ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ]
                 }
                 QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ClosureStrategy::CallGraph {
                         direction: Direction::Both,
-                        depth: 3,
+                        depth: 1,
                     },
                     ClosureStrategy::TypeGraph { max_depth: 2 },
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
                 ],
                 QueryIntent::Path { .. } => vec![
+                    ClosureStrategy::ImportNeighborhood { depth: 3 },
                     ClosureStrategy::CallGraph {
                         direction: Direction::Both,
-                        depth: 4,
+                        depth: 1,
                     },
-                    ClosureStrategy::ImportNeighborhood { depth: 3 },
                 ],
                 QueryIntent::Impact { .. } => {
                     vec![ClosureStrategy::ImportNeighborhood { depth: 3 }]
@@ -594,27 +591,6 @@ impl FocusRuntime {
             &pending_ids,
             boundary_hit.is_some(),
         );
-
-        // 7. Pre-warm investigation for the built files so their import
-        //    neighborhoods are ready before the user queries them.
-        if !built_files.is_empty() {
-            let investigation = Investigation {
-                focus: InvestigationFocus::Position {
-                    file_id: built_files[0],
-                    line: 0,
-                    col: 0,
-                },
-                related_symbols: Vec::new(),
-                related_files: built_files.clone(),
-                desired_capabilities: CapabilityMask::from_bits(
-                    CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL,
-                ),
-            };
-            self.scheduler
-                .lock()
-                .unwrap()
-                .prewarm_investigation(&investigation);
-        }
 
         Ok(FocusResult {
             mode: IndexMode::Focus,

@@ -729,10 +729,10 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
     );
 }
 
-// ── Tests: prewarm_investigation via prepare() ──────────────────────────
+// ── Tests: tracked background expansion via prepare() ───────────────────
 
 #[test]
-fn test_prewarm_called_after_prepare() {
+fn test_prepare_does_not_enqueue_redundant_recent_closures() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let mut rt = test_runtime_focus_mode(store);
@@ -743,23 +743,19 @@ fn test_prewarm_called_after_prepare() {
         direction: None,
         depth: None,
     };
-    let _result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent).unwrap();
 
-    // After prepare(), the scheduler should have:
-    // - UserFocus job (background expansion)
-    // - Recent job(s) (from prewarm_investigation)
+    // The single tracked UserFocus expansion is sufficient. Re-enqueuing one
+    // Recent closure per foreground file creates hidden N+1 work after tasks
+    // reports the query complete.
     assert!(
         rt.has_pending_jobs(),
         "scheduler should have pending jobs after prepare()"
     );
+    assert_eq!(result.pending_closure_ids.len(), 1);
 
     let depths = rt.queue_depths();
-    // Recent queue (index 2) must have at least 1 job from prewarm
-    assert!(
-        depths[2].1 > 0,
-        "Recent queue should have prewarm jobs, got depth: {}",
-        depths[2].1
-    );
+    assert_eq!(depths[2], (FocusPriority::Recent, 0));
 }
 
 #[test]
