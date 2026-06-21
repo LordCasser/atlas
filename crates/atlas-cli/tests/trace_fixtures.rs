@@ -538,7 +538,7 @@ fn fx6_python_cfg_supported_in_capability() {
         20,
     );
 
-    // Python now has CFG support (CfgBuilder is language-aware as of Schema v3).
+    // Python has CFG support through the language-aware CfgBuilder.
     let cap = resp
         .capability
         .as_ref()

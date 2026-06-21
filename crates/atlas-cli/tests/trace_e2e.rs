@@ -2288,9 +2288,6 @@ function compute(): number {
 
     assert!(!path.steps.is_empty(), "nested call trace must have steps");
     // Verify that the trace crosses at least one function boundary.
-    // Currently FAILS because SummaryBuilder parameter index comes from
-    // an unordered DB query — the 0-th param may be wrong, breaking
-    // interprocedural ArgToParam bridging.
     let has_arg_to_param = path
         .steps
         .iter()
@@ -2299,8 +2296,6 @@ function compute(): number {
         has_arg_to_param,
         "nested call trace must include ArgToParam edge (interprocedural bridge missing)"
     );
-    // TODO(critical): when bridge ORDER BY + function range is fixed,
-    // verify that steps include correct param index for double(n: number).
     println!(
         "nested call trace: {} steps, source={:?}, sink={:?}",
         path.steps.len(),
@@ -2315,9 +2310,6 @@ function compute(): number {
 /// Test E: multi-function return bridge — `helper()` return value must
 /// be traceable back through the call to `let x = helper()` in `main()`.
 ///
-/// Currently **may FAIL** because SummaryBuilder doesn't bound returns
-/// by function range — a return in a different function inside the same
-/// file may be incorrectly attributed to the traced callsite.
 #[test]
 fn sem_e_cross_function_return_bridge_through_call() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -2361,8 +2353,12 @@ function main(): number {
         .expect("slice error")
         .expect("cross-function trace must produce path");
 
-    // TODO(fix): once interprocedural bridge has ORDER BY + function range,
-    // assert path.steps.len() >= 2 (crosses helper() call boundary).
+    assert!(
+        path.steps
+            .iter()
+            .any(|step| matches!(step.edge_kind, atlas_engine::DataFlowKind::ReturnToCall)),
+        "cross-function trace must include a ReturnToCall edge"
+    );
     eprintln!(
         "cross-fn bridge trace: {} steps, source={:?}, sink={:?}",
         path.steps.len(),
