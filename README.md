@@ -37,7 +37,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 - **Local-first**: writes all index data to `<project>/.atlas/atlas.db`; no cloud service required.
 - **Deterministic extraction**: tree-sitter AST queries and stable blake3-based IDs instead of model guesses.
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
-- **Interactive TUI**: keyboard-driven terminal UI with symbol search, detail view (Overview / Callers / Callees / Source tabs), caller trace, and visible index-mode status — launched via bare `atlas`. If no usable database exists, `atlas` creates one, runs the same default structural index used by `atlas index`, then starts the TUI.
+- **Interactive TUI**: keyboard-driven Ratatui workbench with symbol search, detail tabs, caller trace, typed parameter forms backed by the same analysis handlers as MCP, and human-oriented result views. Code facts, source, paths, and rules are presented directly; capability, confidence, coverage, and refinement state live in an adaptive HUD. Raw JSON remains available with `r` for auditing. Context and resumable query IDs are injected automatically. Bare `atlas` bootstraps the default structural index when needed.
 - **Agent-native MCP**: stdio MCP server exposing 15 bounded tools for open-first scoped search, graph, dependencies, trace, semantic analysis, background work visibility, and project management.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
@@ -77,7 +77,7 @@ atlas index
 atlas status
 atlas doctor
 
-# Launch the interactive TUI (search, symbol detail, caller trace)
+# Launch the interactive TUI (search, detail, trace, MCP-backed analysis palette)
 atlas
 ```
 
@@ -90,7 +90,7 @@ project root. The MCP server uses the client's current working directory.
 
 | Command | Purpose |
 | --- | --- |
-| `atlas` (no subcommand) | Launch the interactive TUI: symbol search, detail view (Overview/Callers/Callees/Source), caller trace, and index-mode status. If no usable `.atlas/atlas.db` exists, creates one, runs the default structural index, then starts the TUI. |
+| `atlas` (no subcommand) | Launch the interactive TUI: symbol search, detail tabs, caller trace, and `:` analysis command palette. If no usable `.atlas/atlas.db` exists, creates one, runs the default structural index, then starts the TUI. |
 | `atlas index` | Auto-initialize `.atlas/` schema, then discover and index source files. Supports `--include`, `--exclude`, `--scope`, and `--analysis` (manifest \| structural \| full). |
 | `atlas sync` | Incrementally update the index after file changes. Supports `--analysis`. |
 | `atlas status` | Show file, symbol, edge, database, and capability statistics. |
@@ -199,7 +199,7 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, and trace can evolve independently.
+Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V2: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store.
 
 <p align="center">
   <img src="docs/architecture.svg" alt="Atlas Architecture" width="800">
@@ -263,7 +263,7 @@ types/workspace/db ─▶ extraction/resolution/graph/analysis/domain_rules/sear
 
 ### Storage model
 
-Atlas stores index data in `.atlas/atlas.db` (schema version 1). Core tables include:
+Atlas stores index data in `.atlas/atlas.db` (schema version 2). Core tables include:
 
 ```text
 files                    symbols            scopes               references
@@ -314,16 +314,15 @@ Maintained documents:
 - [`docs/testing.md`](docs/testing.md) — test layers, feature matrix, and release checks.
 - [`docs/performance.md`](docs/performance.md) — measured performance baselines.
 - [`docs/trace-contract.md`](docs/trace-contract.md) — frozen trace JSON contract and diagnostics model.
+- [`docs/domain-rules-language-guide.md`](docs/domain-rules-language-guide.md) — domain-rule registries, matching policy, and language extension rules.
 - [`skills/atlas/SKILL.md`](skills/atlas/SKILL.md) — Agent Skill for using Atlas from another agent.
 
 ## Development
 
 ```bash
-# Run all tests (all 14 languages by default)
-cargo test
-
-# Run tests with MCP feature
-cargo test --features mcp
+# Compile and test the complete workspace surface
+cargo check --workspace --all-features
+cargo test --workspace --all-features
 
 # Build release binary with MCP
 cargo build --release -p atlas-cli --features mcp
@@ -422,7 +421,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
-### 6. CFG → control flow (9 languages)
+### 6. CFG → control flow (12 languages)
 
 ```text
 CST root (per function)
@@ -430,7 +429,7 @@ CST root (per function)
   → CfgNode + CfgEdge (Entry → blocks → Exit)
 ```
 
-CFG construction walks the function AST, identifying control-flow splits (`if_statement`, `switch_case`, `try_statement`, `for_statement`, `while_statement`) and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. CFG is available for TypeScript, JavaScript, Python, Java, C, C++, Go, Rust, and Cangjie. C#, PHP, Ruby, and Kotlin do not yet have CFG support.
+CFG construction walks the function AST, identifying control-flow splits and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. Capability profiles currently declare CFG support for every language except ArkTS and PHP. This remains best-effort tree-sitter control flow rather than a compiler CFG; inspect `atlas doctor` for the authoritative per-language capability state.
 
 ### Edge visibility: project-internal symbols only
 

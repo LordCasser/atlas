@@ -1,6 +1,6 @@
 # analysis
 
-Location-driven trace queries, call-graph exploration, and function summaries.
+Location-driven trace queries, call-graph exploration, persistent function summaries, and CFG/dataflow semantic analysis.
 
 ## Components
 
@@ -16,13 +16,16 @@ TraceEngine
 ├── trace_variable(file_id, line, column, max_depth) → TracePath
 │   └── Slicer: backward dataflow walk (Assign → FieldLoad → ArgToParam → UseDef)
 │
-└── trace_callers(target_id, max_depth) → CallerChain
-    └── CallerPathExplorer: backward call graph walk
+├── trace_callers(target_id, max_depth) → CallerChain
+│   └── CallerPathExplorer: backward call graph walk
+│
+└── trace_forward(from_id, to_id, max_depth) → CallerChain
+    └── ForwardPathExplorer: forward call graph walk
 ```
 
 ### Capability gating
 
-`trace_variable` and `trace_callers` check the language's `LanguageCapabilityProfile` before execution. Unsupported languages return `partial_result = true` with diagnostic info, never errors.
+Trace methods check the language's `LanguageCapabilityProfile` before execution. All 14 languages currently report DataflowFull; CFG is unsupported only for ArkTS and PHP. A supported feature can still produce a partial result when facts are missing or traversal is truncated, with the reason in diagnostics.
 
 ### Response envelope
 
@@ -30,8 +33,8 @@ All queries return `TraceQueryResponse<T>`:
 ```json
 {
   "ok": true,
-  "kind": "trace_variable",
-  "capability": { "language": "typescript", "level": "DataflowBasic" },
+  "kind": "trace",
+  "capability": { "language": "typescript", "capability_level": "dataflow_full" },
   "partial_result": false,
   "diagnostics": [],
   "result": { ... }
@@ -55,3 +58,11 @@ Backward dataflow walk from a `DataNodeId`:
 2. Follow incoming dataflow edges: `Assign`, `FieldLoad`, `ArgToParam`, `Read`, `UseDef`
 3. Build `TracePath` steps with source snippets (if `project_root` available)
 4. Stop at parameters, literals, globals, or `max_depth`
+
+### Interprocedural summaries
+
+`SummaryBuilder` persists parameter, return, and call-argument reachability. `CrossFunctionBridge` composes those rows into `ArgToParam` and `ReturnToCall` virtual edges during slicing. Raw `TraceEngine` does not build missing summaries; callers prepare facts through the high-level engine/filesync/lazy paths.
+
+### Semantic CFG analysis
+
+`EffectComposer` combines CFG and dataflow facts into language-neutral semantic effects. `FieldLifecycleEngine`, `BranchDiffEngine`, lifecycle proof, and semantic impact consume those effects. Language-specific ownership/resource meaning stays behind analysis consumers and domain-rule registries.

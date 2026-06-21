@@ -1,6 +1,6 @@
 # Atlas documentation
 
-This directory keeps the release-facing documentation that should remain current for V1 users.
+This directory keeps the release-facing documentation for the current Atlas 1.5.x development line. The trace JSON contract remains versioned separately as v1.
 
 ## Baseline UX contracts
 
@@ -24,13 +24,14 @@ This directory keeps the release-facing documentation that should remain current
   file just because `files.content_hash` is unchanged.
 - Missing optional metadata such as `last_index_time` or `last_sync_time` is a
   normal empty-project/fresh-index state and must not produce warnings.
-- Atlas V1 is pre-release. Do not add runtime compatibility fallbacks for old
-  DB schemas; keep the current schema and code contract aligned instead.
+- Atlas uses Schema V2 and intentionally has no runtime migration chain for
+  older development schemas. Change the primary DDL and code together, then
+  rebuild the project index.
 
 ## Reading order
 
 1. [Architecture](./architecture.md) — authoritative architecture: constraints, modules, schema, dataflow, capability profiles, design decisions.
-2. [Requirements](./requirements.md) — product scope, MVP languages, acceptance criteria.
+2. [Requirements](./requirements.md) — product scope, default languages, acceptance criteria.
 3. [Roadmap](./roadmap.md) — current and future work.
 4. [Testing](./testing.md) — test layers, phase requirements, feature matrix.
 5. [Performance](./performance.md) — measured baselines and recommendations.
@@ -48,3 +49,4 @@ This directory keeps the release-facing documentation that should remain current
 6. Update `trace-contract.md` when trace JSON fields, diagnostics, or capability output change.
 7. Update `domain-rules-language-guide.md` when adding a language registry, rule_kind, pattern policy, metadata shape, or learning behavior.
 8. Delete obsolete content; do not accumulate archive directories.
+9. Treat `db::CURRENT_SCHEMA_VERSION`, `LanguageCapabilityProfile` / `atlas doctor`, and MCP `make_all_tools()` as the executable facts for schema, language capabilities, and tool names.

@@ -34,7 +34,7 @@ and clears per-file index layer records before callers insert replacement facts.
 
 ### watcher
 
-(Planned) Filesystem watcher integration for automatic re-indexing.
+Optional `notify`-based recursive file events behind the crate's `sync` feature. The watcher emits created/modified/removed paths; callers decide when and how to invoke incremental synchronization.
 
 ### FileLock
 
@@ -64,6 +64,10 @@ build_dirty_set(store, discovered, root) → DirtySet
 
 // Shared index pipeline
 run_index_pipeline(store, root, IndexPipelineOptions::new(mode)) → IndexPipelineStats
+
+// Stateful full/incremental orchestration
+IndexPipeline::new(store, root, options) → IndexPipeline
+IncrementalPipeline::new(store, root, mode) → IncrementalPipeline
 
 // Shared cleanup
 clean_stale_file_paths(store, paths) → Vec<FileId>

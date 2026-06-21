@@ -16,7 +16,7 @@ let store = Store::open_db(Path::new("/path/to/.atlas/atlas.db"))?;
 // Initialize the schema (idempotent)
 store.init_schema()?;
 
-// In-memory (for tests and open_project storage="memory")
+// In-memory (tests only; production MCP uses the persistent project DB)
 let store = Store::open_in_memory()?;
 store.init_schema()?;
 
@@ -48,9 +48,17 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `project_metadata` | `key TEXT` | Project-level settings, exclusive lock state |
 | `extraction_state` | `(file_id, unit_id, layer)` | Unified file/unit extraction state |
 | `extraction_jobs` | `job_id TEXT` | Active/completed extraction jobs |
-| `domain_rules` | `rule_id BLOB(32)` | Domain lifecycle rules (alloc/free/owned/cleanup) |
-| `function_pointer_annotations` | `annotation_id BLOB(32)` | User-declared function-pointer dispatch mappings |
-| `function_summaries` | `summary_id BLOB(32)` | Per-function intra-procedural summary |
-| `summary_param_reaches` | `(summary_id, param_index)` | Which params reach which locals |
-| `summary_return_sources` | `(summary_id, return_node)` | Which locals flow to return |
-| `summary_call_arg_sources` | `(summary_id, call_node, arg_index)` | Which locals flow to call args |
+| `domain_rules` | `id TEXT` | Language-neutral domain rules and candidate status |
+| `function_pointer_annotations` | `annotation_id TEXT` | User-declared function-pointer dispatch mappings |
+| `function_summaries` | `function_id BLOB(32)` | Per-function intra-procedural summary |
+| `summary_param_reaches` | logical composite row | Which params reach which locals |
+| `summary_return_sources` | logical composite row | Which locals flow to return |
+| `summary_call_arg_sources` | logical composite row | Which locals flow to call args |
+| `closure_generations` | `closure_id TEXT` | Focus closure generation and commit state |
+| `closure_coverage` | composite key | Per-closure file coverage materialization |
+| `reference_resolutions` | composite key | Closure-scoped resolution candidates/results |
+| `symbol_edge_candidates` | composite key | Closure-scoped graph-edge candidates |
+| `file_inventory` | `file_id BLOB(32)` | Focus bootstrap file inventory and fingerprints |
+| `symbol_hints` | composite key | Lightweight symbol hints for cold scoped queries |
+
+Schema V2 contains 28 entity tables plus the `symbols_fts` virtual table. Focus control-plane rows are transient session materialization; canonical source facts and symbol edges remain durable in the same SQLite database.

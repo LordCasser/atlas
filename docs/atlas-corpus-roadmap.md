@@ -1,6 +1,6 @@
 # 从 Elixir 到 Corpus：面向 LLM Agent 的多版本源码语料库技术路线
 
-> 本文是 Atlas 系列技术博客的第二篇。上一篇文章 [《Atlas 深度解析》](./atlas-deep-dive.md) 讲述了 Atlas 如何为单项目单版本构建语义知识图谱并暴露 27 个 MCP 工具供 Agent 使用。本文将探讨 Atlas 的下一个进化方向——**Corpus**，一个受 Elixir Cross Referencer 启发、面向 LLM Agent 的多版本大型源码语料库系统。
+> 本文探讨 Atlas 的一个独立未来方向——**Corpus**：受 Elixir Cross Referencer 启发、面向 LLM Agent 的多版本大型源码语料库系统。当前 Atlas 主线聚焦单项目单版本，并通过 15 个 MCP 工具提供查询能力。
 
 ---
 
@@ -678,7 +678,7 @@ Elixir 自身是 AGPLv3 许可证，而 Atlas 主项目是 MIT。Corpus 可以�
 | 版本模型 | 单版本（本地 workspace） | 多版本（Git tag） |
 | 去重策略 | hash-based dirty detection | Git blob content-addressed |
 | 查询维度 | 项目内符号关系（callers, callees, path） | 跨版本符号出现位置 + 函数演化 |
-| 存储 | SQLite（~22 表，WAL） | SQLite + Roaring Bitmap + Segment files |
+| 存储 | SQLite（Schema V2：28 张实体表 + 1 张 FTS5 索引，WAL） | SQLite + Roaring Bitmap + Segment files |
 | 主要用户 | 开发中的 Agent/开发者 | 分析开源项目的 Agent/研究者 |
 | Web 接口 | 无（MCP only） | Elixir 兼容 Web + REST API |
 

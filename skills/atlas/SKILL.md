@@ -19,8 +19,9 @@ Use Atlas as the deterministic code-facts layer before reasoning about a reposit
 | Language | Key capabilities |
 |----------|-----------------|
 | TypeScript, JavaScript | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow, use-def chains, field access, call arguments, return flow, CFG, interprocedural summaries (ArgToParam + ReturnToCall) |
-| Python, Java, C, C++, Go, Rust | Same as above; Python/Java/C/C++/Go/Rust have CFG; C function pointers limited depth 3; C++ templates/overloads not modeled; Rust ReturnToCall gap documented |
-| C#, PHP, Ruby, Kotlin, ArkTS, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, interprocedural summaries; CFG varies by language (see `project(action="status")` and trace capability metadata) |
+| Python, Java, C, C++, Go, Rust | Same as above, including CFG and ArgToParam + ReturnToCall summaries; C function pointers limited depth 3; C++ templates/overloads not modeled |
+| C#, Ruby, Kotlin, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, CFG, and ArgToParam + ReturnToCall summaries |
+| PHP, ArkTS | DataflowFull local/interprocedural facts; CFG is currently unsupported |
 
 ## Requirements
 

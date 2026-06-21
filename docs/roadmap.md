@@ -2,7 +2,7 @@
 
 This roadmap tracks **current and future work only**.
 
-## 1. Current release focus: V1 release
+## 1. Current release focus: Atlas 1.5.x
 
 Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
 
@@ -10,7 +10,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 
 - Publish or document a repeatable release build flow for macOS, Linux, and Windows.
 - Document verified platform matrix, minimum Rust version, and feature choices.
-- Decide whether V1 is distributed as source-only, release binaries, or both.
+- Decide whether releases are distributed as source-only, release binaries, or both.
 - Add release notes / changelog entry for the first public version.
 
 ### 1.2 User-facing documentation
@@ -30,7 +30,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 ### 1.4 CLI and database release gates
 
 - Ensure `atlas doctor` exposes release-relevant state.
-- Compatibility: V1 schema with no migration chain (direct DDL changes).
+- Compatibility: Schema V2 with no migration chain for older development schemas (direct DDL changes + re-index).
 - Make `.atlas/` cleanup and rebuild guidance explicit.
 - Keep JSON output stable for scripted use.
 - Publish verified performance baselines.
@@ -43,17 +43,16 @@ cargo test -p atlas-cli --features mcp
 cargo check -p atlas-cli --features mcp
 ```
 
-### 1.6 V1 release blockers
+### 1.6 Completed baseline release gates
 
-These items must be closed before V1 is considered releasable:
+The original baseline implementation blockers are closed and covered by the release test matrix:
 
-- Fix any test compile failures caused by schema/type evolution; release validation cannot rely on a suite that does not compile.
-- Make shared `run_index_pipeline` authoritative for full-index cleanup: deleted files must be removed from DB state when MCP or other shared-pipeline callers re-index.
-- Make shared `run_index_pipeline(Full)` build persistent function summaries, matching CLI Full behavior.
-- Persist `summaries` capability after successful summary build so user-visible status and `analysis.basis` cannot overclaim inter-procedural summary availability.
-- Add explicit Manifest queries or explicit unsupported declarations for every language; Manifest must mean top-level symbols only.
-- Validate CLI `--analysis` values instead of silently falling back to Structural.
-- Align all lazy-triggering MCP tools on the shared public analysis view, including no-result trace responses and CFG-consuming tools.
+- ✅ Workspace and MCP feature test suites compile and pass against the current schema and types.
+- ✅ Shared `run_index_pipeline` owns deleted-file cleanup and persistent summary construction.
+- ✅ Summary capability is persisted only after summary construction succeeds.
+- ✅ Every language has an explicit top-level-only Manifest path.
+- ✅ CLI rejects unknown `--analysis` values.
+- ✅ Lazy-triggering MCP tools use the shared public analysis view, including no-result trace and CFG-consuming paths.
 
 ## 2. Completed work
 
@@ -61,7 +60,7 @@ These items must be closed before V1 is considered releasable:
 
 All 14 languages are now at `DataflowFull` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
-> **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) now fully traverses branch/loop bodies for all languages. Two language-specific wrapper-node issues (Go `statement_list`, Rust `expression_statement`) were fixed in the M2 CFG hardening milestone. All 9 languages with CFG support now produce complete control-flow graphs including statement nodes inside if/else branches and loop bodies. Golden fixtures cover TypeScript, Python, Go, Rust, Java, C, and C++ (cfg_if_else + cfg_loop).
+> **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 12 capability-enabled languages; ArkTS and PHP remain unsupported. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
 
 ### 2.2 Lazy Index (three phases) ✅
 
@@ -152,7 +151,7 @@ Continue expanding end-to-end smoke tests for all languages.
 - Document feature flags and language availability.
 - Keep CLI/MCP as consumers of the same engine behavior.
 - Lock trace response contracts before promising downstream compatibility.
-- Decide which `atlas_`-prefixed analysis/domain-rules tools graduate into the stable short-name MCP surface.
+- Keep the current 15 short-name MCP tools stable; new tools require a distinct user need and contract tests rather than aliases or prefixed duplicates.
 
 ## 6. Future product lines
 
@@ -164,7 +163,7 @@ Continue expanding end-to-end smoke tests for all languages.
 - Variable provenance and caller-path tracing.
 - MCP-driven agent context.
 
-### 6.2 Corpus (not in V1)
+### 6.2 Corpus (separate product line)
 
 A multi-version source corpus system for Linux/U-Boot/BusyBox-style repositories remains a separate future product line:
 
@@ -173,7 +172,7 @@ Atlas:  project-relative path + local workspace DB
 Corpus: git blob + version/tag/path mappings
 ```
 
-## 7. Not planned for V1
+## 7. Not planned for the current Atlas mainline
 
 - Full compiler-grade type checking.
 - Full C/C++ preprocessing, template instantiation, overload resolution, or alias analysis.
@@ -183,64 +182,33 @@ Corpus: git blob + version/tag/path mappings
 - Multi-version source corpus indexing.
 - Full compiler-grade C/C++ ownership proof, pointer arithmetic, union aliasing, or complete cross-function dataflow.
 
-## 8. Semantic analysis multi-language extension
+## 8. Semantic analysis status and remaining work
 
-### 8.1 branch_diff 架构演进与多语言扩展
+### 8.1 Current architecture ✅
 
-#### 8.1.1 当前架构限制
-
-`branch_diff` 和 `lifecycle` 当前存在架构层面的表达能力不足：
-
-- **CFG 节点只挂单个粗粒度 effect**：`effect_kind + target_field` 模型无法表达一条语句包含多个语义 effect（如 alloc return + local assign + field store）
-- **局部变量 ownership 中转不可追踪**：`alloc → local_var → field` 链路在当前模型下无法稳定追踪，导致类似 `ptr = malloc(); data->field = ptr;` 的模式漏报
-- **branch_diff 是副作用集合 diff，不是 ownership/dataflow 分析**：缺少 value-flow IR 层，多层分支、switch/case、goto 存在漏遍历风险
-- **仅 C/C++ 可用**：`analysis::ownership_rules.rs` 和 `domain_rules/engine.rs` 的核心基础设施已是语言无关的，但缺少其他语言的 rule consumer
-
-#### 8.1.2 长期架构目标
-
-从当前单层 CFG effect annotation 演进为分层语义分析管线：
+The multi-effect semantic pipeline is implemented:
 
 ```text
-当前:  CFG node 上挂粗粒度 effect_kind + target_field
-          ↓
-目标:  CFG（控制流）→ DataFlow（值流）→ EffectIR（副作用语义）
-       → Ownership Solver（生命周期推理）→ BranchDiff（语义查询视图）
+CFG + DataFlow
+  → EffectComposer (multiple SemanticEffect values per CFG node)
+  → language ResourceOpConfig / domain-rule consumer
+  → lifecycle state transfer, branch_diff, lifecycle proof, semantic impact
 ```
 
-五层管线说明：
+- `EffectComposer` traces value flow such as alloc → local → field and emits multiple effects with provenance.
+- Lifecycle uses a path-sensitive field-state lattice and consumes composed effects.
+- Branch diff compares semantic effects across sibling branches rather than raw statement counts.
+- Resource-operation registries cover C/C++, Rust, Go, Python, TypeScript, Java, C#, Kotlin, PHP, and Ruby patterns; language-specific meaning stays outside the generic domain-rules core.
+- Capability profiles currently expose CFG for 12 languages; ArkTS and PHP remain the exceptions.
 
-| 层 | 职责 | 产出 |
-|----|------|------|
-| CFG | 控制流图（已有） | `cfg_nodes` / `cfg_edges` |
-| DataFlow | 值流追踪（已有 `data_nodes`/`dataflow_edges`，需增强 alloc→local→field 链路） | per-variable use-def chains |
-| EffectIR | 副作用语义建模（新增） | 每条语句的 multi-effect 列表，with provenance |
-| Ownership Solver | 生命周期推理（新增） | field state machine（跨分支、跨函数） |
-| BranchDiff | 基于 EffectIR 的分支语义对比（重构为查询视图） | 结构性不对称报告 |
+### 8.2 Remaining precision work
 
-#### 8.1.3 多语言分阶段扩展
+- Expand golden/end-to-end fixtures for nested branches, switch/match, exceptional control flow, async boundaries, and language-specific resource constructs.
+- Improve alias/value provenance where tree-sitter facts cannot distinguish same-name or dynamic targets.
+- Keep semantic conclusions explicitly bounded by CFG/dataflow coverage, confidence, domain-rule provenance, and terminal gaps.
+- Do not introduce a second Function IR unless CFG/dataflow facts demonstrably cannot express a required invariant.
 
-**目标**：为以下语言添加 `LanguageOwnershipRules` consumer，使 `branch_diff`/`lifecycle`/`impact(semantic=true)` 能产生有意义的语义分析结果：
-
-| 优先级 | 语言 | 关键模式 | 预计工作量 |
-|--------|------|---------|-----------|
-| P1 | Rust | `Box::new`/`Arc::new` 分配，`Drop` 释放，`unsafe` 边界 | 2-3d |
-| P1 | Go | `make`/`new` 分配，`defer` + `Close()` 释放，goroutine ownership | 2-3d |
-| P2 | Python | `open()` → `close()` 对，`with` 语句 RAII，`None` → 赋值 | 2d |
-| P2 | TypeScript | `new` 分配，`Promise`/`async` 异步边界 | 2d |
-| P3 | Java | `try-with-resources`，`close()` 模式 | 1-2d |
-| P3 | C# | `IDisposable`/`using` 模式 | 1-2d |
-
-**依赖项**：
-- 目标语言需要 CFG 覆盖（见 §9.2 能力表）：Rust、Go 已有 CFG；Python/TypeScript 已有 CFG；Java/C# CFG 未实现
-- `domain_rules` 需要每种语言的 builtin rules（alloc/free/owned pattern）
-- `analysis` 层需要每种语言的 `OwnershipRules` trait 实现
-
-**阶段划分**：
-1. **Phase 1 (v1.4)**: Rust + Go — 语言已有 CFG，rule 模式明确
-2. **Phase 2 (v1.5)**: Python + TypeScript — 高使用率语言，CFG 已覆盖
-3. **Phase 3 (v2.0)**: 剩余语言随 CFG 实现一同交付
-
-**不纳入范围**：SAST 级别的跨函数污点分析、完整 pointer provenance、编译器级 lifetime 验证。
+Not in scope: SAST-style taint scanning, complete pointer provenance, compiler-grade lifetime verification, or automatic vulnerability findings.
 
 ## 9. Focus Runtime — 查询时控制平面演进
 
@@ -291,4 +259,4 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 ### 10.2 FeatureMatrix 镜像方法合并
 
-`FeatureMatrix::supported_feature_names()` 和 `FeatureMatrix::unsupported_feature_names()` 是两个结构完全相同的方法（一个在 `is_supported()` 为 true 时 push，另一个在 false 时 push）。可合并为一个返回 `(Vec<String>, Vec<String>)` 的单一方法，或改为接受谓词参数。
+✅ `FeatureMatrix` 现通过单一私有字段清单生成 supported/unsupported 名称并计算最低置信度，新增能力字段不再需要维护三套镜像列表。

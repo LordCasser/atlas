@@ -23,7 +23,7 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 | Manifest | `atlas index --analysis manifest`、shared `run_index_pipeline(Manifest)`、必要时 `atlas sync --analysis manifest` | 只写 manifest 事实；不会误报 structural/dataflow；用户可见 precision/status 正确 |
 | ResolutionSymbols | dependency/lazy resolution 触发路径 | 只写 resolution symbols/imports/scopes；不会破坏已有 manifest/structural 层；stale hash 行为正确 |
 | Structural | `atlas index` 默认路径、shared filesync pipeline、`atlas sync` 默认路径、`LazyStructuralService` | symbols/scopes/references/callsites 写入；resolution/graph build 正确；manifest -> structural 升级正确 |
-| LazyDataflow | high-level `Engine::trace_variable`、`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；partial/pending diagnostics 正确 |
+| LazyDataflow | high-level `Engine::trace_variable`、`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；budget/pending 内部状态能稳定映射为 public retry/gaps |
 | Full | `atlas index --analysis full`、shared pipeline Full、`atlas sync --analysis full` | structural + dataflow + CFG + summaries 全链路持久化；file/unit extraction_state 和 capability mask 不欠报、不误报 |
 | Raw analysis consumers | `RawTraceEngine`、analysis crate direct tests | 明确说明它们是否负责触发 lazy；若不触发，测试必须先准备所需 DB facts |
 
@@ -87,8 +87,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 
 要求：
 - 对用户可见能力，至少要有一个真实临时项目测试实际命令路径。
-- `trace` 必须验证真实源码项目经过 `index` 后能从指定位置产生变量来源和 caller path。
-- `trace`、`status`、`doctor` 必须验证用户可见的语言能力边界输出。
+- `index` / `sync` 必须覆盖 analysis mode、capability state、增量新增/修改/删除和非法参数。
+- `status`、`doctor` 必须验证用户可见的 schema、index mode 和语言能力边界输出。Atlas 没有 `atlas trace` CLI 命令；trace 产品路径由 MCP 和 high-level `Engine` 测试覆盖。
 
 ### 2.5 MCP 测试
 
@@ -102,7 +102,21 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 触发 lazy extraction 的 MCP 工具必须断言 `analysis.retry_after_ms`、`query_id`、`gaps` 和 `resume_query` 的终态收敛语义；不得重新引入 `precision`、`work`、`lazy_diagnostics` 或 `analysis_contract`。
 - 如果工具返回错误但已经触发可恢复 refinement，必须保留可操作的 `query_id` 和 retry 状态；不可恢复错误不得伪造 retry。
 
-### 2.6 端到端测试
+### 2.6 TUI 测试
+
+适用范围：搜索状态机、command palette、后台任务、取消、终端布局和共享工具调用。
+
+要求：
+- command form 必须覆盖默认参数、当前 symbol/file/query ID 注入、字段编辑、必填校验和数值校验。
+- discriminator 驱动的表单必须断言只展示和提交当前 variant/action 适用的字段，导航必须跳过隐藏字段。
+- MCP-backed command 必须至少有一个测试证明它通过 `ToolRouter` 返回真实结果，而非展示层占位字符串。
+- 结果投影必须覆盖 graph/impact、trace capability/confidence、source excerpt、同步空结果、管理记录、纯文本错误和未知字段前向兼容；根控制字段不得泄漏为代码事实。
+- 关键 overlay 和主布局必须用 Ratatui `TestBackend` 在窄终端尺寸渲染，防止 panic 和核心操作不可见；分析结果模式必须验证主体全宽阅读区域、自适应 HUD、完整键值降级以及可见的滚动/raw/关闭提示。
+- TUI 不得伪造 precision、coverage、gaps 或 pending 状态；这些字段只能来自共享 handler 响应。
+- raw response 必须可达；默认 facts 视图隐藏的内容必须属于文档化的公共元数据集合，未知非元数据字段必须保留。
+- 用户可取消的任务必须覆盖提交、替换、取消和 worker 回收。
+
+### 2.7 端到端测试
 
 适用范围：当前阶段声明已经可用的产品能力。
 
@@ -113,15 +127,14 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - 必须断言最终用户可消费结果。
 - 必须覆盖"请求超出语言能力边界"的场景。
 
-### 2.7 发布前验证矩阵
+### 2.8 发布前验证矩阵
 
 发布候选至少运行：
 
 ```bash
-cargo test
-cargo test --features mcp
-cargo test -p atlas-cli --features mcp
-cargo check -p atlas-cli --features mcp
+cargo fmt --all -- --check
+cargo check --workspace --all-features
+cargo test --workspace --all-features
 ```
 
 如果某个 crate 支持无语言 feature 编译，则默认 feature 的单测也必须通过；否则需要在 Cargo feature 或测试上明确表达“至少一个语言 feature 是前置条件”。
@@ -132,7 +145,7 @@ cargo check -p atlas-cli --features mcp
 - 未受影响路径及理由。
 - 所有失败测试、跳过测试和 residual risk。
 
-### 2.8 管线等价性测试
+### 2.9 管线等价性测试
 
 同一项目通过不同入口（CLI index、sync、shared `IndexPipeline`）索引后必须产生相同 DB 状态。
 测试使用 in-memory `Store` + 临时项目 + `ExtractionMode::Structural` / `Full`，

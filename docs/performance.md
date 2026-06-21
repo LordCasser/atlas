@@ -486,9 +486,9 @@ After banding + proximity filtering, global fuzzy search triggers only 318 times
 
 At 1,931 files (~35K symbols, ~314K refs), extraction and DB writes combined account for <20% of wall clock when indexes are deferred. However, on a 14G production DB with 13.8M references, `references` 100K-row inserts cost 21.9s with all indexes online — a 150x slowdown vs writing to an index-less table. The bottleneck is B-tree index maintenance on the 4 `references` secondary indexes. **Deferring index creation until after bulk write (Phase 10)** eliminates this cost: drop all non-PK indexes and FTS triggers before extraction, write with only PK constraints, recreate indexes and rebuild FTS at finalize. TS project: 25.81s → 18.82s (−27.1% even at 35K-symbol scale).
 
-### 4. New language extraction is fast and reliable
+### 4. New language extraction was fast and reliable in the historical baseline
 
-All 6 new DataflowBasic languages extracted correctly with 0 errors. Parse/extract speeds: Go 2.3ms/file, Rust 14.9ms/file, Ruby 59ms/file. Tree-sitter grammars are mature enough for production use.
+At the time of Baseline 2, all 6 then-new DataflowBasic languages extracted correctly with 0 errors. Parse/extract speeds were Go 2.3ms/file, Rust 14.9ms/file, and Ruby 59ms/file. These labels are historical: all 14 current language profiles now report DataflowFull.
 
 ### 5. 1,931-file TypeScript monorepo indexes in ~18.8 seconds
 

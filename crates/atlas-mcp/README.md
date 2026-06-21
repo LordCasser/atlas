@@ -45,7 +45,7 @@ you want a reusable full-project cache.
 | `lifecycle` | CFG/dataflow lifecycle analysis. |
 | `branch_diff` | CFG/dataflow comparison across branch-like variants. |
 | `fp_dispatches` | Add/list/delete manual function-pointer dispatch annotations. |
-| `domain_rules` | Add/list/delete manual domain rules. |
+| `domain_rules` | Add/list/delete domain rules or learn candidate rules. |
 | `tasks` | Inspect current focus/lazy extraction activity. |
 | `resume_query` | Rehydrate a recent query snapshot after lazy focus work has progressed. |
 
@@ -56,11 +56,12 @@ Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
 ## Query Semantics
 
 - `search.scope` is mandatory even when a rich index exists. It bounds the
-  answer and tells the client whether results are complete for that scope or
-  only partially materialized.
+  answer and seeds focus coverage. Non-terminal work is exposed through
+  `analysis.retry_after_ms`; terminal boundary limitations use `gaps`.
 - A scoped query on an empty store triggers focus-driven extraction for the
-  relevant files. Larger scopes may initially return partial coverage with
-  diagnostics and follow-up actions.
+  relevant files. Larger scopes may return `analysis.retry_after_ms` and a
+  `query_id`; call `resume_query` until the response is terminal. Terminal
+  limitations appear as structured `gaps`.
 - `path` and `trace(kind="forward")` require both endpoints to resolve to local
   symbols. For external/helper calls that appear only as unresolved call tokens,
   use `calls(direction="outgoing")` and inspect `unresolved_callees`, or use

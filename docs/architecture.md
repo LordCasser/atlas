@@ -2,6 +2,8 @@
 
 本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowFull 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
 
+> 当前实现基线：Atlas `1.5.1`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。本文描述当前主干，不保留旧 schema 或旧 MCP 表面的兼容说明。版本号以 workspace manifests 为准，schema 版本以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` 和 `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+
 ## 1. 总体原则
 
 1. Atlas 是 CodeGraph-inspired，不是 CodeGraph-compatible。
@@ -11,7 +13,7 @@
 5. 所有启发式语义结果必须可解释，不能把低置信度结果伪装成精确结果。
 6. 分析等级相关改动必须验证完整入口矩阵：CLI 自有管线、shared filesync pipeline、sync、lazy structural、lazy dataflow、高层 Engine 和 raw analysis consumer。任何模式或 capability/status/precision 变化都不能只验证单一路径。
 7. **终态必然可达**：每次工具调用必须收敛到终态；不存在永久 `building` / `wait` 状态。MCP 响应的 `analysis.retry_after_ms` 必须最终变为 null。
-8. **信号最小**：响应中每个字段，Agent 必须有明确的 consume 路径；删除伪信号（`partial_result`、`background_refinement`、`analysis.state` 等）。
+8. **信号最小**：响应中每个字段，Agent 必须有明确的 consume 路径；非 trace 公共信封不暴露 `partial_result`、`background_refinement`、`analysis.state` 等伪信号。冻结的 trace 内层契约继续保留自己的 `partial_result`。
 9. **内部状态不透出**：引擎层专有概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
 10. **事实，非指令**：响应字段提供事实（缺了什么），不提供 Agent 无法执行的指令（如"去索引这个"）。
 11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封，差异仅在 handler 的阻塞/超时策略。
@@ -27,7 +29,7 @@ crates/
   atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/lazy, dossier
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
-    crates/db/         SQLite schema v1、Store API、readers、schema 迁移基础设施
+    crates/db/         SQLite schema v2、Store API、readers、schema 初始化基础设施
     crates/extraction/ tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG、worker pool
     crates/resolution/ builtin filter、scope/container/import/include/name matching、PathAliasResolver
     crates/graph/      GraphBuilder、GraphSnapshot、GraphEngine
@@ -73,6 +75,8 @@ types → (anyhow, blake3, hex, rusqlite, serde)
 | `analysis` | 消费 dataflow、CFG 和 call graph；trace/slicing | 不破坏底层 facts |
 | `domain_rules` | 语言无关 rule 存储、匹配、学习候选、registry 校验 | 不解释 C/C++ ownership、Rust safety 等语言语义 |
 | `lazy` | 按需 dataflow 加载，budget-capped | 不改变 extraction 语义 |
+| `dossier` | 聚合符号源码、调用证据、关系与文件上下文 | 不触发项目级索引策略 |
+| `filesync` | discovery、dirty detection、共享索引/增量管线、清理与锁 | 不承载 CLI/MCP 展示逻辑 |
 | `cli` / `mcp` | 只编排能力 | 不内嵌解析、resolution 或分析算法 |
 
 ## 3. ID 约束
@@ -368,7 +372,7 @@ Source files
 analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性 lazy 提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
 
 等级路径约束：
-- `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full` 是 extraction mode；`DataflowBasic/DataflowFull` 是语言 capability；`PrecisionTier` 是 lazy 结果质量。三者含义不同，禁止混用。
+- `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full` 是 extraction mode；`DataflowBasic/DataflowFull` 是语言 capability；`Precision { coverage, confidence }` 是 Focus 内部结果质量。三者含义不同，禁止混用。
 - `atlas index` CLI、`filesync::run_index_pipeline`、`atlas sync`、`LazyStructuralService`、`LazyDataflowService` 和 `analysis::TraceEngine` 是不同入口。修改任一等级行为时，必须确认这些入口是否受影响。
 - 高层 `Engine::trace_variable` 负责触发 lazy dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。用户入口应优先走高层 Engine，除非明确只需要底层已持久化数据。
 - `Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 status 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
@@ -381,7 +385,7 @@ analysis 层按需加载 dataflow facts（而非全量预加载），通过 `Laz
 | `Manifest` | 仅顶层 manifest symbols | 不做 references、resolution、graph、summaries | 不能暴露或暗示 structural/dataflow 已完整 |
 | `ResolutionSymbols` | symbols、imports、scopes、scope tree | 不做 references、dataflow、callsites | 仅作为 dependency/lazy resolution 目标层 |
 | `Structural` | symbols、references、imports、scopes、callsites、exports、call edges | resolution + graph build | 能回答结构性搜索、context、caller/callee；不能宣称 dataflow/CFG |
-| `LazyDataflow` | window 内 unit dataflow、binding uses、可用时 CFG | 不重写 structural facts | 必须记录 unit extraction state、pending/partial 诊断和 capability mask |
+| `LazyDataflow` | window 内 unit dataflow、binding uses、可用时 CFG | 不重写 structural facts | 必须记录 unit extraction state、budget/job 状态和 capability mask；入口再映射为 public retry/gaps |
 | `Full` | Structural + 全文件 dataflow + 可用 CFG + summaries | resolution + graph + summary build | facts、summary、extraction_state、capability mask、status 必须全链路一致 |
 | Raw analysis | 不触发 extraction | 只消费已有 DB facts | 调用者必须先准备所需 facts，不能隐式依赖 lazy |
 
@@ -404,7 +408,7 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 
 ### 7.2 跨函数桥接（DataflowFull）
 
-Schema V2 实现了持久化摘要层：
+Schema V2 包含持久化摘要层：
 
 ```
 dataflow_edges    = intra-procedural, fine-grained, direct edges (不变)
@@ -482,19 +486,19 @@ LanguageCapabilityProfile
 | Java | DataflowFull | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
 | C | DataflowFull | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
 | C++ | DataflowFull | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
-| ArkTS | DataflowFull | ✗ | 0.60 | ✓ (via summary tables) | TS grammar fallback |
+| ArkTS | DataflowFull | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar fallback；CFG 未实现 |
 | Go | DataflowFull | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
-| C# | DataflowFull | ✗ | 0.72 | ✓ (via summary tables) | partial classes 未合并 |
-| Rust | DataflowFull | ✓ | 0.70 | ✓ (ArgToParam only; ReturnToCall gap) | 宏/burrow 不建模 |
-| PHP | DataflowFull | ✗ | 0.62 | ✓ (via summary tables) | 参数 DataNode 抽取 gap |
-| Ruby | DataflowFull | ✗ | 0.65 | ✓ (ArgToParam + ReturnToCall) | block/yield gap |
-| Kotlin | DataflowFull | ✗ | 0.67 | ✓ (via summary tables) | extension receiver `this` binding |
-| Cangjie | DataflowFull | ✗ | 0.65 | ✓ (ArgToParam verified; ReturnToCall basic) | postfixExpression callSuffix |
+| C# | DataflowFull | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
+| Rust | DataflowFull | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |
+| PHP | DataflowFull | ✗ | 0.62 | ✓ (ArgToParam + ReturnToCall) | name-based binding；CFG 未实现 |
+| Ruby | DataflowFull | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | block resource CFG；yield 仍为 best-effort |
+| Kotlin | DataflowFull | ✓ | 0.67 | ✓ (ArgToParam + ReturnToCall) | branch/loop CFG；extension receiver binding 为 best-effort |
+| Cangjie | DataflowFull | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | postfixExpression callSuffix |
 
 约束：
 - capability profile 属于 engine/analysis 边界；CLI/MCP/context 只能读取并展示。
 - 每个查询结果必须携带实际使用的语言能力信息。
-- 查询请求超出当前语言边界时，返回 partial result + diagnostics，不返回空数组。
+- 查询请求超出当前语言边界时，trace 内层返回 `partial_result + diagnostics`；非 trace MCP 外层返回终态 capability gap，不静默返回无法解释的空数组。
 - 低置信度 fallback 必须带 `confidence`、`strategy` 和 `provenance`。
 
 ### 9.3 FeatureMatrix 能力门控
@@ -516,12 +520,12 @@ LanguageCapabilityProfile
 - `ParseWorkerPool` — 支持 max file size、panic isolation、结构化 `ExtractionError` 和 `IndexReport`。
 - `SemanticBinder` — 统一填充 source/scope/binding。
 - `LexicalBinder` + `DataFlowBuilder` — 词法绑定与数据流。
-- `CfgBuilder` — 函数级 CFG（TS/JS/Python/Java/C/C++/Go/Rust）。
+- `CfgBuilder` — 函数级 CFG；当前除 ArkTS、PHP 外的 12 种语言均在 capability profile 中声明支持。
 - Golden test framework 覆盖 14 种语言。
 
 已知限制：
-- CFG 不覆盖 try/catch/finally、switch/case、async/await、labeled break/continue（所有语言）。
-- Java/C/C++/ArkTS/Go/C#/Rust/PHP/Ruby/Kotlin/Cangjie 的 CFG 未实现或部分实现（见能力表）。
+- CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、标签跳转和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
+- ArkTS 和 PHP 当前不声明 CFG 支持；其余语言已覆盖核心 branch/loop body traversal，部分语言另有 resource/context 结构覆盖。
 - per-file timeout 尚未完全强制。
 
 ### 10.1 查询时 lazy index 架构
@@ -559,20 +563,14 @@ Job ID 基于时间戳生成（`extract_{microsecond_hex}`）。同一 `(file_id
 
 Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs` 表。
 
-#### 10.1.3 精度等级
+#### 10.1.3 内部精度模型
 
-查询响应携带精度信息，告知消费方结果的完整度：
+引擎内部使用 `Precision { coverage, confidence }`，把“覆盖范围”和“语义确定性”分开建模：
 
-| Precision Level | 条件 |
-|-----------------|------|
-| `Exact` | 目标文件有完整 structural+dataflow，预算未超。 |
-| `PartialExact` | structural 完整但 dataflow 被预算截断。 |
-| `DegradedStructural` | structural 预算超支，仅有 manifest 或 resolution_symbols。 |
-| `LocalDataflowOnly` | dataflow 仅对当前函数可用，无跨文件传播。 |
-| `ManifestOnly` | 仅顶层符号可用。 |
-| `Unavailable` | 文件未索引或语言不支持。 |
+- `CoverageTier`：`RepoComplete`、`ClosureComplete`、`Boundary`、`Partial`、`Manifest`。
+- `SemanticConfidence`：`Low`、`Medium`、`High`、`Certain`。
 
-这些精度等级是引擎内部状态，用于 extraction 层自身的决策与降级。不进入 MCP 公共响应——Agent 只接收 `analysis.retry_after_ms` 和 `gaps` 两个公开信号。
+`Precision` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。不得重新引入已删除的 `PrecisionTier` 公共字段或旧枚举适配层。
 
 #### 10.1.4 In-flight 一致性
 
@@ -724,10 +722,7 @@ analysis/retry_after_ms/gaps。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。MCP handler 只生成
   `QueryIntent`，不得直接组合 lazy structural/dataflow、resolver 或 graph
   builder。
-- `LazyOrchestrator`、`LazyCoordinator` 和 MCP `ensure_structural_for_*`
-  属于旧控制平面。它们的 job claim、budget、query_id、prewarm 和
-  diagnostics 语义迁入 `FocusRuntime` / `ClosureEngine` /
-  `BootstrapManager` 后，应删除或内化。
+- `LazyOrchestrator`、`LazyCoordinator` 和 MCP `ensure_structural_for_*` 旧控制平面已删除。查询调度统一由 `FocusRuntime` / `ClosureEngine` / `BootstrapManager` 承担；事实构建仍复用 lazy services。
 - Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
   overlay；只有 full-index/shared pipeline 可以更新全局
   `references.resolved_*` 和 repo-wide `symbol_edges`。
@@ -737,8 +732,7 @@ analysis/retry_after_ms/gaps。
 - 每次查询只排入 `FocusResult.pending_closure_ids` 中可追踪的 background/region-extension closure。前台已构建文件不得再逐文件排入隐藏 Recent prewarm；否则 `tasks(query_id)` 会先报告完成，而数据库仍在执行 N+1 closure fan-out。
 - `closure_coverage`、`reference_resolutions` 和 `symbol_edge_candidates` 是 graph materialization 的临时 closure facts，不是永久历史日志。新 MCP session 激活项目时整表清理上一 session 的 control-plane facts；同一 session 每次成功物化后只保留最近 16 个 committed closure。已物化的 canonical graph edge、源码事实和 MCP query snapshot 不依赖这些旧行。
 - 已有持久化 file inventory 或源码事实时，MCP bootstrap 只标记基础层 ready，不启动全项目后台扫描。Closure resolver 的本地 fallback 使用 `symbols.name` 索引，不构建 project-wide `GlobalSymbolIndex`；import scope、测试路径分类和 proximity root 必须按源文件计算一次，不得在每个 reference 上重复查询。
-  `PrecisionTier` 不进入 public MCP contract。仍存在的内部使用点必须改为
-  `Precision` 或局部私有 adapter，不能作为响应字段保留。
+  `PrecisionTier` 不进入 public MCP contract；当前内部统一使用 `Precision`。
 - `JobTracker`（`crates/atlas-engine/src/focus/job_tracker.rs`）是 Focus Runtime 的
   完成追踪实体，记录每个 closure 是否构建完成及其耗时。`FocusRuntime` 持有
   `Arc<JobTracker>` 并在 `prepare()` 中通过 `FocusResult.job_tracker` 传递给 MCP 层。
@@ -792,6 +786,42 @@ discover files
 - `ScopedSearchService`：scope 感知搜索 + 定向 lazy structural。
 - Tracing 经 `Engine` facade；`Engine` 负责触发 lazy dataflow，raw `TraceEngine` 仅消费已有 facts。
 - 约束：入口组合服务；服务组合 `Store`、extraction、graph 等；入口绝不对低层 API 做 ad-hoc 组合。
+
+#### TUI 查询工作台
+
+TUI 继续使用 Ratatui；当前问题域不需要第二套终端框架。其边界分为两类：
+
+- 高频交互由 TUI 原生状态机承担：symbol search、详情 tabs、caller trace、选择和滚动。
+- 低频分析通过 `:` command palette 进入既有 `atlas_mcp::tools::ToolRouter`：
+  `symbol`、`calls`、`explore`、`impact`、`path`、`trace`、
+  `file_dependencies`、`lifecycle`、`branch_diff`、`domain_rules`、
+  `fp_dispatches`、`tasks`、`resume_query`。当前选择的 qualified name / file path 由入口层注入；
+  其余参数通过 typed field form 填写。枚举和布尔参数循环选择，数值和文本参数在提交前校验。
+  `trace kind`、`domain_rules action`、`fp_dispatches action` 等 discriminator 同时驱动字段可见性、
+  动态必填、键盘导航和最终参数生成；四者不得各自维护分支规则。TUI 不要求用户手写 MCP JSON。
+
+TUI 的 `ToolCall` 在既有单 worker `JobManager` 中执行；`JobManager` 持有一个
+session-persistent `ToolRouter`，使 `query_id`、`tasks` 和 `resume_query` 在多次命令间
+保持有效。TUI 从最新响应读取顶层 `query_id`，自动填入 `tasks` / `resume_query` 表单。
+主线程只处理按键、取消、状态切换和渲染。`tui::tool_result` 是唯一的结果展示投影边界：
+
+- 默认视图把 subject/source/path/steps/hops/file groups 等代码事实置前，调用与关系证据次之，
+  文件 inventory 和 recommendations 置后；符号、import、domain rule、function-pointer dispatch、
+  task 使用稳定业务字段压缩为人类可扫描的行。
+- `analysis`、`capability`、confidence、coverage、partial/truncated、diagnostics/gaps 等公共元数据
+  进入自适应 HUD 或诊断区。HUD 只消费 handler 明确返回的字段，不推断 precision、coverage、
+  完整性或置信度；缺失字段不生成“No metadata”之类占位噪声。
+- 未识别的非元数据字段必须递归保留在 facts 视图，不能因为当前 TUI 尚不了解新字段而静默丢失。
+- `r` 可随时切换到未经展示投影修改的 pretty JSON/text；raw response 是审计与前向兼容后门。
+
+投影只改变呈现，不重建 analysis envelope，也不改变 lazy/focus、终态或错误语义。这样 TUI
+和 MCP 对相同查询仍使用同一 handler 事实，同时人类不需要阅读 wire-format JSON。
+
+TUI 不暴露 `project` palette command：TUI 生命周期绑定启动时的单个本地项目，切换
+router project 会让原生 search/context session 与 tool session 分裂。`search` 已由原生
+交互视图承担。`atlas-mcp` 因而是
+`atlas-cli` 的常规库依赖；`mcp` Cargo feature 只控制 stdio transport 所需的 Tokio 和
+`atlas mcp` 子命令。
 
 ### 10.4 长操作进度与取消
 
@@ -932,7 +962,7 @@ engine.prepare(params)  →  产出 query_id + 初始 result
 
 | 模式 | 超时 | Progress 通知 | 非终态返回 |
 |------|------|--------------|-----------|
-| TUI | 无限 | 直接渲染终端 | 不发生（阻塞到终态） |
+| TUI | 与无 progress MCP 相同的 bounded wait | 无 transport notification；界面显示 worker activity | 超时返回；保留 `query_id` 并由 `resume_query` 继续 |
 | MCP + progress token | 无限 | 走 `notifications/progress` | 不发生（阻塞到终态） |
 | MCP 无 progress token | THRESHOLD | 无 | 超时返回 + `analysis.retry_after_ms` |
 
@@ -968,13 +998,13 @@ engine.prepare(params)  →  产出 query_id + 初始 result
 | Focus state | `tasks`, `resume_query` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
-- 后续请求通过 `maybe_refresh_graph()` 检测外部索引变化（`ensure_structural_for_files` / `ensure_structural_for_symbol_name` 内部已调用，handler 无需重复）。
+- Focus/lazy 写入通过 `record_lazy_writes()` 进入刷新队列；后续 graph-backed 请求由 `maybe_refresh_graph()` 批量增量刷新，累计变更过大时退化为完整 snapshot rebuild。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
 - `project(action="open")` 不索引，只同步激活项目并打开持久化的 `project/.atlas/atlas.db`；MCP 不暴露 storage mode。
 - MCP 查询路径不探测或同步整个工作树。磁盘文件与持久化索引的全项目同步由显式 CLI `atlas sync`/`atlas index` 负责；查询触发的 lazy extraction 只更新当前 scope/closure，并通过 `tasks`、`query_id` 和 analysis envelope 暴露状态。
 - 显式全项目索引只通过 CLI `atlas index` 执行。
 - `search` 的 `scope` 永远强制参数；scope 同时是结果边界和 focus seed，即使存在 manual full index 也不省略。
-- MCP 不支持 `background=true`；耗时提升通过 scoped focus/lazy 结果的 partial/diagnostics 和 `resume_query` 表达。
+- MCP 不支持 `background=true`；未完成的 scoped focus/lazy 工作通过 `analysis.retry_after_ms` + `query_id` 表达，终态限制通过 `gaps` 表达，客户端使用 `resume_query` 重放。
 - 结果截断 25KB，额外 content block 标注截断信息。
 
 ### 11.4 CLI
@@ -1113,7 +1143,7 @@ branch_diff    lifecycle
   include directories like `arch/<arch>/include/` or `include/generated/`.
   See MCP README for usage.
 
-- **零初始语义**：`project(action="open")` 激活项目但不会索引它。在 search/trace 之前需要显式调用 `index`（manifest extraction）。没有 manifest 索引，lazy extraction 缺乏起点。
+- **冷项目首查成本**：`project(action="open")` 只激活项目，不扫描全树。首次 scoped search/trace 由 Focus bootstrap 建立 file inventory / symbol hints 并做有限闭包提取，因此可能先返回非终态响应；客户端按 `query_id` 和 `analysis.retry_after_ms` 调用 `resume_query`。若需要稳定的项目级完整缓存，应在 MCP 外运行 `atlas index`。
 
 ### Graph
 

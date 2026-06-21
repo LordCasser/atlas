@@ -1,6 +1,6 @@
 # context
 
-AI context builder. Produces structured Markdown context for a symbol, suitable for LLM prompt injection.
+Agent context builder. Produces bounded structured Markdown context for a symbol.
 
 ## Output format
 
@@ -39,4 +39,4 @@ ContextBuilder::build_context_for_symbol(&symbol_id, include_file_peers: bool) â
 ContextView::to_markdown() â†’ String
 ```
 
-When `include_file_peers` is `false`, the `file_peers` field is set to an empty vector and no DB query for file peers is performed, producing smaller, faster responses. Default is `true` for backward compatibility.
+When `include_file_peers` is `false`, the `file_peers` field is set to an empty vector and no DB query for file peers is performed, producing smaller, faster responses. The default is `true`.

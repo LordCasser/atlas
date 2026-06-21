@@ -25,11 +25,11 @@ ID generation uses the `define_id!` macro to eliminate boilerplate.
 
 | Enum | Variants | Description |
 |------|----------|-------------|
-| `Language` | 14 languages | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS, Go, CSharp, Rust, PHP, Ruby, Kotlin, Cangjie; Cangjie only with `cangjie` feature |
-| `SymbolKind` | 20 | File, Module, Class, Struct, Interface, Trait, Enum, EnumMember, Function, Method, Property, Field, Variable, Constant, TypeAlias, Namespace, Parameter, Constructor, Macro, Decorator, Package |
-| `EdgeKind` | 21 | Contains, Calls, Imports, Includes, Exports, Extends, Implements, References, TypeOf, Returns, Instantiates, Overrides, Decorates, Defines, Argument, Parameter, Assigns, Reads, Writes, FieldRead, FieldWrite |
-| `ReferenceKind` | 10 | Usage, TypeReference, Call, Import, FieldAccess, Inheritance, Implementation, Override, Decoration, Read, Write, Instantiation |
-| `ImportKind` | 5 | Include, Import, FromImport, Package, Use |
+| `Language` | 14 languages | TypeScript, JavaScript, Python, Java, C, Cpp, ArkTS, Go, CSharp, Rust, PHP, Ruby, Kotlin, Cangjie; all are enabled by the default feature set |
+| `SymbolKind` | 21 | File, Module, Class, Struct, Interface, Trait, Enum, EnumMember, Function, Method, Property, Field, Variable, Constant, TypeAlias, Namespace, Parameter, Constructor, Macro, Decorator, Package |
+| `EdgeKind` | 22 | Contains, Calls, Imports, Includes, Exports, Extends, Implements, References, TypeOf, Returns, Instantiates, Overrides, Decorates, Defines, Argument, Parameter, Assigns, Reads, Writes, FieldRead, FieldWrite, RegistersCallback |
+| `ReferenceKind` | 12 | Usage, TypeReference, Call, Import, FieldAccess, Inheritance, Implementation, Override, Decoration, Read, Write, Instantiation |
+| `ImportKind` | 6 | Include, Import, FromImport, ExportFrom, Package, Use |
 | `ScopeKind` | 13 | File, Module, Class, Struct, Interface, Enum, Function, Method, Block, Loop, Conditional, Namespace, Trait |
 | `Visibility` | 5 | Public, Private, Protected, Internal, Package |
 | `ResolutionStrategy` | current enum | Exact, scope/import/name/fuzzy/heuristic strategies |
@@ -51,20 +51,21 @@ struct SymbolDef {
     kind: SymbolKind,
     name: String,
     qualified_name: String,
-    symbol_path: String,
+    symbol_path: Vec<String>,
     file_id: FileId,
     language: Language,
     range: TextRange,
     name_range: TextRange,
     signature: Option<String>,
-    visibility: Visibility,
+    visibility: Option<Visibility>,
     exported: bool,
     static_: bool,
     async_: bool,
-    container: Option<String>,
+    container: Option<SymbolId>,
     scope_id: Option<ScopeId>,
     package_name: Option<String>,
-    namespace_path: Option<Vec<String>>,
+    namespace_path: Vec<String>,
+    layer: String,
 }
 ```
 
@@ -127,12 +128,12 @@ struct ImportDef {
 ```rust
 struct Callsite {
     id: CallsiteId,
-    reference_id: ReferenceId,
+    reference_id: Option<ReferenceId>,
     caller: SymbolId,
-    callee: Option<SymbolId>,
     receiver: Option<String>,
-    args: Vec<String>,
+    args: Vec<ArgumentFact>,
     range: TextRange,
+    callee_range: Option<TextRange>,
 }
 ```
 
@@ -156,7 +157,7 @@ struct FileFacts {
     scopes: Vec<ScopeDef>,
     references: Vec<ReferenceUse>,
     imports: Vec<ImportDef>,
-    exports: Vec<String>,
+    exports: Vec<SymbolId>,
     raw_edges: Vec<RawEdge>,
     callsites: Vec<Callsite>,
     bindings: Vec<BindingDef>,
@@ -166,6 +167,10 @@ struct FileFacts {
     cfg_nodes: Vec<CfgNode>,
     cfg_edges: Vec<CfgEdge>,
     diagnostics: Vec<ExtractDiagnostic>,
+    budget_exceeded: bool,
+    lexical_failed: bool,
+    dataflow_failed: bool,
+    cfg_failed: bool,
 }
 ```
 The primary extraction output. Extraction writes single-file facts; resolution and graph construction enrich them without deleting unresolved occurrences.
