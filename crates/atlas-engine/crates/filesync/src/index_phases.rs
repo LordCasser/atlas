@@ -1029,7 +1029,7 @@ pub fn phase_materialize_annotations(store: &Arc<Store>) -> Result<()> {
         .context("Failed to materialize annotations")
 }
 
-/// Build persistent function summaries (Schema v3 / analysis surface).
+/// Build persistent function summaries (Schema v2 / analysis surface).
 ///
 /// Returns the number of functions summarised.
 pub fn phase_build_summaries(

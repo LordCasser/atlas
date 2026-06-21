@@ -1,7 +1,7 @@
 //! Function summary persistence — store & query pre-computed intraprocedural
 //! reachability data.
 //!
-//! ## Tables (Schema v3)
+//! ## Tables (Schema v2)
 //!
 //! - `function_summaries`        — per-function metadata + cache key
 //! - `summary_param_reaches`     — parameter → downstream target

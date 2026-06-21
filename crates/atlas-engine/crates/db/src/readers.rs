@@ -107,7 +107,7 @@ pub trait CallGraphReader {
 
 // ── Summary Reader ──────────────────────────────────────────────────────────
 
-/// Read-only access to persisted function summary tables (Schema v3).
+/// Read-only access to persisted function summary tables (Schema v2).
 ///
 /// Used by [`CrossFunctionBridge`] to perform O(1) cross-function
 /// dataflow bridging without runtime BFS.

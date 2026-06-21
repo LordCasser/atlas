@@ -4,8 +4,8 @@
 //!
 //! `CrossFunctionBridge` replaces the runtime BFS logic in `SummaryEdgeProvider`
 //! with O(1) query-based lookups against the persisted summary tables
-//! (Schema v3).  The caller (`SummaryEdgeProvider`) handles runtime fallback
-//! when summary data is absent (old DB or unindexed functions).
+//! (Schema v2). The caller (`SummaryEdgeProvider`) handles missing summary data
+//! for unindexed functions.
 //!
 //! ## Bridge types
 //!
@@ -29,7 +29,7 @@ use crate::trace::virtual_edges::TraceEdge;
 ///
 /// Returns empty when summary data is absent.  The caller
 /// (`SummaryEdgeProvider`) handles runtime fallback via its
-/// existing BFS logic for backward compatibility with old DBs.
+/// existing BFS logic when the function has not been summarized.
 pub struct CrossFunctionBridge;
 
 impl CrossFunctionBridge {
@@ -167,7 +167,7 @@ impl CrossFunctionBridge {
 }
 
 // Note: No unsafe downcast needed.  `TraceStore` now includes `SummaryReader`
-// (added in Schema v3), so `store.query_call_arg_sources(...)` and
+// (part of Schema v2), so `store.query_call_arg_sources(...)` and
 // `store.query_return_sources(...)` are available directly through the trait
 // object.
 

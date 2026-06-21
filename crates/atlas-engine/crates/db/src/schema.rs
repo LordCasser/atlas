@@ -337,7 +337,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_unit_layer
     ON extraction_jobs(file_id, unit_id, layer)
     WHERE unit_id IS NOT NULL AND status IN ('queued', 'building');
 
--- ===== Summary tables (Schema v3) =====
+-- ===== Summary tables (Schema v2) =====
 
 -- Function summary metadata: one row per function.
 CREATE TABLE IF NOT EXISTS function_summaries (
