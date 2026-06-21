@@ -138,6 +138,24 @@ pub struct FeatureMatrix {
 }
 
 impl FeatureMatrix {
+    fn named_features(&self) -> [(&'static str, &FeatureSupport); 13] {
+        [
+            ("symbol_extraction", &self.symbols),
+            ("reference_extraction", &self.references),
+            ("import_resolution", &self.imports),
+            ("scope_extraction", &self.scopes),
+            ("call_graph", &self.call_graph),
+            ("lexical_bindings", &self.lexical_bindings),
+            ("intra_statement_dataflow", &self.local_dataflow),
+            ("use_def_heuristic", &self.use_def),
+            ("access_path", &self.field_access),
+            ("call_arguments", &self.call_arguments),
+            ("return_flow", &self.returns_flow),
+            ("cfg", &self.cfg),
+            ("interprocedural_dataflow", &self.interprocedural_summaries),
+        ]
+    }
+
     /// Returns the coarse [`CapabilityLevel`] derived from the matrix.
     ///
     /// This preserves backward compatibility with code that checks
@@ -162,116 +180,28 @@ impl FeatureMatrix {
 
     /// Returns the minimum confidence floor across all supported features.
     pub fn min_confidence_floor(&self) -> f64 {
-        let floors: Vec<f64> = [
-            self.symbols.confidence_floor(),
-            self.references.confidence_floor(),
-            self.imports.confidence_floor(),
-            self.scopes.confidence_floor(),
-            self.call_graph.confidence_floor(),
-            self.lexical_bindings.confidence_floor(),
-            self.local_dataflow.confidence_floor(),
-            self.use_def.confidence_floor(),
-            self.field_access.confidence_floor(),
-            self.call_arguments.confidence_floor(),
-            self.returns_flow.confidence_floor(),
-            self.cfg.confidence_floor(),
-            self.interprocedural_summaries.confidence_floor(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        floors.into_iter().fold(1.0, f64::min)
+        self.named_features()
+            .into_iter()
+            .filter_map(|(_, support)| support.confidence_floor())
+            .fold(1.0, f64::min)
     }
 
     /// Human-readable feature names that are currently supported.
     pub fn supported_feature_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        if self.symbols.is_supported() {
-            names.push("symbol_extraction".into());
-        }
-        if self.references.is_supported() {
-            names.push("reference_extraction".into());
-        }
-        if self.imports.is_supported() {
-            names.push("import_resolution".into());
-        }
-        if self.scopes.is_supported() {
-            names.push("scope_extraction".into());
-        }
-        if self.call_graph.is_supported() {
-            names.push("call_graph".into());
-        }
-        if self.lexical_bindings.is_supported() {
-            names.push("lexical_bindings".into());
-        }
-        if self.local_dataflow.is_supported() {
-            names.push("intra_statement_dataflow".into());
-        }
-        if self.use_def.is_supported() {
-            names.push("use_def_heuristic".into());
-        }
-        if self.field_access.is_supported() {
-            names.push("access_path".into());
-        }
-        if self.call_arguments.is_supported() {
-            names.push("call_arguments".into());
-        }
-        if self.returns_flow.is_supported() {
-            names.push("return_flow".into());
-        }
-        if self.cfg.is_supported() {
-            names.push("cfg".into());
-        }
-        if self.interprocedural_summaries.is_supported() {
-            names.push("interprocedural_dataflow".into());
-        }
-        names
+        self.named_features()
+            .into_iter()
+            .filter(|(_, support)| support.is_supported())
+            .map(|(name, _)| name.to_string())
+            .collect()
     }
 
     /// Human-readable feature names that are NOT currently supported.
     pub fn unsupported_feature_names(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        if !self.symbols.is_supported() {
-            names.push("symbol_extraction".into());
-        }
-        if !self.references.is_supported() {
-            names.push("reference_extraction".into());
-        }
-        if !self.imports.is_supported() {
-            names.push("import_resolution".into());
-        }
-        if !self.scopes.is_supported() {
-            names.push("scope_extraction".into());
-        }
-        if !self.call_graph.is_supported() {
-            names.push("call_graph".into());
-        }
-        if !self.lexical_bindings.is_supported() {
-            names.push("lexical_bindings".into());
-        }
-        if !self.local_dataflow.is_supported() {
-            names.push("intra_statement_dataflow".into());
-        }
-        if !self.use_def.is_supported() {
-            names.push("use_def_heuristic".into());
-        }
-        if !self.field_access.is_supported() {
-            names.push("access_path".into());
-        }
-        if !self.call_arguments.is_supported() {
-            names.push("call_arguments".into());
-        }
-        if !self.returns_flow.is_supported() {
-            names.push("return_flow".into());
-        }
-        if !self.cfg.is_supported() {
-            names.push("cfg".into());
-        }
-        if !self.interprocedural_summaries.is_supported() {
-            names.push("interprocedural_dataflow".into());
-        }
-        names
+        self.named_features()
+            .into_iter()
+            .filter(|(_, support)| !support.is_supported())
+            .map(|(name, _)| name.to_string())
+            .collect()
     }
 }
 
