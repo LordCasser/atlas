@@ -4,6 +4,137 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.5.1] — 2026-06-21
+
+### TUI 2.0 — Command Palette + Shared MCP Tool Pipeline
+
+The TUI has been rebuilt around a command-palette architecture.  Instead of
+hard-coded `i`/`v` keys with ad-hoc result strings, the TUI now shares the exact
+same `atlas_mcp::tools::ToolRouter` that the MCP transport uses — same handlers,
+same analysis envelope, same retry/gap semantics.
+
+- **Command palette** (`:` key): typed parameter forms for all 15 analysis tools
+  (`symbol`, `calls`, `explore`, `impact`, `path`, `trace`, `file_dependencies`,
+  `lifecycle`, `branch_diff`, `domain_rules`, `fp_dispatches`, `tasks`,
+  `resume_query`).  Fields are validated before submission; variant-dependent
+  forms (e.g. `trace kind`) show only the relevant parameters.  No JSON required.
+- **Human-oriented result projection**: tool output is rendered as structured
+  sections — code facts, source, paths, dependencies, rules, diagnostics.
+  Capability, confidence, coverage, and truncation metadata live in an adaptive
+  HUD.  Unknown future fields are preserved in the facts view rather than
+  silently dropped.
+- **Raw JSON toggle** (`r`): the untouched handler response is always one key away.
+- **Removed**: `AnalysisHud`, `ToolKind`, `InteractionMode` — analysis state is
+  now supplied exclusively by handler responses, never inferred from index mode.
+- `atlas-mcp` is now a regular library dependency of `atlas-cli`; the `mcp` Cargo
+  feature only controls the stdio transport subcommand.
+
+### MCP Response Envelope V2 — Terminality & Structured Gaps
+
+The MCP response contract has been simplified around two public signals:
+`analysis.retry_after_ms` (work in progress) and `gaps` (permanent limitations).
+
+- **`GapRecord`** replaces `KnownGap`: each gap carries `scope`, `reason`, and
+  `detail` — consumed by both the MCP transport and the TUI projection layer.
+- **Removed public fields**: `storage_mode`, `capability_mask`, `triggered_lazy`,
+  `precision`, `work`, `lazy_diagnostics`, `analysis_contract`.  Agent consumers
+  no longer navigate six overlapping metadata surfaces.
+- **Terminal gap semantics**: search and trace tools now return structured
+  `closure_boundary` and `capability` gaps instead of spurious `retry_after_ms`
+  when the constraint is permanent.
+- **Symbol `view="detail"`** is a pure Store-fact query — no graph init, no lazy
+  trigger.  Only `includeCode=true` with missing source begins lazy extraction.
+- **Resume**: conditional graph refresh only for `SemanticGraphQuery` contract
+  replays; background focus warming removed from search hot path.
+
+### MCP Async Execution
+
+- **`TaskManager`**: true async execution with a sync wait window.  Requests
+  return non-terminal responses with `query_id` while background work continues.
+- **Progress tokens**: forwarded without blocking the dispatch loop; the previous
+  progress-token hang on sync requests is fixed.
+- **`tasks` tool**: snapshot-based job tracking with `query` status field.
+- **Background sync subsystem removed**: probe, spawn, and overlay mutation gates
+  deleted.  File-change sync is CLI-only (`atlas sync`); MCP query paths do not
+  probe or synchronize the working tree.
+
+### Focus Runtime Hardening
+
+The query-time control plane received targeted improvements without changing the
+public MCP contract:
+
+- **Scoped resolver rewrite**: closure resolution no longer builds a
+  `GlobalSymbolIndex`.  Uses local `find_symbols_by_name` with proximity ranking
+  and test-path exclusion.  Reference-kind filtering prevents call references
+  from resolving to non-callable symbols.
+- **Budget truncation**: plans exceeding remaining capacity are partially
+  absorbed instead of wholesale rejected.
+- **Strategy reorder**: `ImportNeighborhood` runs before `CallGraph` (correct for
+  C/C++ include visibility).  Call-graph depth reduced to 1 with fixed-point
+  iteration.
+- **Bootstrap skip**: cold queries on persistent databases skip project-wide
+  scanning when file inventory already exists.
+- **Hot region tracking**: in-memory LRU eviction for visibility-filter
+  deduplication.
+- **`JobTracker`**: per-closure completion tracking with atomic snapshots.
+- **Session cleanup**: previous-session control-plane rows cleared on project open.
+
+### Resolution Improvements
+
+- **Test/spec file exclusion**: `find_exact_name_target_in_scope` and
+  `find_symbols_by_name` now exclude test/spec paths from global symbol scope.
+- **Importer-aware relative import resolution**: lexical path normalization with
+  extension/index resolution handles `./utils` → `src/utils.ts` correctly.
+- **Edit-distance fuzzy fallback** skipped for call references — prevents
+  `createWidget` from resolving to `createGadget` at callsites.
+
+### Schema V2
+
+- **28 entity tables + FTS5** in `.atlas/atlas.db`.  New focus control-plane
+  tables: `closure_generations`, `closure_coverage`, `reference_resolutions`,
+  `symbol_edge_candidates`, `file_inventory`, `symbol_hints`.
+- Focus control-plane rows are transient session materialization; canonical
+  source facts and symbol edges are durable in the same database.
+- Schema comments corrected throughout the codebase (V3→V2).
+
+### Language Capability
+
+- **All 14 languages at DataflowFull** with ArgToParam + ReturnToCall summaries.
+- **CFG**: 12 of 14 languages (ArkTS and PHP excluded).  CFG builder now emits
+  `stmt_range` for branch and loop nodes across all supported languages.
+- **Scope-exit analyzer**: `CallReturn` ownership test enabled — directly
+  returned allocations (`return make_resource()`) are correctly recognized as
+  ownership transfer to the caller.
+- **FeatureMatrix**: DRY via `named_features()` — new fields no longer require
+  three mirror lists.
+
+### Infrastructure
+
+- **Removed**: `atty` dependency; `SyncState` background sync subsystem;
+  `ExecutionContext`; `analysis_response.rs`; `trace_mcp_e2e.rs` (1,964 lines).
+- **`ClosureGraphProvider`**: `*const GraphState` + `unsafe impl Send/Sync` →
+  `Arc<GraphState>`.
+- **`Box<CallerChain>`** in `JobResult` for clippy `large_enum_variant`.
+- **Rust idiom modernization**: inline format args, `matches!()`, `is_some_and()`,
+  `Range::contains()` across the codebase.
+- **Dossier**: peer endpoint selection fix, relation evidence deduplication,
+  empty import symbol handling.
+- **Trace locator**: falls back to `find_latest_visible_reference_target()` when
+  a reference's `resolved` field is absent.
+- **Filesync**: clean git repos return `Some(empty)` instead of `None`, preventing
+  fallback to hash-based scanning.
+- **`branch_diff`**: 0-based to 1-based line number conversion for human display.
+
+### Documentation
+
+- Architecture, requirements, roadmap, testing, and performance documents
+  updated for Schema V2, TUI 2.0, and the current 15-tool MCP surface.
+- All crate READMEs and the Agent SKILL definition synchronized.
+- Removed outdated "multi-language extension roadmap" section — all languages
+  now at DataflowFull with CFG per capability profile.
+
+---
+
 ## [1.5.0] — 2026-06-15
 
 ### Focus Runtime — Query-Time Incremental Analysis (v5.0 → v7.1)
