@@ -6,7 +6,10 @@
 //! project root) needed to execute long-running operations — search, lazy
 //! structural extraction, and call-graph tracing — on a background thread.
 //!
-//! Each job carries its own [`Arc<AtomicBool>`] cancellation token.  The TUI
+//! The manager also owns one session-persistent MCP [`ToolRouter`], allowing
+//! palette queries to share the exact handler path and resume state.
+//!
+//! Each job carries its own [`Arc<AtomicBool>`] cancellation token. The TUI
 //! event loop submits jobs via [`JobManager::submit`] (returns immediately),
 //! polls for completion via [`JobManager::poll`] (called on every tick), and
 //! cancels running jobs via [`JobManager::cancel_current`] (bound to Esc).
@@ -30,6 +33,9 @@ use std::thread::JoinHandle;
 use atlas_engine::{
     CallerChain, Engine, GraphEngine, Language, SearchEngine, SearchResult, Store, SymbolId,
 };
+use atlas_mcp::protocol::ContentBlock;
+use atlas_mcp::tools::{ToolCallContext, ToolRouter};
+use serde_json::Value;
 
 use super::search_session::{ParsedSearch, do_search, parse_query};
 
@@ -55,15 +61,10 @@ pub enum TuiJob {
         depth: usize,
         cancel: Arc<AtomicBool>,
     },
-    /// Variable / dataflow trace (backward provenance) for richer trace parity with MCP.
-    TraceVariable {
-        symbol_id: SymbolId,
-        cancel: Arc<AtomicBool>,
-    },
-    /// Impact analysis (graph + semantic reach) for a symbol.
-    Impact {
-        symbol_id: SymbolId,
-        depth: usize,
+    /// Run one of the shared MCP analysis handlers.
+    ToolCall {
+        name: String,
+        arguments: Value,
         cancel: Arc<AtomicBool>,
     },
 }
@@ -75,8 +76,7 @@ impl TuiJob {
             TuiJob::Search { cancel, .. } => Arc::clone(cancel),
             TuiJob::LazyStructural { cancel, .. } => Arc::clone(cancel),
             TuiJob::TraceCallers { cancel, .. } => Arc::clone(cancel),
-            TuiJob::TraceVariable { cancel, .. } => Arc::clone(cancel),
-            TuiJob::Impact { cancel, .. } => Arc::clone(cancel),
+            TuiJob::ToolCall { cancel, .. } => Arc::clone(cancel),
         }
     }
 }
@@ -108,11 +108,12 @@ pub enum JobResult {
     },
     /// Trace callers finished.  `None` when the job was cancelled or failed.
     TraceChain(Option<Box<CallerChain>>),
-    /// Generic trace result (variable / point / forward etc.). Placeholder string for now;
-    /// will carry rich TraceQueryResponse or view in full impl. HUD can be updated from it.
-    TraceResult(Option<String>),
-    /// Impact result (summary for HUD + later rich pane). Placeholder for MCP parity.
-    ImpactResult(Option<String>),
+    /// Result returned by the same handler used by MCP.
+    ToolOutput {
+        name: String,
+        text: String,
+        is_error: bool,
+    },
 }
 
 // ── Job handle ───────────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ pub struct JobManager {
     store: Arc<Store>,
     graph: Option<Arc<GraphEngine>>,
     project_root: PathBuf,
+    tool_router: Arc<ToolRouter>,
 }
 
 impl JobManager {
@@ -159,11 +161,16 @@ impl JobManager {
     /// The graph snapshot must be provided later via [`set_graph`] before
     /// any search or trace jobs are submitted.
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
+        let tool_router = Arc::new(ToolRouter::new_empty(
+            Arc::clone(&store),
+            project_root.clone(),
+        ));
         Self {
             current: Arc::new(Mutex::new(None)),
             store,
             graph: None,
             project_root,
+            tool_router,
         }
     }
 
@@ -183,18 +190,13 @@ impl JobManager {
     pub fn submit(&self, job: TuiJob) -> bool {
         // Validate required resources
         match &job {
-            TuiJob::Search { .. }
-            | TuiJob::TraceCallers { .. }
-            | TuiJob::TraceVariable { .. }
-            | TuiJob::Impact { .. } => {
+            TuiJob::Search { .. } | TuiJob::TraceCallers { .. } => {
                 if self.graph.is_none() {
-                    tracing::warn!(
-                        "JobManager: graph not set — cannot submit search/trace/impact job"
-                    );
+                    tracing::warn!("JobManager: graph not set — cannot submit search/trace job");
                     return false;
                 }
             }
-            TuiJob::LazyStructural { .. } => {
+            TuiJob::LazyStructural { .. } | TuiJob::ToolCall { .. } => {
                 // Lazy structural only needs store + project_root (no graph)
             }
         }
@@ -202,6 +204,7 @@ impl JobManager {
         let store = Arc::clone(&self.store);
         let graph = self.graph.as_ref().map(Arc::clone);
         let project_root = self.project_root.clone();
+        let tool_router = Arc::clone(&self.tool_router);
 
         let done = Arc::new(AtomicBool::new(false));
         let result = Arc::new(Mutex::new(None));
@@ -231,7 +234,14 @@ impl JobManager {
         let _old = self.current.lock().unwrap().take();
 
         let handle = std::thread::spawn(move || {
-            let r = execute_job(job, &store, graph.as_ref(), &project_root, &cancel_w);
+            let r = execute_job(
+                job,
+                &store,
+                graph.as_ref(),
+                &project_root,
+                &tool_router,
+                &cancel_w,
+            );
             *result_w.lock().unwrap() = Some(r);
             done_w.store(true, Ordering::SeqCst);
         });
@@ -310,6 +320,7 @@ fn execute_job(
     store: &Arc<Store>,
     graph: Option<&Arc<GraphEngine>>,
     project_root: &std::path::Path,
+    tool_router: &ToolRouter,
     cancel: &Arc<AtomicBool>,
 ) -> JobResult {
     match job {
@@ -333,36 +344,30 @@ fn execute_job(
         TuiJob::TraceCallers {
             symbol_id, depth, ..
         } => run_trace(&symbol_id, depth, store, project_root, cancel),
-        TuiJob::TraceVariable { symbol_id, .. } => {
-            if check_cancelled(cancel) {
-                return JobResult::TraceResult(None);
-            }
-            // Now uses real trace path (high-level Engine::trace_variable + dataflow focus).
-            // Returns evidence string for HUD and tool bar display.
-            // (In full: would call engine.trace_variable and format steps/partial)
-            JobResult::TraceResult(Some(format!(
-                "variable-trace (real path) for sym {symbol_id:?}"
-            )))
-        }
-        TuiJob::Impact {
-            symbol_id, depth, ..
+        TuiJob::ToolCall {
+            name, arguments, ..
         } => {
             if check_cancelled(cancel) {
-                return JobResult::ImpactResult(None);
+                return JobResult::ToolOutput {
+                    name,
+                    text: "Cancelled".into(),
+                    is_error: true,
+                };
             }
-            // Use real GraphEngine API for impact-like (callers count as proxy for reach).
-            // In full would use dedicated impact + semantic for gaps/precision.
-            let info = if let Some(g) = graph {
-                let c = g.callers(&symbol_id);
-                format!(
-                    "impact (graph callers: {}) depth={}",
-                    c.callers.len(),
-                    depth
-                )
-            } else {
-                format!("impact (simulated) depth={depth} for {symbol_id:?}")
-            };
-            JobResult::ImpactResult(Some(info))
+            let result = tool_router.call_tool(&ToolCallContext::empty(), &name, &arguments);
+            let text = result
+                .content
+                .into_iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => text,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            JobResult::ToolOutput {
+                name,
+                text,
+                is_error: result.is_error.unwrap_or(false),
+            }
         }
     }
 }
@@ -640,5 +645,30 @@ mod tests {
 
         // Verify the first job's cancel token was signalled.
         assert!(cancel1.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tool_call_uses_shared_mcp_router_without_graph_snapshot() {
+        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        store.init_schema().expect("init schema");
+        let mut manager = JobManager::new(store, PathBuf::from("."));
+        assert!(manager.submit(TuiJob::ToolCall {
+            name: "domain_rules".into(),
+            arguments: serde_json::json!({"action": "list"}),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }));
+
+        for _ in 0..50 {
+            if let Some(JobStatus::Completed {
+                result: JobResult::ToolOutput { name, text, .. },
+            }) = manager.poll()
+            {
+                assert_eq!(name, "domain_rules");
+                assert!(!text.is_empty());
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("tool call did not complete");
     }
 }

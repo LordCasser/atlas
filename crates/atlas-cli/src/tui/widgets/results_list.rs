@@ -33,8 +33,6 @@ impl From<SearchResult> for ResultRow {
 /// - `rows`: all matching symbols (pre-flattened).
 /// - `selected`: index of the currently highlighted row (0-based).
 /// - `scroll`: first visible row (adjusted so `selected` is in view).
-/// - `analysis_note`: optional focus/partial badge suffix for the title (e.g. " [usable_partial g:1]").
-///   Empty string => classic title. Surfaces AnalysisHud state (gaps/precision) in results pane for hybrid TUI parity.
 ///
 /// The widget automatically computes the visible window so `selected`
 /// is never outside the rendered area.
@@ -44,7 +42,6 @@ pub fn render(
     rows: &[ResultRow],
     selected: usize,
     scroll: &mut usize,
-    analysis_note: &str,
 ) {
     let list_height = area.height.saturating_sub(2) as usize; // minus borders
     if list_height == 0 {
@@ -78,7 +75,10 @@ pub fn render(
             let path_style = Style::default().fg(Color::DarkGray);
 
             let mut spans = vec![
-                Span::styled("> ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    if is_selected { "> " } else { "  " },
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(&row.name, name_style),
                 Span::raw("  "),
                 Span::styled(kind_str, kind_style),
@@ -97,12 +97,47 @@ pub fn render(
         })
         .collect();
 
-    let title = if analysis_note.is_empty() {
-        format!(" Results ({}) ", rows.len())
-    } else {
-        format!(" Results ({}) {} ", rows.len(), analysis_note)
-    };
+    let title = format!(" Results ({}) ", rows.len());
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
 
     frame.render_widget(list, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn only_selected_result_has_marker() {
+        let rows = vec![
+            ResultRow {
+                name: "first".into(),
+                kind: SymbolKind::Function,
+                file_path: "src/first.rs".into(),
+                snippet: None,
+            },
+            ResultRow {
+                name: "second".into(),
+                kind: SymbolKind::Function,
+                file_path: "src/second.rs".into(),
+                snippet: None,
+            },
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        let mut scroll = 0;
+        terminal
+            .draw(|frame| render(frame, frame.area(), &rows, 1, &mut scroll))
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!rendered.contains("> first"));
+        assert!(rendered.contains("> second"));
+    }
 }

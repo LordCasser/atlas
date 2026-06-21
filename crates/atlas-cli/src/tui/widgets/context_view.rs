@@ -49,8 +49,6 @@ impl DetailTab {
 /// - `tab`: which tab is active.
 /// - `selected`: which caller/callee item is highlighted (for Callers/Callees tabs).
 /// - `scroll`: vertical scroll offset (pre-clamped by caller so selected is visible).
-/// - `focus_note`: short focus/partial or tool state for embedding (e.g. "focus:usable_partial"), shown in overview.
-///   Keeps hybrid state visible even inside detail without relying solely on bottom tool bar or global status.
 pub fn render(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -58,44 +56,18 @@ pub fn render(
     tab: DetailTab,
     selected: usize,
     scroll: usize,
-    focus_note: &str,
 ) {
-    // Vertical: tab bar (1) + tab content.
+    // One row for labels and one for the separator.
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
         .split(area);
 
-    // ── Tab bar ─────────────────────────────────────────────────────────
-    let titles: Vec<Line> = [
-        DetailTab::Overview,
-        DetailTab::Callers,
-        DetailTab::Callees,
-        DetailTab::Peers,
-        DetailTab::Source,
-    ]
-    .iter()
-    .map(|t| {
-        let label = format!(" {} ", t.as_str());
-        let style = if *t == tab {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        Line::from(Span::styled(label, style))
-    })
-    .collect();
-
-    let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::BOTTOM))
-        .style(Style::default().fg(Color::White));
-    frame.render_widget(tabs, v_chunks[0]);
+    render_tab_bar(frame, v_chunks[0], tab);
 
     // ── Tab content ─────────────────────────────────────────────────────
     match tab {
-        DetailTab::Overview => render_overview(frame, v_chunks[1], context, focus_note),
+        DetailTab::Overview => render_overview(frame, v_chunks[1], context),
         DetailTab::Callers => render_caller_list(
             frame,
             v_chunks[1],
@@ -117,7 +89,34 @@ pub fn render(
     }
 }
 
-fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView, focus_note: &str) {
+fn render_tab_bar(frame: &mut ratatui::Frame, area: Rect, tab: DetailTab) {
+    let titles: Vec<Line> = [
+        DetailTab::Overview,
+        DetailTab::Callers,
+        DetailTab::Callees,
+        DetailTab::Peers,
+        DetailTab::Source,
+    ]
+    .iter()
+    .map(|t| {
+        let style = if *t == tab {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        Line::from(Span::styled(t.as_str(), style))
+    })
+    .collect();
+
+    let tabs = Tabs::new(titles)
+        .block(Block::default().borders(Borders::BOTTOM))
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(tabs, area);
+}
+
+fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
     let subject = &ctx.subject;
     let file_path = ctx.subject_file_path.as_deref().unwrap_or("(unknown)");
 
@@ -129,7 +128,7 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView, fo
         .map(|v| format!("{v:?}"))
         .unwrap_or_else(|| "default".to_string());
 
-    let mut lines = vec![
+    let lines = vec![
         Line::from(Span::styled(
             format!("  {}", subject.qualified_name),
             Style::default()
@@ -177,14 +176,6 @@ fn render_overview(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView, fo
             Style::default().fg(Color::DarkGray),
         )),
     ];
-
-    if !focus_note.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            format!("  [focus: {focus_note}]"),
-            Style::default().fg(Color::Yellow),
-        )));
-    }
 
     let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::NONE))
@@ -392,4 +383,44 @@ fn render_source(frame: &mut ratatui::Frame, area: Rect, ctx: &ContextView) {
         .block(Block::default().borders(Borders::ALL).title(" Source "))
         .wrap(Wrap { trim: false });
     frame.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn tab_bar_labels_are_visible() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(frame, frame.area(), DetailTab::Overview))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Overview"));
+        assert!(rendered.contains("Callers"));
+        assert!(rendered.contains("Source"));
+    }
+
+    #[test]
+    fn all_tab_labels_fit_in_standard_right_pane() {
+        let mut terminal = Terminal::new(TestBackend::new(50, 2)).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(frame, frame.area(), DetailTab::Overview))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Source"));
+    }
 }

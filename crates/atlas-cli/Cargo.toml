@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 atlas-engine = { path = "../atlas-engine" }
-atlas-mcp = { path = "../atlas-mcp", optional = true }
+atlas-mcp = { path = "../atlas-mcp" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
@@ -32,7 +32,7 @@ tempfile = "3"
 
 [features]
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
-mcp = ["atlas-mcp", "dep:tokio"]
+mcp = ["dep:tokio"]
 typescript = ["atlas-engine/typescript"]
 javascript = ["atlas-engine/javascript"]
 python = ["atlas-engine/python"]

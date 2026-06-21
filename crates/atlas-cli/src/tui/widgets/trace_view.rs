@@ -16,14 +16,12 @@ use ratatui::{
 /// - `chain`: the caller chain to display (root → ... → target).
 /// - `selected`: which step is highlighted (0-based index into chain.steps).
 /// - `scroll`: vertical scroll offset (pre-clamped so selected is visible).
-/// - `focus_note`: focus/partial/tool state to append to footer stats (hybrid visibility).
 pub fn render(
     frame: &mut ratatui::Frame,
     area: Rect,
     chain: &CallerChain,
     selected: usize,
     scroll: usize,
-    focus_note: &str,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -145,13 +143,10 @@ pub fn render(
 
     // ── Stats footer ─────────────────────────────────────────────────────
     let truncated = if chain.truncated { "yes" } else { "no" };
-    let mut stats = format!(
+    let stats = format!(
         "  Nodes visited: {}  |  Max depth: {}  |  Truncated: {}",
         chain.nodes_visited, chain.max_depth_reached, truncated
     );
-    if !focus_note.is_empty() {
-        stats.push_str(&format!("  |  focus: {focus_note}"));
-    }
     lines.push(Line::from(Span::styled(
         stats,
         Style::default().fg(Color::DarkGray),

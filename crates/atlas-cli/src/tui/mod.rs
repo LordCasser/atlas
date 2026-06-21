@@ -6,12 +6,14 @@
 //! - `fallback` — plain-text progress for non-TTY environments
 
 pub mod app;
+pub mod command_palette;
 pub mod event;
 pub mod fallback;
 pub mod jobs;
 pub mod progress;
 pub mod search_session;
 pub mod session;
+pub mod tool_result;
 pub mod widgets;
 
 use std::fs;

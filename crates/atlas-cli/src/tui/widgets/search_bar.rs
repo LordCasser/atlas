@@ -9,22 +9,13 @@ use ratatui::{
 
 /// Renders a search input bar at the given area.
 ///
-/// Per approved key UX redesign plan (显式 InteractionMode):
-/// `focused` here means "bar cursor visible". Titles now convey Query vs Browse
-/// context so user immediately sees whether letters will type or trigger tools
-/// (i=impact, v=trace-var etc. as "other search modes").
 pub fn render(frame: &mut ratatui::Frame, area: Rect, input: &str, cursor: usize, focused: bool) {
     let (border_style, title) = if focused {
-        (
-            Style::default().fg(Color::Yellow),
-            // Querying 上下文：明确提示 Esc / ↓ 回 Browse 使用工具（i/v 等 MCP 模式）
-            Line::from(" Search [QUERY] (type; Esc or ↓ to BROWSE & use i/v tools) "),
-        )
+        (Style::default().fg(Color::Yellow), Line::from(" Search "))
     } else {
-        // Browsing 上下文（列表存在）：清楚显示工具可用
         (
             Style::default().fg(Color::DarkGray),
-            Line::from(" Search [BROWSE] (/ or s: query | i=Impact v=Trace x=clear) "),
+            Line::from(" Search  [/ focus] "),
         )
     };
 
@@ -39,7 +30,7 @@ pub fn render(frame: &mut ratatui::Frame, area: Rect, input: &str, cursor: usize
     // Build display text with a cursor indicator.
     let display: Line = if input.is_empty() {
         Line::from(Span::styled(
-            "Search symbols...",
+            "Symbol, path, lang:rust, or name:query",
             Style::default().fg(Color::DarkGray),
         ))
     } else if focused {
