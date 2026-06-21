@@ -1106,29 +1106,9 @@ mod tests {
         );
     }
 
-    /// Known limitation: `ValueSource::CallReturn` is NOT tracked by
-    /// `escaped_locals`.  When a function returns a value via `CallReturn`
-    /// (e.g., `return fopen(...)`) instead of `ValueSource::Local`
-    /// (e.g., `return f`), the scope-exit pass does NOT recognize that the
-    /// allocated resource has been returned to the caller.  It therefore
-    /// incorrectly emits an auto-free at the exit node.
-    ///
-    /// This test asserts the IDEAL behavior (no auto-free), which currently
-    /// FAILS because `run_scope_exit_pass` only collects `ValueSource::Local`
-    /// names into `escaped_locals`.  When the alloc's `PlaceRef::Local` name
-    /// never appears in a Return/Escape with `ValueSource::Local`, the resource
-    /// looks unfreed from the pass's perspective.
-    ///
-    /// To fix, the pass would need to:
-    /// 1. Track which alloc callee produced which PlaceRef.
-    /// 2. When a Return has `ValueSource::CallReturn`, check whether that
-    ///    callee matches an Alloc in the function, and if so, mark the
-    ///    corresponding PlaceRef as escaped.
-    ///
-    /// Low priority: most real-world code assigns resources to local variables
-    /// before returning them (`let x = fopen(...); return x;`).
+    /// A directly returned allocation transfers ownership to the caller and
+    /// must not receive an implicit scope-exit free.
     #[test]
-    #[ignore]
     fn test_returned_resource_via_callreturn_not_auto_freed() {
         let sym_id = make_sym_id();
         let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
@@ -1153,8 +1133,7 @@ mod tests {
         alloc_eff.eligible_for_implicit_cleanup = Some(true);
         effects.insert(node_id, vec![alloc_eff]);
 
-        // Return via CallReturn (NOT ValueSource::Local) —
-        // simulates `return make_resource()` pattern
+        // Return via CallReturn simulates `return make_resource()`.
         let return_node_id = {
             let stmt_range = types::structs::TextRange {
                 start_byte: 20,
@@ -1184,10 +1163,7 @@ mod tests {
 
         run_scope_exit_pass(&mut effects, &cfg);
 
-        // IDEAL: Exit should NOT have a scope-exit Free for "handle"
-        // (the resource was returned to the caller via CallReturn).
-        // CURRENTLY THIS ASSERTION FAILS — the pass does not track
-        // CallReturn in escaped_locals, so a Free IS emitted.
+        // Exit should not free "handle": ownership moved to the caller.
         let exit_node = cfg
             .nodes
             .values()
@@ -1201,9 +1177,7 @@ mod tests {
             });
             assert!(
                 !has_scope_exit_for_handle,
-                "KNOWN LIMITATION: scope-exit should NOT auto-free handle when \
-                 returned via CallReturn, but current code only tracks \
-                 ValueSource::Local in escaped_locals — Free IS emitted"
+                "scope-exit must not auto-free a resource returned via CallReturn"
             );
         }
 
