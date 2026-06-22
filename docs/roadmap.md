@@ -142,6 +142,14 @@ Continue expanding end-to-end smoke tests for all languages.
 - No MCP response may return a semantic/CFG result while its contract says that same capability is unavailable.
 - No recoverable lazy query may omit `query_id` or retry state solely because the current trace/search result is empty.
 
+### 3.4 FP dispatches: struct function-pointer field indexing
+
+`fp_dispatches` tool can map a struct's data-typed field (e.g., `rtnl_link_ops.kind`) to a target function via user annotation, but **function-pointer fields** (e.g., `rtnl_link_ops.changelink`, `.newlink`, `.doit`) are not individually indexed as symbols. Without a per-field symbol, `fp_dispatches` cannot declare `changelink → ipip6_changelink`. This blocks the only escape hatch for function-pointer call graph boundaries — trace/path queries stop at indirect calls.
+
+**Why**: Kernel code (and C generally) uses function-pointer tables pervasively (e.g., `rtnl_link_ops`, `proto_ops`, `file_operations`). Today, `atlas_trace(forward)` cannot find `ipip6_changelink → ns_capable` because the `changelink` dispatch is opaque. Annotations that map `struct.field → target_fn` would bridge this gap: the tracer walks `rtnl_link_ops` callers, finds the annotated `changelink` field, and follows the declared target.
+
+**Effect**: Unlocks cross-function-pointer trace, path, and call-graph queries for all struct-based dispatch patterns in the Linux kernel (and C generally). Currently the #1 precision ceiling for kernel vulnerability analysis.
+
 ## 4. Graph and performance evolution
 
 ### 4.1 Graph/dataflow/CFG loading
@@ -155,6 +163,14 @@ Continue expanding end-to-end smoke tests for all languages.
 - Keep `docs/performance.md` updated with release baselines.
 - Track index time, DB size, memory use, and MCP query latency.
 - Prioritize resolution and DB write bottlenecks.
+
+### 4.3 Large-file lazy extraction budget
+
+Lazy structural extraction has a budget cap (~18s / 30 files for foreground, ~60s / 100 files for background). Very large source files (>2000-line functions like `copy_user_syms` in `kernel/trace/bpf_trace.c`) can exhaust this budget before completing structural extraction, causing tools (`calls`, `trace`, `explore`) to time out on those symbols. The file then stays "building" across retries without converging.
+
+**Why**: Linux kernel has ~70 files with >10,000 lines and individual functions exceeding 2,000 lines. When an agent queries a symbol in one of these files, the lazy window processes the entire file (not just the target function). Tree-sitter parse + SCM query + dataflow/CFG build for a single huge file can independently exceed the per-window time budget, even when the file is the only unit in the window.
+
+**Effect**: Makes `calls`, `trace(forward)`, and `explore` reliably available for all kernel symbols regardless of file size. Currently ~5-10% of kernel functions are unreachable through lazy extraction on first query.
 
 ## 5. Public API stabilization
 
@@ -218,6 +234,8 @@ CFG + DataFlow
 ### 8.2 Remaining precision work
 
 - Expand golden/end-to-end fixtures for nested branches, switch/match, exceptional control flow, async boundaries, and language-specific resource constructs.
+- **Switch statement sibling detection**: `branch_diff` currently returns `branch_count=0` for functions with `switch` statements because CFG models each `case` as a linear successor to the dispatch node, not as parallel sibling branches. A function like `filter_pred_fn_call` (which selects among string/call/function/etc predicates via switch) is the exact shape where branch_diff is most valuable — asymmetric cleanup or locking per case. Extend CfgBuilder to emit sibling edges between switch cases so BranchDiffEngine can compare them.
+- **Cross-function lifecycle tracking**: `lifecycle` currently tracks field transitions only within the queried function (intra-procedural). A common C vulnerability pattern is `alloc() in function_A` → `free() in function_B` — the lifecycle tool cannot detect mismatches across this boundary because CFG + dataflow facts are file-scoped. A bounded cross-function extension would compose call path edges with intra-procedural summaries to answer "is this pointer freed along all call paths?" at 1-2 call depths.
 - Improve alias/value provenance where tree-sitter facts cannot distinguish same-name or dynamic targets.
 - Keep semantic conclusions explicitly bounded by CFG/dataflow coverage, confidence, domain-rule provenance, and terminal gaps.
 - Do not introduce a second Function IR unless CFG/dataflow facts demonstrably cannot express a required invariant.
@@ -255,6 +273,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - 长期：继续收敛 extraction/focus 内部 precision 类型，保持 MCP 公共边界稳定且最小。
 - 长期：以真实大型仓库 smoke 和受控 fixtures 持续测量 cold incoming candidate discovery；
   只有测量证明现有 bounded provider 不足时才引入新的索引实体。
+- **Include-header structs in focus closure**: Currently `atlas_explore` on header-only structs like `dst_entry` (defined in `include/net/dst.h`) returns "building" because the focus closure only expands along call-graph and import-neighborhood edges from the seed symbol. A struct defined in a header that is `#include`-d by the seed's file is a direct import dependency, and its extraction cost is bounded (single struct body, trivial dataflow). Without this, agents analyzing kernel code cannot inspect the definition of any struct whose defining header hasn't been separately queried.
 
 ### 9.4 不变边界
 
