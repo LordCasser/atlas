@@ -146,13 +146,17 @@ impl ClosureEngine {
                 elapsed_ms = started_at.elapsed().as_millis() as u64,
                 "focus seed structural facts ready"
             );
-            closure.mark_extracted(*file_id, &result.precision);
+            if !self.record_extraction_outcome(&mut closure, *file_id, &result) {
+                continue;
+            }
 
             // Populate closure symbols from the extracted file so graph-based
             // strategies (CallGraph, TypeGraph) can query edges by source symbol.
             if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {
                 for sym in &symbols {
-                    closure.symbols.insert(sym.id);
+                    if symbol_matches_seed(&closure.seed, sym) {
+                        closure.symbols.insert(sym.id);
+                    }
                 }
             }
 
@@ -166,10 +170,18 @@ impl ClosureEngine {
             )?;
         }
 
-        // Incremental resolution tracking: avoid re-resolving files that have
-        // already been resolved. Seed files are resolved immediately so that
-        // CallGraph can find their call targets on the first loop iteration.
-        let mut previously_resolved: HashSet<FileId> = HashSet::new();
+        for gap in self.materialize_import_dependencies(
+            &closure,
+            &window.strategies,
+            closure_id,
+            0,
+            window.budget.max_files,
+        )? {
+            closure.record_gap(gap);
+        }
+
+        // Seed files are resolved after their dependency symbols are available
+        // so CallGraph can find targets on the first loop iteration.
         if !seed_files.is_empty() {
             // Build visibility filter for seed file resolution.
             // NOTE: from_file uses FileId::default() because closure-scoped
@@ -187,9 +199,6 @@ impl ClosureEngine {
                 filter_ref,
                 Some(&resolution_kinds),
             )?;
-            for f in &seed_files {
-                previously_resolved.insert(*f);
-            }
             tracing::debug!(
                 closure_id,
                 reference_kinds = resolution_kinds.len(),
@@ -198,31 +207,12 @@ impl ClosureEngine {
             );
         }
 
-        // Phase 2: pre-compute TypeGraph expansion (single-pass, not iterative).
-        // TypeGraph handles its own depth internally — we do NOT re-invoke it
-        // inside the fixed-point loop below.
-        let mut pre_additions = Vec::new();
-        if Instant::now() < deadline {
-            for strategy in &window.strategies {
-                if let ClosureStrategy::TypeGraph { max_depth } = strategy {
-                    let type_files = self.expand_types(&closure, *max_depth, closure_id)?;
-                    for f in type_files {
-                        if !closure.visited.contains(&f) {
-                            pre_additions.push(f);
-                        }
-                    }
-                }
-            }
-        } else {
-            closure.record_gap(KnownGap::BudgetExhausted {
-                strategy: "typegraph_time_budget".to_string(),
-                remaining: 0,
-            });
-        }
-
-        // Phase 3: bounded fixed-point expansion
+        // Phase 2: bounded fixed-point expansion
         let mut last_generation: i64 = 0; // generation 0 = seed extraction
         loop {
+            if iteration >= window.max_iterations {
+                break;
+            }
             if Instant::now() >= deadline {
                 closure.record_gap(KnownGap::BudgetExhausted {
                     strategy: "closure_time_budget".to_string(),
@@ -232,19 +222,11 @@ impl ClosureEngine {
             }
             iteration += 1;
 
-            // Plan: ask strategies what to add next.
-            // Merge pre-computed TypeGraph results into the first iteration.
-            let additions = if iteration == 1 && !pre_additions.is_empty() {
-                let mut plan = self.plan_additions(&window.strategies, &closure, closure_id)?;
-                for f in &pre_additions {
-                    if !plan.contains(f) {
-                        plan.push(*f);
-                    }
-                }
-                plan
-            } else {
-                self.plan_additions(&window.strategies, &closure, closure_id)?
-            };
+            // Newly extracted facts participate in every subsequent planning
+            // round, so call and type boundaries can advance to a fixed point.
+            let (additions, relevant_symbols) =
+                self.plan_additions(&window.strategies, &closure, closure_id, iteration)?;
+            closure.symbols.extend(relevant_symbols);
             tracing::debug!(
                 closure_id,
                 iteration,
@@ -310,13 +292,8 @@ impl ClosureEngine {
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
                     "focus expansion structural facts ready"
                 );
-                closure.mark_extracted(*file_id, &result.precision);
-
-                // Populate closure symbols from the extracted file
-                if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {
-                    for sym in &symbols {
-                        closure.symbols.insert(sym.id);
-                    }
+                if !self.record_extraction_outcome(&mut closure, *file_id, &result) {
+                    continue;
                 }
 
                 // Record coverage
@@ -329,25 +306,27 @@ impl ClosureEngine {
                 )?;
             }
 
-            // Incremental resolution: resolve only newly extracted files so
-            // that the next iteration's CallGraph expansion can discover call
-            // targets via reference_resolutions.
-            let truly_new: Vec<FileId> = new_files
-                .iter()
-                .filter(|f| !previously_resolved.contains(f))
-                .copied()
-                .collect();
-            if !truly_new.is_empty() {
+            for gap in self.materialize_import_dependencies(
+                &closure,
+                &window.strategies,
+                closure_id,
+                generation,
+                window.budget.max_files,
+            )? {
+                closure.record_gap(gap);
+            }
+
+            // New dependency symbols can change resolutions in files that were
+            // already visited, so refresh the complete bounded closure.
+            let closure_files: Vec<FileId> = closure.files.iter().copied().collect();
+            if !closure_files.is_empty() {
                 self.resolver.borrow_mut().resolve_for_closure_kinds(
                     closure_id,
                     generation,
-                    &truly_new,
+                    &closure_files,
                     None, // no visibility filter during incremental resolution
                     Some(&resolution_kinds),
                 )?;
-                for f in &truly_new {
-                    previously_resolved.insert(*f);
-                }
             }
 
             if budget_truncated {
@@ -496,14 +475,14 @@ impl ClosureEngine {
         match seed {
             FocusSeed::File { file_id, .. } => Ok(vec![*file_id]),
             FocusSeed::Position { file_id, .. } => Ok(vec![*file_id]),
-            FocusSeed::Symbol { name, .. } => {
-                // Use candidate provider from lazy_structural
-                self.lazy_structural
-                    .candidate_provider
-                    .candidates_for_symbol(name)
+            FocusSeed::Symbol { name, file_id, .. } => match file_id {
+                Some(file_id) => Ok(vec![*file_id]),
+                None => self
+                    .lazy_structural
+                    .candidate_files_for_symbol(name)
                     .map(|ids| ids.into_iter().take(5).collect())
-                    .context("Failed to locate seed symbol")
-            }
+                    .context("Failed to locate seed symbol"),
+            },
             FocusSeed::Field { struct_sym, .. } => {
                 // Look up struct symbol's file
                 let sym = self
@@ -537,7 +516,7 @@ impl ClosureEngine {
         closure_id: &str,
         direction: Direction,
         depth: u32,
-    ) -> Result<Vec<FileId>> {
+    ) -> Result<(Vec<FileId>, Vec<SymbolId>)> {
         // Only single-level expansion is supported; multi-hop is handled by
         // the fixed-point loop (each iteration re-queries with newly extracted
         // symbols).
@@ -546,28 +525,28 @@ impl ClosureEngine {
                 "Non-default depth requested: {}, focus analysis only supports depth=1",
                 depth
             );
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let mut result: HashSet<FileId> = HashSet::new();
+        let mut relevant_symbols: HashSet<SymbolId> = HashSet::new();
 
         let do_outgoing = matches!(direction, Direction::Outgoing | Direction::Both);
         let do_incoming = matches!(direction, Direction::Incoming | Direction::Both);
 
         if do_outgoing {
-            for file_id in &closure.files {
-                let targets = self
-                    .store
-                    .get_resolved_targets_for_file_and_kinds_in_closure(
-                        closure_id,
-                        file_id,
-                        &[ReferenceKind::Call],
-                    )?;
-                for (target_blob, _) in &targets {
+            for source_symbol in &closure.symbols {
+                let targets = self.store.get_resolved_targets_for_symbol_in_closure(
+                    closure_id,
+                    source_symbol.as_bytes(),
+                    ReferenceKind::Call.as_str(),
+                )?;
+                for target_blob in &targets {
                     if target_blob.len() == 32 {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(target_blob);
                         let target_sym_id = SymbolId::from_bytes(arr);
+                        relevant_symbols.insert(target_sym_id);
                         if let Ok(Some(file_id)) = self.store.find_symbol_file(&target_sym_id) {
                             if !closure.visited.contains(&file_id) {
                                 result.insert(file_id);
@@ -579,17 +558,25 @@ impl ClosureEngine {
         }
 
         if do_incoming {
-            for file_id in &closure.files {
-                let callers = self.store.get_callers_for_target_file_in_closure(
+            if let FocusSeed::Symbol { name, .. } = &closure.seed {
+                for file_id in self.lazy_structural.candidate_files_referencing(name)? {
+                    if !closure.visited.contains(&file_id) {
+                        result.insert(file_id);
+                    }
+                }
+            }
+            for target_symbol in &closure.symbols {
+                let callers = self.store.get_callers_for_symbol_in_closure(
                     closure_id,
-                    file_id,
-                    ReferenceKind::Call,
+                    target_symbol.as_bytes(),
+                    ReferenceKind::Call.as_str(),
                 )?;
                 for source_blob in &callers {
                     if source_blob.len() == 32 {
                         let mut arr = [0u8; 32];
                         arr.copy_from_slice(source_blob);
                         let source_sym_id = SymbolId::from_bytes(arr);
+                        relevant_symbols.insert(source_sym_id);
                         if let Ok(Some(file_id)) = self.store.find_symbol_file(&source_sym_id) {
                             if !closure.visited.contains(&file_id) {
                                 result.insert(file_id);
@@ -600,7 +587,10 @@ impl ClosureEngine {
             }
         }
 
-        Ok(result.into_iter().collect())
+        Ok((
+            result.into_iter().collect(),
+            relevant_symbols.into_iter().collect(),
+        ))
     }
 
     /// Plan additions based on strategies + current closure state.
@@ -609,33 +599,14 @@ impl ClosureEngine {
         strategies: &[ClosureStrategy],
         closure: &FocusClosure,
         closure_id: &str,
-    ) -> Result<Vec<FileId>> {
+        iteration: u32,
+    ) -> Result<(Vec<FileId>, Vec<SymbolId>)> {
         let mut additions = Vec::new();
+        let mut relevant_symbols = HashSet::new();
 
         for strategy in strategies {
             match strategy {
-                ClosureStrategy::ImportNeighborhood { depth } => {
-                    // Create a ClosurePlanner for import expansion; plan_closure
-                    // takes &self so we reuse the same instance for all files.
-                    let planner =
-                        ClosurePlanner::new(self.store.clone(), self.project_root.clone())
-                            .with_include_roots(self.include_roots.clone())
-                            .with_limits(*depth as usize, 30);
-
-                    for file_id in &closure.files {
-                        let deps = planner.plan_closure(file_id)?;
-                        for dep in &deps.direct_deps {
-                            if !closure.visited.contains(dep) {
-                                additions.push(*dep);
-                            }
-                        }
-                        for dep in &deps.transitive_deps {
-                            if !closure.visited.contains(dep) {
-                                additions.push(*dep);
-                            }
-                        }
-                    }
-                }
+                ClosureStrategy::ImportNeighborhood { .. } => {}
                 ClosureStrategy::SameDirectory => {
                     // Find sibling files in same directories as closure files
                     let dirs: HashSet<String> = closure
@@ -654,13 +625,17 @@ impl ClosureEngine {
                     }
                 }
                 ClosureStrategy::CallGraph { direction, depth } => {
-                    let callee_files =
+                    let (callee_files, symbols) =
                         self.expand_callgraph(closure, closure_id, *direction, *depth)?;
                     additions.extend(callee_files);
+                    relevant_symbols.extend(symbols);
                 }
-                ClosureStrategy::TypeGraph { .. } => {
-                    // TypeGraph is pre-computed before the fixed-point loop.
-                    // See Phase 2 in build_closure().
+                ClosureStrategy::TypeGraph { max_depth } => {
+                    if iteration <= *max_depth {
+                        let (files, symbols) = self.expand_types(closure, 1, closure_id)?;
+                        additions.extend(files);
+                        relevant_symbols.extend(symbols);
+                    }
                 }
             }
         }
@@ -671,7 +646,7 @@ impl ClosureEngine {
         additions.retain(|file_id| seen.insert(*file_id));
         additions.retain(|f| !closure.visited.contains(f));
 
-        Ok(additions)
+        Ok((additions, relevant_symbols.into_iter().collect()))
     }
 
     /// Extract a single file using LazyStructuralService.
@@ -683,6 +658,115 @@ impl ClosureEngine {
             .lazy_structural
             .ensure_structural_for_file_in_closure(file_id, Some(&budget))?;
         Ok(result)
+    }
+
+    fn materialize_import_dependencies(
+        &self,
+        closure: &FocusClosure,
+        strategies: &[ClosureStrategy],
+        closure_id: &str,
+        generation: i64,
+        max_files: usize,
+    ) -> Result<Vec<KnownGap>> {
+        let depth = strategies
+            .iter()
+            .filter_map(|strategy| match strategy {
+                ClosureStrategy::ImportNeighborhood { depth } => Some(*depth as usize),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if depth == 0 || closure.files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
+            .with_include_roots(self.include_roots.clone())
+            .with_limits(depth, max_files.max(1));
+        let mut dependencies = HashSet::new();
+        for file_id in &closure.files {
+            let planned = planner.plan_closure(file_id)?;
+            dependencies.extend(planned.direct_deps);
+            dependencies.extend(planned.transitive_deps);
+        }
+        dependencies.retain(|file_id| !closure.files.contains(file_id));
+        let mut dependencies: Vec<_> = dependencies.into_iter().collect();
+        dependencies.sort_by_key(FileId::to_hex);
+
+        let truncated = dependencies.len().saturating_sub(max_files);
+        dependencies.truncate(max_files);
+        let result = self
+            .lazy_structural
+            .ensure_resolution_symbols_for_file_ids_in_closure(&dependencies)?;
+        for file_id in result
+            .built_file_ids
+            .iter()
+            .chain(result.cached_file_ids.iter())
+        {
+            self.store.insert_closure_coverage(
+                closure_id,
+                file_id.as_bytes(),
+                "extracted_resolution_symbols",
+                generation,
+                None,
+            )?;
+        }
+
+        let mut gaps = Vec::new();
+        for (file_id, reason) in result.failed_files {
+            let file = self
+                .store
+                .get_file(&file_id)?
+                .map(|info| info.path)
+                .unwrap_or_else(|| file_id.to_hex());
+            gaps.push(KnownGap::ExtractionFailed { file, reason });
+        }
+        if truncated > 0 || result.budget_exceeded {
+            gaps.push(KnownGap::BudgetExhausted {
+                strategy: "import_resolution_symbols".to_string(),
+                remaining: truncated.max(usize::from(result.budget_exceeded)),
+            });
+        }
+        Ok(gaps)
+    }
+
+    fn record_extraction_outcome(
+        &self,
+        closure: &mut FocusClosure,
+        file_id: FileId,
+        result: &EnsureStructuralResult,
+    ) -> bool {
+        let ready =
+            result.built_file_ids.contains(&file_id) || result.cached_file_ids.contains(&file_id);
+        if ready {
+            closure.mark_extracted(file_id, &result.precision);
+            return true;
+        }
+
+        closure.visited.insert(file_id);
+        if let Some((_, reason)) = result
+            .failed_files
+            .iter()
+            .find(|(failed_id, _)| *failed_id == file_id)
+        {
+            let file = self
+                .store
+                .get_file(&file_id)
+                .ok()
+                .flatten()
+                .map(|info| info.path)
+                .unwrap_or_else(|| file_id.to_hex());
+            closure.record_gap(KnownGap::ExtractionFailed {
+                file,
+                reason: reason.clone(),
+            });
+        } else {
+            closure.record_gap(KnownGap::BudgetExhausted {
+                strategy: "structural_extraction".to_string(),
+                remaining: 1,
+            });
+        }
+        false
     }
 
     /// Commit closure: make all staged coverage and resolution entries visible.
@@ -730,7 +814,7 @@ impl ClosureEngine {
         closure: &FocusClosure,
         max_depth: u32,
         closure_id: &str,
-    ) -> Result<Vec<FileId>> {
+    ) -> Result<(Vec<FileId>, Vec<SymbolId>)> {
         let type_ref_kinds = [
             ReferenceKind::Usage,
             ReferenceKind::Inheritance,
@@ -745,52 +829,27 @@ impl ClosureEngine {
         ];
 
         let mut all_additions: Vec<FileId> = Vec::new();
-        // At each depth level we only search the files added in the previous
-        // level so that each depth step corresponds to one hop in the type
-        // dependency chain.
-        let mut current_scope: HashSet<FileId> = closure.files.iter().copied().collect();
+        let mut all_symbols: Vec<SymbolId> = Vec::new();
+        let mut current_symbols: HashSet<SymbolId> = closure.symbols.iter().copied().collect();
 
         for _depth in 0..max_depth {
             let mut depth_additions = Vec::new();
+            let mut depth_symbols = Vec::new();
 
-            for file_id in &current_scope {
-                // Collect all resolved target symbol IDs from both closure-scoped
-                // and global sources.  Closure-scoped resolutions (from
-                // reference_resolutions) take priority; the global references
-                // table acts as a fallback for files that have not yet been
-                // resolved by the closure-scoped resolver (e.g., multi-depth
-                // TypeGraph where depth-1 files are not resolved until the
-                // fixed-point loop).
+            for source_symbol in &current_symbols {
                 let mut resolved_target_ids: HashSet<SymbolId> = HashSet::new();
-
-                // 1. Closure-scoped resolutions (primary source)
-                let closure_targets = self
-                    .store
-                    .get_resolved_targets_for_file_and_kinds_in_closure(
+                for kind in type_ref_kinds {
+                    let closure_targets = self.store.get_resolved_targets_for_symbol_in_closure(
                         closure_id,
-                        file_id,
-                        &type_ref_kinds,
+                        source_symbol.as_bytes(),
+                        kind.as_str(),
                     )?;
-                for (target_blob, _ref_kind) in &closure_targets {
-                    if target_blob.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(target_blob);
-                        resolved_target_ids.insert(SymbolId::from_bytes(arr));
-                    } else {
-                        tracing::warn!(
-                            "expand_types: closure target_blob has unexpected length {} (expected 32), skipping",
-                            target_blob.len()
-                        );
-                    }
-                }
-
-                // 2. Global references table (fallback)
-                let global_refs = self
-                    .store
-                    .find_references_by_file_and_kinds(file_id, &type_ref_kinds)?;
-                for r in &global_refs {
-                    if let Some(resolved) = &r.resolved {
-                        resolved_target_ids.insert(resolved.symbol_id);
+                    for target_blob in &closure_targets {
+                        if target_blob.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(target_blob);
+                            resolved_target_ids.insert(SymbolId::from_bytes(arr));
+                        }
                     }
                 }
 
@@ -818,17 +877,34 @@ impl ClosureEngine {
                     {
                         depth_additions.push(target_file);
                     }
+                    if !closure.symbols.contains(target_id)
+                        && !all_symbols.contains(target_id)
+                        && !depth_symbols.contains(target_id)
+                    {
+                        depth_symbols.push(*target_id);
+                    }
                 }
             }
 
-            if depth_additions.is_empty() {
+            if depth_additions.is_empty() && depth_symbols.is_empty() {
                 break; // no more transitive type deps to discover
             }
 
             all_additions.extend(depth_additions.iter().copied());
-            current_scope = depth_additions.into_iter().collect();
+            all_symbols.extend(depth_symbols.iter().copied());
+            current_symbols = depth_symbols.into_iter().collect();
         }
 
-        Ok(all_additions)
+        Ok((all_additions, all_symbols))
+    }
+}
+
+fn symbol_matches_seed(seed: &FocusSeed, symbol: &SymbolDef) -> bool {
+    match seed {
+        FocusSeed::Symbol { name, kind, .. } => {
+            (symbol.name == *name || symbol.qualified_name == *name)
+                && kind.is_none_or(|kind| symbol.kind == kind)
+        }
+        _ => true,
     }
 }

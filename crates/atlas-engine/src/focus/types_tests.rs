@@ -30,6 +30,7 @@ fn test_focus_window_defaults() {
         name: "main".into(),
         kind: Some(SymbolKind::Function),
         language: Language::TypeScript,
+        file_id: None,
     };
     let window = FocusWindow::new(seed, Language::TypeScript);
     assert_eq!(window.strategies.len(), 1);
@@ -109,11 +110,13 @@ fn test_focus_seed_equality() {
         name: "main".into(),
         kind: Some(SymbolKind::Function),
         language: Language::TypeScript,
+        file_id: None,
     };
     let b = FocusSeed::Symbol {
         name: "main".into(),
         kind: Some(SymbolKind::Function),
         language: Language::TypeScript,
+        file_id: None,
     };
     assert_eq!(a, b);
 }

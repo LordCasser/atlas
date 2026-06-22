@@ -90,7 +90,7 @@ pub struct FocusScheduler {
     pub(crate) coordinator: Arc<ProjectWriteCoordinator>,
     running: AtomicBool,
     /// Optional shared tracker for job completion notification.
-    /// When set, `mark_done` is called on successful job completion.
+    /// When set, every dequeued job reaches a terminal tracker state.
     job_tracker: Option<Arc<JobTracker>>,
 }
 
@@ -123,8 +123,8 @@ impl FocusScheduler {
     }
 
     /// Attach a shared JobTracker for completion notification.
-    /// When set, `mark_done(job_id)` is called after each successful
-    /// background closure build.
+    /// When set, every background closure build records either `mark_done` or
+    /// `mark_failed`, so query polling always converges.
     pub fn with_job_tracker(mut self, tracker: Arc<JobTracker>) -> Self {
         self.job_tracker = Some(tracker);
         self
@@ -241,9 +241,8 @@ impl FocusScheduler {
         let _guard = self.coordinator.acquire(FocusPriority::Sync);
         let mut processed = 0;
         while let Some(mut job) = self.queues[0].pop_front() {
-            let closure_id = next_job_id();
-            job.closure_id = Some(closure_id.clone());
-            let closure = engine.build_closure(&job.window, &closure_id)?;
+            let (closure_id, closure) =
+                Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
             processed += 1;
             Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
             if let Some(ref tracker) = self.job_tracker {
@@ -273,9 +272,8 @@ impl FocusScheduler {
         {
             let _guard = self.coordinator.acquire(FocusPriority::Sync);
             while let Some(mut job) = self.queues[0].pop_front() {
-                let closure_id = next_job_id();
-                job.closure_id = Some(closure_id.clone());
-                let closure = engine.build_closure(&job.window, &closure_id)?;
+                let (closure_id, closure) =
+                    Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
                 processed += 1;
                 Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
                 if let Some(ref tracker) = self.job_tracker {
@@ -294,9 +292,7 @@ impl FocusScheduler {
         {
             let _guard = self.coordinator.acquire(FocusPriority::UserFocus);
             while let Some(mut job) = self.queues[1].pop_front() {
-                let closure_id = next_job_id();
-                job.closure_id = Some(closure_id.clone());
-                engine.build_closure(&job.window, &closure_id)?;
+                Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
                 processed += 1;
                 if let Some(ref tracker) = self.job_tracker {
                     tracker.mark_done(&job.id);
@@ -316,9 +312,7 @@ impl FocusScheduler {
         {
             let _guard = self.coordinator.acquire(FocusPriority::Recent);
             while let Some(mut job) = self.queues[2].pop_front() {
-                let closure_id = next_job_id();
-                job.closure_id = Some(closure_id.clone());
-                engine.build_closure(&job.window, &closure_id)?;
+                Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
                 processed += 1;
                 if let Some(ref tracker) = self.job_tracker {
                     tracker.mark_done(&job.id);
@@ -335,9 +329,7 @@ impl FocusScheduler {
         {
             let _guard = self.coordinator.acquire(FocusPriority::Speculative);
             while let Some(mut job) = self.queues[3].pop_front() {
-                let closure_id = next_job_id();
-                job.closure_id = Some(closure_id.clone());
-                engine.build_closure(&job.window, &closure_id)?;
+                Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
                 processed += 1;
                 if let Some(ref tracker) = self.job_tracker {
                     tracker.mark_done(&job.id);
@@ -376,9 +368,16 @@ impl FocusScheduler {
                 if should_reset_cancellation {
                     coordinator.reset_cancellation();
                 }
+                if let Some(tracker) = job_tracker {
+                    tracker.record_elapsed(start.elapsed().as_millis() as u64);
+                    tracker.mark_failed(&job.id, format!("{err:#}"));
+                }
                 return Err(err);
             }
         };
+        if let Some(tracker) = job_tracker {
+            tracker.record_built_files(&job.id, closure.files.iter().copied());
+        }
         if job.priority == FocusPriority::Sync {
             Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
             coordinator.reset_cancellation();
@@ -390,6 +389,29 @@ impl FocusScheduler {
             tracker.mark_done(&job.id);
         }
         Ok(())
+    }
+
+    fn build_tracked_closure(
+        engine: &ClosureEngine,
+        job: &mut FocusJob,
+        job_tracker: Option<&JobTracker>,
+    ) -> anyhow::Result<(String, super::types::FocusClosure)> {
+        let closure_id = next_job_id();
+        job.closure_id = Some(closure_id.clone());
+        match engine.build_closure(&job.window, &closure_id) {
+            Ok(closure) => {
+                if let Some(tracker) = job_tracker {
+                    tracker.record_built_files(&job.id, closure.files.iter().copied());
+                }
+                Ok((closure_id, closure))
+            }
+            Err(error) => {
+                if let Some(tracker) = job_tracker {
+                    tracker.mark_failed(&job.id, format!("{error:#}"));
+                }
+                Err(error)
+            }
+        }
     }
 
     fn build_dataflow_for_sync(

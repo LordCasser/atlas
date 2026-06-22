@@ -9,6 +9,7 @@ use types::structs::CapabilityMask;
 
 use crate::investigation::{Investigation, InvestigationFocus};
 
+use super::JobTracker;
 use super::scheduler::{FocusJob, FocusPriority, FocusScheduler};
 use super::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
 
@@ -410,6 +411,34 @@ fn test_process_all_queues_returns_zero_without_engine() {
     assert_eq!(processed, 0, "should return 0 when engine is not set");
     // The job should still be in the queue (process_all_queues is a no-op without engine).
     assert!(scheduler.has_pending(), "job should still be pending");
+}
+
+#[test]
+fn failed_focus_job_is_terminal_for_its_query() {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let missing_file = FileId::generate("missing.c");
+    let engine = test_engine_for_store(store.clone());
+    let tracker = Arc::new(JobTracker::new());
+    let mut scheduler = FocusScheduler::new(store)
+        .with_engine(engine)
+        .with_job_tracker(Arc::clone(&tracker));
+    let window = FocusWindow {
+        seed: FocusSeed::File {
+            file_id: missing_file,
+            language: Default::default(),
+        },
+        strategies: vec![],
+        budget: WindowBudget::default(),
+        language: Default::default(),
+        max_iterations: 1,
+    };
+    let job_id = scheduler.enqueue(window, FocusPriority::UserFocus);
+
+    assert!(scheduler.process_all_queues().is_err());
+    assert!(
+        tracker.are_all_done(std::slice::from_ref(&job_id)),
+        "a failed build must not leave resume_query permanently refining"
+    );
 }
 
 #[test]

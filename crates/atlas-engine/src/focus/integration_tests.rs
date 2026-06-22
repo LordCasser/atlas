@@ -30,6 +30,7 @@ mod tests {
             name: "main".to_string(),
             kind: Some(SymbolKind::Function),
             language: Language::C,
+            file_id: None,
         };
         let window = FocusWindow::new(seed, Language::C);
 

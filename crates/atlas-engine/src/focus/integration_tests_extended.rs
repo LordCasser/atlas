@@ -106,7 +106,7 @@ mod tests {
             }])
             .unwrap();
 
-        let engine = test_engine(store);
+        let engine = test_engine(store.clone());
 
         let window = FocusWindow {
             seed: FocusSeed::File {
@@ -128,18 +128,20 @@ mod tests {
             "closure must contain seed file"
         );
         assert!(
-            closure.files.contains(&util_id),
-            "closure must contain direct dependency (util.h)"
+            !closure.files.contains(&util_id),
+            "unused direct dependency should remain resolution-only"
         );
         assert!(
-            closure.files.contains(&helper_id),
-            "closure must contain transitive dependency (helper.h)"
+            !closure.files.contains(&helper_id),
+            "unused transitive dependency should remain resolution-only"
         );
         assert_eq!(
             closure.files.len(),
-            3,
-            "closure must contain exactly 3 files (seed + 2 deps)"
+            1,
+            "structural closure should contain only the relevant seed file"
         );
+        let coverage = store.get_coverage_counts("e2e-full-closure").unwrap();
+        assert!(coverage.contains(&("extracted_resolution_symbols".into(), 2)));
     }
 
     // ── Test: E2E Visibility Pipeline ────────────────────────────────────────

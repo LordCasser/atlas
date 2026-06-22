@@ -9,12 +9,19 @@
 //! - `TraceVariable` → `atlas_trace variable`
 //! - `Path` → `atlas_path`
 //! - `Impact` → `atlas_impact`
+//! - `SemanticFunction` → function-local lifecycle / branch analysis
 
 use types::ids::{FileId, SymbolId};
 
 /// What the MCP tool is asking for.
 #[derive(Debug, Clone)]
 pub enum QueryIntent {
+    /// Function-local semantic analysis that needs only the exact seed file.
+    SemanticFunction {
+        symbol_name: String,
+        file_id: Option<FileId>,
+        symbol_id: Option<SymbolId>,
+    },
     /// `atlas_calls` / `atlas_callers` / `atlas_callgraph`
     Calls {
         /// The symbol name to look up.
@@ -101,6 +108,16 @@ pub enum QueryIntent {
 mod tests {
     use super::*;
     use types::ids::FileId;
+
+    #[test]
+    fn test_query_intent_semantic_function_construction() {
+        let intent = QueryIntent::SemanticFunction {
+            symbol_name: "analyze_me".into(),
+            file_id: None,
+            symbol_id: None,
+        };
+        assert!(matches!(intent, QueryIntent::SemanticFunction { .. }));
+    }
 
     #[test]
     fn test_query_intent_calls_construction() {

@@ -74,8 +74,17 @@ const LAZY_STRUCTURAL_MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 /// back to `ripgrep` when no indexed symbols match.  Alternative providers
 /// could use `compile_commands.json`, ctags indexes, or custom heuristics.
 pub trait CandidateProvider: Send + Sync {
-    /// Find files that likely contain a definition or reference to `name`.
+    /// Find files that likely contain a definition of `name`.
     fn candidates_for_symbol(&self, name: &str) -> Result<Vec<FileId>>;
+
+    /// Find files that may reference `name`.
+    ///
+    /// The default keeps custom providers source-compatible. The production
+    /// provider overrides this to search source text even when a definition is
+    /// already present in the manifest index.
+    fn candidates_for_references(&self, name: &str) -> Result<Vec<FileId>> {
+        self.candidates_for_symbol(name)
+    }
 
     /// Find files matching the given path pattern.
     ///
@@ -129,6 +138,10 @@ impl CandidateProvider for DefaultCandidateProvider {
             },
             None => Ok(vec![FileId::generate(path)]),
         }
+    }
+
+    fn candidates_for_references(&self, name: &str) -> Result<Vec<FileId>> {
+        self.candidates_from_ripgrep(name, None)
     }
 }
 
@@ -210,6 +223,8 @@ pub struct EnsureStructuralResult {
     pub pending_job_ids: Vec<String>,
     /// Candidate files intentionally left for background focus warming.
     pub deferred_file_ids: Vec<FileId>,
+    /// Files that could not be materialized, with a stable diagnostic.
+    pub failed_files: Vec<(FileId, String)>,
 }
 
 /// Entry point for query-driven lazy structural extraction.
@@ -231,6 +246,14 @@ impl LazyStructuralService {
             project_root,
             candidate_provider: Box::new(provider),
         }
+    }
+
+    pub(crate) fn candidate_files_for_symbol(&self, name: &str) -> Result<Vec<FileId>> {
+        self.candidate_provider.candidates_for_symbol(name)
+    }
+
+    pub(crate) fn candidate_files_referencing(&self, name: &str) -> Result<Vec<FileId>> {
+        self.candidate_provider.candidates_for_references(name)
     }
 
     /// Create a service with a custom candidate provider (for testing only).
@@ -261,6 +284,7 @@ impl LazyStructuralService {
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: vec![],
+                failed_files: vec![],
             });
         }
         self.ensure_structural_for_files(&candidates, None)
@@ -288,6 +312,7 @@ impl LazyStructuralService {
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: vec![],
+                failed_files: vec![],
             });
         }
         self.ensure_structural_for_files(&candidates, None)
@@ -318,6 +343,7 @@ impl LazyStructuralService {
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: candidates,
+                failed_files: vec![],
             });
         }
 
@@ -374,11 +400,10 @@ impl LazyStructuralService {
 
     /// Check whether a file already has a complete structural layer.
     pub fn has_structural_layer(&self, file_id: &FileId) -> Result<bool> {
-        let file = self.store.get_file(file_id)?;
-        let current_hash = file.as_ref().map(|f| &f.content_hash);
-        let Some(current_hash) = current_hash else {
+        let Some(file) = self.store.get_file(file_id)? else {
             return Ok(false);
         };
+        let current_hash = &file.content_hash;
         let layer = self
             .store
             .get_file_extraction_state(file_id, layer::STRUCTURAL)?;
@@ -396,6 +421,75 @@ impl LazyStructuralService {
                 "structural layer has stale call ownership; scheduling lazy rebuild"
             );
             return Ok(false);
+        }
+        if !self.has_complete_c_type_ranges(&file)? {
+            tracing::warn!(
+                %file_id,
+                "structural layer has stale C/C++ type ranges; scheduling lazy rebuild"
+            );
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn has_complete_c_type_ranges(&self, file: &FileInfo) -> Result<bool> {
+        if !matches!(file.language, Language::C | Language::Cpp) {
+            return Ok(true);
+        }
+        let Some(project_root) = &self.project_root else {
+            return Ok(true);
+        };
+
+        let type_symbols: Vec<_> = self
+            .store
+            .find_symbols_by_file(&file.file_id)?
+            .into_iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    types::SymbolKind::Class
+                        | types::SymbolKind::Struct
+                        | types::SymbolKind::Interface
+                        | types::SymbolKind::Trait
+                        | types::SymbolKind::Enum
+                ) && symbol.range.start_line == symbol.range.end_line
+            })
+            .collect();
+        if type_symbols.is_empty() {
+            return Ok(true);
+        }
+
+        let relative_path = Path::new(&file.path);
+        if relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Ok(false);
+        }
+        let source = std::fs::read_to_string(project_root.join(relative_path))
+            .with_context(|| format!("failed to validate type ranges for {}", file.path))?;
+        let lines: Vec<_> = source.lines().collect();
+
+        for symbol in type_symbols {
+            let Some(line) = lines.get(symbol.range.start_line as usize) else {
+                return Ok(false);
+            };
+            let open_count = line.bytes().filter(|byte| *byte == b'{').count();
+            let close_count = line.bytes().filter(|byte| *byte == b'}').count();
+            if open_count > close_count {
+                return Ok(false);
+            }
+            if open_count == 0 && !line.trim_end().ends_with(';') {
+                let next_code_line = lines
+                    .iter()
+                    .skip(symbol.range.start_line as usize + 1)
+                    .map(|line| line.trim())
+                    .find(|line| !line.is_empty());
+                if next_code_line.is_some_and(|line| line.starts_with('{')) {
+                    return Ok(false);
+                }
+            }
         }
         Ok(true)
     }
@@ -433,6 +527,23 @@ impl LazyStructuralService {
         &self,
         file_ids: &[FileId],
     ) -> Result<EnsureStructuralResult> {
+        self.ensure_resolution_symbols_for_file_ids_impl(file_ids, true)
+    }
+
+    /// Focus-owned variant: materialize dependency symbols without mutating
+    /// the repository-wide resolved graph. Closure resolution runs afterward.
+    pub(crate) fn ensure_resolution_symbols_for_file_ids_in_closure(
+        &self,
+        file_ids: &[FileId],
+    ) -> Result<EnsureStructuralResult> {
+        self.ensure_resolution_symbols_for_file_ids_impl(file_ids, false)
+    }
+
+    fn ensure_resolution_symbols_for_file_ids_impl(
+        &self,
+        file_ids: &[FileId],
+        build_global_graph: bool,
+    ) -> Result<EnsureStructuralResult> {
         let start = std::time::Instant::now();
         let mut result = EnsureStructuralResult {
             files_built: 0,
@@ -444,6 +555,7 @@ impl LazyStructuralService {
             files_pending: 0,
             pending_job_ids: vec![],
             deferred_file_ids: vec![],
+            failed_files: vec![],
         };
 
         for file_id in file_ids {
@@ -462,12 +574,14 @@ impl LazyStructuralService {
                     result.built_file_ids.push(*file_id);
                 }
                 Err(e) => {
-                    tracing::warn!("Lazy resolution_symbols failed for {:?}: {:#}", file_id, e);
+                    let reason = format!("{e:#}");
+                    tracing::warn!("Lazy resolution_symbols failed for {:?}: {reason}", file_id);
+                    result.failed_files.push((*file_id, reason));
                 }
             }
         }
 
-        if !result.built_file_ids.is_empty() {
+        if build_global_graph && !result.built_file_ids.is_empty() {
             self.incremental_resolve_and_build(&result.built_file_ids)?;
         }
 
@@ -572,6 +686,7 @@ impl LazyStructuralService {
             files_pending: 0,
             pending_job_ids: vec![],
             deferred_file_ids: vec![],
+            failed_files: vec![],
         };
 
         for file_id in file_ids {
@@ -594,7 +709,9 @@ impl LazyStructuralService {
                     break;
                 }
                 Err(e) => {
-                    tracing::warn!("Lazy structural failed for {:?}: {:#}", file_id, e);
+                    let reason = format!("{e:#}");
+                    tracing::warn!("Lazy structural failed for {:?}: {reason}", file_id);
+                    result.failed_files.push((*file_id, reason));
                 }
             }
         }
@@ -1361,6 +1478,58 @@ mod tests {
             .unwrap();
 
         assert!(!svc.has_structural_layer(&fid).unwrap());
+    }
+
+    #[test]
+    fn stale_multiline_c_type_range_forces_structural_rebuild() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "stale.c";
+        let source = "struct stale {\n    int value;\n};\n";
+        std::fs::write(root.path().join(path), source).unwrap();
+
+        let fid = FileId::generate(path);
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let frontend = create_frontend(Language::C).unwrap();
+        let mut facts = extract_file_with_mode(
+            &frontend,
+            fid,
+            Path::new(path),
+            source,
+            &hash,
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+        let stale = facts
+            .symbols
+            .iter_mut()
+            .find(|symbol| symbol.name == "stale")
+            .unwrap();
+        stale.range.end_line = stale.range.start_line;
+        stale.range.end_byte = source.find('\n').unwrap() as u32;
+        store.insert_file_facts(&facts).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                layer::STRUCTURAL,
+                &hash,
+                status::COMPLETE,
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        assert!(!svc.has_structural_layer(&fid).unwrap());
+
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+        assert_eq!(result.files_built, 1);
+        let rebuilt = store
+            .find_symbols_by_file(&fid)
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.name == "stale")
+            .unwrap();
+        assert!(rebuilt.range.end_line > rebuilt.range.start_line);
     }
 
     #[test]

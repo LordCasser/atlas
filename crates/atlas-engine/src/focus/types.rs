@@ -46,6 +46,7 @@ pub enum FocusSeed {
         name: String,
         kind: Option<SymbolKind>,
         language: Language,
+        file_id: Option<FileId>,
     },
     /// A specific source position.
     Position {

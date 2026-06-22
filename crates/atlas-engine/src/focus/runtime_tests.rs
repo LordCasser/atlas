@@ -414,6 +414,24 @@ fn test_prepare_focus_enqueues_background() {
 }
 
 #[test]
+fn semantic_function_prepare_does_not_enqueue_graph_expansion() {
+    let store = test_store();
+    let file_id = insert_file_structural_complete(&store, "src/semantic.c");
+    let mut rt = test_runtime_focus_mode(store);
+    let result = rt
+        .prepare(&QueryIntent::SemanticFunction {
+            symbol_name: "semantic".into(),
+            file_id: Some(file_id),
+            symbol_id: None,
+        })
+        .unwrap();
+
+    assert!(result.pending_closure_ids.is_empty());
+    assert!(!rt.has_pending_jobs());
+    assert_eq!(result.built_files, vec![file_id]);
+}
+
+#[test]
 fn test_prepare_boundary_hit_expands_existing_hot_region() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
@@ -1043,4 +1061,53 @@ fn calls_direction_none_maps_to_callgraph_strategy() {
         result.is_ok(),
         "prepare() should succeed for Calls with None direction (maps to Both)"
     );
+}
+
+#[test]
+fn impact_focus_plan_expands_the_call_graph() {
+    let intent = QueryIntent::Impact {
+        symbol_name: "root".into(),
+        depth: Some(4),
+    };
+    let strategies = super::strategies_for(&intent, true);
+
+    assert!(strategies.iter().any(|strategy| matches!(
+        strategy,
+        crate::focus::types::ClosureStrategy::CallGraph { .. }
+    )));
+    assert!(matches!(
+        strategies.first(),
+        Some(crate::focus::types::ClosureStrategy::CallGraph { .. })
+    ));
+    assert_eq!(super::iterations_for(&intent, true), 4);
+}
+
+#[test]
+fn path_and_calls_depth_drive_background_fixed_point() {
+    let calls = QueryIntent::Calls {
+        symbol_name: "root".into(),
+        file_id: None,
+        symbol_id: None,
+        direction: Some("outgoing".into()),
+        depth: Some(5),
+    };
+    let path = QueryIntent::Path {
+        from_name: "root".into(),
+        to_name: "leaf".into(),
+        max_depth: Some(8),
+    };
+
+    assert_eq!(super::iterations_for(&calls, true), 5);
+    assert_eq!(super::iterations_for(&path, true), 8);
+    assert_eq!(
+        super::iterations_for(&calls, false),
+        0,
+        "foreground preparation must stop at the seed; requested graph depth belongs to background refinement"
+    );
+    assert!(super::strategies_for(&calls, true).iter().any(|strategy| {
+        matches!(
+            strategy,
+            crate::focus::types::ClosureStrategy::ImportNeighborhood { depth: 1 }
+        )
+    }));
 }

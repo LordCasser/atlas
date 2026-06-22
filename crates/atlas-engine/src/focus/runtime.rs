@@ -52,6 +52,83 @@ const HOT_REGION_EXTENSION_DEPTH_CAP: u32 = 3;
 /// can survive across sessions.
 const MAX_MEMORY_HOT_REGIONS: usize = 10;
 
+fn call_direction(direction: Option<&str>) -> Direction {
+    match direction {
+        Some("incoming") => Direction::Incoming,
+        Some("outgoing") => Direction::Outgoing,
+        _ => Direction::Both,
+    }
+}
+
+fn strategies_for(intent: &QueryIntent, background: bool) -> Vec<ClosureStrategy> {
+    let import = ClosureStrategy::ImportNeighborhood { depth: 1 };
+    let type_depth = if background { 2 } else { 1 };
+    match intent {
+        QueryIntent::SemanticFunction { .. } => Vec::new(),
+        QueryIntent::Calls { direction, .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: call_direction(direction.as_deref()),
+                depth: 1,
+            },
+            import,
+        ],
+        QueryIntent::Context { .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            ClosureStrategy::TypeGraph {
+                max_depth: type_depth,
+            },
+            import,
+        ],
+        QueryIntent::Explore { .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            import,
+        ],
+        QueryIntent::Path { .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            import,
+        ],
+        QueryIntent::Impact { .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            ClosureStrategy::TypeGraph {
+                max_depth: type_depth,
+            },
+            import,
+        ],
+        QueryIntent::Search { .. } => vec![import, ClosureStrategy::SameDirectory],
+        QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => {
+            vec![import, ClosureStrategy::SameDirectory]
+        }
+    }
+}
+
+fn iterations_for(intent: &QueryIntent, background: bool) -> u32 {
+    if !background {
+        return 0;
+    }
+    match intent {
+        QueryIntent::SemanticFunction { .. } => 0,
+        QueryIntent::Calls { depth, .. } => depth.unwrap_or(1).clamp(1, 5) as u32,
+        QueryIntent::Path { max_depth, .. } => max_depth.unwrap_or(5).clamp(1, 10) as u32,
+        QueryIntent::Impact { depth, .. } => depth.unwrap_or(3).clamp(1, 5) as u32,
+        QueryIntent::Explore { .. } | QueryIntent::Context { .. } => 2,
+        QueryIntent::Search { .. }
+        | QueryIntent::TracePoint { .. }
+        | QueryIntent::TraceVariable { .. } => 1,
+    }
+}
+
 // ── IndexMode ───────────────────────────────────────────────────────────────
 
 /// Whether the project has a full index or needs focus-driven analysis.
@@ -94,6 +171,20 @@ pub struct FocusResult {
     /// Shared job tracker for checking background job completion.
     /// `None` in FullIndex mode (no background jobs are running).
     pub job_tracker: Option<Arc<JobTracker>>,
+}
+
+impl FocusResult {
+    /// Foreground and completed background files that must be reflected in the
+    /// in-memory graph before replaying this query.
+    pub fn materialized_files(&self) -> Vec<FileId> {
+        let mut files = self.built_files.clone();
+        if let Some(tracker) = &self.job_tracker {
+            files.extend(tracker.built_files_for(&self.pending_closure_ids));
+        }
+        let mut seen = HashSet::new();
+        files.retain(|file_id| seen.insert(*file_id));
+        files
+    }
 }
 
 // ── FocusRuntime ────────────────────────────────────────────────────────────
@@ -402,64 +493,17 @@ impl FocusRuntime {
 
         // 4. Build minimal closure synchronously
         //
-        // TODO: the strategies match below is duplicated with bg_window (L296).
-        // The two blocks differ only in numeric parameters (depth, budget,
-        // iterations).  Extract strategies_for(intent, WindowKind) when the
-        // third intent variant is added.
+        let minimal_iterations = iterations_for(intent, false);
+        let minimal_budget = WindowBudget {
+            max_iterations: minimal_iterations,
+            ..WindowBudget::default()
+        };
         let minimal_window = FocusWindow {
             seed: seed.clone(),
-            strategies: match intent {
-                QueryIntent::Calls { direction, .. } => {
-                    let call_dir = match direction.as_deref() {
-                        Some("incoming") => Direction::Incoming,
-                        Some("outgoing") => Direction::Outgoing,
-                        _ => Direction::Both,
-                    };
-                    vec![
-                        ClosureStrategy::ImportNeighborhood { depth: 1 },
-                        ClosureStrategy::CallGraph {
-                            direction: call_dir,
-                            depth: 1,
-                        },
-                    ]
-                }
-                QueryIntent::Context { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
-                    ClosureStrategy::CallGraph {
-                        direction: Direction::Both,
-                        depth: 1,
-                    },
-                    ClosureStrategy::TypeGraph { max_depth: 1 },
-                ],
-                QueryIntent::Explore { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
-                    ClosureStrategy::CallGraph {
-                        direction: Direction::Both,
-                        depth: 1,
-                    },
-                ],
-                QueryIntent::Path { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
-                    ClosureStrategy::CallGraph {
-                        direction: Direction::Both,
-                        depth: 1,
-                    },
-                ],
-                QueryIntent::Impact { .. } => {
-                    vec![ClosureStrategy::ImportNeighborhood { depth: 2 }]
-                }
-                QueryIntent::Search { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
-                    ClosureStrategy::SameDirectory,
-                ],
-                QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 1 },
-                    ClosureStrategy::SameDirectory,
-                ],
-            },
-            budget: WindowBudget::default(),
+            strategies: strategies_for(intent, false),
+            budget: minimal_budget,
             language,
-            max_iterations: 1,
+            max_iterations: minimal_iterations,
         };
 
         let closure_id = scheduler::next_job_id();
@@ -480,25 +524,35 @@ impl FocusRuntime {
                     .collect()
             });
 
-        // 5b. Derive precision from actual coverage results.
-        let total_coverage_items: usize = coverage_counts
-            .as_ref()
-            .map(|c| c.values().sum())
-            .unwrap_or(0);
+        let mut gaps = closure.gaps.clone();
+        if !bootstrap_ready {
+            gaps.push(KnownGap::BudgetExhausted {
+                strategy: "bootstrap_tier0_wait".to_string(),
+                remaining: 0,
+            });
+        }
 
-        let precision = if total_coverage_items > 0 {
-            Precision {
-                coverage: CoverageTier::ClosureComplete {
-                    closure_id: closure_id.clone(),
-                },
-                confidence: SemanticConfidence::High,
-            }
-        } else {
+        // 5b. Derive precision from actual structural closure and gaps. A
+        // resolution-symbol dependency is useful coverage, but not proof that
+        // the requested code closure is structurally complete.
+        let precision = if closure.files.is_empty() {
             Precision {
                 coverage: CoverageTier::Boundary {
                     target_tier: SymbolTier::Manifest,
                 },
                 confidence: SemanticConfidence::Low,
+            }
+        } else if !gaps.is_empty() {
+            Precision {
+                coverage: CoverageTier::Partial { gaps: gaps.clone() },
+                confidence: SemanticConfidence::Medium,
+            }
+        } else {
+            Precision {
+                coverage: CoverageTier::ClosureComplete {
+                    closure_id: closure_id.clone(),
+                },
+                confidence: SemanticConfidence::High,
             }
         };
 
@@ -507,82 +561,40 @@ impl FocusRuntime {
             boundary_hit = self.hot_regions.boundary_hit_for_files(&built_files);
         }
 
-        let mut gaps = closure.gaps.clone();
-        if !bootstrap_ready {
-            gaps.push(KnownGap::BudgetExhausted {
-                strategy: "bootstrap_tier0_wait".to_string(),
-                remaining: 0,
-            });
-        }
         // Mark foreground closure as immediately done in the tracker.
         self.job_tracker.mark_done(&closure_id);
         let pending_closure_ids: Vec<String> = Vec::new();
 
         // 6. Enqueue background expansion
+        let background_iterations = iterations_for(intent, true);
+        let background_budget = WindowBudget {
+            max_iterations: background_iterations,
+            ..WindowBudget::background()
+        };
         let bg_window = FocusWindow {
             seed,
-            strategies: match intent {
-                QueryIntent::Calls { direction, .. } => {
-                    let call_dir = match direction.as_deref() {
-                        Some("incoming") => Direction::Incoming,
-                        Some("outgoing") => Direction::Outgoing,
-                        _ => Direction::Both,
-                    };
-                    vec![
-                        ClosureStrategy::ImportNeighborhood { depth: 2 },
-                        ClosureStrategy::CallGraph {
-                            direction: call_dir,
-                            depth: 1,
-                        },
-                    ]
-                }
-                QueryIntent::Explore { .. } | QueryIntent::Context { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
-                    ClosureStrategy::CallGraph {
-                        direction: Direction::Both,
-                        depth: 1,
-                    },
-                    ClosureStrategy::TypeGraph { max_depth: 2 },
-                ],
-                QueryIntent::Path { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 3 },
-                    ClosureStrategy::CallGraph {
-                        direction: Direction::Both,
-                        depth: 1,
-                    },
-                ],
-                QueryIntent::Impact { .. } => {
-                    vec![ClosureStrategy::ImportNeighborhood { depth: 3 }]
-                }
-                QueryIntent::Search { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
-                    ClosureStrategy::SameDirectory,
-                ],
-                QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
-                    ClosureStrategy::SameDirectory,
-                ],
-            },
-            budget: WindowBudget::background(),
+            strategies: strategies_for(intent, true),
+            budget: background_budget,
             language,
-            max_iterations: 3,
+            max_iterations: background_iterations,
         };
-        let bg_closure_id = self
-            .scheduler
-            .lock()
-            .unwrap()
-            .enqueue(bg_window.clone(), FocusPriority::UserFocus);
-
         let mut pending_ids = pending_closure_ids;
-        pending_ids.push(bg_closure_id);
-        if let Some(hit) = boundary_hit.as_ref() {
-            let extension_window = hot_region_extension_window(&bg_window, hit);
-            let extension_closure_id = self
+        if background_iterations > 0 {
+            let bg_closure_id = self
                 .scheduler
                 .lock()
                 .unwrap()
-                .enqueue(extension_window, FocusPriority::UserFocus);
-            pending_ids.push(extension_closure_id);
+                .enqueue(bg_window.clone(), FocusPriority::UserFocus);
+            pending_ids.push(bg_closure_id);
+            if let Some(hit) = boundary_hit.as_ref() {
+                let extension_window = hot_region_extension_window(&bg_window, hit);
+                let extension_closure_id = self
+                    .scheduler
+                    .lock()
+                    .unwrap()
+                    .enqueue(extension_window, FocusPriority::UserFocus);
+                pending_ids.push(extension_closure_id);
+            }
         }
 
         self.hot_regions.observe_closure(
@@ -750,6 +762,11 @@ impl FocusRuntime {
         intent: &QueryIntent,
     ) -> Result<(FocusSeed, Option<FileId>, Option<SymbolId>, Language)> {
         match intent {
+            QueryIntent::SemanticFunction {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => self.locate_calls_seed(symbol_name, file_id, symbol_id),
             QueryIntent::Calls {
                 symbol_name,
                 file_id,
@@ -792,6 +809,7 @@ impl FocusRuntime {
                     name: query.clone(),
                     kind: None,
                     language,
+                    file_id: None,
                 };
                 Ok((seed, None, None, language))
             }
@@ -842,15 +860,18 @@ impl FocusRuntime {
                 name: sym.name.clone(),
                 kind: Some(sym.kind),
                 language: sym.language,
+                file_id: Some(sym.file_id),
             };
             return Ok((seed, Some(sym.file_id), Some(*sym_id), sym.language));
         }
 
         if let Some(fid) = file_id {
             let language = self.resolve_language_for_file(fid).unwrap_or_default();
-            let seed = FocusSeed::File {
-                file_id: *fid,
+            let seed = FocusSeed::Symbol {
+                name: symbol_name.to_string(),
+                kind: None,
                 language,
+                file_id: Some(*fid),
             };
             return Ok((seed, Some(*fid), None, language));
         }
@@ -870,6 +891,7 @@ impl FocusRuntime {
             name: symbol_name.to_string(),
             kind: None,
             language,
+            file_id: seed_file_id,
         };
 
         Ok((seed, seed_file_id, None, language))

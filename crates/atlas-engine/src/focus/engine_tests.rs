@@ -80,6 +80,21 @@ struct MockCandidateProvider {
     candidates: Vec<FileId>,
 }
 
+struct IncomingCandidateProvider {
+    definition: FileId,
+    references: Vec<FileId>,
+}
+
+impl CandidateProvider for IncomingCandidateProvider {
+    fn candidates_for_symbol(&self, _name: &str) -> anyhow::Result<Vec<FileId>> {
+        Ok(vec![self.definition])
+    }
+
+    fn candidates_for_references(&self, _name: &str) -> anyhow::Result<Vec<FileId>> {
+        Ok(self.references.clone())
+    }
+}
+
 impl CandidateProvider for MockCandidateProvider {
     fn candidates_for_symbol(&self, _name: &str) -> anyhow::Result<Vec<FileId>> {
         Ok(self.candidates.clone())
@@ -243,6 +258,7 @@ fn test_locate_seed_symbol() {
             name: "schedule".to_string(),
             kind: None,
             language: Language::C,
+            file_id: None,
         },
         strategies: vec![],
         budget: WindowBudget::default(),
@@ -269,12 +285,11 @@ fn test_locate_seed_symbol() {
 fn test_build_closure_max_iterations_limit() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "main.c");
+    let sibling_id = insert_file_structural_complete(&store, "helper.c");
     let engine = test_engine(store);
 
-    // Set max_iterations to 0 — the first extraction happens before
-    // the loop, but the loop checks iteration >= max_iterations *after*
-    // extracting. With max_iterations=0, the very first iteration (1)
-    // triggers the limit.
+    // Zero expansion iterations is the foreground contract: materialize and
+    // resolve the seed, but leave every neighborhood expansion to background.
     let window = FocusWindow {
         seed: FocusSeed::File {
             file_id,
@@ -290,13 +305,11 @@ fn test_build_closure_max_iterations_limit() {
         .build_closure(&window, "test-max-iter")
         .expect("build_closure should succeed");
 
-    // The seed file must still be visited
     assert!(closure.visited.contains(&file_id));
-
-    // With max_iterations=0, any expansion loop iteration will hit the
-    // termination check. If SameDirectory found no siblings, there's no
-    // gap. If it did find siblings, we'd get a BudgetExhausted gap.
-    // Either way the build completes gracefully.
+    assert!(closure.files.contains(&file_id));
+    assert!(!closure.visited.contains(&sibling_id));
+    assert!(!closure.files.contains(&sibling_id));
+    assert!(closure.gaps.is_empty());
 }
 
 #[test]
@@ -366,8 +379,8 @@ fn test_build_closure_with_imports() {
         .expect("build_closure should succeed");
 
     assert!(
-        closure.files.contains(&dep_id),
-        "dependency file must be included via import expansion"
+        !closure.files.contains(&dep_id),
+        "an unused include should support resolution without inflating the structural closure"
     );
     assert!(
         closure.files.contains(&seed_id),
@@ -565,6 +578,7 @@ fn test_build_closure_records_gap_on_missing_file() {
             name: "nonexistent".to_string(),
             kind: None,
             language: Language::C,
+            file_id: None,
         },
         strategies: vec![],
         budget: WindowBudget::default(),
@@ -760,18 +774,16 @@ fn test_build_closure_empty_project() {
         max_iterations: 3,
     };
 
-    // The engine's ensure_structural_for_file is resilient to files not
-    // yet in the store — it returns a cached/fallback result. So the
-    // build_closure succeeds even on an empty project.
+    // A missing seed is a terminal coverage gap, not a tool-level failure.
     let closure = engine
         .build_closure(&window, "test-empty-project")
         .expect("build_closure should succeed even on empty project");
 
-    // The seed file still appears in the closure (mark_extracted always succeeds).
     assert!(
-        closure.files.contains(&seed_id),
-        "engine is resilient: seed file appears in closure even on empty store"
+        !closure.files.contains(&seed_id),
+        "a file without structural facts must not be reported as closure-complete"
     );
+    assert!(!closure.gaps.is_empty());
 }
 
 #[test]
@@ -793,17 +805,16 @@ fn test_locate_seed_file_not_found() {
         max_iterations: 3,
     };
 
-    // locate_seed returns the file_id without checking existence.
-    // The engine's ensure_structural_for_file handles non-existent files
-    // gracefully, so build_closure succeeds.
+    // locate_seed remains tolerant so the response can carry a structured gap.
     let closure = engine
         .build_closure(&window, "test-seed-not-found")
         .expect("build_closure succeeds even for seed file not in DB");
 
     assert!(
-        closure.files.contains(&missing_id),
-        "engine is resilient: non-existent seed file appears in closure"
+        !closure.files.contains(&missing_id),
+        "a non-existent seed must not be counted as analyzed"
     );
+    assert!(!closure.gaps.is_empty());
 }
 
 #[test]
@@ -1299,6 +1310,60 @@ fn test_callgraph_expansion_finds_callee_file() {
     );
 }
 
+#[test]
+fn symbol_seed_does_not_expand_unrelated_calls_from_the_same_file() {
+    let store = test_store();
+    let source_file = insert_file_structural_complete(&store, "source.c");
+    let relevant_file = insert_file_structural_complete(&store, "relevant.c");
+    let unrelated_file = insert_file_structural_complete(&store, "unrelated.c");
+    let root = insert_function_symbol(&store, source_file, "root");
+    let unrelated = insert_function_symbol(&store, source_file, "unrelated");
+    insert_function_symbol(&store, relevant_file, "relevant_target");
+    insert_function_symbol(&store, unrelated_file, "unrelated_target");
+    store
+        .insert_references(&[
+            make_unresolved_reference(
+                source_file,
+                Some(root),
+                types::ReferenceKind::Call,
+                "relevant_target",
+                10,
+                20,
+            ),
+            make_unresolved_reference(
+                source_file,
+                Some(unrelated),
+                types::ReferenceKind::Call,
+                "unrelated_target",
+                30,
+                40,
+            ),
+        ])
+        .unwrap();
+    let engine = test_engine(store);
+    let window = FocusWindow {
+        seed: FocusSeed::Symbol {
+            name: "root".into(),
+            kind: Some(types::SymbolKind::Function),
+            language: Language::C,
+            file_id: Some(source_file),
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Outgoing,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 2,
+    };
+
+    let closure = engine
+        .build_closure(&window, "symbol-scoped-callgraph")
+        .unwrap();
+    assert!(closure.files.contains(&relevant_file));
+    assert!(!closure.files.contains(&unrelated_file));
+}
+
 /// Test B: Depth=1 only adds direct callees; depth=2 is beyond budget
 /// (multi-hop is deferred to the fixed-point loop, so it returns empty).
 #[test]
@@ -1546,6 +1611,66 @@ fn test_callgraph_incoming_finds_caller_file() {
         closure.files.len(),
         2,
         "closure must contain seed + caller = 2 files"
+    );
+}
+
+#[test]
+fn cold_incoming_callgraph_materializes_reference_candidates() {
+    let store = test_store();
+    let target_file = insert_file_structural_complete(&store, "core/target.c");
+    let caller_file = insert_file_structural_complete(&store, "drivers/caller.c");
+    let _target = insert_function_symbol(&store, target_file, "target");
+    let caller = insert_function_symbol(&store, caller_file, "caller");
+    store
+        .insert_references(&[make_unresolved_reference(
+            caller_file,
+            Some(caller),
+            types::ReferenceKind::Call,
+            "target",
+            10,
+            16,
+        )])
+        .unwrap();
+
+    let provider = IncomingCandidateProvider {
+        definition: target_file,
+        references: vec![caller_file],
+    };
+    let lazy_structural =
+        LazyStructuralService::with_provider(store.clone(), None, Box::new(provider));
+    let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
+    let engine = ClosureEngine::new(store.clone(), lazy_structural, lazy_dataflow, None, vec![]);
+    let window = FocusWindow {
+        seed: FocusSeed::Symbol {
+            name: "target".into(),
+            kind: Some(types::SymbolKind::Function),
+            language: Language::C,
+            file_id: Some(target_file),
+        },
+        strategies: vec![ClosureStrategy::CallGraph {
+            direction: Direction::Incoming,
+            depth: 1,
+        }],
+        budget: WindowBudget::default(),
+        language: Language::C,
+        max_iterations: 2,
+    };
+
+    let closure = engine
+        .build_closure(&window, "cold-incoming-reference-candidates")
+        .unwrap();
+    assert!(closure.files.contains(&target_file));
+    assert!(closure.files.contains(&caller_file));
+    let incoming = store
+        .get_callers_for_target_file_in_closure(
+            "cold-incoming-reference-candidates",
+            &target_file,
+            types::ReferenceKind::Call,
+        )
+        .unwrap();
+    assert!(
+        !incoming.is_empty(),
+        "caller edge should be resolved in closure"
     );
 }
 
@@ -2199,6 +2324,7 @@ fn test_scoped_resolution_empty_closure_no_crash() {
             name: "nonexistent".to_string(),
             kind: None,
             language: Language::C,
+            file_id: None,
         },
         strategies: vec![],
         budget: WindowBudget::default(),

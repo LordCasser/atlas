@@ -1,5 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+
+use types::FileId;
 
 /// Tracks completion of background focus closure-building jobs.
 ///
@@ -9,8 +11,10 @@ use std::sync::Mutex;
 /// has finished (terminal state) versus when polling is still needed.
 #[derive(Debug)]
 pub struct JobTracker {
-    /// Set of job IDs whose closures have been fully built.
-    completed: Mutex<HashSet<String>>,
+    /// Terminal jobs. `None` means success; `Some` retains the failure reason.
+    terminal: Mutex<HashMap<String, Option<String>>>,
+    /// Files materialized by each background closure.
+    built_files: Mutex<HashMap<String, Vec<FileId>>>,
     /// Recorded build durations (in milliseconds) for completed jobs,
     /// used to compute ETA for pending jobs.
     build_times: Mutex<Vec<u64>>,
@@ -20,7 +24,8 @@ impl JobTracker {
     /// Create a new, empty tracker.
     pub fn new() -> Self {
         Self {
-            completed: Mutex::new(HashSet::new()),
+            terminal: Mutex::new(HashMap::new()),
+            built_files: Mutex::new(HashMap::new()),
             build_times: Mutex::new(Vec::new()),
         }
     }
@@ -30,10 +35,55 @@ impl JobTracker {
     /// Called by [`FocusScheduler`] after a background job finishes.
     /// Idempotent — duplicate calls for the same ID are harmless.
     pub fn mark_done(&self, job_id: &str) {
-        self.completed
+        self.terminal
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(job_id.to_string());
+            .insert(job_id.to_string(), None);
+    }
+
+    /// Record a terminal failure so polling converges without losing cause.
+    pub fn mark_failed(&self, job_id: &str, reason: impl Into<String>) {
+        self.terminal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.to_string(), Some(reason.into()));
+    }
+
+    pub fn record_built_files(&self, job_id: &str, files: impl IntoIterator<Item = FileId>) {
+        let mut unique = HashSet::new();
+        let files = files
+            .into_iter()
+            .filter(|file_id| unique.insert(*file_id))
+            .collect();
+        self.built_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job_id.to_string(), files);
+    }
+
+    pub fn built_files_for(&self, job_ids: &[String]) -> Vec<FileId> {
+        let files = self.built_files.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen = HashSet::new();
+        job_ids
+            .iter()
+            .filter_map(|job_id| files.get(job_id))
+            .flatten()
+            .copied()
+            .filter(|file_id| seen.insert(*file_id))
+            .collect()
+    }
+
+    pub fn failures_for(&self, job_ids: &[String]) -> Vec<(String, String)> {
+        let terminal = self.terminal.lock().unwrap_or_else(|e| e.into_inner());
+        job_ids
+            .iter()
+            .filter_map(|job_id| {
+                terminal
+                    .get(job_id)
+                    .and_then(|reason| reason.as_ref())
+                    .map(|reason| (job_id.clone(), reason.clone()))
+            })
+            .collect()
     }
 
     /// Check whether every job in `job_ids` has completed.
@@ -43,8 +93,8 @@ impl JobTracker {
         if job_ids.is_empty() {
             return true;
         }
-        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
-        job_ids.iter().all(|id| completed.contains(id))
+        let terminal = self.terminal.lock().unwrap_or_else(|e| e.into_inner());
+        job_ids.iter().all(|id| terminal.contains_key(id))
     }
 
     /// Count how many jobs in `job_ids` are NOT yet completed.
@@ -52,8 +102,11 @@ impl JobTracker {
         if job_ids.is_empty() {
             return 0;
         }
-        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
-        job_ids.iter().filter(|id| !completed.contains(*id)).count()
+        let terminal = self.terminal.lock().unwrap_or_else(|e| e.into_inner());
+        job_ids
+            .iter()
+            .filter(|id| !terminal.contains_key(*id))
+            .count()
     }
 
     /// Record the wall-clock duration of a completed job build.
@@ -75,8 +128,11 @@ impl JobTracker {
 
     /// Snapshot the pending count and ETA against the same completion state.
     pub fn pending_count_and_eta_ms(&self, job_ids: &[String]) -> (usize, u64) {
-        let completed = self.completed.lock().unwrap_or_else(|e| e.into_inner());
-        let pending = job_ids.iter().filter(|id| !completed.contains(*id)).count();
+        let terminal = self.terminal.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = job_ids
+            .iter()
+            .filter(|id| !terminal.contains_key(*id))
+            .count();
         if pending == 0 {
             return (0, 0);
         }
@@ -197,5 +253,31 @@ mod tests {
         }
         // avg=50000, pending=10, uncapped=500000 → capped to 60000
         assert_eq!(tracker.eta_ms(&ids), 60000);
+    }
+
+    #[test]
+    fn tracker_returns_materialized_files_for_query_jobs() {
+        let tracker = JobTracker::new();
+        let first = types::FileId::generate("first.c");
+        let second = types::FileId::generate("second.c");
+        tracker.record_built_files("job-1", [first, second]);
+        tracker.record_built_files("job-2", [second]);
+
+        let files = tracker.built_files_for(&["job-1".into(), "job-2".into()]);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&first));
+        assert!(files.contains(&second));
+    }
+
+    #[test]
+    fn failed_job_is_terminal_and_keeps_its_diagnostic() {
+        let tracker = JobTracker::new();
+        tracker.mark_failed("job-1", "closure build failed");
+
+        assert!(tracker.are_all_done(&["job-1".into()]));
+        assert_eq!(
+            tracker.failures_for(&["job-1".into()]),
+            vec![("job-1".into(), "closure build failed".into())]
+        );
     }
 }
