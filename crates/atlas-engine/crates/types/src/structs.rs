@@ -176,6 +176,10 @@ pub enum SymbolTier {
 /// A known gap in analysis completeness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KnownGap {
+    ExtractionFailed {
+        file: String,
+        reason: String,
+    },
     UnresolvedImport {
         from: String,
         import_path: String,

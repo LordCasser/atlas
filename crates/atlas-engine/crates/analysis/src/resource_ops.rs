@@ -700,6 +700,7 @@ mod tests {
     fn test_c_config_produces() {
         let config = ResourceOpConfig::default_for(Language::C);
         assert!(config.is_producer("malloc"));
+        assert!(config.is_producer("kzalloc_obj"));
         assert!(config.is_producer("Curl_copy_header_value"));
         assert!(config.is_producer("curl_copy_something"));
         assert!(!config.is_producer("free"));
@@ -709,6 +710,7 @@ mod tests {
     fn test_c_config_consumes() {
         let config = ResourceOpConfig::default_for(Language::C);
         assert_eq!(config.is_consumer("free"), Some(0));
+        assert_eq!(config.is_consumer("kfree"), Some(0));
         assert_eq!(config.is_consumer("Curl_safefree"), Some(0));
         assert_eq!(config.is_consumer("safefree"), Some(0));
         assert_eq!(config.is_consumer("malloc"), None);

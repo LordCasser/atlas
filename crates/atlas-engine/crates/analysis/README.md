@@ -65,4 +65,10 @@ Backward dataflow walk from a `DataNodeId`:
 
 ### Semantic CFG analysis
 
-`EffectComposer` combines CFG and dataflow facts into language-neutral semantic effects. `FieldLifecycleEngine`, `BranchDiffEngine`, lifecycle proof, and semantic impact consume those effects. Language-specific ownership/resource meaning stays behind analysis consumers and domain-rule registries.
+`EffectComposer` combines CFG and dataflow facts into language-neutral semantic effects.
+Handlers compose these effects at query time onto an in-memory CFG copy; persisted CFG
+nodes remain raw control-flow facts. `FieldLifecycleEngine` tracks both canonical field
+paths and exact local resource variables. `BranchDiffEngine`, lifecycle proof, and semantic
+impact consume the same composition. Language-specific ownership/resource meaning stays
+behind analysis consumers and domain-rule registries; C/C++ defaults include common libc
+and Linux kernel allocation/free APIs.

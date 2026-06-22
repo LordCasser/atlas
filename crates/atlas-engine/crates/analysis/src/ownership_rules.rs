@@ -80,7 +80,7 @@ impl CppOwnershipRules {
             }
         }
         // Builtin defaults for common C/C++ functions
-        if func_name == "free" || func_name == "operator delete" || func_name == "std::free" {
+        if builtins::C_FREE_FUNCTIONS.contains(&func_name) {
             return Some(RuleMatch::Heuristic {
                 rule_id: "builtin_free".into(),
                 kind: "free_fn".into(),
@@ -111,10 +111,7 @@ impl CppOwnershipRules {
                 });
             }
         }
-        if matches!(
-            func_name,
-            "malloc" | "calloc" | "realloc" | "strdup" | "operator new"
-        ) {
+        if builtins::C_ALLOC_FUNCTIONS.contains(&func_name) {
             return Some(RuleMatch::Heuristic {
                 rule_id: "builtin_alloc".into(),
                 kind: "alloc_fn".into(),

@@ -12,13 +12,28 @@ pub(crate) const C_ALLOC_FUNCTIONS: &[&str] = &[
     "strdup",
     "strndup",
     "fopen",
+    "kmalloc",
+    "kzalloc",
+    "kcalloc",
+    "kmalloc_array",
+    "kvcalloc",
+    "vmalloc",
+    "vzalloc",
+    "kzalloc_obj",
     "operator new",
     "operator new[]",
 ];
 
 /// C/C++ deallocation/free functions that consume resources.
-pub(crate) const C_FREE_FUNCTIONS: &[&str] =
-    &["free", "operator delete", "operator delete[]", "std::free"];
+pub(crate) const C_FREE_FUNCTIONS: &[&str] = &[
+    "free",
+    "kfree",
+    "kvfree",
+    "vfree",
+    "operator delete",
+    "operator delete[]",
+    "std::free",
+];
 
 /// Functions that may or may not transfer ownership (e.g., realloc).
 pub(crate) const C_MAYBE_OWNED: &[&str] = &["realloc"];

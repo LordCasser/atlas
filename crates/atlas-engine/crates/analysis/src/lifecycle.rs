@@ -14,6 +14,7 @@ use types::ids::CfgNodeId;
 use super::lifecycle_proof::EvidenceLevel;
 use super::ownership_rules::CppOwnershipRules;
 use crate::cfg_graph::CfgGraph;
+use crate::effect_composer::EffectComposition;
 
 type TransitionTrace = Vec<(FieldState, FieldState, Option<EffectKind>)>;
 
@@ -352,6 +353,30 @@ impl FieldLifecycleEngine {
             exit_state: Some(final_state),
         }
     }
+
+    /// Analyze query-time semantic effects without persisting a second CFG.
+    pub fn analyze_with_composition(
+        cfg_nodes: &[CfgNode],
+        cfg_edges: &[CfgEdge],
+        field_path: &str,
+        ownership_rules: &OwnershipRules,
+        rules: &CppOwnershipRules,
+        composition: &EffectComposition,
+    ) -> FieldLifecycleResult {
+        let mut enriched_nodes = cfg_nodes.to_vec();
+        for node in &mut enriched_nodes {
+            if let Some(effects) = composition.node_effects.get(&node.id) {
+                node.semantic_effects.clone_from(effects);
+            }
+        }
+        Self::analyze_with_rules(
+            &enriched_nodes,
+            cfg_edges,
+            field_path,
+            ownership_rules,
+            rules,
+        )
+    }
 }
 
 // ── Fixpoint helpers ────────────────────────────────────────────────────
@@ -462,82 +487,54 @@ fn apply_semantic_effect(
     canonical_target: &str,
 ) -> (FieldState, Option<EffectKind>) {
     match &eff.kind {
-        SemanticEffectKind::Free {
-            place: PlaceRef::Field { path },
-            ..
-        } => {
-            let path_canon = types::structs::canonicalize_field_path(path);
-            if !field_matches(&path_canon, canonical_target) {
+        SemanticEffectKind::Free { place, .. } => {
+            if !place_matches(place, canonical_target) {
                 return (state, None);
             }
             (FieldState::Freed, Some(EffectKind::Free))
         }
-        SemanticEffectKind::Alloc {
-            target: PlaceRef::Field { path },
-            ..
-        } => {
-            let path_canon = types::structs::canonicalize_field_path(path);
-            if !field_matches(&path_canon, canonical_target) {
+        SemanticEffectKind::Alloc { target, .. } => {
+            if !place_matches(target, canonical_target) {
                 return (state, None);
             }
             (FieldState::Assigned, Some(EffectKind::Allocate))
         }
-        SemanticEffectKind::Store {
-            dst: PlaceRef::Field { path },
-            ..
-        } => {
-            let path_canon = types::structs::canonicalize_field_path(path);
-            if !field_matches(&path_canon, canonical_target) {
+        SemanticEffectKind::Store { dst, .. } => {
+            if !place_matches(dst, canonical_target) {
                 return (state, None);
             }
             (FieldState::Assigned, Some(EffectKind::Assign))
         }
-        SemanticEffectKind::Nullify {
-            place: PlaceRef::Field { path },
-            ..
-        } => {
-            let path_canon = types::structs::canonicalize_field_path(path);
-            if !field_matches(&path_canon, canonical_target) {
+        SemanticEffectKind::Nullify { place } => {
+            if !place_matches(place, canonical_target) {
                 return (state, None);
             }
             (FieldState::Nullified, Some(EffectKind::Assign))
         }
-        SemanticEffectKind::Assign {
-            dst: PlaceRef::Field { path },
-            ..
-        } => {
-            let path_canon = types::structs::canonicalize_field_path(path);
-            if !field_matches(&path_canon, canonical_target) {
+        SemanticEffectKind::Assign { dst, .. } => {
+            if !place_matches(dst, canonical_target) {
                 return (state, None);
             }
             (FieldState::Assigned, Some(EffectKind::Assign))
         }
         SemanticEffectKind::Escape { .. } => (FieldState::Escaped, None),
         SemanticEffectKind::Return { .. } => (state, Some(EffectKind::Return)),
-        // Untethered alloc/assign/free (to locals or indeterminate): no field-state change
-        SemanticEffectKind::Alloc {
-            target: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
-            ..
-        } => (state, None),
-        SemanticEffectKind::Free {
-            place: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
-            ..
-        } => (state, None),
-        SemanticEffectKind::Assign {
-            dst: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
-            ..
-        } => (state, None),
-        SemanticEffectKind::Store {
-            dst: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
-            ..
-        } => (state, None),
-        SemanticEffectKind::Nullify {
-            place: PlaceRef::Local { .. } | PlaceRef::Indeterminate,
-            ..
-        } => (state, None),
         // Call: field effect is determined by callee classification, handled in legacy path
         // or through the effect composer's Alloc/Free decomposition
         SemanticEffectKind::Call { .. } => (state, None),
+    }
+}
+
+fn place_matches(place: &PlaceRef, canonical_target: &str) -> bool {
+    match place {
+        PlaceRef::Field { path } => field_matches(
+            &types::structs::canonicalize_field_path(path),
+            canonical_target,
+        ),
+        PlaceRef::Local { name } => {
+            types::structs::canonicalize_field_path(name) == canonical_target
+        }
+        PlaceRef::Indeterminate => false,
     }
 }
 
@@ -708,6 +705,32 @@ mod tests {
         )
     }
 
+    fn se_local_alloc(node_id: CfgNodeId, order: u32, name: &str) -> SemanticEffect {
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Alloc {
+                target: PlaceRef::Local {
+                    name: name.to_string(),
+                },
+                callee: "kzalloc_obj".to_string(),
+            },
+        )
+    }
+
+    fn se_local_free(node_id: CfgNodeId, order: u32, name: &str) -> SemanticEffect {
+        test_effect(
+            node_id,
+            order,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Local {
+                    name: name.to_string(),
+                },
+                callee: "kfree".to_string(),
+            },
+        )
+    }
+
     fn make_entry_exit_graph(nodes: &[CfgNode]) -> (Vec<CfgNode>, Vec<CfgEdge>) {
         let fid = test_fid();
         let entry = CfgNode::entry(&fid);
@@ -790,6 +813,51 @@ mod tests {
                 .suspicious_points
                 .iter()
                 .all(|p| p.kind != SuspiciousKind::UseAfterFree)
+        );
+    }
+
+    #[test]
+    fn test_local_resource_lifecycle() {
+        let fid = test_fid();
+        let alloc_id = CfgNodeId::generate(&fid, "test", 1);
+        let free_id = CfgNodeId::generate(&fid, "test", 2);
+        let nodes = vec![
+            make_stmt_node(vec![se_local_alloc(alloc_id, 0, "priv")], 10, 1),
+            make_stmt_node(vec![se_local_free(free_id, 0, "priv")], 12, 2),
+        ];
+        let (all_nodes, edges) = make_entry_exit_graph(&nodes);
+        let rules = OwnershipRules::default();
+        let result =
+            FieldLifecycleEngine::analyze_field_lifecycle(&all_nodes, &edges, "priv", &rules);
+
+        assert_eq!(result.transitions.len(), 2);
+        assert_eq!(result.final_state, FieldState::Freed);
+    }
+
+    #[test]
+    fn test_composed_effects_are_applied_without_persisting_cfg_mutations() {
+        let node = make_stmt_node(Vec::new(), 10, 1);
+        let effect = se_local_alloc(node.id, 0, "priv");
+        let (all_nodes, edges) = make_entry_exit_graph(std::slice::from_ref(&node));
+        let composition = EffectComposition {
+            node_effects: HashMap::from([(node.id, vec![effect])]),
+            ..EffectComposition::default()
+        };
+        let result = FieldLifecycleEngine::analyze_with_composition(
+            &all_nodes,
+            &edges,
+            "priv",
+            &OwnershipRules::default(),
+            &CppOwnershipRules::default(),
+            &composition,
+        );
+
+        assert_eq!(result.transitions.len(), 1);
+        assert_eq!(result.final_state, FieldState::Assigned);
+        assert!(
+            all_nodes
+                .iter()
+                .all(|node| node.semantic_effects.is_empty())
         );
     }
 
