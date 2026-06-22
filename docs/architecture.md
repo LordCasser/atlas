@@ -840,10 +840,20 @@ TUI 继续使用 Ratatui；当前问题域不需要第二套终端框架。其�
   `trace kind`、`domain_rules action`、`fp_dispatches action` 等 discriminator 同时驱动字段可见性、
   动态必填、键盘导航和最终参数生成；四者不得各自维护分支规则。TUI 不要求用户手写 MCP JSON。
 
-TUI 的 `ToolCall` 在既有单 worker `JobManager` 中执行；`JobManager` 持有一个
+TUI 的后台工作在既有单 worker `JobManager` 中执行；`JobManager` 持有一个
 session-persistent `ToolRouter`，使 `query_id`、`tasks` 和 `resume_query` 在多次命令间
 保持有效。TUI 从最新响应读取顶层 `query_id`，自动填入 `tasks` / `resume_query` 表单。
 主线程只处理按键、取消、状态切换和渲染。`tui::tool_result` 是唯一的结果展示投影边界：
+
+- 原生 symbol search 先读取 SQLite facts；图未就绪时使用空图提供中性的 degree 信号，
+  不在 UI 线程构建全量 snapshot。精确名称、类型、语言和路径排序不受影响。
+- 首次打开 graph-backed detail 时提交 `LoadGraph` job。worker 从 Store 构建不可变
+  `GraphEngine`，主线程只安装 snapshot 并创建轻量 `ContextBuilder`。lazy 写入只标记
+  snapshot stale；下一次 detail 复用相同后台 reload 路径。
+- `GraphSession` 不保留同步 lazy-init/refresh 入口，避免以后再次把大型 snapshot 构建
+  放回按键处理路径。
+- 新 job 替换旧 worker 时只设置 cooperative cancel 并 detach 原 `JoinHandle`，不得在
+  `submit()`/按键路径固定 sleep 等待取消。
 
 - 默认视图把 subject/source/path/steps/hops/file groups 等代码事实置前，调用与关系证据次之，
   文件 inventory 和 recommendations 置后；符号、import、domain rule、function-pointer dispatch、

@@ -37,9 +37,11 @@ This directory keeps the release-facing documentation for the current Atlas 1.5.
 - Coverage counts only materialized facts. Successful and failed background
   work both reach a terminal state; failures remain visible as structured gaps.
 - Resume refreshes graph snapshots with both foreground and background files.
-- Cold C/C++ type queries return the complete defining scope on the first
+- Cold type queries return the complete defining scope on the first
   consumable result. Old same-hash structural rows with provably incomplete
   multiline type ranges are rejected and rebuilt on demand.
+- TUI native search remains usable before graph readiness. Full snapshot loading and stale
+  reload happen in the existing background job system, never in the terminal event loop.
 
 ## Reading order
 

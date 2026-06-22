@@ -209,9 +209,14 @@ expansion proceeds from relevant symbol IDs to a bounded fixed point. Files are 
 as covered only after facts are built or reused successfully.
 
 Lazy cache reuse also checks structural invariants that a content hash cannot express.
-In particular, stale C/C++ multiline type ranges produced by older extractor semantics
-are rebuilt on demand, including struct/class/union/enum scopes, so an existing partial
-index does not permanently preserve a one-line type definition.
+In particular, stale multiline type ranges produced by older extractor semantics are
+rebuilt on demand across supported brace-based languages, including
+struct/class/union/interface/trait/enum scopes, so an existing partial index does not
+permanently preserve a one-line type definition.
+
+Native TUI search is store-backed and available immediately, even before the in-memory
+graph snapshot is ready. The first graph-backed detail view loads that snapshot through
+the existing background job system, keeping the terminal event loop responsive.
 
 Graph queries synchronously materialize only their exact seed and return bounded facts;
 requested multi-hop closure expansion is tracked as resumable background work. Function-

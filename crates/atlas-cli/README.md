@@ -55,6 +55,13 @@ is retained and prefilled for `tasks` and `resume_query`, while remaining
 editable. Project lifecycle and search are intentionally not palette commands:
 the TUI owns one local project and provides native symbol search.
 
+Native search does not wait for the full graph snapshot. Before a snapshot is installed,
+it uses SQLite symbol facts with neutral graph-degree scoring; exact name, kind, language,
+and path signals remain available. Opening the first graph-backed detail submits one
+`LoadGraph` job, keeps rendering the running state, then installs the resulting immutable
+snapshot into `GraphSession`. Lazy writes mark that snapshot stale; the next detail action
+uses the same background reload path. No graph construction runs on the UI thread.
+
 The result projector is presentation-only. It never invents precision or
 coverage, and it preserves unknown non-metadata fields in the facts view rather
 than silently discarding future handler output. Root control metadata is moved

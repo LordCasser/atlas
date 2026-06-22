@@ -120,6 +120,11 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
   “输入符号 → Enter 搜索 → Enter 打开 → Tab 到 Source → `:explore` → Run”，并记录
   首次源码范围、终态 HUD、coverage/gaps 和退出后的 closure coverage。自动化测试负责
   可重复语义，人工 TUI smoke 负责验证真实交互链路。
+- 大型真实项目的 TUI smoke 必须在 graph 尚未加载时立即提交搜索，验证结果先于 snapshot
+  完成出现；随后 Enter 打开详情，验证 running 状态可持续渲染并在后台加载完成后自动进入
+  detail。只测预热 graph 的路径不能证明启动交互无阻塞。
+- worker replacement 测试必须约束 `submit()` 不固定 sleep；旧 worker 通过 cancel token
+  合作退出，UI 线程只负责替换 handle。
 
 ### 2.6.1 Focus/closure 回归矩阵
 
@@ -139,8 +144,8 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - `calls`/`path` 的前台 closure 测试必须断言只物化 seed；请求 depth 只影响可追踪后台
   fixed point。真实大文件 smoke 必须分别记录首次旧缓存自愈和第二次热缓存结果。
 - missing file、取消和 extraction error 不得计入 closure files 或完整 coverage。
-- C/C++ multiline `enum` 与 struct/class 一样必须覆盖完整 defining scope；旧的一行 enum
-  缓存必须只重建一次，第二次访问不能再次判定 stale。
+- 跨语言 multiline `enum` 与 struct/class/interface/trait 一样必须覆盖完整 defining
+  scope；旧的一行 brace-type 缓存必须只重建一次，第二次访问不能再次判定 stale。
 - `lifecycle` 回归必须直接使用抽取出的 CFG/dataflow，在查询时组合 effects，并分别覆盖
   field 与 local resource。Linux fixture 至少验证 `kzalloc_obj`/`kfree` 分类和一个真实 TUI
   流程（例如 `vga_arb_open::priv`），不能用手工填充最终 transition 代替。

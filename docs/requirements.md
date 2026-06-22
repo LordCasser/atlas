@@ -335,6 +335,8 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
 13. 部分索引的大型项目中，首次 cold symbol/explore 能按符号级 bounded closure 收敛；
     dependency-only 文件不被误算 structural，后台成功/失败都能到达可解释终态。
+14. TUI 原生 search 不等待或同步构建全量 graph snapshot；首次 graph-backed detail 和
+    stale refresh 在可取消后台 job 中完成，UI 线程持续处理 tick、渲染和退出。
 
 ## 7. 当前阶段验收焦点
 

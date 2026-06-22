@@ -111,8 +111,10 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   resumable background fixed point.
 - Function-local semantic tools use a dedicated focus intent and do not enqueue unrelated
   call/type expansion.
-- C/C++ multiline enum ranges participate in the same stale-cache invariant and one-time
-  self-healing path as struct/class/union ranges.
+- Multiline type ranges across supported brace-based languages participate in the same
+  stale-cache invariant and one-time self-healing path.
+- TUI native search is independent of graph snapshot readiness; first detail loading and
+  stale graph refresh run through the background job system.
 
 ## 3. Trace and language capability work
 

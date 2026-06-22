@@ -4,7 +4,24 @@
 
 - **Machine**: Apple Silicon (aarch64), macOS
 - **Atlas build**: `cargo build --release -p atlas-cli`
-- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5), 2026-06-18 (Baseline 6)
+- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5), 2026-06-18 (Baseline 6), 2026-06-22 (Baseline 7)
+
+## Baseline 7: Linux TUI startup responsiveness
+
+- **Repository**: Linux development tree, 63,855 files, 1,078,323 symbols,
+  245,700 edges in the existing partial/lazy database.
+- **Build**: local debug build; numbers are interaction smoke measurements, not release
+  throughput claims.
+- **Before**: pressing Enter on an exact symbol search synchronously loaded the full graph
+  snapshot on the UI thread; `make_stripe_request` took about 30 seconds to appear.
+- **After**: the same search returned in under 1 second using store-backed search with
+  neutral degree scoring. Pressing Enter on the result displayed a live running state while
+  the graph loaded in the background, then automatically opened the detail view after about
+  30 seconds.
+
+The graph construction cost is unchanged; the improvement removes it from the
+latency-sensitive search and event-loop path. Release-mode snapshot construction remains a
+separate benchmark target.
 
 ## Baseline 1: TypeScript Project (project-graph)
 
