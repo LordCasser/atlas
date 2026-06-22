@@ -44,7 +44,7 @@ Each language implements a `LanguageFrontend` via slot-based composition:
 
 For detailed capability profiles, see `types::LanguageCapabilityProfile`.
 
-C/C++ type symbols use their complete defining scope. This applies to multiline
-struct/class/union/enum declarations, including the closing delimiter. Lazy cache
-validation treats older one-line ranges as stale and rebuilds the file once even when its
-content hash is unchanged.
+Type symbols use their complete defining scope. This applies to multiline
+struct/class/union/interface/trait/enum declarations, including the closing delimiter.
+Lazy cache validation recognizes older one-line ranges in supported brace-based languages
+and rebuilds the file once even when its indexed content hash is unchanged.

@@ -31,6 +31,20 @@ pub struct GraphEngine {
 }
 
 impl GraphEngine {
+    /// Construct an empty snapshot for store-only operations whose graph
+    /// signal is optional, such as symbol search during TUI startup.
+    pub fn empty() -> Self {
+        Self::from_snapshot(GraphSnapshot {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            id_to_idx: std::collections::HashMap::new(),
+            name_index: std::collections::HashMap::new(),
+            qname_index: std::collections::HashMap::new(),
+            file_index: std::collections::HashMap::new(),
+            edge_count: 0,
+        })
+    }
+
     /// Build a GraphEngine by loading the full graph from the Store.
     ///
     /// `confidence_threshold` filters out low-confidence edges (0.0 = keep all).
@@ -770,5 +784,13 @@ mod tests {
             .collect();
         assert!(!ids.contains(&b.id), "incoming should not reach b");
         assert!(ids.contains(&c.id), "incoming should reach c");
+    }
+
+    #[test]
+    fn empty_graph_has_no_nodes_edges_or_degree() {
+        let graph = GraphEngine::empty();
+        assert_eq!(graph.node_count(), 0);
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.degree(&SymbolId::from_bytes([0; 32])), 0);
     }
 }

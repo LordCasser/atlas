@@ -422,20 +422,17 @@ impl LazyStructuralService {
             );
             return Ok(false);
         }
-        if !self.has_complete_c_type_ranges(&file)? {
+        if !self.has_complete_type_ranges(&file)? {
             tracing::warn!(
                 %file_id,
-                "structural layer has stale C/C++ type ranges; scheduling lazy rebuild"
+                "structural layer has stale type ranges; scheduling lazy rebuild"
             );
             return Ok(false);
         }
         Ok(true)
     }
 
-    fn has_complete_c_type_ranges(&self, file: &FileInfo) -> Result<bool> {
-        if !matches!(file.language, Language::C | Language::Cpp) {
-            return Ok(true);
-        }
+    fn has_complete_type_ranges(&self, file: &FileInfo) -> Result<bool> {
         let Some(project_root) = &self.project_root else {
             return Ok(true);
         };
@@ -1528,6 +1525,59 @@ mod tests {
             .unwrap()
             .into_iter()
             .find(|symbol| symbol.name == "stale")
+            .unwrap();
+        assert!(rebuilt.range.end_line > rebuilt.range.start_line);
+    }
+
+    #[cfg(feature = "rust")]
+    #[test]
+    fn stale_multiline_rust_type_range_forces_structural_rebuild() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "stale.rs";
+        let source = "struct Stale {\n    value: i32,\n}\n";
+        std::fs::write(root.path().join(path), source).unwrap();
+
+        let fid = FileId::generate(path);
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let frontend = create_frontend(Language::Rust).unwrap();
+        let mut facts = extract_file_with_mode(
+            &frontend,
+            fid,
+            Path::new(path),
+            source,
+            &hash,
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+        let stale = facts
+            .symbols
+            .iter_mut()
+            .find(|symbol| symbol.name == "Stale")
+            .unwrap();
+        stale.range.end_line = stale.range.start_line;
+        stale.range.end_byte = source.find('\n').unwrap() as u32;
+        store.insert_file_facts(&facts).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                layer::STRUCTURAL,
+                &hash,
+                status::COMPLETE,
+                CapabilityMask::default(),
+            )
+            .unwrap();
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        assert!(!svc.has_structural_layer(&fid).unwrap());
+
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+        assert_eq!(result.files_built, 1);
+        let rebuilt = store
+            .find_symbols_by_file(&fid)
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.name == "Stale")
             .unwrap();
         assert!(rebuilt.range.end_line > rebuilt.range.start_line);
     }

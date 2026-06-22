@@ -1239,6 +1239,35 @@ int tcp_v4_rcv(void) {
         assert_eq!(symbol.range.end_line, 3);
     }
 
+    #[cfg(feature = "rust")]
+    #[test]
+    fn rust_type_symbol_range_covers_the_complete_definition() {
+        let source = "pub struct JobManager {\n    current: usize,\n}\n";
+        let file_id = FileId::generate("type_range.rs");
+        let frontend = create_frontend(Language::Rust).unwrap();
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            &PathBuf::from("type_range.rs"),
+            source,
+            "type-range",
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+        let symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "JobManager")
+            .expect("struct symbol");
+
+        assert_eq!(symbol.range.start_line, 0);
+        assert_eq!(symbol.range.end_line, 2);
+        assert_eq!(
+            &source[symbol.range.start_byte as usize..symbol.range.end_byte as usize],
+            "pub struct JobManager {\n    current: usize,\n}"
+        );
+    }
+
     #[cfg(feature = "typescript")]
     #[test]
     fn test_extract_and_insert_ts_arrow_function_registry_guard() {
