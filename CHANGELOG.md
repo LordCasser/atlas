@@ -4,6 +4,124 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.5.2] — 2026-06-23
+
+### Focus Runtime — Cold Start & Fixed-Point Precision
+
+The closure engine (query-time focus) has been substantially reworked to scope
+cold-start expansion around individual symbols rather than entire files.
+Previously, querying a symbol pulled the whole file into the structural closure;
+now only that symbol and its direct call/type dependents are expanded.
+
+- **Symbol-scoped cold start**: `FocusSeed::Symbol` carries an optional `file_id`.
+  When the seed symbol's file is already known, the engine skips the candidate
+  provider and expands only that symbol's direct dependents.  Stack traces,
+  lifecycle, and branch-diff queries are now function-local (`QueryIntent::
+  SemanticFunction`) — they need only the seed file, not call-graph expansion.
+- **Import/Include as resolution-only boundary**: import dependency files are
+  materialized for *resolution symbols only* (so call targets can be resolved),
+  but are never expanded into the structural closure.  The closure no longer
+  fan-outs across all includes.
+- **Fixed-point TypeGraph**: TypeGraph expansion now participates in every
+  planning round of the fixed-point loop alongside CallGraph — previously it was
+  a single-prefetch Phase 2 that never iterated.
+- **Full-closure resolution**: resolution re-evaluates every file in the bounded
+  closure on each iteration (was incremental "new files only"), because new
+  dependency symbols can change resolutions in previously-visited files.
+- **Closure completeness**: `ClosureComplete` (high confidence) now requires a
+  non-empty structural closure AND zero gaps.  Gaps are recorded via
+  `record_extraction_outcome()` — extraction failures and budget exhaustions are
+  now structured terminal gaps, not silent omissions.
+- **JobTracker terminal state**: failed focus jobs are now terminal (entries
+  become diagnostic gaps) instead of remaining permanently "refining."  Failed
+  background work produces `background_refinement_failed` gap records; queries
+  converge rather than hanging.
+
+### Query-Time Lifecycle Effects
+
+Domain-rule changes no longer require rebuilding the structural index.  The
+lifecycle engine accepts a pre-composed `EffectComposition` at query time,
+applied to an in-memory CFG copy; persisted CFG nodes remain raw.
+
+- **`analyze_with_composition()`**: caller provides a composed `EffectComposition`
+  with resource-op annotations (producer/consumer/leak/release).  The lifecycle
+  pipeline applies them to a clean CFG copy without mutating persisted rows.
+- **Local resource variable tracking**: `place_matches()` handles `Local` and
+  `Indeterminate` place references in addition to struct field paths — the
+  lifecycle engine now tracks resources assigned to local variables (`void *p =
+  kmalloc(...)`) alongside struct members.
+- **Linux kernel alloc/free functions**: `kmalloc`, `kzalloc`, `kcalloc`,
+  `kmalloc_array`, `vmalloc`, `vzalloc`, `kfree`, `kvfree`, `vfree` added to
+  the builtin C alloc/free lists.  `ownership_rules.rs` now queries these lists
+  dynamically rather than hardcoding individual function names.
+- **`KnownGap::ExtractionFailed`**: new gap variant for structured extraction
+  failure reporting — consumed by both MCP and TUI layers.
+
+### Extraction — Type Symbol Ranges & Stale Cache Self-Healing
+
+- **Enum scope capture**: tree-sitter queries for both C and C++ now capture
+  `enum_specifier` as a scope node.  `ScopeKind::Enum` is mapped in both `c.rs`
+  and `cpp.rs` language drivers.
+- **Full type symbol ranges**: `Class`, `Struct`, `Interface`, `Trait`, and
+  `Enum` symbols now have their range expanded to the complete defining scope
+  body (was only `Function`/`Method`).  This includes multiline definitions with
+  the closing delimiter.
+- **Stale type-range detection generalized**: the lazy structural cache validator
+  (`has_complete_type_ranges`) now applies to all supported brace-based languages
+  (was C/C++ only).  A Rust struct extracted with a one-line range will be
+  detected as stale and rebuilt even when the content hash matches.
+
+### MCP — Precise Intent Boundaries & Terminal Gap Handling
+
+- **`SemanticFunction` intent**: `branch_diff` and `lifecycle` handlers now use
+  `QueryIntent::SemanticFunction` — the engine extracts only the target
+  function's file (structural, dataflow, CFG) without call-graph fan-out.
+- **Query-time lifecycle composition**: the MCP lifecycle handler loads dataflow
+  nodes and edges, builds `CfgGraph` at request time, calls `compose_effects()`
+  with `ResourceOpConfig`, and passes the composition to `analyze_with_composition()`.
+  Analysis basis is enriched with `"dataflow"` and `"effects"` entries.
+- **Post-focus symbol re-fetch**: the explore handler re-fetches the symbol from
+  the store *after* focus preparation.  The pre-focus snapshot may carry a
+  stale single-line type range (declaration only); the post-focus copy has the
+  full body range, which the dossier builder depends on.
+- **`materialized_files()` for complete refresh**: replaces `built_files`
+  (foreground-only) with `materialized_files()` (foreground + background
+  from `JobTracker`).  Used by the lazy-refresh queue and `resume_query` replay
+  — background-refined facts are now visible in the graph snapshot on resume.
+- **Background refinement failures as terminal gaps**: `apply_focus_result_to_lr()`
+  collects `JobTracker.failures_for()` and injects them as
+  `background_refinement_failed` gap records.  Regression tests assert that
+  failed background work produces a terminal (no-retry) response.
+
+### TUI — Async Graph Loading & Non-Blocking UI
+
+The TUI no longer builds the in-memory graph snapshot on the UI thread.
+Native symbol search is available immediately via store-backed SQLite ranking.
+
+- **`LoadGraph` background job**: `GraphEngine::from_store()` runs on the worker
+  thread.  `GraphSession` is a passive owner — workers push completed snapshots
+  via `install_graph()`; `needs_refresh()` reports staleness so callers submit a
+  fresh `LoadGraph` rather than rebuilding inline.
+- **Store-only search fallback**: `run_search()` uses `GraphEngine::empty()` when
+  no graph snapshot is available, ranking results from SQLite facts with neutral
+  degree scores.  Search, trace, and call jobs are accepted before the graph is
+  ready.
+- **Async detail view**: `show_symbol_detail()` submits a `LoadGraph` job and
+  stashes `pending_detail_symbol` when the graph is absent or stale.  On
+  `JobResult::GraphLoaded`, the snapshot is installed and the detail view renders.
+- **Non-blocking job replacement**: the 100ms `sleep` in `JobManager::submit()`
+  that blocked the UI thread during worker replacement has been removed.
+  Cancellation is cooperative via cancel token; the old `JoinHandle` is detached.
+- **`GraphEngine::empty()`**: new constructor for store-only operations whose
+  graph signal is optional (symbol search during TUI startup, tests).
+
+### Infrastructure
+
+- **Crate versions**: `atlas-cli`, `atlas-engine`, `atlas-mcp` bumped to 1.5.2.
+- **47 files changed**: +1,959 / −679 across the release cycle.
+
+---
+
 ## [1.5.1] — 2026-06-21
 
 ### TUI 2.0 — Command Palette + Shared MCP Tool Pipeline
