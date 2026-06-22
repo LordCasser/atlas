@@ -50,6 +50,12 @@ A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source ch
 3. **Respect capability metadata**
    - Call `project(action="status")` or `atlas doctor` when trace precision matters.
    - `partial_result: true` and diagnostics are first-class output; explain limitations.
+   - For non-trace analysis, `analysis.retry_after_ms` means the result is not terminal:
+     retain `query_id` and call `resume_query` after that delay. No retry plus no `gaps`
+     is complete; no retry plus `gaps` is terminal with explicit limitations.
+   - A cold scoped query materializes a bounded symbol closure. Import/include
+     neighbors may remain at the lightweight resolution-symbol layer, so do not
+     interpret project-wide structural coverage as a prerequisite for a useful result.
 
 4. **Refresh after edits**
    - `atlas sync --project <repo>` after modifying files.
@@ -82,12 +88,17 @@ The 15 MCP tools use short names in the native server. Note: some MCP client env
 | `impact` | Bidirectional impact analysis (what would break?) | `symbol` | `depth` (1-5, default 3), `semantic` (include lifecycle invariants and branch diffs) |
 | `file_dependencies` | File-level import/include graph | `file_path` | `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `limit` (default 50), `analysis` (`manifest`/`structural`; default `manifest`) |
 | `trace` | Source-level trace: point resolution, variable provenance, forward/caller chains | — | `kind` (`point`/`variable`/`forward`/`callers`; default `point`), `file_path`/`file_id`, `line`, `column`, `symbol`, `from`/`to`, `max_depth`, `include_roots` |
-| `lifecycle` | C/C++ field lifecycle through CFG (allocate → use → free) | `symbol`, `field` | `include_roots` |
+| `lifecycle` | C/C++ field or local-resource lifecycle through CFG/dataflow effects | `symbol`, `field` | `include_roots` |
 | `branch_diff` | Compare branch side effects within a function (C/C++) | `symbol` | `include_roots` |
 | `domain_rules` | Manage lifecycle domain rules (alloc/free/owned patterns) | — | `action` (`add`/`list`/`delete`/`learn`), `rule_kind`, `pattern`, `rule_id`, `source`, `confidence` |
 | `fp_dispatches` | C/C++ function-pointer dispatch annotations | — | `action` (`add`/`list`/`delete`), `field_qname`, `target_qname`, `annotation_id`, `confidence` |
 | `tasks` | List background extraction/lazy-refinement jobs | — | `query_id` |
 | `resume_query` | Re-run a previous query with enhanced results after lazy refinement | `query_id` | — |
+
+`lifecycle` is function-local: it composes ownership effects at query time and does not
+need call-graph expansion. C/C++ defaults recognize common libc and Linux kernel alloc/free
+APIs. An `unknown` final state does not imply zero analysis; inspect transitions, proof
+paths, and `partial`.
 
 ### Trace `kind` parameter details
 

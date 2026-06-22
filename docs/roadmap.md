@@ -86,7 +86,10 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 ### 2.6 Field lifecycle, branch diff, and semantic impact ✅
 
-- C/C++-oriented `FieldLifecycleEngine` analyzes field state transitions from CFG/dataflow facts.
+- C/C++-oriented `FieldLifecycleEngine` analyzes field and local-resource transitions from
+  CFG/dataflow facts; handlers compose semantic effects at query time rather than requiring
+  pre-annotated persisted CFG nodes.
+- Built-in ownership classification includes common Linux kernel alloc/free APIs.
 - `BranchDiffEngine` compares sibling branch side effects without introducing a separate Function IR.
 - Lifecycle proof mode can use domain rules to raise evidence to rule-backed proof.
 - `impact` can include semantic impact summaries based on lifecycle paths and domain rules.
@@ -101,6 +104,15 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 ### 2.8 MCP tool consolidation (open-first focus surface) ✅
 
 MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_status`、`wait_for_task`、`resume_task` 和后台 open/search 参数不再属于 MCP；显式全项目索引只保留 CLI `atlas index`。
+
+### 2.9 Large-repository focus correctness ✅
+
+- Foreground graph preparation is seed-only; requested multi-hop expansion is a tracked,
+  resumable background fixed point.
+- Function-local semantic tools use a dedicated focus intent and do not enqueue unrelated
+  call/type expansion.
+- C/C++ multiline enum ranges participate in the same stale-cache invariant and one-time
+  self-healing path as struct/class/union ranges.
 
 ## 3. Trace and language capability work
 
@@ -234,10 +246,13 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 | Phase 4 | ScopedResolver + FocusGraphBuilder | 闭包作用域引用解析和 scoped graph overlay |
 | Phase 5 | MCP Response Envelope 统一 | `analysis`/`coverage_counts`/`gaps`/`query_id` 统一 public view，删除 `precision`/`work` 等伪信号 |
 | Phase 6 | 旧控制平面清理 | `LazyOrchestrator`/`LazyCoordinator` 已从模块系统移除，MCP 不再使用 `ensure_structural_*` |
+| Phase 7 | 冷启动闭包正确性 | 精确 symbol frontier、dependency resolution-only、深度驱动 fixed point、后台 materialization refresh、成功/失败终态、完整 C/C++ type ranges 和旧 type-range cache 自愈 |
 
 ### 9.3 剩余工作
 
 - 长期：继续收敛 extraction/focus 内部 precision 类型，保持 MCP 公共边界稳定且最小。
+- 长期：以真实大型仓库 smoke 和受控 fixtures 持续测量 cold incoming candidate discovery；
+  只有测量证明现有 bounded provider 不足时才引入新的索引实体。
 
 ### 9.4 不变边界
 

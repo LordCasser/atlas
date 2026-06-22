@@ -115,6 +115,35 @@ Atlas 同时存在 extraction mode、capability level、lazy precision tier 和�
 - TUI 不得伪造 precision、coverage、gaps 或 pending 状态；这些字段只能来自共享 handler 响应。
 - raw response 必须可达；默认 facts 视图隐藏的内容必须属于文档化的公共元数据集合，未知非元数据字段必须保留。
 - 用户可取消的任务必须覆盖提交、替换、取消和 worker 回收。
+- 涉及 cold-start/focus 行为的发布验证不能只使用 `TestBackend`。必须从一个已有
+  manifest、仅部分 structural 的大型真实项目中启动 bare `atlas`，按用户习惯完成
+  “输入符号 → Enter 搜索 → Enter 打开 → Tab 到 Source → `:explore` → Run”，并记录
+  首次源码范围、终态 HUD、coverage/gaps 和退出后的 closure coverage。自动化测试负责
+  可重复语义，人工 TUI smoke 负责验证真实交互链路。
+
+### 2.6.1 Focus/closure 回归矩阵
+
+- 冷 C/C++ class/struct/enum 的首次详情和首次 `explore` 必须返回完整 defining scope，
+  不能先返回一行再依赖 `resume_query` 修正。
+- 上述测试必须同时覆盖 manifest-only 冷文件和“content hash 相同、structural state 标记
+  complete、但 type range 来自旧抽取语义”的缓存文件；后者必须被不变量检查拒绝并
+  自愈重抽。
+- symbol seed 的 call/type 扩展必须排除同文件无关 peer；测试 fixture 应同时包含相关和
+  无关调用，证明闭包不是 file-wide fan-out。
+- import/include dependency 默认只产生 `resolution_symbols` coverage；未被 call/type 关系
+  选中的 header 不得计入 structural closure。
+- incoming cold caller 必须覆盖“候选发现 → structural extraction → scoped resolution →
+  verified edge”，且候选发现本身不得当作调用边。
+- 后台成功物化的文件必须进入 resume 时的 graph refresh；后台失败必须退出 pending、
+  保留诊断并形成终态 gap。
+- `calls`/`path` 的前台 closure 测试必须断言只物化 seed；请求 depth 只影响可追踪后台
+  fixed point。真实大文件 smoke 必须分别记录首次旧缓存自愈和第二次热缓存结果。
+- missing file、取消和 extraction error 不得计入 closure files 或完整 coverage。
+- C/C++ multiline `enum` 与 struct/class 一样必须覆盖完整 defining scope；旧的一行 enum
+  缓存必须只重建一次，第二次访问不能再次判定 stale。
+- `lifecycle` 回归必须直接使用抽取出的 CFG/dataflow，在查询时组合 effects，并分别覆盖
+  field 与 local resource。Linux fixture 至少验证 `kzalloc_obj`/`kfree` 分类和一个真实 TUI
+  流程（例如 `vga_arb_open::priv`），不能用手工填充最终 transition 代替。
 
 ### 2.7 端到端测试
 

@@ -523,6 +523,17 @@ LanguageCapabilityProfile
 - `CfgBuilder` — 函数级 CFG；当前除 ArkTS、PHP 外的 12 种语言均在 capability profile 中声明支持。
 - Golden test framework 覆盖 14 种语言。
 
+符号源码范围是抽取事实，不由展示层猜测。函数/方法使用 enclosing callable
+scope；C/C++ 的 class/struct/interface/enum 使用完整 defining scope（包括成员和闭合
+delimiter），不能把 manifest 的声明起始行冒充完整定义。TUI、MCP `explore` 和
+`symbol(includeCode=true)` 都只消费这一个范围事实。
+
+旧数据库可能具有相同 content hash 但由旧抽取语义生成。Lazy structural cache 命中前
+执行少量、可证明的不变量检查：call reference 的 owner 必须是 callable；C/C++ 一行
+type range 若对应源码已经打开但未闭合定义，则不是完整 structural fact。违反不变量的
+文件按需自愈重抽，而不是全库失效或在展示层拼接源码。只有无法从现有事实与当前源码
+可靠判定的抽取语义变化，才应提升 schema/extractor revision 并要求重索引。
+
 已知限制：
 - CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、标签跳转和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
 - ArkTS 和 PHP 当前不声明 CFG 支持；其余语言已覆盖核心 branch/loop body traversal，部分语言另有 resource/context 结构覆盖。
@@ -580,8 +591,22 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 #### 10.1.5 Closure 与 Linux 增强边界
 
-- `ClosurePlanner`: 基于 import/include 图计算依赖闭包，确保被引用文件的 `resolution_symbols` 层先于主文件的 structural 层构建。
+- Focus closure 同时记录结构化文件集合和相关符号前沿。symbol seed 必须保留精确
+  `SymbolId`/`file_id`；扩展只能从 seed 或前一轮新发现的相关符号出发，不能因为一个
+  文件进入 closure 就把该文件所有 peer 的调用和类型关系都加入前沿。
+- `ClosurePlanner` 基于 import/include 图计算解析边界，确保被引用文件的
+  `resolution_symbols` 层先于主文件的 scoped resolution 构建。依赖文件默认不进入
+  structural closure；只有 call/type 关系证明它与查询相关时才升级为 structural。
 - `resolution_symbols` 层实现: 轻量提取模式，产出 symbols + imports + scopes（无 references/callsites/dataflow/raw_edges），供跨文件引用解析使用。
+- 每轮有限不动点按“相关 structural facts → dependency resolution symbols → 对当前
+  bounded closure 重新 scoped resolution → call/type expansion”推进。重新解析已有文件
+  是必要步骤，因为新加入的 resolution symbols 可能改变上一轮 unresolved reference。
+- `calls`、`path`、`impact` 的前台阶段只物化精确 seed 所在文件并返回当前可证明的图；
+  请求深度决定可恢复的后台不动点轮数，并受各工具公开上限和文件/时间预算共同约束。
+  这避免大文件邻居扩展占住首个响应，同时不把 seed-only 伪装成完整结果。incoming call graph
+  在目标文件仍冷时允许使用 bounded reference
+  candidate discovery 找到潜在 caller 文件，再以真实抽取和 scoped resolution 验证；
+  candidate 命中本身不是 graph edge。
 - Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall、static inline）在提取后进行后处理增强，不改动通用提取管道。
 
 #### 10.1.6 已实现的基础阶段
@@ -627,7 +652,10 @@ Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"�
 
 `query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，创建后 TTL 为 5 分钟；快照保存原 tool 参数及本次 `FocusResult` 的 live `JobTracker`。`resume_query(query_id)` 复用该 focus 状态重放查询，不重新调度 closure，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
 
-语义图查询重放前必须把快照中的 `FocusResult.built_files` 重新加入增量 graph refresh queue。后台 focus 可能在初始响应后替换同一文件的最终 facts；仅比较计数/秒级时间戳的 index signature 不能可靠发现这种等量替换。
+语义图查询重放前必须把快照中的前台 `built_files` 和 `JobTracker` 记录的后台
+materialized files 一并加入增量 graph refresh queue。后台 focus 可能在初始响应后替换
+同一文件的最终 facts；仅比较计数/秒级时间戳的 index signature 不能可靠发现这种等量
+替换。SQLite 中已有而 `GraphSnapshot` 尚不可见，不算 refinement 完成。
 
 `Investigation` 是 MCP session 级隐式调查上下文，不提供用户可见的 create/close API。分析类工具会根据 symbol、position 或 field focus 更新 active investigation，并把相关文件/符号和期望能力传给 lazy 调度器。TTL 同样为 5 分钟。
 
@@ -722,6 +750,9 @@ analysis/retry_after_ms/gaps。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。MCP handler 只生成
   `QueryIntent`，不得直接组合 lazy structural/dataflow、resolver 或 graph
   builder。
+- 函数内语义工具使用 `SemanticFunction` intent：只保证目标函数所在文件的
+  structural/dataflow/CFG facts，不排入 call/type graph expansion。`lifecycle` 和
+  `branch_diff` 的精度来自函数内事实，而不是扩大文件闭包。
 - `LazyOrchestrator`、`LazyCoordinator` 和 MCP `ensure_structural_for_*` 旧控制平面已删除。查询调度统一由 `FocusRuntime` / `ClosureEngine` / `BootstrapManager` 承担；事实构建仍复用 lazy services。
 - Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
   overlay；只有 full-index/shared pipeline 可以更新全局
@@ -734,9 +765,16 @@ analysis/retry_after_ms/gaps。
 - 已有持久化 file inventory 或源码事实时，MCP bootstrap 只标记基础层 ready，不启动全项目后台扫描。Closure resolver 的本地 fallback 使用 `symbols.name` 索引，不构建 project-wide `GlobalSymbolIndex`；import scope、测试路径分类和 proximity root 必须按源文件计算一次，不得在每个 reference 上重复查询。
   `PrecisionTier` 不进入 public MCP contract；当前内部统一使用 `Precision`。
 - `JobTracker`（`crates/atlas-engine/src/focus/job_tracker.rs`）是 Focus Runtime 的
-  完成追踪实体，记录每个 closure 是否构建完成及其耗时。`FocusRuntime` 持有
+  完成追踪实体，记录每个 closure 的成功/失败终态、耗时和实际 materialized files。
+  失败与成功都必须退出 pending；失败原因映射为终态 `background_refinement_failed`
+  gap，不能以永久 running 隐藏。`FocusRuntime` 持有
   `Arc<JobTracker>` 并在 `prepare()` 中通过 `FocusResult.job_tracker` 传递给 MCP 层。
   MCP `apply_focus_result_to_lr()` 通过 `tracker.are_all_done(&pending)` 判定终态。
+- `EnsureStructuralResult` 只把实际 built/cached 文件计入 closure。抽取失败记录
+  `extraction_failed` gap；取消或未完成记录 budget gap。请求过但没有事实的文件不能计入
+  coverage，也不能提升为 `ClosureComplete/High`。
+- `ClosureComplete/High` 只适用于非空且无 gap 的结构化闭包；只有 manifest、只有
+  resolution symbols、空闭包或存在 gap 时必须诚实降级。
 - Focus 是内部机制，不是 public response surface。默认 MCP 响应和
   `atlas_status` 不暴露 `focus`、closure id、scheduler priority、
   bootstrap tier 或 focus-specific pending queue；只暴露公开语义的
@@ -749,6 +787,8 @@ analysis/retry_after_ms/gaps。
 当 `upsert_resolution_symbols` 检测到磁盘上的文件内容自上次 `files` 行写入以来已经变更（内容哈希不同），它会在同一事务中原子性地更新 `files.content_hash`。所有之前存在的更丰富层（structural、dataflow）变为过期状态，因为它们记录的 layer hash 不再匹配更新后的 file hash。在下次 lazy 访问时它们将从当前内容重建。
 
 此"安全更新"策略保证渐进式富化永不会悄悄提供过期数据，代价是可能需要重建过期的层。
+Content hash 只证明源码未变，不证明抽取器语义未变；§10 的 structural 不变量检查补足
+可局部识别的旧事实。不得把 hash 相同直接等同于所有历史抽取事实仍语义有效。
 
 ### 10.2 共享索引管线
 
@@ -867,8 +907,9 @@ analysis response
 
 **终态判定**：由 `FocusRuntime.job_tracker.are_all_done(&pending_closure_ids)` 判定。
 终态保证可达——`JobTracker` 在 `FocusScheduler::process_detached_job` 每个闭包构建
-完成后调用 `mark_done(closure_id)`，`FocusRuntime::prepare()` 在前台闭包完成后
-立即 `mark_done`，前台闭包 ID 不进入 `pending_closure_ids`。
+成功后调用 `mark_done(closure_id)`，失败后调用 `mark_failed(closure_id, reason)`；
+`FocusRuntime::prepare()` 在前台闭包完成后立即标记终态，前台闭包 ID 不进入
+`pending_closure_ids`。两种后台终态都保留已物化文件供 graph refresh 使用。
 
 ### 10.5 架构收敛约束
 
@@ -1087,9 +1128,19 @@ branch_diff    lifecycle
 
 **EffectComposer**（`analysis::effect_composer`）：消费 CFG + DataFlow + `&dyn OwnershipContract`，通过 range-overlap 匹配 + DFS 反向追踪 DataFlow 边，将单语句分解为多条 `SemanticEffect`（Alloc/Free/Store/Nullify 等），并构建函数级 `TransferGraph`（field→value 映射）。
 
+持久化 CFG 保存控制流事实，不要求把查询相关的 `semantic_effects` 预写回数据库。
+`lifecycle`、semantic impact 和 `branch_diff` 在查询时加载目标函数的 CFG/dataflow，执行
+`EffectComposer`，并把组合结果附着到内存中的 CFG 副本。这样 structural/CFG 缓存保持
+语言事实层，ownership/domain rules 的变化可以立即影响分析而无需重建索引。
+
 **branch_diff_semantic**：基于 `EffectComposition` 比较分支路径的语义效应差异，输出结构化 `BranchDiffIssue`（含 asymmetry kind、confidence、evidence）。MCP `branch_diff` tool 默认使用 semantic 路径（`semantic=true`）。
 
-**lifecycle**：`transfer_state` 优先读取 `semantic_effects`（多效应按序处理），legacy 路径已移除。`FieldTransition` 按效应记录，DoubleFree/UseAfterFree 检测基于每次状态转换。
+**lifecycle**：`transfer_state` 读取查询时组合的 `semantic_effects`（多效应按序处理），
+legacy 路径已移除。跟踪目标既可以是 canonical field path，也可以是函数局部资源变量；
+local 必须精确匹配，field 使用 canonical field matching。`FieldTransition` 按效应记录，
+DoubleFree/UseAfterFree 检测基于每次状态转换。C/C++ 默认资源语义包括 libc alloc/free，
+以及 Linux 常见的 `kmalloc`/`kzalloc`/`kcalloc`/`kvcalloc`/`vmalloc` 与
+`kfree`/`kvfree`/`vfree`。
 
 #### 12.3.2 多语言支持
 
@@ -1098,7 +1149,7 @@ branch_diff    lifecycle
 #### 12.3.3 当前约束
 
 - CFG effect annotation、field lifecycle 和 branch diff 先以 C/C++ 为主要适用语言。
-- `FieldLifecycleEngine` 对字段状态做路径敏感分析，状态包括 `Unknown`、`MaybeLive`、`Assigned`、`Freed`、`Nullified`、`Escaped`、`Returned`、`Invalidated`。
+- `FieldLifecycleEngine` 对字段或局部资源状态做路径敏感分析，状态包括 `Unknown`、`MaybeLive`、`Assigned`、`Freed`、`Nullified`、`Escaped`、`Returned`、`Invalidated`。
 - `BranchDiffEngine` 比较 sibling branch 的语义效应差异。
 - `LifecycleProof` 在 domain rules 覆盖相关 free/alloc/owned pattern 后，将 pattern observation 升级为 rule-backed proof。
 - `impact` 可在 semantic 模式中组合 graph impact、domain rules 和 lifecycle 分析，输出 semantic impact 摘要。

@@ -39,6 +39,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 - **Incremental sync**: content-hash based dirty-file detection with Git-aware file discovery.
 - **Interactive TUI**: keyboard-driven Ratatui workbench with symbol search, detail tabs, caller trace, typed parameter forms backed by the same analysis handlers as MCP, and human-oriented result views. Code facts, source, paths, and rules are presented directly; capability, confidence, coverage, and refinement state live in an adaptive HUD. Raw JSON remains available with `r` for auditing. Context and resumable query IDs are injected automatically. Bare `atlas` bootstraps the default structural index when needed.
 - **Agent-native MCP**: stdio MCP server exposing 15 bounded tools for open-first scoped search, graph, dependencies, trace, semantic analysis, background work visibility, and project management.
+- **Symbol-scoped cold start**: focus expansion follows relevant call/type symbols rather than every peer in a source file. Import/include neighbors stay at the lightweight resolution-symbol layer until a verified relationship requires structural facts; background success and failure both converge to an explicit terminal response.
 - **Graph + trace queries**: callers, callees, shortest path, impact, source-position lookup, variable origin tracing, and caller-path tracing.
 - **Explicit capability boundaries**: language capability metadata and trace diagnostics report partial results instead of silently overclaiming precision.
 
@@ -200,6 +201,23 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 ## Architecture
 
 Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V2: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store.
+
+For a cold scoped query, Focus keeps two distinct boundaries: relevant files receive
+structural extraction, while import/include dependencies normally receive only
+`resolution_symbols`. Scoped resolution is rerun as that boundary grows, and call/type
+expansion proceeds from relevant symbol IDs to a bounded fixed point. Files are counted
+as covered only after facts are built or reused successfully.
+
+Lazy cache reuse also checks structural invariants that a content hash cannot express.
+In particular, stale C/C++ multiline type ranges produced by older extractor semantics
+are rebuilt on demand, including struct/class/union/enum scopes, so an existing partial
+index does not permanently preserve a one-line type definition.
+
+Graph queries synchronously materialize only their exact seed and return bounded facts;
+requested multi-hop closure expansion is tracked as resumable background work. Function-
+local semantic queries stay local: lifecycle composes CFG and dataflow effects at query
+time and can track both fields and local C/C++ resources, including common Linux kernel
+allocators and deallocators.
 
 <p align="center">
   <img src="docs/architecture.svg" alt="Atlas Architecture" width="800">

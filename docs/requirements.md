@@ -265,6 +265,25 @@ MCP 入口必须先 `project(action="open")` 同步激活项目；open 不做全
 - `query_id` + `tasks` + `resume_query`：让可恢复 refinement 可观测并最终收敛。
 - 空结果或错误不得吞掉仍可恢复的 query 状态；不可恢复错误不得伪造 retry。
 - CFG/semantic 工具已经基于 CFG 产出结果时，不得同时声明 CFG 不可用。
+- `lifecycle` 必须在查询时从目标函数 CFG + dataflow 组合 semantic effects；不能因持久化
+  `cfg_nodes.semantic_effects` 为空而返回零迁移。C/C++ local resource 和 field path 均是合法
+  跟踪目标，默认 ownership matcher 必须覆盖项目已声明支持的内核 alloc/free 惯用法。
+
+Focus closure 必须满足以下正确性约束：
+
+- symbol 查询以精确符号为扩展前沿；同文件其他 peer 不因共址而自动进入 call/type 闭包。
+- import/include 文件优先只构建 `ResolutionSymbols`；只有被查询关系证明相关的文件才升级
+  为 `Structural`。
+- 请求深度驱动 bounded fixed point，并受公开深度上限、文件预算和时间预算约束。
+- 图查询前台只同步保证精确 seed；多跳 call/type 扩展必须进入可追踪后台 closure，首个
+  响应通过 retry/gaps 如实声明边界。函数内 semantic 查询不得为获取 CFG 而启动图扩展。
+- coverage 只统计实际 built/cached facts。抽取失败、取消和预算耗尽必须成为终态 gap，
+  不能伪装为完整，也不能永久 pending。
+- 后台物化 facts 必须在 `resume_query` 重放前进入 graph snapshot；持久化成功但查询不可见
+  不算完成。
+- 冷 C/C++ type 查询必须在首次可消费结果中返回完整定义范围。
+- Content hash 相同不能覆盖可证明的 structural 语义失效。旧 C/C++ 多行类型的一行范围
+  和非 callable call owner 必须触发定向自愈重抽，无需全项目重索引。
 
 ### CLI
 
@@ -314,6 +333,8 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 10. 语言 fixtures 和集成测试覆盖主链路。
 11. 持久化跨函数摘要层（Schema V2）已实现。
 12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
+13. 部分索引的大型项目中，首次 cold symbol/explore 能按符号级 bounded closure 收敛；
+    dependency-only 文件不被误算 structural，后台成功/失败都能到达可解释终态。
 
 ## 7. 当前阶段验收焦点
 

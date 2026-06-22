@@ -28,6 +28,19 @@ This directory keeps the release-facing documentation for the current Atlas 1.5.
   older development schemas. Change the primary DDL and code together, then
   rebuild the project index.
 
+## Baseline focus contracts
+
+- Query-time closure expansion is symbol-scoped. A seed file supplies facts,
+  but unrelated peer symbols in that file do not become graph frontiers.
+- Import/include dependencies are resolution boundaries first, not automatic
+  structural closure members.
+- Coverage counts only materialized facts. Successful and failed background
+  work both reach a terminal state; failures remain visible as structured gaps.
+- Resume refreshes graph snapshots with both foreground and background files.
+- Cold C/C++ type queries return the complete defining scope on the first
+  consumable result. Old same-hash structural rows with provably incomplete
+  multiline type ranges are rejected and rebuilt on demand.
+
 ## Reading order
 
 1. [Architecture](./architecture.md) — authoritative architecture: constraints, modules, schema, dataflow, capability profiles, design decisions.
