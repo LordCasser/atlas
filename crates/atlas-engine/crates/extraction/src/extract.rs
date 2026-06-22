@@ -259,20 +259,34 @@ pub fn extract_file_with_mode_cancellable(
     // 7. Build scope tree and assign containers
     super::build_scope_tree(&mut scopes, &mut symbols);
 
-    // 7z. Expand function-like symbol ranges to match their function scope.
+    // 7z. Expand callable and type symbol ranges to match their defining scope.
     //     definitions.scm captures only the name identifier (e.g. "compute"),
     //     but resolve_dataflow_function_ids() needs the full function body range
     //     to assign function_id to DataNodes inside the body.
     for sym in symbols.iter_mut() {
-        if matches!(
-            sym.kind,
-            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
-        ) {
-            // Find the innermost function/method scope that contains this symbol.
+        let expected_scope = match sym.kind {
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => {
+                Some(&[ScopeKind::Function, ScopeKind::Method][..])
+            }
+            SymbolKind::Class | SymbolKind::Struct | SymbolKind::Interface | SymbolKind::Trait => {
+                Some(
+                    &[
+                        ScopeKind::Class,
+                        ScopeKind::Struct,
+                        ScopeKind::Interface,
+                        ScopeKind::Trait,
+                    ][..],
+                )
+            }
+            SymbolKind::Enum => Some(&[ScopeKind::Enum][..]),
+            _ => None,
+        };
+        if let Some(expected_scope) = expected_scope {
+            // Find the tightest defining scope that contains the captured name.
             let containing = scopes
                 .iter()
                 .filter(|s| {
-                    matches!(s.kind, ScopeKind::Function | ScopeKind::Method)
+                    expected_scope.contains(&s.kind)
                         && s.range.start_byte <= sym.range.end_byte
                         && s.range.end_byte >= sym.range.start_byte
                 })
@@ -1166,6 +1180,63 @@ int tcp_v4_rcv(void) {
             .find(|r| r.kind == ReferenceKind::Call && r.name == "dev_net_rcu")
             .expect("dev_net_rcu call reference");
         assert_eq!(call.source_symbol, Some(caller));
+    }
+
+    #[cfg(feature = "c")]
+    #[test]
+    fn c_type_symbol_range_covers_the_complete_definition() {
+        let source = "struct ioam6_lwt {\n    int state;\n    long reset_ts;\n};\n";
+        let file_id = FileId::generate("type_range.c");
+        let frontend = create_frontend(Language::C).unwrap();
+        let file_path = PathBuf::from("type_range.c");
+
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            &file_path,
+            source,
+            "type-range",
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+        let symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "ioam6_lwt")
+            .expect("struct symbol");
+
+        assert_eq!(symbol.name_range.start_line, 0);
+        assert_eq!(symbol.range.start_line, 0);
+        assert_eq!(symbol.range.end_line, 3);
+        assert_eq!(
+            &source[symbol.range.start_byte as usize..symbol.range.end_byte as usize],
+            "struct ioam6_lwt {\n    int state;\n    long reset_ts;\n}"
+        );
+    }
+
+    #[cfg(feature = "c")]
+    #[test]
+    fn c_enum_symbol_range_covers_the_complete_definition() {
+        let source = "enum stripe_result {\n    STRIPE_SUCCESS,\n    STRIPE_RETRY,\n};\n";
+        let file_id = FileId::generate("enum_range.c");
+        let frontend = create_frontend(Language::C).unwrap();
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            &PathBuf::from("enum_range.c"),
+            source,
+            "enum-range",
+            ExtractionMode::Structural,
+        )
+        .unwrap();
+        let symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "stripe_result")
+            .expect("enum symbol");
+
+        assert_eq!(symbol.range.start_line, 0);
+        assert_eq!(symbol.range.end_line, 3);
     }
 
     #[cfg(feature = "typescript")]

@@ -5,7 +5,9 @@
 
 (function_definition) @scope.function
 
-(struct_specifier (field_declaration_list) @scope.class)
+(struct_specifier (field_declaration_list)) @scope.class
+
+(enum_specifier (enumerator_list)) @scope.enum
 
 (compound_statement) @scope.block
 

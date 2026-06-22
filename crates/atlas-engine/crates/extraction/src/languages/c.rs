@@ -286,6 +286,7 @@ fn c_scope_kind(capture: &str) -> Option<ScopeKind> {
         "scope.file" => Some(ScopeKind::File),
         "scope.function" => Some(ScopeKind::Function),
         "scope.class" => Some(ScopeKind::Class),
+        "scope.enum" => Some(ScopeKind::Enum),
         "scope.block" => Some(ScopeKind::Block),
         "scope.conditional" => Some(ScopeKind::Conditional),
         "scope.loop" => Some(ScopeKind::Loop),

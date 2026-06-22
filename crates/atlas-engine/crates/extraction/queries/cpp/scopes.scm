@@ -5,7 +5,11 @@
 
 (function_definition) @scope.function
 
-(class_specifier (field_declaration_list) @scope.class)
+(class_specifier (field_declaration_list)) @scope.class
+
+(struct_specifier (field_declaration_list)) @scope.class
+
+(enum_specifier (enumerator_list)) @scope.enum
 
 (namespace_definition) @scope.namespace
 
