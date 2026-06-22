@@ -17,8 +17,8 @@
 //! ## Thread model
 //!
 //! - **Main thread**: submits jobs, polls status, cancels, renders UI.
-//! - **Worker thread**: executes the job (read-only from the graph snapshot,
-//!   may write to the database via `lazy_structural`).
+//! - **Worker thread**: executes the job, including initial graph loading;
+//!   lazy structural jobs may write to the database.
 //!
 //! The worker never accesses `GraphSession` or any other main-thread state.
 //! It operates on its own `SearchEngine` / `Engine` constructed from cloned
@@ -43,6 +43,8 @@ use super::search_session::{ParsedSearch, do_search, parse_query};
 
 /// A background job that the TUI can submit and poll.
 pub enum TuiJob {
+    /// Build the in-memory graph snapshot without blocking the UI thread.
+    LoadGraph { cancel: Arc<AtomicBool> },
     /// Search query across indexed symbols.
     Search {
         query: String,
@@ -73,6 +75,7 @@ impl TuiJob {
     /// Return a clone of the cancellation token for this job.
     fn cancel(&self) -> Arc<AtomicBool> {
         match self {
+            TuiJob::LoadGraph { cancel } => Arc::clone(cancel),
             TuiJob::Search { cancel, .. } => Arc::clone(cancel),
             TuiJob::LazyStructural { cancel, .. } => Arc::clone(cancel),
             TuiJob::TraceCallers { cancel, .. } => Arc::clone(cancel),
@@ -95,8 +98,10 @@ pub enum JobStatus {
 }
 
 /// The result payload of a completed job.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum JobResult {
+    /// Graph snapshot loaded for installation into the main-thread session.
+    GraphLoaded(Result<Arc<GraphEngine>, String>),
     /// Search returned results (non-empty).
     SearchResults(Vec<SearchResult>),
     /// Search returned empty — caller should trigger lazy structural.
@@ -114,6 +119,40 @@ pub enum JobResult {
         text: String,
         is_error: bool,
     },
+}
+
+impl std::fmt::Debug for JobResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GraphLoaded(Ok(graph)) => f
+                .debug_struct("GraphLoaded")
+                .field("nodes", &graph.node_count())
+                .field("edges", &graph.edge_count())
+                .finish(),
+            Self::GraphLoaded(Err(error)) => f.debug_tuple("GraphLoadFailed").field(error).finish(),
+            Self::SearchResults(results) => f.debug_tuple("SearchResults").field(results).finish(),
+            Self::SearchEmpty => f.write_str("SearchEmpty"),
+            Self::LazyComplete {
+                files_built,
+                files_cached,
+            } => f
+                .debug_struct("LazyComplete")
+                .field("files_built", files_built)
+                .field("files_cached", files_cached)
+                .finish(),
+            Self::TraceChain(chain) => f.debug_tuple("TraceChain").field(chain).finish(),
+            Self::ToolOutput {
+                name,
+                text,
+                is_error,
+            } => f
+                .debug_struct("ToolOutput")
+                .field("name", name)
+                .field("text", text)
+                .field("is_error", is_error)
+                .finish(),
+        }
+    }
 }
 
 // ── Job handle ───────────────────────────────────────────────────────────────
@@ -158,8 +197,8 @@ pub struct JobManager {
 impl JobManager {
     /// Create a new job manager.
     ///
-    /// The graph snapshot must be provided later via [`set_graph`] before
-    /// any search or trace jobs are submitted.
+    /// Search can run immediately with store-only ranking. A snapshot is
+    /// installed later via [`set_graph`] after `LoadGraph` completes.
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
         let tool_router = Arc::new(ToolRouter::new_empty(
             Arc::clone(&store),
@@ -185,22 +224,9 @@ impl JobManager {
     /// eventually exit when it checks the cancellation token, but we don't
     /// join it here to avoid blocking the event loop).
     ///
-    /// Returns `false` if the job requires a graph snapshot but none has
-    /// been set yet (search & trace require graph; lazy structural does not).
+    /// Search remains available before the graph snapshot is loaded; it uses
+    /// store-backed ranking without graph degree as a startup fallback.
     pub fn submit(&self, job: TuiJob) -> bool {
-        // Validate required resources
-        match &job {
-            TuiJob::Search { .. } | TuiJob::TraceCallers { .. } => {
-                if self.graph.is_none() {
-                    tracing::warn!("JobManager: graph not set — cannot submit search/trace job");
-                    return false;
-                }
-            }
-            TuiJob::LazyStructural { .. } | TuiJob::ToolCall { .. } => {
-                // Lazy structural only needs store + project_root (no graph)
-            }
-        }
-
         let store = Arc::clone(&self.store);
         let graph = self.graph.as_ref().map(Arc::clone);
         let project_root = self.project_root.clone();
@@ -214,24 +240,16 @@ impl JobManager {
         let result_w = Arc::clone(&result);
         let cancel_w = Arc::clone(&cancel);
 
-        // Cancel any previously running job before replacing it.
-        let had_old = {
-            let guard = self.current.lock().unwrap();
-            if let Some(ref handle) = *guard {
+        // Signal and detach the previous worker. Cancellation is cooperative;
+        // waiting here would block the TUI event loop without strengthening
+        // the ownership guarantee.
+        let _old = {
+            let mut current = self.current.lock().unwrap();
+            if let Some(ref handle) = *current {
                 handle.cancel.store(true, Ordering::SeqCst);
-                true
-            } else {
-                false
             }
+            current.take()
         };
-        if had_old {
-            // Give the old worker a brief window to detect cancellation.
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-
-        // Take ownership of the old handle (Drop will also signal cancel as
-        // a safety net if the worker hasn't exited yet).
-        let _old = self.current.lock().unwrap().take();
 
         let handle = std::thread::spawn(move || {
             let r = execute_job(
@@ -324,6 +342,19 @@ fn execute_job(
     cancel: &Arc<AtomicBool>,
 ) -> JobResult {
     match job {
+        TuiJob::LoadGraph { .. } => {
+            if check_cancelled(cancel) {
+                return JobResult::GraphLoaded(Err("Cancelled".into()));
+            }
+            let loaded = GraphEngine::from_store(store, 0.3)
+                .map(Arc::new)
+                .map_err(|error| error.to_string());
+            if check_cancelled(cancel) {
+                JobResult::GraphLoaded(Err("Cancelled".into()))
+            } else {
+                JobResult::GraphLoaded(loaded)
+            }
+        }
         TuiJob::Search {
             query,
             scope,
@@ -391,15 +422,16 @@ fn run_search(
         return JobResult::SearchEmpty;
     }
 
+    let fallback_graph;
     let graph = match graph {
-        Some(g) => g,
+        Some(graph) => Arc::clone(graph),
         None => {
-            tracing::error!("Search job submitted without graph snapshot");
-            return JobResult::SearchResults(Vec::new());
+            fallback_graph = Arc::new(GraphEngine::empty());
+            fallback_graph
         }
     };
 
-    let search_engine = SearchEngine::new(Arc::clone(store), Arc::clone(graph));
+    let search_engine = SearchEngine::new(Arc::clone(store), graph);
 
     // Parse the query.
     let parsed = parse_query(query);
@@ -515,10 +547,10 @@ mod tests {
     }
 
     #[test]
-    fn job_manager_submit_search_returns_false_without_graph() {
+    fn job_manager_submit_search_returns_true_without_graph() {
         let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
         store.init_schema().expect("init schema");
-        let jm = JobManager::new(store, PathBuf::from("."));
+        let mut jm = JobManager::new(store, PathBuf::from("."));
         let cancel = Arc::new(AtomicBool::new(false));
         let ok = jm.submit(TuiJob::Search {
             query: "test".into(),
@@ -526,7 +558,16 @@ mod tests {
             language: None,
             cancel,
         });
-        assert!(!ok);
+        assert!(ok);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if matches!(jm.poll(), Some(JobStatus::Completed { .. })) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("store-only search did not complete");
     }
 
     #[test]
@@ -619,6 +660,29 @@ mod tests {
     }
 
     #[test]
+    fn graph_load_job_builds_snapshot_without_blocking_submitter() {
+        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        store.init_schema().expect("init schema");
+        let mut manager = JobManager::new(store, PathBuf::from("."));
+        assert!(manager.submit(TuiJob::LoadGraph {
+            cancel: Arc::new(AtomicBool::new(false)),
+        }));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Some(JobStatus::Completed {
+                result: JobResult::GraphLoaded(Ok(graph)),
+            }) = manager.poll()
+            {
+                assert_eq!(graph.node_count(), 0);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("graph load job did not complete");
+    }
+
+    #[test]
     fn job_manager_submit_replaces_running_job() {
         let jm = test_job_manager();
         let cancel1 = Arc::new(AtomicBool::new(false));
@@ -635,6 +699,7 @@ mod tests {
 
         // Submit a second job — this should cancel the first.
         let cancel2 = Arc::new(AtomicBool::new(false));
+        let started = std::time::Instant::now();
         let ok = jm.submit(TuiJob::Search {
             query: "second".into(),
             scope: None,
@@ -642,6 +707,10 @@ mod tests {
             cancel: cancel2,
         });
         assert!(ok);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "replacing a worker must not sleep on the UI thread"
+        );
 
         // Verify the first job's cancel token was signalled.
         assert!(cancel1.load(Ordering::SeqCst));

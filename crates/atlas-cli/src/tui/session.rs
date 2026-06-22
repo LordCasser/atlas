@@ -1,110 +1,62 @@
-//! Graph session: manages the lifecycle of `GraphEngine`, `SearchEngine`,
-//! `ContextBuilder`, and high-level `Engine` with lazy initialisation and
-//! signature-based refresh.
+//! Graph session: owns the installed `GraphEngine` and `ContextBuilder` used
+//! by the main TUI thread. Snapshot construction happens in `JobManager`.
 //!
 //! Analogous to `ToolRouter`'s graph management in `atlas-mcp`, but
 //! decoupled from MCP protocol concerns.
 
+use atlas_engine::{ContextBuilder, GraphEngine, SourceExtractor, Store};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
-use anyhow::Context;
-use atlas_engine::{ContextBuilder, GraphEngine, SearchEngine, SourceExtractor, Store};
-
-/// Manages the in-memory graph snapshot and derived engines for a single
-/// project session.  The graph is loaded lazily on first use and refreshed
-/// when the SQLite database signature changes.
-///
-/// Also holds a high-level [`Engine`] for trace-based queries (which may
-/// trigger lazy dataflow) and a [`SourceExtractor`] for AST-aware source
-/// snippet extraction.
+/// Manages the in-memory graph snapshot and context builder for one project.
 pub struct GraphSession {
     store: Arc<Store>,
     graph: Option<Arc<GraphEngine>>,
-    search: Option<SearchEngine>,
     context: Option<ContextBuilder>,
-    last_signature: String,
     initialized: bool,
     stale_flag: Arc<AtomicBool>,
-    last_check: Instant,
     project_root: PathBuf,
 }
 
 impl GraphSession {
     /// Create a new session without building the graph.
-    ///
-    /// Constructs a high-level [`Engine`] from the store so that trace
-    /// queries go through the unified API (and may trigger lazy dataflow).
     pub fn new(store: Arc<Store>, project_root: PathBuf) -> Self {
         Self {
             store,
             graph: None,
-            search: None,
             context: None,
-            last_signature: String::new(),
             initialized: false,
             stale_flag: Arc::new(AtomicBool::new(false)),
-            last_check: Instant::now(),
             project_root,
         }
     }
 
-    // ── lifecycle ─────────────────────────────────────────────────────────
-
-    /// Build the graph on first use (idempotent).
-    ///
-    /// Subsequent calls are a no-op.  Use [`maybe_refresh`]
-    /// to pick up database changes after initialisation.
-    pub fn ensure_initialized(&mut self) -> anyhow::Result<()> {
-        if self.initialized {
-            return Ok(());
-        }
-        self.rebuild().context("Failed to build graph snapshot")
-    }
-
-    /// Refresh the graph if the database signature has changed.
-    ///
-    /// Cached for 5 seconds to avoid per-request `COUNT` queries.
-    /// If [`mark_stale`] was called (e.g. after lazy structural extraction),
-    /// the cooldown is skipped.
-    pub fn maybe_refresh(&mut self) -> anyhow::Result<()> {
-        if !self.initialized {
-            return Ok(());
-        }
-
-        // Background lazy structural may have written new facts —
-        // skip cooldown to pick them up immediately.
-        if self.stale_flag.swap(false, Ordering::AcqRel) {
-            self.last_check = self
-                .last_check
-                .checked_sub(std::time::Duration::from_secs(10))
-                .unwrap_or(self.last_check);
-        }
-
-        if self.last_check.elapsed().as_secs() < 5 {
-            return Ok(());
-        }
-
-        self.last_check = Instant::now();
-        let current = self.store.index_signature().unwrap_or_default();
-        if current != self.last_signature {
-            tracing::info!(
-                "Index signature changed, refreshing graph (was: {}, now: {})",
-                self.last_signature,
-                current
-            );
-            self.rebuild()?;
-        }
-        Ok(())
-    }
-
     /// Notify the session that the database has been written to externally
-    /// (e.g. by lazy structural extraction), so the next `maybe_refresh`
-    /// should skip its cooldown.
+    /// (e.g. by lazy structural extraction), so the next graph-backed action
+    /// submits a fresh `LoadGraph` job.
     pub fn mark_stale(&self) {
         self.stale_flag.store(true, Ordering::Release);
+    }
+
+    /// Whether a graph-backed action should reload the snapshot before use.
+    pub fn needs_refresh(&self) -> bool {
+        self.stale_flag.load(Ordering::Acquire)
+    }
+
+    /// Install a graph snapshot built off the UI thread and rebuild only the
+    /// lightweight derived query helpers on the caller thread.
+    pub fn install_graph(&mut self, graph: Arc<GraphEngine>) {
+        let source_extractor =
+            SourceExtractor::new(Arc::clone(&self.store), self.project_root.clone());
+        let context = ContextBuilder::new(Arc::clone(&self.store), Arc::clone(&graph))
+            .with_project_root(self.project_root.clone())
+            .with_source_fn(Arc::new(source_extractor));
+
+        self.graph = Some(graph);
+        self.context = Some(context);
+        self.initialized = true;
+        self.stale_flag.store(false, Ordering::Release);
     }
 
     // ── accessors (panic if not initialized) ──────────────────────────────
@@ -113,62 +65,12 @@ impl GraphSession {
         self.initialized
     }
 
-    pub fn search_engine(&self) -> &SearchEngine {
-        self.search
-            .as_ref()
-            .expect("graph not initialized; call ensure_initialized() first")
-    }
-
     pub fn context_builder(&self) -> &ContextBuilder {
-        self.context
-            .as_ref()
-            .expect("graph not initialized; call ensure_initialized() first")
+        self.context.as_ref().expect("graph not installed")
     }
 
     /// Access the low-level [`GraphEngine`] for graph traversal queries.
     pub fn graph_engine(&self) -> &Arc<GraphEngine> {
-        self.graph
-            .as_ref()
-            .expect("graph not initialized; call ensure_initialized() first")
-    }
-
-    pub fn store(&self) -> &Arc<Store> {
-        &self.store
-    }
-
-    // ── internal ──────────────────────────────────────────────────────────
-
-    fn rebuild(&mut self) -> anyhow::Result<()> {
-        tracing::info!("Building graph snapshot...");
-        let start = Instant::now();
-
-        let graph = Arc::new(
-            GraphEngine::from_store(&self.store, 0.3)
-                .context("Failed to load graph from database")?,
-        );
-
-        let search = SearchEngine::new(Arc::clone(&self.store), Arc::clone(&graph));
-
-        // Create SourceExtractor for AST-aware source snippet extraction
-        // (tree-sitter re-parsing), matching the MCP pattern.
-        let source_extractor =
-            SourceExtractor::new(Arc::clone(&self.store), self.project_root.clone());
-        let context = ContextBuilder::new(Arc::clone(&self.store), Arc::clone(&graph))
-            .with_project_root(self.project_root.clone())
-            .with_source_fn(Arc::new(source_extractor));
-
-        self.last_signature = self.store.index_signature().unwrap_or_default();
-        self.graph = Some(graph);
-        self.search = Some(search);
-        self.context = Some(context);
-        self.initialized = true;
-
-        let elapsed = start.elapsed();
-        tracing::info!(
-            "Graph snapshot ready ({:.1}s, sig: {})",
-            elapsed.as_secs_f64(),
-            self.last_signature,
-        );
-        Ok(())
+        self.graph.as_ref().expect("graph not installed")
     }
 }

@@ -88,6 +88,8 @@ pub struct App {
     pending_search: Option<ParsedSearch>,
     /// Whether lazy structural has been triggered for the current search.
     search_lazy_triggered: bool,
+    /// Symbol waiting for the first graph snapshot to finish loading.
+    pending_detail_symbol: Option<atlas_engine::SymbolId>,
 
     // ── DB stats (cached once) ────────────────────────────────────────
     file_count: i64,
@@ -116,6 +118,7 @@ impl App {
             job_manager,
             pending_search: None,
             search_lazy_triggered: false,
+            pending_detail_symbol: None,
             search_input: String::new(),
             search_cursor: 0,
             search_results: Vec::new(),
@@ -188,6 +191,7 @@ impl App {
             Some(super::jobs::JobStatus::Cancelled) => {
                 self.pending_search = None;
                 self.search_lazy_triggered = false;
+                self.pending_detail_symbol = None;
             }
             _ => {}
         }
@@ -682,18 +686,24 @@ impl App {
         if self.selected_index >= self.search_results.len() {
             return;
         }
-        let symbol = &self.search_results[self.selected_index].symbol;
+        let symbol_id = self.search_results[self.selected_index].symbol.id;
 
-        // Ensure graph is initialized.
-        if let Err(e) = self.session.ensure_initialized() {
-            tracing::error!("Failed to init graph: {e}");
+        if !self.session.is_initialized() || self.session.needs_refresh() {
+            self.pending_detail_symbol = Some(symbol_id);
+            self.job_manager.submit(TuiJob::LoadGraph {
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
             return;
         }
 
+        self.show_symbol_detail(symbol_id);
+    }
+
+    fn show_symbol_detail(&mut self, symbol_id: atlas_engine::SymbolId) {
         match self
             .session
             .context_builder()
-            .build_context_for_symbol(&symbol.id, true)
+            .build_context_for_symbol(&symbol_id, true)
         {
             Ok(ctx) => {
                 self.detail_context = Some(ctx);
@@ -796,19 +806,10 @@ impl App {
             self.selected_index = 0;
             return;
         }
-        if let Err(e) = self.session.ensure_initialized() {
-            tracing::error!("Failed to init graph: {e}");
-            return;
+        if self.session.is_initialized() {
+            self.job_manager
+                .set_graph(self.session.graph_engine().clone());
         }
-        if let Err(e) = self.session.maybe_refresh() {
-            tracing::error!("Failed to refresh graph: {e}");
-            return;
-        }
-
-        // Push current graph snapshot to the job manager so background
-        // workers can construct their own SearchEngine from it.
-        self.job_manager
-            .set_graph(self.session.graph_engine().clone());
 
         let parsed = parse_query(&self.search_input);
         self.pending_search = Some(parsed.clone());
@@ -836,6 +837,26 @@ impl App {
                 self.last_tool_result = None;
                 tracing::info!("Search returned {count} results");
             }
+            JobResult::GraphLoaded(loaded) => match loaded {
+                Ok(graph) => {
+                    self.session.install_graph(Arc::clone(&graph));
+                    self.job_manager.set_graph(graph);
+                    if let Some(symbol_id) = self.pending_detail_symbol.take() {
+                        self.show_symbol_detail(symbol_id);
+                    }
+                }
+                Err(error) => {
+                    self.pending_detail_symbol = None;
+                    self.tool_name = Some("Graph".into());
+                    self.last_tool_result = Some(ToolResultView::from_text(
+                        format!("Failed to load graph: {error}"),
+                        true,
+                    ));
+                    self.tool_scroll = 0;
+                    self.tool_raw = false;
+                    tracing::error!("Failed to load graph: {error}");
+                }
+            },
             JobResult::SearchEmpty => {
                 if self.search_lazy_triggered {
                     // Already tried lazy structural — accept empty.
@@ -865,17 +886,11 @@ impl App {
                 files_cached,
             } => {
                 tracing::info!("Lazy structural: {files_built} built, {files_cached} cached");
-                // Refresh the graph on the main thread so it picks up the
-                // newly extracted symbols.
+                // Search reads the store directly, so do not rebuild a large
+                // graph snapshot on the UI thread. Mark it stale for the next
+                // graph-backed action and immediately repeat the search.
                 self.session.mark_stale();
-                if let Err(e) = self.session.maybe_refresh() {
-                    tracing::error!("Failed to refresh graph after lazy structural: {e}");
-                }
                 self.refresh_cached_status();
-                // Push refreshed graph to the job manager.
-                self.job_manager
-                    .set_graph(self.session.graph_engine().clone());
-                // Re-submit the original search with the refreshed graph.
                 if let Some(ref parsed) = self.pending_search {
                     let cancel = Arc::new(AtomicBool::new(false));
                     self.job_manager.submit(TuiJob::Search {
@@ -1105,6 +1120,7 @@ mod tests {
             job_manager,
             pending_search: None,
             search_lazy_triggered: false,
+            pending_detail_symbol: None,
             search_input: String::new(),
             search_cursor: 0,
             search_results: Vec::new(),
@@ -1172,6 +1188,27 @@ mod tests {
         }
         assert_eq!(app.search_input, "lang:rust");
         assert!(!app.palette_visible);
+    }
+
+    #[test]
+    fn perform_search_does_not_build_graph_on_ui_thread() {
+        let mut app = test_app();
+        app.search_input = "missing_symbol".into();
+
+        app.perform_search();
+
+        assert!(!app.session.is_initialized());
+        assert!(app.job_manager.is_running());
+    }
+
+    #[test]
+    fn graph_load_failure_is_visible_in_the_workbench() {
+        let mut app = test_app();
+
+        app.handle_job_completion(JobResult::GraphLoaded(Err("broken graph".into())));
+
+        assert_eq!(app.tool_name.as_deref(), Some("Graph"));
+        assert!(app.last_tool_result.is_some());
     }
 
     #[test]
