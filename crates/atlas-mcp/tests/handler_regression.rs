@@ -408,23 +408,32 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
                 resp["analysis"]["scope"].as_str().is_some(),
                 "{tool} should have analysis scope for local materialized result: {resp:.500}",
             );
-            assert!(
-                resp["analysis"]["retry_after_ms"]
-                    .as_u64()
-                    .is_some_and(|ms| ms > 0),
-                "{tool} should carry retry_after_ms in the analysis block: {resp:.500}",
-            );
+            if tool == "lifecycle" {
+                assert!(
+                    resp["analysis"].get("retry_after_ms").is_none(),
+                    "function-local lifecycle should be terminal once CFG/dataflow facts are available: {resp:.500}",
+                );
+            } else {
+                assert!(
+                    resp["analysis"]["retry_after_ms"]
+                        .as_u64()
+                        .is_some_and(|ms| ms > 0),
+                    "{tool} should carry retry_after_ms in the analysis block: {resp:.500}",
+                );
+            }
             assert!(
                 resp.get("background_refinement").is_none(),
                 "{tool} should not expose legacy background_refinement: {resp:.500}",
             );
         }
-        assert!(
-            resp["analysis"]["retry_after_ms"]
-                .as_u64()
-                .is_some_and(|ms| ms > 0 && ms <= 60_000),
-            "{tool} should expose a bounded focus ETA: {resp:.500}"
-        );
+        if tool != "lifecycle" {
+            assert!(
+                resp["analysis"]["retry_after_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| ms > 0 && ms <= 60_000),
+                "{tool} should expose a bounded focus ETA: {resp:.500}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

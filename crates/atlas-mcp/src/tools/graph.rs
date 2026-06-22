@@ -1732,7 +1732,7 @@ impl ToolRouter {
 
         let lr = AnalysisEnvelope::new("explore", args);
 
-        let (sym_id, resolved_opt) = match resolution {
+        let (sym_id, mut resolved_opt) = match resolution {
             SymbolResolution::Single {
                 symbol_id,
                 resolved,
@@ -1809,7 +1809,7 @@ impl ToolRouter {
             }
         };
 
-        let sym = match self.project().store.find_symbol_by_id(&sym_id) {
+        let seed_sym = match self.project().store.find_symbol_by_id(&sym_id) {
             Ok(Some(s)) => s,
             Ok(None) => {
                 let mut err = format!("Symbol not found in store: {qname}");
@@ -1823,21 +1823,45 @@ impl ToolRouter {
             }
         };
 
-        let file_path = self
-            .project()
-            .store_query_runtime
-            .resolve_file_path(&sym.file_id);
-
-        self.update_investigation(InvestigationFocus::Symbol(sym.id));
+        self.update_investigation(InvestigationFocus::Symbol(seed_sym.id));
 
         // Lazy structural: prepare focus query for graph edges
         let (focus_result, focus_warnings) = prepared_focus.unwrap_or_else(|| {
             self.prepare_focus_query(Some(atlas_engine::QueryIntent::Explore {
                 symbol_name: qname.to_string(),
-                file_id: Some(sym.file_id),
+                file_id: Some(seed_sym.file_id),
                 symbol_id: None,
             }))
         });
+
+        // Focus may replace manifest or stale structural facts for the same
+        // deterministic SymbolId. Never build the dossier from the pre-focus
+        // copy: its range can be only the declaration name even though the DB
+        // now contains the complete definition.
+        let sym = match self.project().store.find_symbol_by_id(&sym_id) {
+            Ok(Some(symbol)) => symbol,
+            Ok(None) => {
+                return (
+                    format!("Symbol disappeared after focus preparation: {qname}"),
+                    true,
+                );
+            }
+            Err(error) => {
+                return (
+                    format!("Lookup after focus preparation failed: {error}"),
+                    true,
+                );
+            }
+        };
+        if let Ok(SymbolResolution::Single { resolved, .. }) =
+            self.resolve_symbol_input(&input, SymbolResolutionPolicy::UniqueOrCandidates)
+        {
+            resolved_opt = Some(resolved);
+        }
+        let file_path = self
+            .project()
+            .store_query_runtime
+            .resolve_file_path(&sym.file_id);
 
         let (store_clone, root_clone) = {
             let active = self.project();
@@ -2166,9 +2190,8 @@ impl ToolRouter {
 
                 // Collect fields that have effect annotations (both legacy and semantic)
                 let mut fields: HashSet<String> = HashSet::new();
-                for n in &cfg_nodes {
-                    // Semantic effects (preferred)
-                    for eff in &n.semantic_effects {
+                for effects in composition.node_effects.values() {
+                    for eff in effects {
                         use atlas_engine::effects::PlaceRef;
                         match &eff.kind {
                             atlas_engine::effects::SemanticEffectKind::Free {
@@ -2199,12 +2222,13 @@ impl ToolRouter {
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(analysis::CppOwnershipRules::default);
-                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_with_rules(
+                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_with_composition(
                         &cfg_nodes,
                         &cfg_edges,
                         field_path,
                         &ownership_rules,
                         &cpp_rules,
+                        &composition,
                     );
                     lifecycle.function_qname = node.qualified_name.clone();
 

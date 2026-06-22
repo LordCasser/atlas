@@ -66,10 +66,11 @@ impl ToolRouter {
             ToolContract::SemanticGraphQuery(_)
         ) {
             if let Some(ref focus_result) = snapshot.focus_result {
+                let materialized_files = focus_result.materialized_files();
                 self.project()
                     .query_runtime
                     .lazy_refresh_queue
-                    .record_lazy_writes(&focus_result.built_files);
+                    .record_lazy_writes(&materialized_files);
             }
             if let Err(e) = self.maybe_refresh_graph() {
                 tracing::warn!("Graph refresh in resume handler failed: {e:#}");

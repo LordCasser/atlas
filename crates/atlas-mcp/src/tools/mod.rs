@@ -158,8 +158,21 @@ pub(crate) fn apply_focus_result_to_lr(
                 "Focus analysis complete: all background jobs have finished.".to_string(),
             )
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
-        if !result.gaps.is_empty() {
-            lr = lr.with_gap_records(result.gaps.iter().map(known_gap_record).collect());
+        let mut gaps: Vec<_> = result.gaps.iter().map(known_gap_record).collect();
+        if let Some(tracker) = &result.job_tracker {
+            gaps.extend(
+                tracker
+                    .failures_for(&result.pending_closure_ids)
+                    .into_iter()
+                    .map(|(_, reason)| analysis_envelope::GapRecord {
+                        scope: "focus_closure".to_string(),
+                        reason: "background_refinement_failed".to_string(),
+                        detail: reason,
+                    }),
+            );
+        }
+        if !gaps.is_empty() {
+            lr = lr.with_gap_records(gaps);
         }
         lr
     } else {
@@ -179,6 +192,11 @@ fn known_gap_record(gap: &atlas_engine::structs::KnownGap) -> analysis_envelope:
     use atlas_engine::structs::KnownGap;
 
     let (scope, reason, detail) = match gap {
+        KnownGap::ExtractionFailed { file, reason } => (
+            file.clone(),
+            "extraction_failed",
+            format!("Structural extraction failed: {reason}"),
+        ),
         KnownGap::UnresolvedImport { from, import_path } => (
             from.clone(),
             "unresolved_import",
@@ -401,11 +419,12 @@ impl ToolRouter {
 
         // 4. Post-processing: record lazy writes and refresh graph.
         if let Some(ref result) = focus_result {
-            if !result.built_files.is_empty() {
+            let materialized_files = result.materialized_files();
+            if !materialized_files.is_empty() {
                 project
                     .query_runtime
                     .lazy_refresh_queue
-                    .record_lazy_writes(&result.built_files);
+                    .record_lazy_writes(&materialized_files);
             }
             if let Err(e) = self.maybe_refresh_graph() {
                 let mut combined = warnings.clone();
@@ -4591,6 +4610,38 @@ mod tests {
             assert!(
                 resp.get("partial_result").is_none(),
                 "non-terminal should not set partial_result in new protocol: {resp}"
+            );
+        }
+
+        // ── Case 3: Failed background work is terminal and diagnostic ──
+        {
+            let tracker = JobTracker::new();
+            tracker.mark_failed("cl_failed", "fixture extraction failed");
+
+            let result = atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: Some(Precision {
+                    coverage: CoverageTier::Partial { gaps: vec![] },
+                    confidence: SemanticConfidence::Medium,
+                }),
+                gaps: vec![],
+                pending_closure_ids: vec!["cl_failed".to_string()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: Some(Arc::new(tracker)),
+            };
+
+            let (resp, _) = build_json(&result);
+            assert!(resp["analysis"].get("retry_after_ms").is_none());
+            assert_eq!(resp["gaps"][0]["scope"], "focus_closure");
+            assert_eq!(resp["gaps"][0]["reason"], "background_refinement_failed");
+            assert!(
+                resp["gaps"][0]["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.contains("fixture extraction failed"))
             );
         }
     }

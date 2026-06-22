@@ -130,12 +130,10 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("branch_diff", args);
         let query_id = lr.query_id().to_string();
         let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::SemanticFunction {
                 symbol_name: symbol.clone(),
                 file_id: self.resolve_selector_file_id(&input),
                 symbol_id: None,
-                direction: None,
-                depth: None,
             }));
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);

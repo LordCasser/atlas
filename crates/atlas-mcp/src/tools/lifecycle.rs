@@ -37,12 +37,10 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("lifecycle", args);
         let query_id = lr.query_id().to_string();
         let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+            self.prepare_focus_query(Some(atlas_engine::QueryIntent::SemanticFunction {
                 symbol_name: symbol.clone(),
                 file_id: self.resolve_selector_file_id(&input),
                 symbol_id: None,
-                direction: None,
-                depth: None,
             }));
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
@@ -107,10 +105,10 @@ impl ToolRouter {
                     atlas_engine::Language::Cpp => Some("cpp"),
                     _ => None,
                 };
-                lang.map(|l| (s.qualified_name, l))
+                lang.map(|_| (s.qualified_name, s.language))
             });
 
-        let (qname, lang_str) = match sym_info {
+        let (qname, language) = match sym_info {
             Some((qname, lang)) => (qname, lang),
             None => {
                 let resp = json!({
@@ -125,20 +123,58 @@ impl ToolRouter {
             }
         };
 
+        let mut dataflow_error = None;
+        if let Err(error) = self
+            .project()
+            .analysis_runtime
+            .ensure_dataflow_for_function(&sid, Some(&query_id))
+        {
+            dataflow_error = Some(format!("{error:#}"));
+        }
+        let data_nodes = self
+            .project()
+            .store
+            .find_data_nodes_by_function(&sid)
+            .unwrap_or_default();
+        let dataflow_edges = if data_nodes.is_empty() {
+            Vec::new()
+        } else {
+            self.project()
+                .store
+                .find_dataflow_edges_by_sources(
+                    &data_nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+                )
+                .unwrap_or_default()
+        };
+        let contract = atlas_engine::analysis::ResourceOpConfig::default_for(language);
+        let composition =
+            match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges) {
+                Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
+                    &cfg_graph,
+                    &data_nodes,
+                    &dataflow_edges,
+                    &contract,
+                ),
+                Err(_) => atlas_engine::analysis::EffectComposition::default(),
+            };
+
         // Load domain rules from DB for this symbol's language
-        let cpp_rules =
-            atlas_engine::analysis::CppOwnershipRules::load_for(&self.project().store, lang_str);
+        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(
+            &self.project().store,
+            language.as_str(),
+        );
         let has_any_rules = cpp_rules.has_any_rules();
         let has_user_rules = cpp_rules.has_user_rules();
         let ownership_rules = atlas_engine::analysis::OwnershipRules::default();
 
         // Run rule-backed lifecycle analysis
-        let mut result = atlas_engine::analysis::FieldLifecycleEngine::analyze_with_rules(
+        let mut result = atlas_engine::analysis::FieldLifecycleEngine::analyze_with_composition(
             &cfg_nodes,
             &cfg_edges,
             &field,
             &ownership_rules,
             &cpp_rules,
+            &composition,
         );
         result.function_qname = qname;
 
@@ -192,23 +228,55 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        if result.partial {
+        if let Some(error) = dataflow_error {
             lr = lr
                 .with_analysis_scope("local".into())
                 .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
+                .with_gap_records(vec![super::analysis_envelope::GapRecord {
+                    scope: result.function_qname.clone(),
+                    reason: "no_dataflow".into(),
+                    detail: error,
+                }])
+                .with_analysis_summary(format!(
+                    "Lifecycle dataflow refinement failed; CFG-only analysis found {} transitions, final state={}, {} suspicious point(s).",
+                    result.transitions.len(),
+                    result.final_state.as_str(),
+                    result.suspicious_points.len(),
+                ));
+        } else if result.partial {
+            lr = lr
+                .with_analysis_scope("local".into())
+                .with_analysis_basis(vec![
+                    "cfg".into(),
+                    "dataflow".into(),
+                    "effects".into(),
+                    "domain_rules".into(),
+                ])
+                .with_gap_records(vec![super::analysis_envelope::GapRecord {
+                    scope: result.function_qname.clone(),
+                    reason: "analysis_budget".into(),
+                    detail: "Lifecycle fixpoint reached its bounded visit limit.".into(),
+                }])
                 .with_analysis_summary(format!(
                     "Partial lifecycle analysis: {} transitions found, final state={}, {} suspicious point(s).",
                     result.transitions.len(),
                     result.final_state.as_str(),
                     result.suspicious_points.len(),
-                ))
-                .with_analysis_retry_after_ms(8000);
+                ));
         } else {
             lr = lr
                 .with_analysis_scope("local".into())
-                .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])
+                .with_analysis_basis(vec![
+                    "cfg".into(),
+                    "dataflow".into(),
+                    "effects".into(),
+                    "domain_rules".into(),
+                ])
                 .with_gap_records(vec![])
-                .with_analysis_summary("Lifecycle analysis used CFG and domain rules.".into());
+                .with_analysis_summary(
+                    "Lifecycle analysis used focused CFG, dataflow effects, and domain rules."
+                        .into(),
+                );
         }
         lr.with_is_error(false).build(resp, self)
     }
