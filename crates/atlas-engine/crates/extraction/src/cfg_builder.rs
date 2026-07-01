@@ -48,6 +48,11 @@ struct CfgLanguageConfig {
     throw_kinds: &'static [&'static str],
     /// Node kinds for expression/declaration statements.
     stmt_kinds: &'static [&'static str],
+    /// Node kinds for switch statements (switch, switch_expression, etc.).
+    switch_kinds: &'static [&'static str],
+    /// Node kinds for case/default clauses inside a switch body
+    /// (case_statement, switch_case, expression_case, etc.).
+    case_kinds: &'static [&'static str],
 }
 
 /// Return the language-specific CFG configuration for the given language.
@@ -68,6 +73,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "debugger_statement",
                 "empty_statement",
             ],
+            switch_kinds: &["switch_statement"],
+            case_kinds: &["switch_case", "switch_default"],
         },
         Language::Java => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -86,6 +93,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_statement",
                 "break_statement",
             ],
+            switch_kinds: &["switch_expression"],
+            case_kinds: &["switch_block_statement_group", "switch_rule"],
         },
         Language::Go => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -100,6 +109,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_statement",
                 "break_statement",
             ],
+            switch_kinds: &["expression_switch_statement", "type_switch_statement"],
+            case_kinds: &["expression_case", "type_case", "default_case"],
         },
         Language::Python => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -113,6 +124,10 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_statement",
                 "break_statement",
             ],
+            // Python `match` is pattern-matching (guards, capture bindings),
+            // not a C-style switch; deferred like Rust `match_expression`.
+            switch_kinds: &[],
+            case_kinds: &[],
         },
         Language::C | Language::Cpp => CfgLanguageConfig {
             block_kinds: &["compound_statement"],
@@ -126,6 +141,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "continue_statement",
                 "break_statement",
             ],
+            switch_kinds: &["switch_statement"],
+            case_kinds: &["case_statement"],
         },
         Language::Rust => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -134,6 +151,10 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_expression"],
             throw_kinds: &[], // Rust uses Result, not throw
             stmt_kinds: &["let_declaration", "continue_expression", "break_expression"],
+            // Rust `match` is pattern-matching (guards, bindings), deferred —
+            // see the `match_expression` arm in walk_stmt_list.
+            switch_kinds: &[],
+            case_kinds: &[],
         },
         Language::CSharp => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -147,6 +168,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return_statement"],
             throw_kinds: &["throw_statement"],
             stmt_kinds: &["expression_statement", "local_declaration_statement"],
+            switch_kinds: &["switch_statement"],
+            case_kinds: &["switch_section"],
         },
         Language::Kotlin => CfgLanguageConfig {
             block_kinds: &["function_body"],
@@ -160,6 +183,9 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "variable_declaration",
                 "call_expression",
             ],
+            // Kotlin `when` AST not yet verified for a unified walk; deferred.
+            switch_kinds: &[],
+            case_kinds: &[],
         },
         Language::Cangjie => CfgLanguageConfig {
             block_kinds: &["block"],
@@ -168,6 +194,9 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["jumpExpression"], // jumpExpression covers return/break/continue
             throw_kinds: &[],
             stmt_kinds: &["variableDeclaration", "expressionStatement"],
+            // Cangjie `match` AST not yet verified for a unified walk; deferred.
+            switch_kinds: &[],
+            case_kinds: &[],
         },
         Language::Ruby => CfgLanguageConfig {
             block_kinds: &["body_statement"],
@@ -176,6 +205,9 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return"],
             throw_kinds: &["raise"],
             stmt_kinds: &["call", "assignment", "break", "next"],
+            // Ruby `case`/`when` AST not yet verified for a unified walk; deferred.
+            switch_kinds: &[],
+            case_kinds: &[],
         },
         _ => CfgLanguageConfig {
             // Default: TS/JS config (best-effort for unknown languages)
@@ -193,6 +225,8 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
                 "debugger_statement",
                 "empty_statement",
             ],
+            switch_kinds: &["switch_statement"],
+            case_kinds: &["switch_case", "switch_default"],
         },
     }
 }
@@ -691,7 +725,16 @@ impl CfgContext<'_> {
     fn walk_block(&mut self, block: Node, _block_start: u32) {
         let mut cursor = block.walk();
         let children: Vec<Node> = block.named_children(&mut cursor).collect();
+        self.walk_stmt_list(&children);
+    }
 
+    /// Walk a flat list of statement nodes using the per-statement dispatch.
+    ///
+    /// Shared by [`Self::walk_block`] (block bodies) and [`Self::walk_switch`]
+    /// (switch-case bodies) so that control-flow constructs nested inside a
+    /// `switch` case (if/loop/nested switch/etc.) are handled identically to
+    /// top-level block statements.
+    fn walk_stmt_list(&mut self, children: &[Node]) {
         // Process each statement in the block
         let mut i = 0;
         while i < children.len() {
@@ -700,9 +743,9 @@ impl CfgContext<'_> {
             let stmt_range = node_text_range(&stmt, self.source);
 
             if self.config.if_kinds.contains(&kind) {
-                i = self.walk_if(&children, i, stmt_range.start_byte);
+                i = self.walk_if(children, i, stmt_range.start_byte);
             } else if self.config.loop_kinds.contains(&kind) {
-                i = self.walk_loop(&children, i, stmt_range.start_byte);
+                i = self.walk_loop(children, i, stmt_range.start_byte);
             } else if self.config.return_kinds.contains(&kind) {
                 self.emit_stmt(CfgNodeKind::Return, stmt_range.start_byte, &stmt);
                 // React cleanup return: `return () => { ... }` or `return () => expr`
@@ -863,8 +906,17 @@ impl CfgContext<'_> {
 
                 i += 1;
                 continue;
+            } else if self.config.switch_kinds.contains(&kind) {
+                // Switch/case: model each case as an independent sibling path
+                // from a Branch (dispatch) node into a Join. Fall-through is
+                // NOT modeled (Phase 1). See `walk_switch`.
+                i = self.walk_switch(children, i, stmt_range.start_byte);
             } else if kind == "try_statement" || kind == "switch_statement" {
-                // Deferred: treat as single statement
+                // Deferred: treat as single statement.
+                // (A `switch_statement` only reaches here when the active
+                // language config has no `switch_kinds` entry — e.g. a
+                // language whose switch AST is not yet supported by
+                // `walk_switch`. try_statement is always deferred.)
                 self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
                 i += 1;
             } else if kind == "preproc_if" || kind == "preproc_def" {
@@ -1032,6 +1084,154 @@ impl CfgContext<'_> {
 
         self.prev_node_id = Some(join_id);
         idx + 1
+    }
+
+    /// Handle switch/case: Branch (dispatch) → CaseBranch → case body → Join.
+    ///
+    /// # Phase 1 model (conservative approximation)
+    ///
+    /// Each `case`/`default` clause becomes an **independent sibling path** from
+    /// the dispatch Branch node into a shared Join, mirroring the if/else shape
+    /// so [`super::super`]'s `BranchDiffEngine` can compare cases as siblings.
+    /// The first edge from the Branch into every case body is retagged to
+    /// [`CfgEdgeKind::CaseBranch`].
+    ///
+    /// **Fall-through is NOT modeled.** In C-family languages a case without a
+    /// terminating `break` falls through to the next case at runtime; here every
+    /// case tail connects only to the Join. This is a deliberate over-connection
+    /// to Join (never a spurious edge between cases), keeping the CFG a safe
+    /// under-approximation of inter-case flow. See `docs/roadmap.md` §8.2.
+    ///
+    /// Returns the index after the switch statement.
+    fn walk_switch(&mut self, children: &[Node], idx: usize, start_byte: u32) -> usize {
+        let switch_node = &children[idx];
+
+        // 1. Create Branch (dispatch) node, connect from previous.
+        let branch_id = self.add_node(CfgNodeKind::Branch, start_byte, Some(switch_node));
+        if let Some(prev) = self.prev_node_id.take() {
+            self.add_edge(&prev, &branch_id, CfgEdgeKind::Normal);
+        }
+
+        // 2. Find the case/default clauses. Go keeps cases as direct children of
+        //    the switch node; C/Java/TS/C# nest them under a body container.
+        let case_clauses = self.find_switch_cases(*switch_node);
+
+        // 3. Walk each case body as an independent path from the Branch.
+        let mut case_tails: Vec<types::ids::CfgNodeId> = Vec::new();
+        for clause in &case_clauses {
+            // Statement nodes belonging to this case clause (skip the case
+            // label / pattern nodes, which are not executable statements).
+            let body_stmts = self.case_body_statements(clause);
+            if body_stmts.is_empty() {
+                // Empty case (e.g. C fall-through label `case 1:` with no body,
+                // or `default:` with nothing). No node is emitted; the dispatch
+                // simply reaches Join for this arm below.
+                continue;
+            }
+
+            let saved_edge_count = self.edges.len();
+            self.prev_node_id = Some(branch_id);
+            self.walk_stmt_list(&body_stmts);
+            // Retag the first edge (Branch → first node of this case body) to
+            // CaseBranch, matching how walk_if tags TrueBranch/FalseBranch.
+            if self.edges.len() > saved_edge_count {
+                self.edges[saved_edge_count].kind = CfgEdgeKind::CaseBranch;
+            }
+            if let Some(tail) = self.prev_node_id.take() {
+                case_tails.push(tail);
+            }
+        }
+
+        // 4. Create Join node; connect each case tail → Join. Cases ending in
+        //    return/throw leave `prev_node_id` cleared, so they never enqueue a
+        //    tail here (matching walk_if semantics).
+        let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1, None);
+        for tail in &case_tails {
+            if *tail != branch_id {
+                self.add_edge(tail, &join_id, CfgEdgeKind::Normal);
+            }
+        }
+        // The dispatch can always skip straight to Join when no case matches
+        // (or a case is empty), so connect Branch → Join directly. This keeps
+        // Join reachable and mirrors the implicit false-edge in walk_if.
+        self.add_edge(&branch_id, &join_id, CfgEdgeKind::CaseBranch);
+
+        self.prev_node_id = Some(join_id);
+        idx + 1
+    }
+
+    /// Collect the case/default clause nodes of a switch statement.
+    ///
+    /// Handles both layouts observed across grammars:
+    /// - Nested: `switch → body-container → case_clauses` (C/C++, Java, TS/JS, C#).
+    /// - Flat: `switch → case_clauses` as direct children (Go).
+    fn find_switch_cases<'a>(&self, switch_node: Node<'a>) -> Vec<Node<'a>> {
+        // First, look for case clauses directly under the switch node (Go).
+        let mut direct: Vec<Node> = Vec::new();
+        let mut cursor = switch_node.walk();
+        for child in switch_node.named_children(&mut cursor) {
+            if self.config.case_kinds.contains(&child.kind()) {
+                direct.push(child);
+            }
+        }
+        if !direct.is_empty() {
+            return direct;
+        }
+
+        // Otherwise, descend into the switch body container and collect the
+        // case clauses nested inside it (C/Java/TS/C#).
+        let mut cases: Vec<Node> = Vec::new();
+        let mut cursor = switch_node.walk();
+        for child in switch_node.named_children(&mut cursor) {
+            // The body container is any child that itself contains case clauses.
+            let mut inner_cursor = child.walk();
+            let inner_cases: Vec<Node> = child
+                .named_children(&mut inner_cursor)
+                .filter(|c| self.config.case_kinds.contains(&c.kind()))
+                .collect();
+            if !inner_cases.is_empty() {
+                cases.extend(inner_cases);
+            }
+        }
+        cases
+    }
+
+    /// Return the executable statement nodes inside a case/default clause,
+    /// skipping the case label / pattern children.
+    ///
+    /// Grammars differ in how case bodies are structured:
+    /// - C/C++/Java/C#: statements are direct children of the case node, after
+    ///   the label/pattern (e.g. `case_statement`'s `value`, Java `switch_label`).
+    /// - Go: the case wraps its body in a `statement_list` child.
+    /// - TS/JS: statements sit in the case node's `body` fields.
+    ///
+    /// The shared `walk_stmt_list` dispatch already recurses through
+    /// `statement_list` wrappers, so Go's container is returned as-is.
+    ///
+    /// Case labels/patterns/values are identified in two complementary ways so
+    /// the walk stays general across grammars:
+    /// - by tree-sitter field name (`value`/`type`/`alias`/`pattern`/`guard`/
+    ///   `condition`) — used by C/C++, TS/JS, Go;
+    /// - by node kind (`switch_label`, `*_pattern`, `when_clause`, …) — used by
+    ///   Java and C# whose label nodes carry no field name.
+    fn case_body_statements<'a>(&self, clause: &Node<'a>) -> Vec<Node<'a>> {
+        let mut cursor = clause.walk();
+        let mut stmts = Vec::new();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.is_named() {
+                    let field = cursor.field_name().unwrap_or("");
+                    if !is_case_label_field(field) && !is_case_label_kind(child.kind()) {
+                        stmts.push(child);
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        stmts
     }
 
     /// Walk a single branch body (consequence or alternative).
@@ -1326,6 +1526,42 @@ fn node_text_range(node: &Node, _source: &[u8]) -> TextRange {
     }
 }
 
+/// Whether a tree-sitter field name identifies a case label/value/guard child
+/// rather than an executable statement.  The same field name is used across
+/// grammars for the same structural role:
+///
+/// | Field        | Languages                        |
+/// |--------------|----------------------------------|
+/// | `value`      | C/C++, TS/JS, Go (expr_switch)   |
+/// | `type`       | Go (type_switch)                 |
+/// | `alias`      | Go (type_switch variable bind)   |
+/// | `pattern`    | C# (constant_pattern, etc.)      |
+/// | `guard`      | C# (case_guard)                  |
+/// | `condition`  | C++ (condition_clause, if/switch) |
+pub fn is_case_label_field(field: &str) -> bool {
+    matches!(
+        field,
+        "value" | "type" | "alias" | "pattern" | "guard" | "condition"
+    )
+}
+
+/// Whether a tree-sitter node kind represents a case label/pattern/guard that
+/// should be skipped when extracting executable statements from a case clause.
+///
+/// This covers languages whose case labels are unnamed children (no field name
+/// assigned by the grammar), notably Java and C#.
+pub fn is_case_label_kind(kind: &str) -> bool {
+    // Java (`switch_label`), C# (`case_switch_label`, `default_switch_label`)
+    if kind.ends_with("_label") || kind == "switch_label" {
+        return true;
+    }
+    // C# patterns (`constant_pattern`, `relational_pattern`, `when_clause`, …)
+    if kind.ends_with("_pattern") || kind == "when_clause" {
+        return true;
+    }
+    false
+}
+
 // ── CFG extraction helpers (used by extract.rs) ─────────────────────────
 
 /// Function node kinds that CfgBuilder handles across languages.
@@ -1488,5 +1724,275 @@ mod tests {
             .find(|node| node.kind == CfgNodeKind::Branch)
             .unwrap();
         assert_eq!(branch.stmt_range.start_line, 1);
+    }
+
+    fn parse_lang(lang: Language, source: &str) -> (tree_sitter::Tree, Vec<u8>) {
+        let source_bytes = source.as_bytes().to_vec();
+        let mut parser = tree_sitter::Parser::new();
+        let frontend = create_frontend(lang).unwrap();
+        parser
+            .set_language(&frontend.parser.tree_sitter_language())
+            .unwrap();
+        let tree = parser.parse(&source_bytes, None).unwrap();
+        (tree, source_bytes)
+    }
+
+    /// Build a CFG for the first `function_definition` found in the tree (C/C++).
+    fn build_cfg_for_first_fn(lang: Language, source: &str) -> super::CfgResult {
+        let (tree, source_bytes) = parse_lang(lang, source);
+        let root = tree.root_node();
+        let file_id = FileId::generate("test.c");
+        let mut cursor = root.walk();
+        let (func_node, fid) = root
+            .named_children(&mut cursor)
+            .filter(|n| {
+                n.kind() == "function_definition"
+                    || n.kind() == "function_declaration"
+                    || n.kind() == "method_declaration"
+            })
+            .find_map(|n| {
+                let name = n
+                    .named_child(0)
+                    .and_then(|c| {
+                        if c.kind() == "identifier" {
+                            c.utf8_text(&source_bytes).ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or("anon");
+                let fid = SymbolId::generate(&file_id, "", name, "function", None);
+                Some((n, fid))
+            })
+            .expect("no function definition found");
+        CfgBuilder::build(lang, &fid, func_node, &source_bytes)
+    }
+
+    /// TS/JS: find function by name.
+    fn build_cfg_for_fn_ts(source: &str) -> super::CfgResult {
+        let (tree, source_bytes) = parse_ts(source);
+        let (func_node, func_id) = find_function(&tree, &source_bytes);
+        CfgBuilder::build(Language::TypeScript, &func_id, func_node, &source_bytes)
+    }
+
+    /// Build a CFG for a Java method by wrapping it in a minimal class.
+    fn build_cfg_for_java_method(method_src: &str) -> super::CfgResult {
+        let source = format!("class T{{ {method_src} }}");
+        let (tree, source_bytes) = parse_lang(Language::Java, &source);
+        let root = tree.root_node();
+        let file_id = FileId::generate("test.java");
+        // Recursively find the first method_declaration.
+        fn find_method<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "method_declaration" {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(found) = find_method(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let func_node = find_method(root).expect("no method found");
+        let name = func_node
+            .named_child(1)
+            .and_then(|c| {
+                if c.kind() == "identifier" {
+                    c.utf8_text(&source_bytes).ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("anon");
+        let fid = SymbolId::generate(&file_id, "", name, "method", None);
+        CfgBuilder::build(Language::Java, &fid, func_node, &source_bytes)
+    }
+
+    // ── Switch CFG tests ──────────────────────────────────────────
+
+    /// A TypeScript switch with 3 cases + default should produce:
+    ///   Branch + 4 CaseBranch edges + Join
+    #[test]
+    fn test_switch_cfg_ts() {
+        let result = build_cfg_for_fn_ts(
+            "function f(x: number) {
+               switch (x) {
+                 case 1: a(); break;
+                 case 2: b(); break;
+                 case 3: c(); break;
+                 default: d();
+               }
+             }",
+        );
+        let has_branch = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch);
+        let has_join = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join);
+        assert!(has_branch, "Expected Branch node for switch");
+        assert!(has_join, "Expected Join node for switch");
+        let branch = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Branch)
+            .unwrap();
+        // Find CaseBranch edges out of the Branch node
+        let cb_count = result
+            .edges
+            .iter()
+            .filter(|e| e.source == branch.id && e.kind == CfgEdgeKind::CaseBranch)
+            .count();
+        assert!(
+            cb_count >= 4,
+            "Expected >= 4 CaseBranch edges (3 case + 1 default + 1 no-match skip), got {cb_count}"
+        );
+        // Ensure each case body was connected to Join
+        let join = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Join)
+            .unwrap();
+        let normal_to_join = result
+            .edges
+            .iter()
+            .filter(|e| e.target == join.id && e.kind == CfgEdgeKind::Normal)
+            .count();
+        assert!(
+            normal_to_join >= 3,
+            "Expected >= 3 Normal edges into Join (3 cases that don't return), got {normal_to_join}"
+        );
+    }
+
+    /// C switch with 3 cases + default.
+    #[test]
+    fn test_switch_cfg_c() {
+        let result = build_cfg_for_first_fn(
+            Language::C,
+            "void f(int x) {
+               switch (x) {
+                 case 1: free(a); break;
+                 case 2: g(); break;
+                 case 3: h(); break;
+                 default: i();
+               }
+             }",
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Expected Branch for C switch"
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Expected Join for C switch"
+        );
+        let branch = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Branch)
+            .unwrap();
+        let cb_count = result
+            .edges
+            .iter()
+            .filter(|e| e.source == branch.id && e.kind == CfgEdgeKind::CaseBranch)
+            .count();
+        assert!(
+            cb_count >= 4,
+            "Expected >= 4 CaseBranch edges for C switch (3 case + default + no-match)"
+        );
+    }
+
+    /// Java switch_expression with 3 cases.
+    #[test]
+    fn test_switch_cfg_java() {
+        let result = build_cfg_for_java_method(
+            "void f(int x) {
+               switch (x) {
+                 case 1: a(); break;
+                 case 2: b(); break;
+                 case 3: c(); break;
+                 default: d();
+               }
+             }",
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Expected Branch for Java switch"
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Expected Join for Java switch"
+        );
+        let branch = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Branch)
+            .unwrap();
+        let cb_count = result
+            .edges
+            .iter()
+            .filter(|e| e.source == branch.id && e.kind == CfgEdgeKind::CaseBranch)
+            .count();
+        assert!(
+            cb_count >= 4,
+            "Expected >= 4 CaseBranch edges for Java switch, got {cb_count}"
+        );
+    }
+
+    /// Go switch with 2 cases + default.
+    #[test]
+    fn test_switch_cfg_go() {
+        let result = build_cfg_for_first_fn(
+            Language::Go,
+            "func f(x int) {
+               switch x {
+               case 1: a()
+               case 2: b()
+               default: c()
+               }
+             }",
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Expected Branch for Go switch"
+        );
+        assert!(
+            result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Expected Join for Go switch"
+        );
+        let branch = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Branch)
+            .unwrap();
+        let cb_count = result
+            .edges
+            .iter()
+            .filter(|e| e.source == branch.id && e.kind == CfgEdgeKind::CaseBranch)
+            .count();
+        assert!(
+            cb_count >= 3,
+            "Expected >= 3 CaseBranch edges for Go switch (2 case + default + no-match), got {cb_count}"
+        );
+    }
+
+    /// try_statement is STILL deferred — remains a single Statement node.
+    #[test]
+    fn test_try_statement_still_deferred() {
+        let result = build_cfg_for_fn_ts(
+            "function f() {
+               try { risky(); } catch(e) { handle(); }
+             }",
+        );
+        let has_branch = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Branch);
+        let has_join = result.nodes.iter().any(|n| n.kind == CfgNodeKind::Join);
+        assert!(!has_branch, "try_statement should NOT create a Branch");
+        assert!(!has_join, "try_statement should NOT create a Join");
+        let stmt_count = result
+            .nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .count();
+        assert!(
+            stmt_count == 1,
+            "Expected exactly 1 Statement node for deferred try, got {stmt_count}"
+        );
     }
 }

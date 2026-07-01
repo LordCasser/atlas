@@ -50,6 +50,15 @@ impl BranchPathSummary {
             }
         }
     }
+
+    /// Whether this summary has any tracked effects.
+    fn has_any_effect(&self) -> bool {
+        !self.frees.is_empty()
+            || !self.allocates.is_empty()
+            || !self.writes.is_empty()
+            || !self.reads.is_empty()
+            || !self.calls.is_empty()
+    }
 }
 
 /// Diff between two branch paths.
@@ -83,6 +92,18 @@ impl BranchDiffEngine {
 
             let true_targets = graph.successors_by_kind(nid, CfgEdgeKind::TrueBranch);
             let false_targets = graph.successors_by_kind(nid, CfgEdgeKind::FalseBranch);
+            let case_targets = graph.successors_by_kind(nid, CfgEdgeKind::CaseBranch);
+
+            // Switch dispatch node: N-way case comparison (CaseBranch edges).
+            // A Branch node emitted by walk_switch has CaseBranch successors and
+            // no True/FalseBranch successors. Handle it separately, then skip the
+            // if/else path so we don't double-report.
+            if !case_targets.is_empty() {
+                if let Some(diff) = Self::diff_switch_cases(&graph, node, &case_targets) {
+                    diffs.push(diff);
+                }
+                continue;
+            }
 
             if true_targets.is_empty() && false_targets.is_empty() {
                 continue;
@@ -140,6 +161,122 @@ impl BranchDiffEngine {
         }
 
         diffs
+    }
+
+    /// N-way switch-case comparison (Phase 1).
+    ///
+    /// A switch dispatch Branch node has one [`CfgEdgeKind::CaseBranch`] edge per
+    /// case body plus one synthetic Branch→Join skip edge (the "no case matched"
+    /// path). Each case is modeled as an **independent** path from the dispatch;
+    /// fall-through is not modeled (see `cfg_builder::walk_switch`).
+    ///
+    /// # False-positive strategy (contract: may under-report, must NOT over-report)
+    ///
+    /// Because fall-through is invisible to the CFG, a case that *actually* falls
+    /// through to a freeing case would look like "missing free" if compared
+    /// naively — a false positive. To stay conservative we:
+    ///
+    /// 1. **Ignore effect-less paths.** Empty case bodies and the synthetic
+    ///    Branch→Join skip edge land directly on the Join/Exit and carry no
+    ///    effects. A fall-through `case N:` (label with no body) is exactly such
+    ///    an empty path, so it can never be the flagged outlier. This is the
+    ///    core guard against fall-through false positives.
+    /// 2. **Reference-union comparison, O(n).** Compute the union of effects
+    ///    across all *effectful* cases once, then compare each case against the
+    ///    union. We only flag the **all-but-one** shape: a resource handled in
+    ///    every effectful case except exactly one. A lone case doing something no
+    ///    other case does (n-1 cases silent) is treated as an intentional
+    ///    special-case, not an asymmetry — reporting it would be noise and, under
+    ///    fall-through, likely wrong.
+    ///
+    /// Returns `Some(BranchDiff)` describing the outlier case, or `None`.
+    fn diff_switch_cases(
+        graph: &CfgGraph,
+        branch_node: &CfgNode,
+        case_targets: &[&CfgEdge],
+    ) -> Option<BranchDiff> {
+        // 1. Walk each case path; keep only effectful ones (guards fall-through
+        //    empty cases and the synthetic no-match skip edge). Effect-less paths
+        //    contribute nothing to the union, so filtering them here does not
+        //    change the union — it only bounds the outlier vote below.
+        let case_paths: Vec<BranchPathSummary> = case_targets
+            .iter()
+            .map(|edge| Self::walk_branch_path(graph, &edge.target))
+            .filter(|p| p.has_any_effect())
+            .collect();
+
+        // 2. Reference union of effects across all effectful cases (O(n)).
+        let mut union = BranchPathSummary::default();
+        for p in &case_paths {
+            union.merge_from(p);
+        }
+
+        // 3. Suspicious asymmetry: only the "all-but-one" shape is flagged, and
+        //    only with ≥ 3 effectful cases (see `find_all_but_one_outlier` and
+        //    the doc comment above). Fewer effectful cases → recorded branch with
+        //    no asymmetry flag (mirrors the if/else path, which always records a
+        //    BranchDiff even when both sides are effect-free).
+        let n = case_paths.len();
+        let suspicious = Self::find_all_but_one_outlier(&union.frees, &case_paths, |p| &p.frees)
+            .map(|res| {
+                format!(
+                    "Switch asymmetry: resource '{res}' freed in {} of {n} cases but not in 1 case",
+                    n - 1
+                )
+            })
+            .or_else(|| {
+                Self::find_all_but_one_outlier(&union.allocates, &case_paths, |p| &p.allocates).map(
+                    |res| {
+                        format!(
+                            "Switch asymmetry: resource '{res}' allocated in {} of {n} cases but not in 1 case",
+                            n - 1
+                        )
+                    },
+                )
+            });
+
+        // Always record the switch branch (branch_count > 0 for switches), with
+        // the asymmetry flag set only under the conservative rule above.
+        Some(BranchDiff {
+            branch_node_line: branch_node.stmt_range.start_line,
+            common_prefix: "switch".to_string(),
+            path_true: union,
+            path_false: BranchPathSummary::default(),
+            suspicious_asymmetry: suspicious,
+        })
+    }
+
+    /// Find a resource that appears in exactly `n-1` of the case paths (handled
+    /// everywhere but one). Returns the resource name of the first such outlier.
+    ///
+    /// This is the only switch-case shape we flag: it corresponds to a resource
+    /// that is consistently managed across cases with a single conspicuous gap —
+    /// the pattern most likely to be a real leak/double-free bug. A resource
+    /// touched by only 1 case (or by ≤ n-2 cases) is treated as intentional
+    /// per-case behavior and NOT flagged, keeping us within the no-over-report
+    /// contract even without fall-through modeling.
+    fn find_all_but_one_outlier(
+        union_resources: &[String],
+        case_paths: &[BranchPathSummary],
+        select: impl Fn(&BranchPathSummary) -> &Vec<String>,
+    ) -> Option<String> {
+        let n = case_paths.len();
+        if n < 3 {
+            // With only 2 cases, "all-but-one" == "one case only", which is
+            // indistinguishable from an intentional special-case. Require ≥ 3
+            // cases so the majority signal is meaningful.
+            return None;
+        }
+        for res in union_resources {
+            let count = case_paths
+                .iter()
+                .filter(|p| select(p).contains(res))
+                .count();
+            if count == n - 1 {
+                return Some(res.clone());
+            }
+        }
+        None
     }
 
     /// Phase 2: Diff branches using semantic effects from EffectComposer.
@@ -594,5 +731,209 @@ mod tests {
         ];
         let result = BranchDiffEngine::diff_branches(&nodes, &edges);
         assert_eq!(result.len(), 2, "Should find both branches");
+    }
+
+    // ── Switch N-way tests ────────────────────────────────────────────────
+    //
+    // Switch CFG shape produced by cfg_builder::walk_switch:
+    //   Branch --CaseBranch--> case_body_i --Normal--> Join   (per case)
+    //   Branch --CaseBranch--> Join                            (synthetic skip)
+    //
+    // These tests exercise the false-positive strategy in diff_switch_cases:
+    // only the "all-but-one" shape (≥3 effectful cases, one gap) is flagged.
+
+    /// Build a switch CFG: `n_cases` case bodies each with the given effects,
+    /// plus the synthetic Branch→Join skip edge.
+    fn build_switch_cfg(
+        fid: &SymbolId,
+        case_effects: &[Vec<SemanticEffect>],
+    ) -> (Vec<CfgNode>, Vec<CfgEdge>, u32) {
+        let entry = make_entry_node(fid, 0);
+        let branch = make_branch_node(fid, 10, 1);
+        let join = make_join_node(fid, 100, 1000);
+        let exit = make_exit_node(fid, 1001);
+
+        let mut nodes = vec![entry.clone(), branch.clone()];
+        let mut edges = vec![make_edge(&entry.id, &branch.id, CfgEdgeKind::Normal)];
+
+        for (i, effects) in case_effects.iter().enumerate() {
+            let byte = 10 + i as u32; // unique byte → unique node id
+            let case_node = make_stmt_node(fid, effects.clone(), 20 + i as u32, byte);
+            edges.push(make_edge(&branch.id, &case_node.id, CfgEdgeKind::CaseBranch));
+            edges.push(make_edge(&case_node.id, &join.id, CfgEdgeKind::Normal));
+            nodes.push(case_node);
+        }
+        // Synthetic no-match skip edge.
+        edges.push(make_edge(&branch.id, &join.id, CfgEdgeKind::CaseBranch));
+        edges.push(make_edge(&join.id, &exit.id, CfgEdgeKind::Normal));
+        nodes.push(join);
+        nodes.push(exit);
+
+        (nodes, edges, branch.stmt_range.start_line)
+    }
+
+    /// Helper to build a case body's free effect for a resource, keyed by byte.
+    fn case_free(fid: &SymbolId, byte: u32, res: &str) -> SemanticEffect {
+        let nid = CfgNodeId::generate(fid, CfgNodeKind::Statement.as_str(), byte);
+        se_free(nid, 0, res)
+    }
+
+    /// 3 cases, `res` freed in 2 of them → all-but-one → FLAGGED.
+    #[test]
+    fn test_switch_all_but_one_free_detected() {
+        let fid = test_function_id();
+        let case_effects = vec![
+            vec![case_free(&fid, 10, "res")], // case 0: frees res
+            vec![case_free(&fid, 11, "res")], // case 1: frees res
+            vec![case_free(&fid, 12, "other")], // case 2: frees something else (gap for res)
+        ];
+        let (nodes, edges, _line) = build_switch_cfg(&fid, &case_effects);
+        let result = BranchDiffEngine::diff_branches(&nodes, &edges);
+        assert_eq!(result.len(), 1, "Should produce exactly one switch diff");
+        let diff = &result[0];
+        assert!(
+            diff.suspicious_asymmetry.is_some(),
+            "all-but-one free should be flagged, got: {diff:?}"
+        );
+        let msg = diff.suspicious_asymmetry.as_ref().unwrap();
+        assert!(
+            msg.contains("res") && msg.contains("freed"),
+            "message should name the outlier resource: {msg}"
+        );
+    }
+
+    /// 3 cases, `res` freed in ONLY 1 of them → unique special-case → NOT flagged.
+    /// This is the fall-through-safe case: a lone freeing case must not be
+    /// reported as "missing free" in the other two.
+    #[test]
+    fn test_switch_unique_case_not_flagged() {
+        let fid = test_function_id();
+        let case_effects = vec![
+            vec![case_free(&fid, 10, "res")], // case 0: frees res (unique)
+            vec![case_free(&fid, 11, "a")],   // case 1: frees a
+            vec![case_free(&fid, 12, "b")],   // case 2: frees b
+        ];
+        let (nodes, edges, _line) = build_switch_cfg(&fid, &case_effects);
+        let result = BranchDiffEngine::diff_branches(&nodes, &edges);
+        // A switch diff is produced (branch is recorded), but no asymmetry flag.
+        assert_eq!(result.len(), 1, "Should still record the switch branch");
+        assert!(
+            result[0].suspicious_asymmetry.is_none(),
+            "a resource freed by only one case must NOT be flagged (fall-through safe), got: {:?}",
+            result[0].suspicious_asymmetry
+        );
+    }
+
+    /// A plausibly-fall-through empty case (no effects) plus the synthetic skip
+    /// edge must not trip the outlier detector. 3 effectful cases all free `res`
+    /// symmetrically; the empty case is ignored → no flag.
+    #[test]
+    fn test_switch_empty_case_ignored() {
+        let fid = test_function_id();
+        let case_effects = vec![
+            vec![case_free(&fid, 10, "res")],
+            vec![case_free(&fid, 11, "res")],
+            vec![case_free(&fid, 12, "res")],
+            vec![], // empty case (fall-through label): no effects → ignored
+        ];
+        let (nodes, edges, _line) = build_switch_cfg(&fid, &case_effects);
+        let result = BranchDiffEngine::diff_branches(&nodes, &edges);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].suspicious_asymmetry.is_none(),
+            "symmetric frees + ignored empty case should not be flagged, got: {:?}",
+            result[0].suspicious_asymmetry
+        );
+    }
+
+    /// Two-case switch is never flagged (all-but-one collapses to one-case-only).
+    #[test]
+    fn test_switch_two_cases_not_flagged() {
+        let fid = test_function_id();
+        let case_effects = vec![
+            vec![case_free(&fid, 10, "res")],
+            vec![case_free(&fid, 11, "other")],
+        ];
+        let (nodes, edges, _line) = build_switch_cfg(&fid, &case_effects);
+        let result = BranchDiffEngine::diff_branches(&nodes, &edges);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].suspicious_asymmetry.is_none(),
+            "2-case switch must not be flagged, got: {:?}",
+            result[0].suspicious_asymmetry
+        );
+    }
+
+    /// End-to-end: a real switch parsed by CfgBuilder must produce a Branch node
+    /// that `diff_branches` records (rather than the old single Statement, which
+    /// yielded branch_count=0). Validates the extraction→analysis wiring.
+    #[test]
+    fn test_switch_end_to_end_cfg_recorded() {
+        use extraction::create_frontend;
+        use tree_sitter::Parser;
+        use types::enums::Language;
+
+        let source = r#"function pick(x: number) {
+          switch (x) {
+            case 1: freeA(); break;
+            case 2: freeB(); break;
+            case 3: freeC(); break;
+            default: fallback();
+          }
+        }"#;
+        let source_bytes = source.as_bytes().to_vec();
+        let frontend = create_frontend(Language::TypeScript).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&frontend.parser.tree_sitter_language())
+            .unwrap();
+        let tree = parser.parse(&source_bytes, None).unwrap();
+
+        // Find the function node.
+        fn find_fn<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+            if node.kind() == "function_declaration" {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(f) = find_fn(child) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        let func_node = find_fn(tree.root_node()).expect("function found");
+        let fid = test_function_id();
+        let cfg = extraction::CfgBuilder::build(
+            Language::TypeScript,
+            &fid,
+            func_node,
+            &source_bytes,
+        );
+
+        // A Branch (dispatch) node must exist, with CaseBranch edges out of it.
+        let branch = cfg
+            .nodes
+            .iter()
+            .find(|n| n.kind == CfgNodeKind::Branch)
+            .expect("switch should produce a Branch node");
+        let case_edges = cfg
+            .edges
+            .iter()
+            .filter(|e| e.source == branch.id && e.kind == CfgEdgeKind::CaseBranch)
+            .count();
+        assert!(
+            case_edges >= 4,
+            "expected >= 4 CaseBranch edges (3 case + default + skip), got {case_edges}"
+        );
+
+        // branch_diff must now record the switch (branch_count > 0).
+        let diffs = BranchDiffEngine::diff_branches(&cfg.nodes, &cfg.edges);
+        assert_eq!(
+            diffs.len(),
+            1,
+            "switch should be recorded as one branch diff, got {}",
+            diffs.len()
+        );
     }
 }

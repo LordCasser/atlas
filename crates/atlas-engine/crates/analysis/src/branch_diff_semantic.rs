@@ -112,6 +112,14 @@ pub fn analyze_branch_semantic(
         // Collect true/false target nodes
         let true_targets = cfg.successors_by_kind(node_id, CfgEdgeKind::TrueBranch);
         let false_targets = cfg.successors_by_kind(node_id, CfgEdgeKind::FalseBranch);
+        let case_targets = cfg.successors_by_kind(node_id, CfgEdgeKind::CaseBranch);
+
+        // Switch dispatch node: N-way case comparison (CaseBranch edges).
+        // Handle separately from if/else, then skip so we don't double-process.
+        if !case_targets.is_empty() {
+            analyze_switch_cases(cfg, *node_id, &case_targets, composition, &mut issues);
+            continue;
+        }
 
         if true_targets.is_empty() && false_targets.is_empty() {
             continue;
@@ -147,6 +155,128 @@ pub fn analyze_branch_semantic(
     });
 
     issues
+}
+
+// ---------------------------------------------------------------------------
+// N-way switch-case analysis (Phase 1)
+// ---------------------------------------------------------------------------
+
+/// A switch dispatch Branch node has one [`CfgEdgeKind::CaseBranch`] edge per
+/// case body plus a synthetic Branch→Join skip edge. Each case is an independent
+/// path from the dispatch; fall-through is NOT modeled (see
+/// `cfg_builder::walk_switch`).
+///
+/// # False-positive strategy (contract: may under-report, must NOT over-report)
+///
+/// Because fall-through is invisible to the CFG, a case that really falls
+/// through to a freeing case would look like "missing free" if compared
+/// naively — a false positive. To stay conservative:
+///
+/// 1. **Only effectful cases participate.** Case paths that touch no field
+///    (empty fall-through labels, the synthetic no-match skip edge) are dropped
+///    before comparison, so a bare `case N:` fall-through can never be the
+///    flagged outlier.
+/// 2. **All-but-one rule with a per-field union (O(n·fields)).** For each field
+///    in the union of all case effects, we count how many cases free / alloc it.
+///    We only flag the field when it is freed (or allocated) in **exactly n-1**
+///    of the effectful cases — a single conspicuous gap in an otherwise uniform
+///    resource discipline. A field touched by only one case (n-1 cases silent)
+///    is treated as an intentional per-case special-case and NOT flagged.
+///
+/// Requires ≥ 3 effectful cases: with 2, "all-but-one" collapses to "one case
+/// only", which is indistinguishable from an intentional special-case.
+fn analyze_switch_cases(
+    cfg: &CfgGraph,
+    branch_node_id: CfgNodeId,
+    case_targets: &[&types::cfg::CfgEdge],
+    composition: &EffectComposition,
+    issues: &mut Vec<BranchDiffIssue>,
+) {
+    // 1. Per-case field-effect maps; keep only cases with at least one effect.
+    let case_maps: Vec<HashMap<String, FieldEffectSummary>> = case_targets
+        .iter()
+        .map(|edge| walk_branch_region(cfg, &edge.target, composition))
+        .filter(|m| !m.is_empty())
+        .collect();
+
+    let n = case_maps.len();
+    // Need a meaningful majority: at least 3 effectful cases.
+    if n < 3 {
+        return;
+    }
+
+    // 2. Union of all fields touched across effectful cases.
+    let all_fields: HashSet<&str> = case_maps
+        .iter()
+        .flat_map(|m| m.keys().map(|s| s.as_str()))
+        .collect();
+
+    // 3. All-but-one detection per field, for free and alloc independently.
+    for field in all_fields {
+        let free_count = case_maps
+            .iter()
+            .filter(|m| m.get(field).map(|s| s.has_free).unwrap_or(false))
+            .count();
+        let alloc_count = case_maps
+            .iter()
+            .filter(|m| m.get(field).map(|s| s.has_alloc).unwrap_or(false))
+            .count();
+
+        // Build representative true/false summaries for the issue: an effectful
+        // (majority) case as `true_side`, the lone outlier as `false_side`.
+        if free_count == n - 1 {
+            let (majority, outlier) = split_majority_outlier(&case_maps, field, |s| s.has_free);
+            issues.push(make_issue(
+                field,
+                branch_node_id,
+                BranchAsymmetryKind::AsymmetricFree,
+                IssueSeverity::Medium,
+                0.60,
+                format!(
+                    "field '{field}' freed in {} of {n} switch cases but not in 1 case (possible missing cleanup; fall-through not modeled)",
+                    n - 1
+                ),
+                &majority,
+                &outlier,
+            ));
+        } else if alloc_count == n - 1 {
+            let (majority, outlier) = split_majority_outlier(&case_maps, field, |s| s.has_alloc);
+            issues.push(make_issue(
+                field,
+                branch_node_id,
+                BranchAsymmetryKind::AsymmetricAlloc,
+                IssueSeverity::Low,
+                0.55,
+                format!(
+                    "field '{field}' allocated in {} of {n} switch cases but not in 1 case (fall-through not modeled)",
+                    n - 1
+                ),
+                &majority,
+                &outlier,
+            ));
+        }
+    }
+}
+
+/// Split case summaries for `field` into (a representative majority-case
+/// summary, the lone outlier summary) using the given predicate. Used to
+/// populate the `true_side`/`false_side` of a switch `BranchDiffIssue`.
+fn split_majority_outlier(
+    case_maps: &[HashMap<String, FieldEffectSummary>],
+    field: &str,
+    predicate: impl Fn(&FieldEffectSummary) -> bool,
+) -> (FieldEffectSummary, FieldEffectSummary) {
+    let mut majority = FieldEffectSummary::default();
+    let mut outlier = FieldEffectSummary::default();
+    for m in case_maps {
+        let summary = m.get(field).cloned().unwrap_or_default();
+        if predicate(&summary) {
+            majority = summary;
+        } else {
+            outlier = summary;
+        }
+    }
+    (majority, outlier)
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,6 +1195,189 @@ mod tests {
         assert!(
             issues.is_empty(),
             "Symmetric branches should produce no issues, got: {issues:?}"
+        );
+    }
+
+    // ── Switch N-way semantic tests ───────────────────────────────────────
+    //
+    // Switch CFG shape (from cfg_builder::walk_switch):
+    //   Branch --CaseBranch--> case_stmt_i --Normal--> Join   (per case)
+    //   Branch --CaseBranch--> Join                            (synthetic skip)
+    //
+    // Exercises analyze_switch_cases' false-positive strategy: only the
+    // all-but-one shape (≥3 effectful cases, single gap) is flagged.
+
+    fn tr(byte: u32) -> TextRange {
+        TextRange {
+            start_byte: byte,
+            end_byte: byte,
+            start_line: byte,
+            start_column: 0,
+            end_line: byte,
+            end_column: 0,
+        }
+    }
+
+    fn plain_node(id: CfgNodeId, fid: types::ids::SymbolId, kind: CfgNodeKind, byte: u32) -> CfgNode {
+        CfgNode {
+            id,
+            function_id: fid,
+            kind,
+            stmt_range: tr(byte),
+            call_context: types::enums::CallContext::None,
+            semantic_effects: vec![],
+        }
+    }
+
+    fn free_field_effect(nid: CfgNodeId, field: &str) -> SemanticEffect {
+        make_se_effect(
+            nid,
+            0,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Field {
+                    path: field.to_string(),
+                },
+                callee: "free".to_string(),
+            },
+        )
+    }
+
+    /// Build a switch CFG + composition. `case_fields[i]` = the field freed by
+    /// case i, or `None` for an empty (fall-through) case.
+    fn build_switch_semantic(
+        fid: types::ids::SymbolId,
+        case_fields: &[Option<&str>],
+    ) -> (Vec<CfgNode>, Vec<CfgEdge>, EffectComposition) {
+        let entry_nid = CfgNodeId::generate(&fid, "entry", 0);
+        let branch_nid = CfgNodeId::generate(&fid, "branch", 1);
+        let join_nid = CfgNodeId::generate(&fid, "join", 900);
+        let exit_nid = CfgNodeId::generate(&fid, "exit", 901);
+
+        let mut nodes = vec![
+            plain_node(entry_nid, fid, CfgNodeKind::Entry, 0),
+            plain_node(branch_nid, fid, CfgNodeKind::Branch, 1),
+        ];
+        let mut edges = vec![CfgEdge {
+            id: types::ids::CfgEdgeId::default(),
+            source: entry_nid,
+            target: branch_nid,
+            kind: CfgEdgeKind::Normal,
+        }];
+        let mut node_effects: HashMap<CfgNodeId, Vec<SemanticEffect>> = HashMap::new();
+
+        for (i, field) in case_fields.iter().enumerate() {
+            let byte = 10 + i as u32;
+            let case_nid = CfgNodeId::generate(&fid, "case", byte);
+            let mut case_node = plain_node(case_nid, fid, CfgNodeKind::Statement, byte);
+            if let Some(f) = field {
+                let eff = free_field_effect(case_nid, f);
+                case_node.semantic_effects = vec![eff.clone()];
+                node_effects.insert(case_nid, vec![eff]);
+            }
+            edges.push(CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: branch_nid,
+                target: case_nid,
+                kind: CfgEdgeKind::CaseBranch,
+            });
+            edges.push(CfgEdge {
+                id: types::ids::CfgEdgeId::default(),
+                source: case_nid,
+                target: join_nid,
+                kind: CfgEdgeKind::Normal,
+            });
+            nodes.push(case_node);
+        }
+
+        // Synthetic no-match skip edge.
+        edges.push(CfgEdge {
+            id: types::ids::CfgEdgeId::default(),
+            source: branch_nid,
+            target: join_nid,
+            kind: CfgEdgeKind::CaseBranch,
+        });
+
+        nodes.push(plain_node(join_nid, fid, CfgNodeKind::Join, 900));
+        nodes.push(plain_node(exit_nid, fid, CfgNodeKind::Exit, 901));
+        edges.push(CfgEdge {
+            id: types::ids::CfgEdgeId::default(),
+            source: join_nid,
+            target: exit_nid,
+            kind: CfgEdgeKind::Normal,
+        });
+
+        let composition = EffectComposition {
+            node_effects,
+            transfer_graph: TransferGraph {
+                field_writes: HashMap::new(),
+                field_frees: HashMap::new(),
+            },
+        };
+        (nodes, edges, composition)
+    }
+
+    /// 3 cases, `data.res` freed in 2 → all-but-one → FLAGGED.
+    #[test]
+    fn test_switch_semantic_all_but_one_free() {
+        let fid = test_fid();
+        let (nodes, edges, composition) = build_switch_semantic(
+            fid,
+            &[Some("data.res"), Some("data.res"), Some("data.other")],
+        );
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+        let issues = analyze_branch_semantic(&graph, &composition);
+        let res_issue = issues.iter().find(|i| i.field == "data.res");
+        assert!(
+            res_issue.is_some(),
+            "all-but-one free of data.res should be flagged, got: {issues:?}"
+        );
+        let issue = res_issue.unwrap();
+        assert_eq!(issue.kind, BranchAsymmetryKind::AsymmetricFree);
+        assert!(issue.description.contains("switch cases"));
+    }
+
+    /// 3 cases, `data.res` freed in ONLY 1 → unique special-case → NOT flagged.
+    /// Fall-through safety: a lone freeing case must not imply "missing free".
+    #[test]
+    fn test_switch_semantic_unique_case_not_flagged() {
+        let fid = test_fid();
+        let (nodes, edges, composition) =
+            build_switch_semantic(fid, &[Some("data.res"), Some("data.a"), Some("data.b")]);
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+        let issues = analyze_branch_semantic(&graph, &composition);
+        assert!(
+            issues.is_empty(),
+            "a field freed by only one case must NOT be flagged, got: {issues:?}"
+        );
+    }
+
+    /// Symmetric frees across 3 cases + one empty (fall-through) case → no flag.
+    #[test]
+    fn test_switch_semantic_empty_case_ignored() {
+        let fid = test_fid();
+        let (nodes, edges, composition) = build_switch_semantic(
+            fid,
+            &[Some("data.res"), Some("data.res"), Some("data.res"), None],
+        );
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+        let issues = analyze_branch_semantic(&graph, &composition);
+        assert!(
+            issues.is_empty(),
+            "symmetric frees + ignored empty case should not be flagged, got: {issues:?}"
+        );
+    }
+
+    /// Two-case switch never flagged.
+    #[test]
+    fn test_switch_semantic_two_cases_not_flagged() {
+        let fid = test_fid();
+        let (nodes, edges, composition) =
+            build_switch_semantic(fid, &[Some("data.res"), Some("data.other")]);
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+        let issues = analyze_branch_semantic(&graph, &composition);
+        assert!(
+            issues.is_empty(),
+            "2-case switch must not be flagged, got: {issues:?}"
         );
     }
 }

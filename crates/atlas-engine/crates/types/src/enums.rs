@@ -1217,6 +1217,12 @@ pub enum CfgEdgeKind {
     TrueBranch,
     /// False branch of a condition.
     FalseBranch,
+    /// A single `case`/`default` arm of a `switch` statement.
+    ///
+    /// Phase 1 models each case as an independent sibling path from the switch
+    /// dispatch (Branch) node; fall-through between cases is NOT modeled. See
+    /// `docs/roadmap.md` §8.2 for the documented limitations.
+    CaseBranch,
     /// Loop back edge.
     LoopBack,
     /// Exception flow edge.
@@ -1229,6 +1235,7 @@ impl CfgEdgeKind {
             Self::Normal => "normal",
             Self::TrueBranch => "true_branch",
             Self::FalseBranch => "false_branch",
+            Self::CaseBranch => "case_branch",
             Self::LoopBack => "loop_back",
             Self::Exception => "exception",
         }
@@ -1240,6 +1247,7 @@ impl CfgEdgeKind {
             "normal" => Some(Self::Normal),
             "true_branch" => Some(Self::TrueBranch),
             "false_branch" => Some(Self::FalseBranch),
+            "case_branch" => Some(Self::CaseBranch),
             "loop_back" => Some(Self::LoopBack),
             "exception" => Some(Self::Exception),
             _ => None,
@@ -1535,5 +1543,41 @@ mod tests {
     fn test_cfg_node_kind_from_str_invalid() {
         assert_eq!(CfgNodeKind::from_str("invalid"), None);
         assert_eq!(CfgNodeKind::from_str(""), None);
+    }
+
+    // ── CfgEdgeKind as_str roundtrip ──────────────────────────────────────
+
+    #[test]
+    fn test_cfg_edge_kind_as_str_roundtrip() {
+        let kinds = [
+            CfgEdgeKind::Normal,
+            CfgEdgeKind::TrueBranch,
+            CfgEdgeKind::FalseBranch,
+            CfgEdgeKind::CaseBranch,
+            CfgEdgeKind::LoopBack,
+            CfgEdgeKind::Exception,
+        ];
+        for kind in &kinds {
+            let s = kind.as_str();
+            let back = CfgEdgeKind::from_str(s);
+            assert_eq!(back, Some(*kind), "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn test_cfg_edge_kind_case_branch_str() {
+        // DB persists edge kind as TEXT via these round-trip methods; the
+        // stable "case_branch" spelling must not drift.
+        assert_eq!(CfgEdgeKind::CaseBranch.as_str(), "case_branch");
+        assert_eq!(
+            CfgEdgeKind::from_str("case_branch"),
+            Some(CfgEdgeKind::CaseBranch)
+        );
+    }
+
+    #[test]
+    fn test_cfg_edge_kind_from_str_invalid() {
+        assert_eq!(CfgEdgeKind::from_str("invalid"), None);
+        assert_eq!(CfgEdgeKind::from_str(""), None);
     }
 }
