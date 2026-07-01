@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-cli"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "atlas-engine",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-engine"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "analysis",
  "anyhow",
@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "atlas-mcp"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "anyhow",
  "atlas-engine",
