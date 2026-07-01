@@ -391,9 +391,36 @@ impl ToolRouter {
     ///
     /// Returns `(Some(FocusResult), warnings)` when focus analysis completed,
     /// or `(None, warnings)` when focus is not needed or unavailable.
+    ///
+    /// Equivalent to [`prepare_focus_query_with_roots`] with an empty
+    /// `include_roots` vector. Tools that accept `include_roots` from their MCP
+    /// arguments should call [`prepare_focus_query_with_roots`] instead so that
+    /// angle-bracket `#include <...>` directives resolve to project headers.
     pub fn prepare_focus_query(
         &self,
         intent: Option<atlas_engine::QueryIntent>,
+    ) -> (
+        Option<atlas_engine::focus::runtime::FocusResult>,
+        Vec<String>,
+    ) {
+        self.prepare_focus_query_with_roots(intent, Vec::new())
+    }
+
+    /// Unified focus query preparation carrying request-scoped `include_roots`.
+    ///
+    /// This is the entry point that wires MCP `include_roots` through to the
+    /// focus closure engine, so structs defined in header files reached via
+    /// angle-bracket `#include <...>` enter the focus closure instead of
+    /// staying stuck in "building" state.
+    ///
+    /// The roots are applied to the cached foreground closure engine on every
+    /// call — including clearing to an empty `Vec` for queries that carry none —
+    /// so there is no cross-query leakage (the apply → `build_closure` sequence
+    /// is serialised by the `FocusRuntime` Mutex).
+    pub fn prepare_focus_query_with_roots(
+        &self,
+        intent: Option<atlas_engine::QueryIntent>,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
     ) -> (
         Option<atlas_engine::focus::runtime::FocusResult>,
         Vec<String>,
@@ -415,7 +442,10 @@ impl ToolRouter {
         };
 
         // 3. Delegate FocusRuntime interaction to QueryRuntime.
-        let (focus_result, warnings) = project.query_runtime.prepare(&intent, &project.store);
+        let (focus_result, warnings) =
+            project
+                .query_runtime
+                .prepare(&intent, &project.store, include_roots);
 
         // 4. Post-processing: record lazy writes and refresh graph.
         if let Some(ref result) = focus_result {
@@ -2426,8 +2456,9 @@ impl ToolRouter {
         }
 
         // Ensure structural layer is available for this file
-        let (_include_roots, root_warnings) = self.include_roots_from_args(args);
-        let (_focus_result, focus_warnings) = self.prepare_focus_query(None);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_focus_result, focus_warnings) =
+            self.prepare_focus_query_with_roots(None, include_roots);
         let mut warnings: Vec<String> = root_warnings;
         warnings.extend(focus_warnings);
 

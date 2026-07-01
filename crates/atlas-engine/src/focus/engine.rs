@@ -105,6 +105,24 @@ impl ClosureEngine {
         }
     }
 
+    /// Set the request-scoped include roots used by [`materialize_import_dependencies`]
+    /// to resolve angle-bracket `#include <...>` directives.
+    ///
+    /// The engine is cached (created once per project by [`FocusRuntime::ensure_closure_engine`])
+    /// and reused across queries, but `include_roots` are **per-query** (validated by the MCP
+    /// layer and never persisted). To prevent cross-query leakage, the caller MUST overwrite
+    /// this field on every query — including clearing it to `vec![]` for queries that carry no
+    /// roots — before invoking [`build_closure`]. The foreground path in
+    /// [`FocusRuntime::prepare`] does exactly this, serialised by the `FocusRuntime` Mutex so the
+    /// set → `build_closure` → release sequence is atomic.
+    ///
+    /// The background scheduler engine is intentionally NOT touched here: its engine is detached
+    /// and processed on a separate thread, so per-query mutation cannot be made leak-free without
+    /// threading roots through the job/window (see focus/ARCHITECTURE note in the task report).
+    pub(crate) fn set_include_roots(&mut self, roots: Vec<IncludeRoot>) {
+        self.include_roots = roots;
+    }
+
     /// Build a focus closure with bounded fixed-point iteration.
     ///
     /// 1. Initialize closure from seed

@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use atlas_engine::Store;
+use atlas_engine::IncludeRoot;
 use atlas_engine::focus::query::QueryIntent;
 use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 
@@ -63,12 +64,21 @@ impl QueryRuntime {
 
     /// Prepare focus-driven lazy extraction for a query intent.
     ///
+    /// `include_roots` are request-scoped angle-include roots (validated and
+    /// normalised by the MCP layer). They are applied to the cached foreground
+    /// [`FocusRuntime`] closure engine immediately before the synchronous
+    /// `build_closure`, so angle-bracket `#include <...>` directives resolve to
+    /// project headers and structs defined there can enter the focus closure.
+    /// Each call overwrites the engine's roots — pass an empty `Vec` for queries
+    /// that carry none — so there is no cross-query leakage.
+    ///
     /// Returns `(None, vec![])` when the project has a full index.
     /// Returns `(Some(FocusResult), warnings)` when focus analysis completes.
     pub fn prepare(
         &self,
         intent: &QueryIntent,
         store: &Store,
+        include_roots: Vec<IncludeRoot>,
     ) -> (Option<FocusResult>, Vec<String>) {
         // 1. Cache check: skip if manual full index exists
         if self.cache.has_manual_full_index(store) {
@@ -87,7 +97,21 @@ impl QueryRuntime {
         // focus writes for one project remain ordered. Async handlers run this
         // blocking work on dedicated worker threads; unrelated store and graph
         // queries do not acquire this lock.
+        //
+        // `apply_query_include_roots` is called under the same lock, immediately
+        // before `prepare`, so the set → build_closure → release sequence is
+        // atomic with respect to other queries: no query can observe another
+        // query's include_roots on the foreground engine.
         let mut runtime = self.focus_runtime.lock().unwrap();
+        if let Err(e) = runtime.apply_query_include_roots(include_roots) {
+            // Root application failed (e.g. closure engine could not be
+            // initialised). `prepare` will surface the underlying error;
+            // surface a warning here so the caller still sees a signal.
+            return (
+                None,
+                vec![format!("Focus include_roots application failed: {e}")],
+            );
+        }
         match runtime.prepare(intent) {
             Ok(result) => (Some(result), vec![]),
             Err(e) => (None, vec![format!("Focus preparation failed: {e}")]),
@@ -110,7 +134,7 @@ impl QueryRuntime {
     /// GraphRuntime::provider().
     #[allow(dead_code)] // wired in handle_callers (P0-F2-A); future handlers coming
     pub fn prepare_graph_query(&self, intent: &QueryIntent) -> PreparedGraphQuery {
-        let (focus_result, _warnings) = self.prepare(intent, &self.store);
+        let (focus_result, _warnings) = self.prepare(intent, &self.store, Vec::new());
         let closure_id = focus_result.as_ref().and_then(|r| r.closure_id.clone());
         let coverage_counts = focus_result
             .as_ref()
@@ -175,7 +199,7 @@ mod tests {
             depth: None,
         };
         // FocusRuntime is initialized — prepare should attempt focus analysis.
-        let (_result, warnings) = qr.prepare(&intent, &store);
+        let (_result, warnings) = qr.prepare(&intent, &store, Vec::new());
         // In an empty store, focus preparation may return None with warnings
         // (seed not found) or Some with a result. Either way, it should not
         // return the "not initialized" error path.
@@ -202,7 +226,7 @@ mod tests {
             direction: None,
             depth: None,
         };
-        let (result, warnings) = qr.prepare(&intent, &store);
+        let (result, warnings) = qr.prepare(&intent, &store, Vec::new());
         assert!(result.is_none());
         assert!(warnings.is_empty());
     }

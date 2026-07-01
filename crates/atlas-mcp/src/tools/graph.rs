@@ -1170,13 +1170,14 @@ impl ToolRouter {
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding. A cold focus project may lack
         // the intra-file call edges that BFS needs to discover a path.
-        let (_roots, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
         let intent = Some(atlas_engine::QueryIntent::Path {
             from_name: from_qname.to_string(),
             to_name: to_qname.to_string(),
             max_depth: Some(max_depth),
         });
-        let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, focus_warnings) =
+            self.prepare_focus_query_with_roots(intent, include_roots);
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
         let is_manual_full = {

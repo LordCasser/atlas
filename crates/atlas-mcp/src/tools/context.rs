@@ -297,7 +297,7 @@ impl ToolRouter {
         &self,
         ctx: &super::ToolCallContext,
         input: &SymbolInput,
-        _include_roots: Vec<atlas_engine::IncludeRoot>,
+        include_roots: Vec<atlas_engine::IncludeRoot>,
         _investigation: Option<&atlas_engine::Investigation>,
         _query_id: Option<&str>,
     ) -> Result<
@@ -325,11 +325,14 @@ impl ToolRouter {
                 // Look up symbol info for file_id
                 if let Ok(Some(sym)) = self.project().store.find_symbol_by_id(&symbol_id) {
                     let (focus_result, focus_warnings) =
-                        self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                            symbol_name: qname.to_string(),
-                            file_id: Some(sym.file_id),
-                            symbol_id: None,
-                        }));
+                        self.prepare_focus_query_with_roots(
+                            Some(atlas_engine::QueryIntent::Context {
+                                symbol_name: qname.to_string(),
+                                file_id: Some(sym.file_id),
+                                symbol_id: None,
+                            }),
+                            include_roots.clone(),
+                        );
                     warnings.extend(focus_warnings);
                     if focus_result_acc.is_none() {
                         focus_result_acc = focus_result;
@@ -361,11 +364,14 @@ impl ToolRouter {
         if name_matches.len() == 1 {
             // Unambiguous — use it directly
             let (focus_result, focus_warnings) =
-                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                    symbol_name: qname.to_string(),
-                    file_id: Some(name_matches[0].file_id),
-                    symbol_id: None,
-                }));
+                self.prepare_focus_query_with_roots(
+                    Some(atlas_engine::QueryIntent::Context {
+                        symbol_name: qname.to_string(),
+                        file_id: Some(name_matches[0].file_id),
+                        symbol_id: None,
+                    }),
+                    include_roots.clone(),
+                );
             warnings.extend(focus_warnings);
             if focus_result_acc.is_none() {
                 focus_result_acc = focus_result;
@@ -384,11 +390,14 @@ impl ToolRouter {
                 .collect();
             if matching_qnames.len() == 1 {
                 let (focus_result, focus_warnings) =
-                    self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                        symbol_name: qname.to_string(),
-                        file_id: Some(matching_qnames[0].file_id),
-                        symbol_id: None,
-                    }));
+                    self.prepare_focus_query_with_roots(
+                        Some(atlas_engine::QueryIntent::Context {
+                            symbol_name: qname.to_string(),
+                            file_id: Some(matching_qnames[0].file_id),
+                            symbol_id: None,
+                        }),
+                        include_roots.clone(),
+                    );
                 warnings.extend(focus_warnings);
                 if focus_result_acc.is_none() {
                     focus_result_acc = focus_result;
@@ -434,11 +443,14 @@ impl ToolRouter {
         // ── Tier 3: try lazy structural, then re-query ──
         ctx.send_progress(0.5, "Extracting structural data...");
         let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                symbol_name: qname.to_string(),
-                file_id: None,
-                symbol_id: None,
-            }));
+            self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::Context {
+                    symbol_name: qname.to_string(),
+                    file_id: None,
+                    symbol_id: None,
+                }),
+                include_roots.clone(),
+            );
         warnings.extend(focus_warnings);
         if focus_result_acc.is_none() {
             focus_result_acc = focus_result;

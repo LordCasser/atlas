@@ -43,7 +43,7 @@ impl ToolRouter {
         }
 
         // Parse include_roots
-        let (_, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = {
             let active = self.project();
@@ -100,11 +100,14 @@ impl ToolRouter {
 
         // Ensure structural before tracing
         let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::TracePoint {
-                file_id,
-                line,
-                column,
-            }));
+            self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::TracePoint {
+                    file_id,
+                    line,
+                    column,
+                }),
+                include_roots,
+            );
         if let Some(ref result) = focus_result {
             lr = super::apply_focus_result_to_lr(lr, result);
         }
@@ -159,7 +162,7 @@ impl ToolRouter {
         }
 
         // Parse include_roots
-        let (_, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let file_id = {
             let active = self.project();
@@ -217,11 +220,14 @@ impl ToolRouter {
 
         // Ensure structural before tracing
         let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::TraceVariable {
-                file_id,
-                line,
-                column,
-            }));
+            self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::TraceVariable {
+                    file_id,
+                    line,
+                    column,
+                }),
+                include_roots,
+            );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -255,7 +261,7 @@ impl ToolRouter {
 
     pub(crate) fn handle_trace_caller_path(&self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
-        let (_, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse symbol parameter as unified SymbolInput (string or structured selector).
         let input: SymbolInput = match parse_symbol_input(args, "symbol") {
@@ -291,13 +297,16 @@ impl ToolRouter {
 
         let mut lr = AnalysisEnvelope::new("trace", args);
         let (focus_result, lazy_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
-                symbol_name: symbol_str.to_string(),
-                file_id: self.resolve_selector_file_id(&input),
-                symbol_id: None,
-                direction: Some("incoming".to_string()),
-                depth: Some(max_depth),
-            }));
+            self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::Calls {
+                    symbol_name: symbol_str.to_string(),
+                    file_id: self.resolve_selector_file_id(&input),
+                    symbol_id: None,
+                    direction: Some("incoming".to_string()),
+                    depth: Some(max_depth),
+                }),
+                include_roots,
+            );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -393,7 +402,7 @@ impl ToolRouter {
 
     pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
         let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
-        let (_, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse 'from' parameter as unified SymbolInput.
         let from_input: SymbolInput = match parse_symbol_input(args, "from") {
@@ -581,7 +590,8 @@ impl ToolRouter {
                 direction: None,
                 depth: None,
             });
-        let (focus_result, lazy_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, lazy_warnings) =
+            self.prepare_focus_query_with_roots(intent, include_roots);
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }

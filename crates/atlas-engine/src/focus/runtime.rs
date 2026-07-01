@@ -30,6 +30,7 @@ use types::ids::{FileId, SymbolId};
 use types::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier};
 
 use crate::LazyDataflowService;
+use crate::closure_planner::IncludeRoot;
 use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazyStructuralService};
 
 use super::bootstrap::BootstrapManager;
@@ -963,6 +964,34 @@ impl FocusRuntime {
         Ok(())
     }
 
+    /// Apply the request-scoped `include_roots` for the *upcoming* query to the
+    /// cached foreground [`ClosureEngine`].
+    ///
+    /// `include_roots` are per-query (validated and normalised by the MCP layer
+    /// and never persisted), but the `ClosureEngine` is cached for the lifetime
+    /// of the project. To avoid cross-query leakage, the caller MUST invoke this
+    /// for **every** query — passing an empty `Vec` to clear roots for queries
+    /// that carry none — immediately before [`prepare`]. The `FocusRuntime`
+    /// `Mutex` (held by [`QueryRuntime::prepare`] across the apply → prepare
+    /// pair) serialises the set → `build_closure` → release sequence so the
+    /// foreground result always reflects exactly the roots of the query that
+    /// produced it.
+    ///
+    /// Only the foreground `closure_engine` is touched. The background
+    /// scheduler engine is **intentionally not modified**: it is detached and
+    /// processed on a separate thread (see `FocusScheduler::background_worker_loop`),
+    /// so per-query mutation cannot be made leak-free without threading roots
+    /// through the job/window. Keeping it at `vec![]` is the conservative,
+    /// leak-free choice; background pre-warming simply does not resolve
+    /// angle-bracket includes (foreground queries still do, on demand).
+    pub fn apply_query_include_roots(&mut self, roots: Vec<IncludeRoot>) -> Result<()> {
+        self.ensure_closure_engine()?;
+        if let Some(engine) = self.closure_engine.as_mut() {
+            engine.set_include_roots(roots);
+        }
+        Ok(())
+    }
+
     /// Resolve the language for a file by looking it up in the store.
     fn resolve_language_for_file(&self, file_id: &FileId) -> Option<Language> {
         self.store
@@ -1023,3 +1052,162 @@ impl Drop for FocusRuntime {
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
+
+/// Integration test for request-scoped `include_roots` wiring.
+///
+/// Proves end-to-end through `FocusRuntime::prepare`:
+/// 1. A query that supplies `include_roots` resolves an angle-bracket
+///    `#include <net/dst.h>` to a project header (`include/net/dst.h`) and
+///    materialises the header's resolution symbols into the closure coverage
+///    (visible as the `"boundary"` tier in `coverage_counts`).
+/// 2. A follow-up query on the same `FocusRuntime` (cached engine) that carries
+///    NO roots does NOT resolve the header — proving per-query roots do not
+///    leak across queries on the cached foreground engine.
+#[cfg(test)]
+mod include_roots_integration {
+    use super::{FocusRuntime, IndexMode};
+    use crate::closure_planner::IncludeRoot;
+    use crate::focus::query::QueryIntent;
+    use db::Store;
+    use std::sync::Arc;
+    use types::enums::{Language, ParseStatus};
+    use types::ids::{FileId, ImportId};
+    use types::structs::{CapabilityMask, FileInfo, ImportDef};
+    use types::{ImportKind, layer, status};
+
+    fn test_store() -> Arc<Store> {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        Arc::new(store)
+    }
+
+    /// Insert a file and mark its structural layer complete so the focus
+    /// closure treats it as already extracted (no disk read needed). A
+    /// structurally-complete file also satisfies `has_resolution_symbols_layer`,
+    /// so `materialize_import_dependencies` records it as a cached
+    /// resolution-symbol dependency.
+    fn insert_file_structural_complete(store: &Store, path: &str) -> FileId {
+        let file_id = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.to_string(),
+                language: Language::C,
+                content_hash: "abc123".to_string(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                layer::STRUCTURAL,
+                "abc123",
+                status::COMPLETE,
+                CapabilityMask::default(),
+            )
+            .unwrap();
+        file_id
+    }
+
+    /// Insert an angle-bracket `#include <net/dst.h>` record on `seed`.
+    fn insert_angle_include(store: &Store, seed: FileId) {
+        let import_id = ImportId::generate(&seed, "include", "net/dst.h", None, 0);
+        store
+            .insert_imports(&[ImportDef {
+                id: import_id,
+                file_id: seed,
+                kind: ImportKind::Include,
+                module: "net/dst.h".to_string(),
+                imported_name: String::new(),
+                local_name: None,
+                alias: None,
+                is_wildcard: false,
+                is_relative: false, // angle-bracket include
+                range: types::structs::TextRange::default(),
+            }])
+            .unwrap();
+    }
+
+    fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
+        let mut rt = FocusRuntime::new(store, None);
+        rt.detect_index_mode_override = Some(IndexMode::Focus);
+        rt
+    }
+
+    #[test]
+    fn include_roots_resolve_angle_include_and_do_not_leak_across_queries() {
+        let store = test_store();
+        let seed_id = insert_file_structural_complete(&store, "src/main.c");
+        let header_id = insert_file_structural_complete(&store, "include/net/dst.h");
+        insert_angle_include(&store, seed_id);
+
+        let mut rt = test_runtime_focus_mode(store.clone());
+
+        let intent = QueryIntent::Context {
+            symbol_name: "main".to_string(),
+            file_id: Some(seed_id),
+            symbol_id: None,
+        };
+
+        // ── Query 1: WITH include_roots ──────────────────────────────────
+        // `#include <net/dst.h>` should resolve via the "include" root to
+        // `include/net/dst.h`, so the header is materialised as resolution
+        // symbols and recorded in closure coverage under the
+        // "extracted_resolution_symbols" source (mapped to "boundary" tier).
+        rt.apply_query_include_roots(vec![IncludeRoot {
+            path: "include".to_string(),
+        }])
+        .expect("apply_query_include_roots must succeed");
+        let q1 = rt.prepare(&intent).expect("prepare (q1) must succeed");
+        assert_eq!(q1.mode, IndexMode::Focus);
+        let q1_counts: std::collections::HashMap<String, usize> =
+            q1.coverage_counts.clone().unwrap_or_default();
+        assert!(
+            q1_counts.contains_key("boundary"),
+            "q1 (with include_roots): expected a 'boundary' coverage entry from the resolved \
+             angle-include header, got: {:?}",
+            q1_counts
+        );
+        // Confirm the header specifically was recorded as a resolved dependency
+        // (source = "extracted_resolution_symbols" after visibility commit).
+        let closure_id = q1.closure_id.as_ref().expect("q1 closure_id");
+        let cov_rows = store.get_visible_coverage(closure_id).unwrap_or_default();
+        let header_bytes = header_id.as_bytes().to_vec();
+        assert!(
+            cov_rows
+                .iter()
+                .any(|r| r.file_id == header_bytes && r.source == "extracted_resolution_symbols"),
+            "q1: the resolved header (include/net/dst.h) must appear in closure coverage as an \
+             extracted_resolution_symbols entry, got rows: {:?}",
+            cov_rows
+                .iter()
+                .map(|r| (r.source.clone(), r.file_id.len()))
+                .collect::<Vec<_>>()
+        );
+
+        // ── Query 2: NO include_roots (leak check) ───────────────────────
+        // On the SAME FocusRuntime (cached engine), a follow-up query with no
+        // roots must NOT resolve the angle include. If roots leaked from q1,
+        // the header would still be resolved here.
+        rt.apply_query_include_roots(vec![])
+            .expect("apply_query_include_roots (clear) must succeed");
+        let q2 = rt.prepare(&intent).expect("prepare (q2) must succeed");
+        assert_eq!(q2.mode, IndexMode::Focus);
+        let q2_closure_id = q2.closure_id.as_ref().expect("q2 closure_id");
+        let q2_cov_rows = store.get_visible_coverage(q2_closure_id).unwrap_or_default();
+        assert!(
+            !q2_cov_rows.iter().any(|r| {
+                r.file_id == header_bytes && r.source == "extracted_resolution_symbols"
+            }),
+            "q2 (no include_roots): the header must NOT be resolved into q2's closure — \
+             per-query roots must not leak across queries on the cached engine."
+        );
+        let q2_counts: std::collections::HashMap<String, usize> =
+            q2.coverage_counts.clone().unwrap_or_default();
+        assert!(
+            !q2_counts.contains_key("boundary"),
+            "q2 (no include_roots): 'boundary' coverage must be absent (no leaked roots), got: {:?}",
+            q2_counts
+        );
+    }
+}
