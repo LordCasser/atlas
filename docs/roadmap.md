@@ -238,6 +238,7 @@ CFG + DataFlow
   - **NOT handled (deliberately deferred to a later phase):**
     - **Fall-through semantics are not modeled.** Each case body is an independent path from the dispatch `Branch` to `Join`; a C-style `case` without a terminating `break` is treated as if it broke. Case tails only connect to `Join`, never to the next case, so the CFG is a safe under-approximation of inter-case flow (never a spurious inter-case edge).
     - **False-positive avoidance (contract: may under-report, must NOT over-report).** Because fall-through is invisible, both engines flag only the *all-but-one* shape — a resource freed/allocated in exactly `n-1` of the effectful cases with a single conspicuous gap — and require ≥ 3 effectful cases. Effect-less paths (empty fall-through labels, the synthetic no-match `Branch→Join` skip edge) are ignored, so a bare `case N:` fall-through can never be the flagged outlier. A resource touched by only one case is treated as an intentional special-case, not an asymmetry.
+      - **Residual false positive — non-empty intentional fall-through.** The empty-body guard above only neutralizes *bare* fall-through labels. A case with a *non-empty* body that intentionally falls through to the next case (e.g. `case 1: log(); /* fall through */ case 2: free(x); break;`) is still modeled as two independent paths, so case 2 can look like the *unique freer* and case 1 like a conspicuous gap. This is a known residual outside the safe contract; it is rare in resource-cleanup code (which normally `break`s) and is accepted until fall-through edges are modeled.
     - **`lifecycle.rs` branch-context frames do not track case paths.** The successor-context `match edge.kind` at `lifecycle.rs` ~302–327 has explicit `TrueBranch`/`FalseBranch` arms; `CaseBranch` falls into the `_` wildcard. Dataflow state still propagates through case edges (all successors are enqueued), but no per-case `BranchFrame` is pushed, so switch cases are not path-sensitive in lifecycle analysis, and a switch nested inside an if/else can pop the outer branch frame early when a `CaseBranch`/`Normal` edge reaches the switch `Join` (guarded against stack underflow). Making lifecycle path-sensitive for cases is the next increment.
     - Non-C-family `switch`-like constructs remain deferred as single statements: Rust `match_expression`, Python `match`, Kotlin `when`, Cangjie `match`, Ruby `case`/`when` (pattern-matching semantics with guards/bindings; their ASTs are not yet wired into `walk_switch`). `try_statement` is likewise still deferred.
 
@@ -279,7 +280,10 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - 长期：继续收敛 extraction/focus 内部 precision 类型，保持 MCP 公共边界稳定且最小。
 - 长期：以真实大型仓库 smoke 和受控 fixtures 持续测量 cold incoming candidate discovery；
   只有测量证明现有 bounded provider 不足时才引入新的索引实体。
-- **Include-header structs in focus closure**: Currently `atlas_explore` on header-only structs like `dst_entry` (defined in `include/net/dst.h`) returns "building" because the focus closure only expands along call-graph and import-neighborhood edges from the seed symbol. A struct defined in a header that is `#include`-d by the seed's file is a direct import dependency, and its extraction cost is bounded (single struct body, trivial dataflow). Without this, agents analyzing kernel code cannot inspect the definition of any struct whose defining header hasn't been separately queried.
+- **Include-header structs in focus closure** — *foreground path implemented*: request-scoped `include_roots` now thread from the MCP tool boundary (`context`/`trace`/`graph` handlers) through `prepare_focus_query_with_roots` → `QueryRuntime::prepare` → `FocusRuntime::apply_query_include_roots` into the cached foreground `ClosureEngine` before each `build_closure`. Angle includes like `#include <net/dst.h>` resolve against the provided roots, so a struct such as `dst_entry` defined in `include/net/dst.h` enters the closure and `atlas_explore` returns its definition instead of "building". The set-roots→prepare→build_closure sequence is held under a single `QueryRuntime` mutex guard, so roots are per-query and never leak across queries (regression test: `include_roots_resolve_angle_include_and_do_not_leak_across_queries`).
+  - **NOT yet handled:**
+    - **Background `sched_engine` does not receive per-query roots.** The foreground fix mutates only the cached foreground engine. The background scheduler detaches its engine via `engine.take()` and processes it on a worker thread outside the `QueryRuntime` mutex, so applying roots to it with the same setter is not leak-free (a later query's background job could observe an earlier query's roots). A correct fix requires per-job roots carried on `FocusWindow` (`focus/types.rs`) and read inside `build_closure`/`materialize_import_dependencies`, plus a scheduler call-site change. Until then, background pre-warming does not resolve angle includes; foreground queries resolve them on demand.
+    - **`search.rs` focus path does not pass `include_roots`.** `SearchService` already forwards roots to its own `ScopedSearchService`, but its `prepare_focus_query` call sites do not use the roots-aware variant, so angle-include resolution does not apply during search-triggered focus extraction. Upgrading those call sites to `prepare_focus_query_with_roots` is the same one-line-per-site change already applied to `context`/`trace`/`graph`.
 
 ### 9.4 不变边界
 
@@ -293,11 +297,13 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 ### 10.1 Capability Profile 数据声明化
 
-当前 `types/src/capability.rs` 中 14 种语言的 `LanguageCapabilityProfile` 均以 ~60-70 行的 struct literal 硬编码构造，约 80% 字段为重复样板。Go 和 Python 已通过 `ProfileSpec` + `build_profile()` 原型迁移为数据声明模式。
+✅ 全部 14 种语言的 `LanguageCapabilityProfile` 现已统一通过 `ProfileSpec` + `build_profile()` 数据声明模式构造。此前各语言以 ~60-70 行 struct literal 硬编码，约 80% 字段为重复样板。
 
-- 将剩余 12 种语言（TypeScript、JavaScript、Java、C、C++、C#、PHP、Ruby、Rust、Kotlin、Cangjie、ArkTS）逐语言迁移到 `ProfileSpec` 模式。
-- 每个迁移以 identity test 验证产出 `LanguageCapabilityProfile` 与迁移前完全一致。
-- 迁移完成后考虑删除原始 `ts_profile()` / `java_profile()` 等构造器，统一为 `build_profile(&LANG_PROFILE_SPEC)`。
+- 剩余 12 种语言（TypeScript、JavaScript、Java、C、C++、C#、PHP、Ruby、Rust、Kotlin、Cangjie、ArkTS）已在 Go/Python 原型之后完成迁移。
+- 每个迁移均以 per-language identity test（`test_<lang>_profile_identity`）验证产出 `LanguageCapabilityProfile` 与迁移前逐字段完全一致；四项一致性测试（`test_all_profiles_are_valid`、`test_all_profiles_have_feature_matrix`、`test_cfg_feature_matrix_consistent_with_supported_features`、`test_cfg_known_limitation`）保持通过。
+- 特殊情形保留：C 的 `include_resolution`+`function_pointer_tracking` 及 call_graph 0.65；C++ 的 `include_resolution`；ArkTS/PHP 的 `cfg` 为 Unsupported；Cangjie 由 `fm.supported_feature_names()` 派生改写为显式列表（13 项全支持、unsupported 为空）；C#/Ruby 的 CFG limitation 文本含 "body traversal"+"implemented"。现有三个 `FeatureOverride` 变体（`Confidence`/`WithLimitations`/`Unsupported`）足以表达全部覆盖，未新增变体。
+
+**Note — `atlas status` 的语言列表语义（避免误判为 Cangjie 缺陷）**：`atlas status`（及 MCP `status`）按设计只列出**项目中实际存在源文件**的语言（遍历 `files_by_language`，见 `status.rs`）；`atlas doctor` 才用 `all_compiled()` 列出所有编译语言。因此若某项目无 `.cj` 文件，`status` 不显示 Cangjie 属正常语义，而非注册/profile 缺陷——`all_compiled()` 已含 Cangjie（`#[cfg(feature="cangjie")]`，默认启用），`atlas doctor` 正确显示 `cangjie dataflow_full 65%`。
 
 ### 10.2 FeatureMatrix 镜像方法合并
 
