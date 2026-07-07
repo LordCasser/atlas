@@ -555,9 +555,9 @@ impl Store {
             "idx_extraction_jobs_status" =>
                 "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_status ON extraction_jobs(status)".into(),
             "idx_extraction_jobs_active_file_layer" =>
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_file_layer ON extraction_jobs(file_id, layer) WHERE status = 'active'".into(),
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_file_layer ON extraction_jobs(file_id, layer) WHERE unit_id IS NULL AND status IN ('queued', 'building')".into(),
             "idx_extraction_jobs_active_unit_layer" =>
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_unit_layer ON extraction_jobs(file_id, unit_id, layer) WHERE status = 'active'".into(),
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_extraction_jobs_active_unit_layer ON extraction_jobs(file_id, unit_id, layer) WHERE unit_id IS NOT NULL AND status IN ('queued', 'building')".into(),
             // summary (not bulk-written, kept for repair)
             "idx_spr_function" =>
                 "CREATE INDEX IF NOT EXISTS idx_spr_function ON summary_param_reaches(function_id)".into(),
@@ -2797,6 +2797,16 @@ mod tests {
             list_indexes(store).contains(&name.to_string())
         }
 
+        fn index_sql(store: &Store, name: &str) -> String {
+            let conn = store.lock();
+            conn.query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name = ?1",
+                [name],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        }
+
         #[test]
         fn full_rebuild_guard_drop_repairs_schema() {
             let store = Arc::new(test_store());
@@ -2930,6 +2940,45 @@ mod tests {
             assert!(
                 index_exists(&store, "idx_symbols_kind"),
                 "ensure_required should recreate missing index"
+            );
+        }
+
+        #[test]
+        fn ensure_required_schema_objects_repairs_extraction_job_active_indexes() {
+            let store = test_store();
+
+            {
+                let conn = store.lock();
+                conn.execute_batch(
+                    "DROP INDEX IF EXISTS idx_extraction_jobs_active_file_layer;
+                     DROP INDEX IF EXISTS idx_extraction_jobs_active_unit_layer;",
+                )
+                .unwrap();
+            }
+
+            let repaired = store.ensure_required_schema_objects().unwrap();
+            assert_eq!(repaired, 2, "two missing extraction job indexes repaired");
+
+            let file_sql = index_sql(&store, "idx_extraction_jobs_active_file_layer");
+            assert!(
+                file_sql.contains("unit_id IS NULL")
+                    && file_sql.contains("status IN ('queued', 'building')"),
+                "file-level active job index must match schema predicate, got: {file_sql}"
+            );
+            assert!(
+                !file_sql.contains("status = 'active'"),
+                "old active-status predicate must not be recreated: {file_sql}"
+            );
+
+            let unit_sql = index_sql(&store, "idx_extraction_jobs_active_unit_layer");
+            assert!(
+                unit_sql.contains("unit_id IS NOT NULL")
+                    && unit_sql.contains("status IN ('queued', 'building')"),
+                "unit-level active job index must match schema predicate, got: {unit_sql}"
+            );
+            assert!(
+                !unit_sql.contains("status = 'active'"),
+                "old active-status predicate must not be recreated: {unit_sql}"
             );
         }
 

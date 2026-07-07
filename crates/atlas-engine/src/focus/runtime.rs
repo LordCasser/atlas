@@ -157,6 +157,11 @@ pub struct FocusResult {
     pub gaps: Vec<KnownGap>,
     /// For Focus mode: pending closure IDs being built in background.
     pub pending_closure_ids: Vec<String>,
+    /// Raw extraction jobs encountered by foreground closure preparation.
+    ///
+    /// These come from `extraction_jobs` in-flight de-duplication. They are
+    /// retryable pending work, but not Focus closure jobs and not terminal gaps.
+    pub pending_extraction_job_ids: Vec<String>,
     /// For Focus mode: the closure_id if a closure was built.
     pub closure_id: Option<String>,
     /// For Focus mode: seed symbol_id if located.
@@ -175,6 +180,22 @@ pub struct FocusResult {
 }
 
 impl FocusResult {
+    /// Pending work visible to the public retry model.
+    pub fn pending_work_count_and_eta_ms(&self) -> (usize, u64) {
+        let (closure_pending, closure_eta) = self
+            .job_tracker
+            .as_ref()
+            .map(|tracker| tracker.pending_count_and_eta_ms(&self.pending_closure_ids))
+            .unwrap_or((0, 0));
+        let extraction_pending = self.pending_extraction_job_ids.len();
+        let pending = closure_pending + extraction_pending;
+        if pending == 0 {
+            return (0, 0);
+        }
+        let extraction_eta = 5000 * extraction_pending as u64;
+        (pending, (closure_eta + extraction_eta).clamp(5000, 60000))
+    }
+
     /// Foreground and completed background files that must be reflected in the
     /// in-memory graph before replaying this query.
     pub fn materialized_files(&self) -> Vec<FileId> {
@@ -459,7 +480,11 @@ impl FocusRuntime {
     ///
     /// For **Focus** mode: ensures bootstrap minimum, locates the seed, builds
     /// a minimal closure synchronously, then enqueues background expansion.
-    pub fn prepare(&mut self, intent: &QueryIntent) -> Result<FocusResult> {
+    pub fn prepare(
+        &mut self,
+        intent: &QueryIntent,
+        include_roots: Vec<IncludeRoot>,
+    ) -> Result<FocusResult> {
         let mode = self.detect_index_mode();
 
         if mode == IndexMode::FullIndex {
@@ -468,6 +493,7 @@ impl FocusRuntime {
                 precision: None,
                 gaps: Vec::new(),
                 pending_closure_ids: Vec::new(),
+                pending_extraction_job_ids: Vec::new(),
                 closure_id: None,
                 seed_symbol_id: None,
                 seed_file_id: None,
@@ -502,6 +528,7 @@ impl FocusRuntime {
         let minimal_window = FocusWindow {
             seed: seed.clone(),
             strategies: strategies_for(intent, false),
+            include_roots: include_roots.clone(),
             budget: minimal_budget,
             language,
             max_iterations: minimal_iterations,
@@ -575,6 +602,7 @@ impl FocusRuntime {
         let bg_window = FocusWindow {
             seed,
             strategies: strategies_for(intent, true),
+            include_roots: include_roots.clone(),
             budget: background_budget,
             language,
             max_iterations: background_iterations,
@@ -610,6 +638,7 @@ impl FocusRuntime {
             precision: Some(precision),
             gaps,
             pending_closure_ids: pending_ids,
+            pending_extraction_job_ids: closure.pending_extraction_job_ids.clone(),
             closure_id: Some(closure_id),
             seed_symbol_id,
             seed_file_id,
@@ -719,6 +748,7 @@ impl FocusRuntime {
                     ClosureStrategy::ImportNeighborhood { depth: 2 },
                     ClosureStrategy::SameDirectory,
                 ],
+                include_roots: Vec::new(),
                 budget: WindowBudget::background(),
                 language,
                 max_iterations: 2,
@@ -932,7 +962,6 @@ impl FocusRuntime {
             lazy_structural,
             lazy_dataflow,
             self.project_root.clone(),
-            vec![], // include_roots can be set later via engine configuration
         );
 
         // Create a second engine instance for the scheduler's background worker.
@@ -956,39 +985,10 @@ impl FocusRuntime {
             sched_lazy,
             sched_dataflow,
             self.project_root.clone(),
-            vec![],
         );
 
         self.closure_engine = Some(engine);
         self.scheduler.lock().unwrap().set_engine(sched_engine);
-        Ok(())
-    }
-
-    /// Apply the request-scoped `include_roots` for the *upcoming* query to the
-    /// cached foreground [`ClosureEngine`].
-    ///
-    /// `include_roots` are per-query (validated and normalised by the MCP layer
-    /// and never persisted), but the `ClosureEngine` is cached for the lifetime
-    /// of the project. To avoid cross-query leakage, the caller MUST invoke this
-    /// for **every** query — passing an empty `Vec` to clear roots for queries
-    /// that carry none — immediately before [`prepare`]. The `FocusRuntime`
-    /// `Mutex` (held by [`QueryRuntime::prepare`] across the apply → prepare
-    /// pair) serialises the set → `build_closure` → release sequence so the
-    /// foreground result always reflects exactly the roots of the query that
-    /// produced it.
-    ///
-    /// Only the foreground `closure_engine` is touched. The background
-    /// scheduler engine is **intentionally not modified**: it is detached and
-    /// processed on a separate thread (see `FocusScheduler::background_worker_loop`),
-    /// so per-query mutation cannot be made leak-free without threading roots
-    /// through the job/window. Keeping it at `vec![]` is the conservative,
-    /// leak-free choice; background pre-warming simply does not resolve
-    /// angle-bracket includes (foreground queries still do, on demand).
-    pub fn apply_query_include_roots(&mut self, roots: Vec<IncludeRoot>) -> Result<()> {
-        self.ensure_closure_engine()?;
-        if let Some(engine) = self.closure_engine.as_mut() {
-            engine.set_include_roots(roots);
-        }
         Ok(())
     }
 
@@ -1062,12 +1062,13 @@ mod tests;
 ///    (visible as the `"boundary"` tier in `coverage_counts`).
 /// 2. A follow-up query on the same `FocusRuntime` (cached engine) that carries
 ///    NO roots does NOT resolve the header — proving per-query roots do not
-///    leak across queries on the cached foreground engine.
+///    leak across queries on reused focus runtime state.
 #[cfg(test)]
 mod include_roots_integration {
-    use super::{FocusRuntime, IndexMode};
+    use super::{BoundaryHit, FocusRuntime, IndexMode, hot_region_extension_window};
     use crate::closure_planner::IncludeRoot;
     use crate::focus::query::QueryIntent;
+    use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use db::Store;
     use std::sync::Arc;
     use types::enums::{Language, ParseStatus};
@@ -1135,6 +1136,40 @@ mod include_roots_integration {
     }
 
     #[test]
+    fn hot_region_extension_preserves_include_roots() {
+        let file_id = FileId::generate("src/main.c");
+        let base = FocusWindow {
+            seed: FocusSeed::File {
+                file_id,
+                language: Language::C,
+            },
+            strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 2 }],
+            include_roots: vec![IncludeRoot {
+                path: "include".to_string(),
+            }],
+            budget: WindowBudget::background(),
+            language: Language::C,
+            max_iterations: 1,
+        };
+        let hit = BoundaryHit {
+            region_id: "region".to_string(),
+            depth: 2,
+        };
+
+        let extended = hot_region_extension_window(&base, &hit);
+
+        assert_eq!(
+            extended
+                .include_roots
+                .iter()
+                .map(|root| root.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["include"],
+            "hot-region background extension must keep the request roots from the base window"
+        );
+    }
+
+    #[test]
     fn include_roots_resolve_angle_include_and_do_not_leak_across_queries() {
         let store = test_store();
         let seed_id = insert_file_structural_complete(&store, "src/main.c");
@@ -1154,11 +1189,14 @@ mod include_roots_integration {
         // `include/net/dst.h`, so the header is materialised as resolution
         // symbols and recorded in closure coverage under the
         // "extracted_resolution_symbols" source (mapped to "boundary" tier).
-        rt.apply_query_include_roots(vec![IncludeRoot {
-            path: "include".to_string(),
-        }])
-        .expect("apply_query_include_roots must succeed");
-        let q1 = rt.prepare(&intent).expect("prepare (q1) must succeed");
+        let q1 = rt
+            .prepare(
+                &intent,
+                vec![IncludeRoot {
+                    path: "include".to_string(),
+                }],
+            )
+            .expect("prepare (q1) must succeed");
         assert_eq!(q1.mode, IndexMode::Focus);
         let q1_counts: std::collections::HashMap<String, usize> =
             q1.coverage_counts.clone().unwrap_or_default();
@@ -1189,12 +1227,14 @@ mod include_roots_integration {
         // On the SAME FocusRuntime (cached engine), a follow-up query with no
         // roots must NOT resolve the angle include. If roots leaked from q1,
         // the header would still be resolved here.
-        rt.apply_query_include_roots(vec![])
-            .expect("apply_query_include_roots (clear) must succeed");
-        let q2 = rt.prepare(&intent).expect("prepare (q2) must succeed");
+        let q2 = rt
+            .prepare(&intent, Vec::new())
+            .expect("prepare (q2) must succeed");
         assert_eq!(q2.mode, IndexMode::Focus);
         let q2_closure_id = q2.closure_id.as_ref().expect("q2 closure_id");
-        let q2_cov_rows = store.get_visible_coverage(q2_closure_id).unwrap_or_default();
+        let q2_cov_rows = store
+            .get_visible_coverage(q2_closure_id)
+            .unwrap_or_default();
         assert!(
             !q2_cov_rows.iter().any(|r| {
                 r.file_id == header_bytes && r.source == "extracted_resolution_symbols"

@@ -41,6 +41,14 @@
     (function_declarator
       (field_identifier) @definition.field)))
 
+;; Function pointer field with parenthesized pointer declarator:
+;; int (*do_it)(int);
+(field_declaration
+  (function_declarator
+    (parenthesized_declarator
+      (pointer_declarator
+        (field_identifier) @definition.field))))
+
 ;; Regular data field: int port;
 (field_declaration
   (type_identifier)

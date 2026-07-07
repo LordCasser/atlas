@@ -56,7 +56,7 @@ mod tests {
     fn test_engine(store: Arc<Store>) -> ClosureEngine {
         let lazy_structural = LazyStructuralService::new(store.clone(), None);
         let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-        ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
+        ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
     }
 
     // ── Test: E2E Full Closure Build ────────────────────────────────────────
@@ -114,6 +114,7 @@ mod tests {
                 language: Language::C,
             },
             strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 2 }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language: Language::C,
             max_iterations: 3,

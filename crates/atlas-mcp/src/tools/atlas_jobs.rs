@@ -1,7 +1,9 @@
-//! Background extraction job listing — used by the `tasks` tool.
+//! Active extraction job listing — used by the `tasks` tool.
 //!
-//! Provides observability into lazy extraction progress. Can filter by
-//! query_id to see jobs triggered by a specific query.
+//! Provides observability into in-flight lazy extraction work. Completed
+//! structural jobs may disappear when file facts are atomically replaced, so
+//! this module reports raw job rows and active pending counts, not durable
+//! query completion.
 
 use super::ToolRouter;
 use serde_json::{Value, json};
@@ -44,9 +46,9 @@ impl ToolRouter {
                 Ok(prog) => {
                     let pending = prog.queued + prog.building;
                     let msg = if pending > 0 {
-                        format!("{pending} jobs pending")
+                        format!("{pending} extraction job(s) pending")
                     } else {
-                        "all jobs complete".to_string()
+                        "no active extraction jobs".to_string()
                     };
                     (Some(prog), pending, msg)
                 }

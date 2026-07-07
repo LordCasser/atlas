@@ -1239,6 +1239,36 @@ int tcp_v4_rcv(void) {
         assert_eq!(symbol.range.end_line, 3);
     }
 
+    #[cfg(feature = "c")]
+    #[test]
+    fn c_function_pointer_field_is_indexed_as_field_symbol() {
+        let source = "struct dispatch_ops {\n    int (*do_it)(int);\n};\n";
+        let file_id = FileId::generate("fp_field.c");
+        let frontend = create_frontend(Language::C).unwrap();
+        let facts = extract_file(
+            &frontend,
+            file_id,
+            &PathBuf::from("fp_field.c"),
+            source,
+            "fp-field",
+        )
+        .unwrap();
+
+        let field = facts
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.name == "do_it"
+                    && symbol.qualified_name == "dispatch_ops.do_it"
+                    && symbol.kind == types::SymbolKind::Field
+            })
+            .expect("function-pointer struct field symbol");
+        assert_eq!(
+            &source[field.name_range.start_byte as usize..field.name_range.end_byte as usize],
+            "do_it"
+        );
+    }
+
     #[cfg(feature = "rust")]
     #[test]
     fn rust_type_symbol_range_covers_the_complete_definition() {
@@ -1367,6 +1397,36 @@ void C::m() {
         store.init_schema().unwrap();
         let result = store.insert_file_facts(&facts);
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
+    }
+
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn cpp_function_pointer_field_is_indexed_as_field_symbol() {
+        let source = "struct DispatchOps {\n    int (*do_it)(int);\n};\n";
+        let file_id = FileId::generate("fp_field.cpp");
+        let frontend = create_frontend(Language::Cpp).unwrap();
+        let facts = extract_file(
+            &frontend,
+            file_id,
+            &PathBuf::from("fp_field.cpp"),
+            source,
+            "fp-field",
+        )
+        .unwrap();
+
+        let field = facts
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.name == "do_it"
+                    && symbol.qualified_name == "DispatchOps::do_it"
+                    && symbol.kind == types::SymbolKind::Field
+            })
+            .expect("function-pointer struct field symbol");
+        assert_eq!(
+            &source[field.name_range.start_byte as usize..field.name_range.end_byte as usize],
+            "do_it"
+        );
     }
     #[cfg(feature = "typescript")]
     #[test]

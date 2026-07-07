@@ -14,7 +14,6 @@
 //!   is managed through a separate `FnMut() -> bool` interrupt closure,
 //!   keeping progress reporting and control flow orthogonal.
 
-use crate::index_pipeline::{IndexProgress, IndexProgressCallback};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use types::progress::ProgressState;
@@ -130,44 +129,6 @@ pub trait ProgressSink: Send + Sync {
 
 // ── Built-in implementations ───────────────────────────────────────────────
 
-/// A sink that forwards every event to a legacy
-/// [`IndexProgressCallback`].
-///
-/// This bridges the old callback-based API so existing callers
-/// (MCP, CLI) can migrate without changing their callback logic.
-pub struct CallbackSink {
-    callback: IndexProgressCallback,
-}
-
-impl CallbackSink {
-    /// Wrap an existing callback in a `CallbackSink`.
-    pub fn new(callback: IndexProgressCallback) -> Self {
-        Self { callback }
-    }
-}
-
-impl ProgressSink for CallbackSink {
-    fn emit(&self, event: ProgressEvent) {
-        // Forward PhaseFinished events to the legacy callback as a fraction
-        // update.  Rich event types (PhaseStarted, Warning, Cancelled) are
-        // silently dropped — legacy callers only understand fractions.
-        if let ProgressEvent::PhaseFinished {
-            succeeded,
-            failed,
-            detail,
-            ..
-        } = event
-        {
-            let total = succeeded + failed;
-            (self.callback)(IndexProgress {
-                fraction: 1.0, // legacy callers interpret 1.0 = "phase done"
-                total: Some(total as f64),
-                message: detail,
-            });
-        }
-    }
-}
-
 /// A sink that silently discards all events (no-op).
 ///
 /// Use when progress reporting is not needed (e.g. batch scripts,
@@ -218,20 +179,13 @@ pub fn noop() -> Box<dyn ProgressSink> {
     Box::new(NoopSink)
 }
 
-/// Create a boxed callback sink from a legacy callback.
-pub fn from_callback(cb: IndexProgressCallback) -> Box<dyn ProgressSink> {
-    Box::new(CallbackSink::new(cb))
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::index_pipeline::IndexProgress;
 
     #[test]
     fn noop_sink_discards_all() {
@@ -244,45 +198,6 @@ mod tests {
             last_phase: PhaseName::Extraction,
         });
         // No assertions needed — the sink must not panic.
-    }
-
-    #[test]
-    fn callback_sink_forwards_phase_finished() {
-        let called = Arc::new(AtomicBool::new(false));
-        let c = Arc::clone(&called);
-        let cb: IndexProgressCallback = Arc::new(move |p: IndexProgress| {
-            assert!(p.fraction > 0.0);
-            assert!(p.total.is_some());
-            c.store(true, Ordering::SeqCst);
-        });
-        let sink = from_callback(cb);
-        sink.emit(ProgressEvent::PhaseFinished {
-            phase: PhaseName::Extraction,
-            succeeded: 42,
-            failed: 3,
-            detail: Some("done".into()),
-        });
-        assert!(called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn callback_sink_ignores_non_finished_events() {
-        let called = Arc::new(AtomicBool::new(false));
-        let c = Arc::clone(&called);
-        let cb: IndexProgressCallback = Arc::new(move |_| {
-            c.store(true, Ordering::SeqCst);
-        });
-        let sink = from_callback(cb);
-        // PhaseStarted, ItemProgress, Warning, Cancelled should not trigger callback.
-        sink.emit(ProgressEvent::PhaseStarted {
-            phase: PhaseName::Extraction,
-            total: 50,
-        });
-        sink.emit(ProgressEvent::Warning {
-            phase: PhaseName::Extraction,
-            message: "test".into(),
-        });
-        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

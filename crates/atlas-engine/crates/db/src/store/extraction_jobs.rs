@@ -1,8 +1,10 @@
-//! Extraction job tracking — query and update extraction build jobs.
+//! Extraction job tracking — query and update active extraction build jobs.
 //!
-//! The `extraction_jobs` table records the lifecycle of extraction jobs
-//! (queued → building → complete/failed) and provides in-flight deduplication:
-//! two concurrent requests for the same file+unit+layer return the same job_id.
+//! The `extraction_jobs` table provides in-flight deduplication: two concurrent
+//! requests for the same file+unit+layer return the same job_id. Complete/failed
+//! states are supported for callers that retain the row, but file-level fact
+//! replacement may cascade-delete rows, so durable completion is proven by fresh
+//! `extraction_state` plus facts rather than by job history.
 
 use super::Store;
 use rusqlite::params;

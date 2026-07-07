@@ -169,6 +169,107 @@ mod tests {
     }
 
     #[test]
+    fn test_materialize_from_extracted_c_function_pointer_field() {
+        let store = std::sync::Arc::new(setup_store());
+        let file_id = FileId::generate("src/fp_ops.c");
+        let source = r#"
+struct dispatch_ops {
+    int (*do_it)(int);
+};
+
+int concrete_handler(int value) {
+    return value + 1;
+}
+
+int invoke(struct dispatch_ops *ops, int value) {
+    return ops->do_it(value);
+}
+"#;
+        let frontend = extraction::create_frontend(Language::C).unwrap();
+        let facts = extraction::extract_file(
+            &frontend,
+            file_id,
+            &std::path::PathBuf::from("src/fp_ops.c"),
+            source,
+            "fp-ops",
+        )
+        .unwrap();
+        store.insert_file_facts(&facts).unwrap();
+
+        let field = store
+            .find_symbols_by_qname("dispatch_ops.do_it")
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.kind == SymbolKind::Field)
+            .unwrap_or_else(|| {
+                let symbols = store
+                    .find_symbols_by_file(&file_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|symbol| {
+                        format!(
+                            "{}:{}:{}",
+                            symbol.qualified_name,
+                            symbol.name,
+                            symbol.kind.as_str()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                panic!(
+                    "C extractor must index function-pointer fields as Field symbols; got symbols: {:?}",
+                    symbols
+                )
+            });
+        let target = store
+            .find_symbols_by_qname("concrete_handler")
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.kind == SymbolKind::Function)
+            .expect("target function symbol");
+        let caller = store
+            .find_symbols_by_qname("invoke")
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.kind == SymbolKind::Function)
+            .expect("caller function symbol");
+
+        let mut resolver = resolution::ReferenceResolver::new(store.clone());
+        let (resolved, _stats) = resolver.resolve_for_files(&[file_id]).unwrap();
+        assert!(
+            resolved.iter().any(|(reference, target)| {
+                reference.name == "do_it"
+                    && reference.source_symbol == Some(caller.id)
+                    && target.symbol_id == field.id
+            }),
+            "field access through the function pointer must resolve to the extracted field symbol"
+        );
+
+        let ann = types::FpAnnotation {
+            annotation_id: annotation_id(&field.id, "do_it"),
+            source_symbol: field.id,
+            field_name: "do_it".into(),
+            target_symbol: target.id,
+            confidence: Confidence::new(1.0),
+        };
+        store.upsert_fp_annotation(&ann).unwrap();
+
+        let count = materialize_annotations(&store).unwrap();
+        assert_eq!(count, 2);
+
+        let field_edges = store.find_edges_by_source(&field.id).unwrap();
+        assert_eq!(field_edges.len(), 1);
+        assert_eq!(field_edges[0].target, target.id);
+        assert_eq!(field_edges[0].kind, EdgeKind::Calls);
+        assert_eq!(field_edges[0].provenance, Provenance::UserAnnotation);
+
+        let caller_edges = store.find_edges_by_source(&caller.id).unwrap();
+        assert_eq!(caller_edges.len(), 1);
+        assert_eq!(caller_edges[0].target, target.id);
+        assert_eq!(caller_edges[0].kind, EdgeKind::Calls);
+        assert_eq!(caller_edges[0].provenance, Provenance::UserAnnotation);
+    }
+
+    #[test]
     fn test_materialize_creates_edge() {
         let store = setup_store();
         let fa = FileId::generate("src/field.c");

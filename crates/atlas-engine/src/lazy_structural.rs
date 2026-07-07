@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use db::Store;
+use db::{ClaimResult, Store};
 use extraction::{
     CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode,
     extract_file_with_mode_cancellable,
@@ -696,17 +696,48 @@ impl LazyStructuralService {
                 result.cached_file_ids.push(*file_id);
                 continue;
             }
+            if self.store.get_file(file_id)?.is_none()
+                && self.store.find_file_inventory_by_id(file_id)?.is_none()
+            {
+                result.failed_files.push((
+                    *file_id,
+                    format!("file not found in files or inventory: {file_id:?}"),
+                ));
+                continue;
+            }
+            if self.store.get_file(file_id)?.is_none() {
+                let file_info = self.file_info_for_lazy(file_id)?;
+                self.store.upsert_file(&file_info)?;
+            }
+            let job_id = match self.store.claim_file_extraction_job(
+                file_id,
+                layer::STRUCTURAL,
+                None,
+                None,
+                None,
+            )? {
+                ClaimResult::Claimed { job_id } => job_id,
+                ClaimResult::AlreadyBuilding { job_id } => {
+                    result.files_pending += 1;
+                    result.pending_job_ids.push(job_id);
+                    continue;
+                }
+            };
             match self.reindex_file_structural(file_id, token) {
                 Ok(ReindexOutcome::Built) => {
+                    self.store.complete_extraction_job(&job_id)?;
                     result.files_built += 1;
                     result.built_file_ids.push(*file_id);
                 }
                 Ok(ReindexOutcome::Cancelled) => {
+                    self.store
+                        .fail_extraction_job(&job_id, "structural extraction budget exceeded")?;
                     result.budget_exceeded = true;
                     break;
                 }
                 Err(e) => {
                     let reason = format!("{e:#}");
+                    self.store.fail_extraction_job(&job_id, &reason)?;
                     tracing::warn!("Lazy structural failed for {:?}: {reason}", file_id);
                     result.failed_files.push((*file_id, reason));
                 }
@@ -1665,12 +1696,123 @@ mod tests {
         let result = svc.ensure_structural_for_file(&fid, None).unwrap();
 
         assert_eq!(result.files_built, 1);
+        assert!(
+            store
+                .find_active_file_extraction_job(&fid, layer::STRUCTURAL)
+                .unwrap()
+                .is_none(),
+            "successful structural ensure must not leave an active extraction job"
+        );
         assert!(svc.has_structural_layer(&fid).unwrap());
         let refs = store.find_references_by_file(&fid).unwrap();
         assert!(
             refs.iter().any(|r| r.name == "helper"),
             "structural ensure must parse references when no structural extraction_state exists"
         );
+    }
+
+    #[test]
+    fn structural_ensure_materializes_inventory_only_file_before_claiming_job() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "inventory_only.c";
+        let source = "int inventory_only(void) { return 1; }\n";
+        let full_path = root.path().join(path);
+        std::fs::write(&full_path, source).unwrap();
+
+        let fid = FileId::generate(path);
+        let metadata = std::fs::metadata(&full_path).unwrap();
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
+        #[cfg(unix)]
+        let (inode, dev) = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.ino() as i64, metadata.dev() as i64)
+        };
+        #[cfg(not(unix))]
+        let (inode, dev) = (0i64, 0i64);
+
+        store
+            .insert_file_inventory(
+                &fid,
+                path,
+                Language::C.as_str(),
+                mtime,
+                metadata.len() as i64,
+                inode,
+                dev,
+            )
+            .unwrap();
+        assert!(
+            store.get_file(&fid).unwrap().is_none(),
+            "fixture must start as inventory-only"
+        );
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+
+        assert_eq!(result.files_built, 1);
+        assert!(
+            store.get_file(&fid).unwrap().is_some(),
+            "lazy structural must materialize a files row before recording extraction jobs"
+        );
+        assert!(
+            store
+                .find_active_file_extraction_job(&fid, layer::STRUCTURAL)
+                .unwrap()
+                .is_none(),
+            "successful structural ensure must not leave an active extraction job"
+        );
+        assert!(svc.has_structural_layer(&fid).unwrap());
+    }
+
+    #[test]
+    fn structural_ensure_reports_existing_active_job_without_rebuilding() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "pending.c";
+        let source = "int pending(void) { return 1; }\n";
+        std::fs::write(root.path().join(path), source).unwrap();
+
+        let fid = FileId::generate(path);
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        store
+            .upsert_file(&FileInfo {
+                file_id: fid,
+                path: path.to_string(),
+                language: Language::C,
+                content_hash,
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let claim = store
+            .claim_file_extraction_job(&fid, layer::STRUCTURAL, Some("query"), None, Some(1000))
+            .unwrap();
+        let job_id = match claim {
+            ClaimResult::Claimed { job_id } => job_id,
+            ClaimResult::AlreadyBuilding { .. } => panic!("first claim should own the job"),
+        };
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+
+        assert_eq!(result.files_built, 0);
+        assert_eq!(result.files_cached, 0);
+        assert_eq!(result.files_pending, 1);
+        assert_eq!(result.pending_job_ids, vec![job_id.clone()]);
+        assert!(
+            !svc.has_structural_layer(&fid).unwrap(),
+            "a caller that does not own the active job must not rebuild the file"
+        );
+        let active = store
+            .find_active_file_extraction_job(&fid, layer::STRUCTURAL)
+            .unwrap()
+            .expect("existing job should remain active");
+        assert_eq!(active.job_id, job_id);
     }
 
     // ── ripgrep candidate provider tests ──────────────────────────────────

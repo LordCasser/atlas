@@ -759,7 +759,11 @@ mod tests {
         for (i, effects) in case_effects.iter().enumerate() {
             let byte = 10 + i as u32; // unique byte → unique node id
             let case_node = make_stmt_node(fid, effects.clone(), 20 + i as u32, byte);
-            edges.push(make_edge(&branch.id, &case_node.id, CfgEdgeKind::CaseBranch));
+            edges.push(make_edge(
+                &branch.id,
+                &case_node.id,
+                CfgEdgeKind::CaseBranch,
+            ));
             edges.push(make_edge(&case_node.id, &join.id, CfgEdgeKind::Normal));
             nodes.push(case_node);
         }
@@ -783,8 +787,8 @@ mod tests {
     fn test_switch_all_but_one_free_detected() {
         let fid = test_function_id();
         let case_effects = vec![
-            vec![case_free(&fid, 10, "res")], // case 0: frees res
-            vec![case_free(&fid, 11, "res")], // case 1: frees res
+            vec![case_free(&fid, 10, "res")],   // case 0: frees res
+            vec![case_free(&fid, 11, "res")],   // case 1: frees res
             vec![case_free(&fid, 12, "other")], // case 2: frees something else (gap for res)
         ];
         let (nodes, edges, _line) = build_switch_cfg(&fid, &case_effects);
@@ -904,12 +908,8 @@ mod tests {
         }
         let func_node = find_fn(tree.root_node()).expect("function found");
         let fid = test_function_id();
-        let cfg = extraction::CfgBuilder::build(
-            Language::TypeScript,
-            &fid,
-            func_node,
-            &source_bytes,
-        );
+        let cfg =
+            extraction::CfgBuilder::build(Language::TypeScript, &fid, func_node, &source_bytes);
 
         // A Branch (dispatch) node must exist, with CaseBranch edges out of it.
         let branch = cfg

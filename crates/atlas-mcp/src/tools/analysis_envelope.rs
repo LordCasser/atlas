@@ -299,7 +299,7 @@ impl AnalysisEnvelope {
 
         // 8. Store snapshot
         let status = if self.analysis_retry_after_ms.is_some() {
-            QueryStatus::Partial
+            QueryStatus::Retryable
         } else {
             QueryStatus::Ready
         };
@@ -481,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn test_partial_response_uses_analysis_retry_without_legacy_fields() {
+    fn test_retryable_response_uses_analysis_retry_without_legacy_fields() {
         let store = MockStore::new();
         let args = json!({"symbol": "test"});
         let lr = AnalysisEnvelope::new("calls", &args)
@@ -503,7 +503,7 @@ mod tests {
         assert!(v.get("gaps").is_none());
         assert_eq!(
             store.snapshots.lock().unwrap()[0].status,
-            QueryStatus::Partial
+            QueryStatus::Retryable
         );
     }
 

@@ -8,7 +8,8 @@
 //!
 //! # Usage pattern
 //! ```ignore
-//! let (focus_result, warnings) = self.active.query_runtime.prepare(&intent, &store);
+//! let (focus_result, warnings) =
+//!     self.active.query_runtime.prepare(&intent, &store, include_roots);
 //! ```
 //!
 //! # Dependencies
@@ -19,8 +20,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use atlas_engine::Store;
 use atlas_engine::IncludeRoot;
+use atlas_engine::Store;
 use atlas_engine::focus::query::QueryIntent;
 use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
 
@@ -65,12 +66,9 @@ impl QueryRuntime {
     /// Prepare focus-driven lazy extraction for a query intent.
     ///
     /// `include_roots` are request-scoped angle-include roots (validated and
-    /// normalised by the MCP layer). They are applied to the cached foreground
-    /// [`FocusRuntime`] closure engine immediately before the synchronous
-    /// `build_closure`, so angle-bracket `#include <...>` directives resolve to
-    /// project headers and structs defined there can enter the focus closure.
-    /// Each call overwrites the engine's roots — pass an empty `Vec` for queries
-    /// that carry none — so there is no cross-query leakage.
+    /// normalised by the MCP layer). They are copied into the foreground and
+    /// background focus windows for this query, so the background scheduler never
+    /// observes mutable per-query state from another request.
     ///
     /// Returns `(None, vec![])` when the project has a full index.
     /// Returns `(Some(FocusResult), warnings)` when focus analysis completes.
@@ -98,21 +96,8 @@ impl QueryRuntime {
         // blocking work on dedicated worker threads; unrelated store and graph
         // queries do not acquire this lock.
         //
-        // `apply_query_include_roots` is called under the same lock, immediately
-        // before `prepare`, so the set → build_closure → release sequence is
-        // atomic with respect to other queries: no query can observe another
-        // query's include_roots on the foreground engine.
         let mut runtime = self.focus_runtime.lock().unwrap();
-        if let Err(e) = runtime.apply_query_include_roots(include_roots) {
-            // Root application failed (e.g. closure engine could not be
-            // initialised). `prepare` will surface the underlying error;
-            // surface a warning here so the caller still sees a signal.
-            return (
-                None,
-                vec![format!("Focus include_roots application failed: {e}")],
-            );
-        }
-        match runtime.prepare(intent) {
+        match runtime.prepare(intent, include_roots) {
             Ok(result) => (Some(result), vec![]),
             Err(e) => (None, vec![format!("Focus preparation failed: {e}")]),
         }

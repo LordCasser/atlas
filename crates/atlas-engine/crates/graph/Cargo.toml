@@ -14,7 +14,7 @@ serde_json = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-extraction = { path = "../extraction", features = ["typescript"] }
+extraction = { path = "../extraction", features = ["typescript", "c"] }
 resolution = { path = "../resolution" }
 tempfile = "3"
 blake3 = "1"

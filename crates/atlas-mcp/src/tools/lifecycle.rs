@@ -4,7 +4,7 @@
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
 
-use super::analysis_envelope::AnalysisEnvelope;
+use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
 use super::{ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
@@ -34,14 +34,17 @@ impl ToolRouter {
             );
         }
 
-        let mut lr = AnalysisEnvelope::new("lifecycle", args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let mut lr = AnalysisEnvelope::new("lifecycle", args).with_root_warnings(root_warnings);
         let query_id = lr.query_id().to_string();
-        let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::SemanticFunction {
+        let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::SemanticFunction {
                 symbol_name: symbol.clone(),
                 file_id: self.resolve_selector_file_id(&input),
                 symbol_id: None,
-            }));
+            }),
+            include_roots,
+        );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -117,9 +120,21 @@ impl ToolRouter {
                     "field_path": field,
                     "error": "unsupported_language",
                     "message": "Lifecycle analysis only supports C/C++. The requested symbol is not C/C++ or could not be resolved.",
-                    "verdict": "incomplete",
                 });
-                return lr.with_is_error(true).build(resp, self);
+                return lr
+                    .with_is_error(false)
+                    .with_analysis_scope("local".into())
+                    .with_analysis_summary(
+                        "Lifecycle analysis is unavailable for this language; only C/C++ are supported."
+                            .into(),
+                    )
+                    .with_analysis_basis(vec!["cfg".into()])
+                    .with_gap_records(vec![GapRecord {
+                        scope: symbol.clone(),
+                        reason: "unsupported_language".into(),
+                        detail: "Lifecycle analysis currently supports only C/C++ symbols.".into(),
+                    }])
+                    .build(resp, self);
             }
         };
 
@@ -202,7 +217,6 @@ impl ToolRouter {
             "field_path": result.field_path,
             "function": result.function_qname,
             "final_state": result.final_state.as_str(),
-            "partial": result.partial,
             "verdict": proof.verdict.as_str(),
             "evidence_level": proof.evidence_level.as_str(),
             "reasoning": proof.reasoning,
@@ -258,7 +272,7 @@ impl ToolRouter {
                     detail: "Lifecycle fixpoint reached its bounded visit limit.".into(),
                 }])
                 .with_analysis_summary(format!(
-                    "Partial lifecycle analysis: {} transitions found, final state={}, {} suspicious point(s).",
+                    "Lifecycle analysis hit its bounded visit limit: {} transitions found, final state={}, {} suspicious point(s).",
                     result.transitions.len(),
                     result.final_state.as_str(),
                     result.suspicious_points.len(),

@@ -76,6 +76,58 @@ fn schema_project_open_has_no_background_index_parameters() {
 }
 
 #[test]
+fn schema_tasks_observes_queries_not_async_tasks() {
+    let tools = make_all_tools();
+    let tasks_tool = tools
+        .iter()
+        .find(|t| t.name == "tasks")
+        .expect("tasks tool must exist");
+
+    let props = tasks_tool
+        .input_schema
+        .properties
+        .as_ref()
+        .and_then(|props| props.as_object())
+        .expect("tasks tool must have object properties");
+    assert!(
+        props.get("query_id").is_some(),
+        "tasks must keep query_id-based refinement observability"
+    );
+    assert!(
+        props.get("task_id").is_none(),
+        "tasks must not expose a separate async task polling surface"
+    );
+}
+
+#[test]
+fn schema_graph_tools_accept_request_scoped_include_roots() {
+    let tools = make_all_tools();
+    for name in [
+        "calls",
+        "explore",
+        "path",
+        "trace",
+        "lifecycle",
+        "branch_diff",
+    ] {
+        let tool = tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} tool must exist"));
+        let props = tool
+            .input_schema
+            .properties
+            .as_ref()
+            .and_then(|props| props.as_object())
+            .unwrap_or_else(|| panic!("{name} tool must have object properties"));
+        assert!(
+            props.get("include_roots").is_some(),
+            "{name} must expose request-scoped include_roots in its MCP schema"
+        );
+    }
+}
+
+#[test]
 fn all_tools_have_descriptions() {
     let tools = make_all_tools();
     for tool in &tools {

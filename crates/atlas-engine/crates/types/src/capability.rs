@@ -521,7 +521,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                    ],
                 ),
             ),
             (
@@ -535,7 +537,9 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                    ],
                 ),
             ),
             (
@@ -591,7 +595,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                    ],
                 ),
             ),
             (
@@ -605,7 +611,9 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                    ],
                 ),
             ),
             (
@@ -741,7 +749,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.75,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
             ),
             (
@@ -755,7 +765,9 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.75,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
             ),
             (
@@ -769,7 +781,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.75,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -821,7 +835,9 @@ mod profiles {
                 FeatureField::CallGraph,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["function pointer calls resolved via local def-use (depth 3, intra-procedural only)"],
+                    &[
+                        "function pointer calls resolved via local def-use (depth 3, intra-procedural only)",
+                    ],
                 ),
             ),
             (
@@ -856,7 +872,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.73,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -933,7 +951,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -989,7 +1009,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["dataflow via TS grammar (ArkTS-specific intra-procedural patterns not yet verified)"],
+                    &[
+                        "dataflow via TS grammar (ArkTS-specific intra-procedural patterns not yet verified)",
+                    ],
                 ),
             ),
             (
@@ -1007,7 +1029,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -1102,7 +1126,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
+                    ],
                 ),
             ),
         ],
@@ -1216,7 +1242,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
             ),
             (
@@ -1230,21 +1258,27 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                    &[
+                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                    ],
                 ),
             ),
             (
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["Control-flow graph with using_statement and branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with using_statement and branch/loop body traversal implemented",
+                    ],
                 ),
             ),
             (
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -1317,7 +1351,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -1383,7 +1419,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.62,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -1459,7 +1497,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -1532,7 +1572,9 @@ mod profiles {
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
                     0.67,
-                    &["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                    &[
+                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)",
+                    ],
                 ),
             ),
         ],
@@ -2149,20 +2191,37 @@ mod tests {
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.60));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
 
         // Overridden features
         assert_eq!(
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                ],
             )
         );
         assert_eq!(
@@ -2176,7 +2235,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                ],
             )
         );
         assert_eq!(
@@ -2234,20 +2295,37 @@ mod tests {
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.60));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
 
         // Overridden features
         assert_eq!(
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                ],
             )
         );
         assert_eq!(
@@ -2261,7 +2339,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                ],
             )
         );
         assert_eq!(
@@ -2319,20 +2399,37 @@ mod tests {
 
         // Default features (confidence_floor = 0.75, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.75));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.75));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.75)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.75));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.75));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.75));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.75));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.75));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.75));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.75)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.75)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.75)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.75)
+        );
 
         // Overridden features
         assert_eq!(
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.75,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
             )
         );
         assert_eq!(
@@ -2346,7 +2443,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.75,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
             )
         );
         assert_eq!(
@@ -2360,7 +2459,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.75,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2406,19 +2507,33 @@ mod tests {
 
         // Default features (confidence_floor = 0.73, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.73));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.73));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.73)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.73));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.73));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.73));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.73));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.73));
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.73)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.73)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.73)
+        );
 
         // call_graph has confidence override (0.65, not 0.73)
         assert_eq!(
             fm.call_graph,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["function pointer calls resolved via local def-use (depth 3, intra-procedural only)"],
+                vec![
+                    "function pointer calls resolved via local def-use (depth 3, intra-procedural only)"
+                ],
             )
         );
         assert_eq!(
@@ -2453,7 +2568,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.73,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2497,13 +2614,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.70, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.70));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.70));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.70));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
 
         // Overridden features
         assert_eq!(
@@ -2538,7 +2670,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2579,13 +2713,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.60));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.60));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.60));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.60)
+        );
 
         // Overridden features
         assert_eq!(
@@ -2599,7 +2748,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["dataflow via TS grammar (ArkTS-specific intra-procedural patterns not yet verified)"],
+                vec![
+                    "dataflow via TS grammar (ArkTS-specific intra-procedural patterns not yet verified)"
+                ],
             )
         );
         assert_eq!(
@@ -2618,7 +2769,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2668,7 +2821,10 @@ mod tests {
 
         // Default features (confidence_floor = 0.65, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.65));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.65));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.65));
 
@@ -2723,7 +2879,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)"
+                ],
             )
         );
     }
@@ -2766,20 +2924,37 @@ mod tests {
 
         // Default features (confidence_floor = 0.72, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.72));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.72));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.72));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.72));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.72));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.72));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.72));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.72));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.72)
+        );
 
         // Overridden features
         assert_eq!(
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
             )
         );
         assert_eq!(
@@ -2793,7 +2968,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["scope-chain-aware binding with shadowing support; edge cases in nested expressions"],
+                vec![
+                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                ],
             )
         );
         // CFG limitation must mention both "body traversal" and "implemented"
@@ -2802,14 +2979,18 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["Control-flow graph with using_statement and branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with using_statement and branch/loop body traversal implemented"
+                ],
             )
         );
         assert_eq!(
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2852,13 +3033,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.70, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.70));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.70));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.70));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.70));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.70)
+        );
 
         // Overridden features
         assert_eq!(
@@ -2893,7 +3089,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -2936,13 +3134,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.62, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.62));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.62));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.62)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.62));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.62));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.62));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.62));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.62));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.62));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.62)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.62)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.62)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.62)
+        );
 
         // Overridden features
         assert_eq!(
@@ -2975,7 +3188,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.62,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -3020,13 +3235,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.65, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.65));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.65));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.65));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.65));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.65)
+        );
 
         // Overridden features
         assert_eq!(
@@ -3061,7 +3291,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }
@@ -3103,13 +3335,28 @@ mod tests {
 
         // Default features (confidence_floor = 0.67, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.67));
-        assert_eq!(fm.references, FeatureSupport::supported_with_confidence(0.67));
+        assert_eq!(
+            fm.references,
+            FeatureSupport::supported_with_confidence(0.67)
+        );
         assert_eq!(fm.imports, FeatureSupport::supported_with_confidence(0.67));
         assert_eq!(fm.scopes, FeatureSupport::supported_with_confidence(0.67));
-        assert_eq!(fm.call_graph, FeatureSupport::supported_with_confidence(0.67));
-        assert_eq!(fm.field_access, FeatureSupport::supported_with_confidence(0.67));
-        assert_eq!(fm.call_arguments, FeatureSupport::supported_with_confidence(0.67));
-        assert_eq!(fm.returns_flow, FeatureSupport::supported_with_confidence(0.67));
+        assert_eq!(
+            fm.call_graph,
+            FeatureSupport::supported_with_confidence(0.67)
+        );
+        assert_eq!(
+            fm.field_access,
+            FeatureSupport::supported_with_confidence(0.67)
+        );
+        assert_eq!(
+            fm.call_arguments,
+            FeatureSupport::supported_with_confidence(0.67)
+        );
+        assert_eq!(
+            fm.returns_flow,
+            FeatureSupport::supported_with_confidence(0.67)
+        );
 
         // Overridden features
         assert_eq!(
@@ -3144,7 +3391,9 @@ mod tests {
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
                 0.67,
-                vec!["cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"],
+                vec![
+                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall verified)"
+                ],
             )
         );
     }

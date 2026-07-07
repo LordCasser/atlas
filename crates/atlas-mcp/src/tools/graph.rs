@@ -460,6 +460,7 @@ impl ToolRouter {
         policy: SymbolResolutionPolicy,
         direction: Option<String>,
         depth: Option<usize>,
+        include_roots: &[atlas_engine::IncludeRoot],
     ) -> Result<SymbolResolution, String> {
         let qname = symbol_input_qname(input);
         let resolution = self.resolve_symbol_input(input, policy)?;
@@ -475,7 +476,7 @@ impl ToolRouter {
             direction,
             depth,
         });
-        let _ = self.prepare_focus_query(intent);
+        let _ = self.prepare_focus_query_with_roots(intent, include_roots.to_vec());
         self.resolve_symbol_input(input, policy)
     }
 
@@ -483,6 +484,7 @@ impl ToolRouter {
         &self,
         qname: &str,
         scope: &str,
+        include_roots: Vec<String>,
     ) -> Result<Option<SymbolResolution>, String> {
         let engine: Arc<Engine> = Arc::new(Engine::from_store(
             self.project().store.clone(),
@@ -499,6 +501,7 @@ impl ToolRouter {
                 scope: Some(scope.to_string()),
                 analysis: SearchAnalysis::Auto,
                 limit: MAX_AMBIGUOUS_CANDIDATES,
+                include_roots,
                 ..Default::default()
             })
             .map_err(|e| format!("Scoped explore search failed: {e}"))?;
@@ -586,12 +589,14 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let resolution = match self.resolve_graph_symbol_with_focus_retry(
             &input,
             SymbolResolutionPolicy::Aggregate,
             Some("incoming".to_string()),
             None,
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -618,7 +623,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = AnalysisEnvelope::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(root_warnings);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
@@ -627,7 +632,8 @@ impl ToolRouter {
             direction: Some("incoming".to_string()),
             depth: None,
         });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, mut focus_warnings) =
+            self.prepare_focus_query_with_roots(intent, include_roots);
 
         let has_full_index = {
             let active = self.project();
@@ -712,12 +718,14 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let resolution = match self.resolve_graph_symbol_with_focus_retry(
             &input,
             SymbolResolutionPolicy::Aggregate,
             Some("outgoing".to_string()),
             None,
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -744,7 +752,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = AnalysisEnvelope::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(root_warnings);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
@@ -753,7 +761,8 @@ impl ToolRouter {
             direction: Some("outgoing".to_string()),
             depth: None,
         });
-        let (focus_result, mut focus_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, mut focus_warnings) =
+            self.prepare_focus_query_with_roots(intent, include_roots);
 
         let has_full_index = {
             let active = self.project();
@@ -855,6 +864,7 @@ impl ToolRouter {
             Ok(k) => k,
             Err(e) => return (e, true),
         };
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let retry_direction = if direction.is_empty() {
             None
@@ -866,6 +876,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::Aggregate,
             retry_direction.clone(),
             Some(depth),
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -893,7 +904,7 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = AnalysisEnvelope::new("calls", args);
+        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(root_warnings);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
@@ -902,7 +913,8 @@ impl ToolRouter {
             direction: retry_direction,
             depth: Some(depth),
         });
-        let (focus_result, lazy_warnings) = self.prepare_focus_query(intent);
+        let (focus_result, lazy_warnings) =
+            self.prepare_focus_query_with_roots(intent, include_roots);
 
         let project = self.project();
         let graph = match project.graph_runtime.provider().graph_snapshot() {
@@ -1097,6 +1109,7 @@ impl ToolRouter {
             Ok(f) => f,
             Err(e) => return (e, true),
         };
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Resolve both sides with Aggregate policy.
         let from_resolution = match self.resolve_graph_symbol_with_focus_retry(
@@ -1104,6 +1117,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::Aggregate,
             None,
             Some(max_depth),
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -1113,6 +1127,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::Aggregate,
             None,
             Some(max_depth),
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -1170,7 +1185,6 @@ impl ToolRouter {
         // Transparent lazy structural: ensure both endpoint files have full
         // structural data before path finding. A cold focus project may lack
         // the intra-file call edges that BFS needs to discover a path.
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
         let intent = Some(atlas_engine::QueryIntent::Path {
             from_name: from_qname.to_string(),
             to_name: to_qname.to_string(),
@@ -1264,7 +1278,7 @@ impl ToolRouter {
             include_code: bool,
         ) -> Vec<serde_json::Value> {
             let mut hops: Vec<serde_json::Value> =
-                Vec::with_capacity(path.node_indices.len() + path.edge_indices.len());
+                Vec::with_capacity(path.node_indices.len() + path.edges.len());
             for i in 0..path.node_indices.len() {
                 let mut node_json = super::node_json(store_query, snap, path.node_indices[i], None);
                 if include_code {
@@ -1668,6 +1682,9 @@ impl ToolRouter {
         if let Err(e) = super::validate_symbol_name_length(qname) {
             return (e, true);
         }
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let include_roots_for_scope: Vec<String> =
+            include_roots.iter().map(|root| root.path.clone()).collect();
         let source_mode = parse_source_mode(args);
         let source_lines = args
             .get("source_lines")
@@ -1703,20 +1720,21 @@ impl ToolRouter {
                 if sel.file_path.as_deref().is_some_and(|p| !p.trim().is_empty())
         );
         let prepared_focus = if scope.is_none() && has_file_hint {
-            Some(
-                self.prepare_focus_query(Some(atlas_engine::QueryIntent::Explore {
+            Some(self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::Explore {
                     symbol_name: qname.to_string(),
                     file_id: self.resolve_selector_file_id(&input),
                     symbol_id: None,
-                })),
-            )
+                }),
+                include_roots.clone(),
+            ))
         } else {
             None
         };
 
         // Resolve with UniqueOrCandidates policy.
         let resolution = if let Some(scope) = scope {
-            match self.scoped_explore_resolution(qname, scope) {
+            match self.scoped_explore_resolution(qname, scope, include_roots_for_scope) {
                 Ok(Some(r)) => r,
                 Ok(None) => SymbolResolution::NotFound {
                     qname: qname.to_string(),
@@ -1731,7 +1749,7 @@ impl ToolRouter {
             }
         };
 
-        let lr = AnalysisEnvelope::new("explore", args);
+        let lr = AnalysisEnvelope::new("explore", args).with_root_warnings(root_warnings);
 
         let (sym_id, mut resolved_opt) = match resolution {
             SymbolResolution::Single {
@@ -1771,7 +1789,7 @@ impl ToolRouter {
             } => {
                 let mut resp = json!({
                     "symbol": qname,
-                    "status": "building",
+                    "status": "unresolved",
                     "message": "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this explore request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region.",
                 });
                 if !suggestions.is_empty() {
@@ -1828,11 +1846,14 @@ impl ToolRouter {
 
         // Lazy structural: prepare focus query for graph edges
         let (focus_result, focus_warnings) = prepared_focus.unwrap_or_else(|| {
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Explore {
-                symbol_name: qname.to_string(),
-                file_id: Some(seed_sym.file_id),
-                symbol_id: None,
-            }))
+            self.prepare_focus_query_with_roots(
+                Some(atlas_engine::QueryIntent::Explore {
+                    symbol_name: qname.to_string(),
+                    file_id: Some(seed_sym.file_id),
+                    symbol_id: None,
+                }),
+                include_roots,
+            )
         });
 
         // Focus may replace manifest or stale structural facts for the same
@@ -2006,6 +2027,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::Aggregate,
             None,
             Some(depth),
+            &[],
         ) {
             Ok(r) => r,
             Err(e) => return (e, true),
@@ -2585,11 +2607,11 @@ mod tests {
         let (resp, is_error) = router.handle_impact(&json!({
             "symbol": "nonexistent"
         }));
-        // In focus mode, symbol-not-found returns a partial "building" result
+        // In focus mode, symbol-not-found returns a retryable unresolved result
         // (is_error=false) instead of a hard error. Both acceptable.
         assert!(
-            is_error || resp.contains("building") || resp.contains("not available"),
-            "nonexistent symbol should error or return partial: {resp}"
+            is_error || resp.contains("unresolved") || resp.contains("not available"),
+            "nonexistent symbol should error or return retryable unresolved response: {resp}"
         );
     }
 
@@ -2601,11 +2623,11 @@ mod tests {
             "symbol": "nonexistent",
             "direction": "outgoing"
         }));
-        // In focus mode, symbol-not-found returns a partial "building" result
+        // In focus mode, symbol-not-found returns a retryable unresolved result
         // (is_error=false) instead of a hard error. Both are acceptable.
         assert!(
-            is_error || resp.contains("building") || resp.contains("not available"),
-            "nonexistent symbol should error or return partial: {resp}"
+            is_error || resp.contains("unresolved") || resp.contains("not available"),
+            "nonexistent symbol should error or return retryable unresolved response: {resp}"
         );
     }
 
@@ -2618,8 +2640,8 @@ mod tests {
             "direction": "incoming"
         }));
         assert!(
-            is_error || resp.contains("building") || resp.contains("not available"),
-            "nonexistent symbol should error or return partial: {resp}"
+            is_error || resp.contains("unresolved") || resp.contains("not available"),
+            "nonexistent symbol should error or return retryable unresolved response: {resp}"
         );
     }
 
@@ -2632,8 +2654,8 @@ mod tests {
             "direction": "both"
         }));
         assert!(
-            is_error || resp.contains("building") || resp.contains("not available"),
-            "nonexistent symbol should error or return partial: {resp}"
+            is_error || resp.contains("unresolved") || resp.contains("not available"),
+            "nonexistent symbol should error or return retryable unresolved response: {resp}"
         );
     }
 
@@ -2648,9 +2670,9 @@ mod tests {
             "depth": 2
         }));
         // direction="both" must not produce an argument parsing error.
-        // Symbol may not exist (focus mode returns partial), but that's ok.
+        // Symbol may not exist (focus mode returns retryable unresolved), but that's ok.
         assert!(
-            is_error || resp.contains("building") || resp.contains("not available"),
+            is_error || resp.contains("unresolved") || resp.contains("not available"),
             "direction='both' should be accepted; got: {resp}"
         );
     }
@@ -2926,6 +2948,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn calls_invalid_include_roots_returns_warning() {
+        let store = test_store();
+        insert_test_symbol(&store, "src/callee.ts", "warned_callee");
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp_str, is_error) = router.handle_calls(&json!({
+            "symbol": "warned_callee",
+            "direction": "incoming",
+            "include_roots": ["/absolute/rejected"]
+        }));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let warnings = resp["warnings"].as_array().expect("warnings should exist");
+        assert!(
+            warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|s| s.contains("absolute path rejected"))),
+            "expected include_roots warning, got: {resp}"
+        );
+    }
+
     // ── handle_explore tests ───────────────────────────────────────────
 
     #[test]
@@ -2998,18 +3043,51 @@ mod tests {
     }
 
     #[test]
-    fn explore_not_found_returns_retryable_partial_response() {
+    fn explore_invalid_include_roots_returns_warning() {
+        let store = test_store();
+        insert_test_symbol(&store, "test.ts", "myfunc_with_roots");
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp_str, is_error) = router.handle_explore(&json!({
+            "symbol": "myfunc_with_roots",
+            "include_roots": ["/absolute/rejected"]
+        }));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let warnings = resp["warnings"].as_array().expect("warnings should exist");
+        assert!(
+            warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|s| s.contains("absolute path rejected"))),
+            "expected include_roots warning, got: {resp}"
+        );
+    }
+
+    #[test]
+    fn explore_not_found_returns_retryable_unresolved_response() {
         let store = test_store();
         let router = test_router(store);
         let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "missing_func"}));
         assert!(
             !is_error,
-            "missing cold symbol should be a retryable partial response: {resp_str}"
+            "missing cold symbol should be a retryable unresolved response: {resp_str}"
         );
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert_eq!(resp["status"], json!("building"));
+        assert_eq!(resp["status"], json!("unresolved"));
         assert_eq!(resp["analysis"]["retry_after_ms"], json!(2000));
+        assert!(resp.get("query_id").is_some(), "missing query_id: {resp}");
+        assert!(
+            resp.get("retry_after_ms").is_none(),
+            "retry guidance belongs only under analysis: {resp}"
+        );
+        assert!(
+            resp.get("gaps").is_none(),
+            "non-terminal retryable response must not expose terminal gaps: {resp}"
+        );
+        assert!(resp.get("partial_result").is_none());
         assert!(resp.get("background_refinement").is_none());
+        assert!(resp.get("work").is_none());
     }
 
     // ── ambiguity candidate tests ──────────────────────────────────────
@@ -3258,7 +3336,7 @@ mod tests {
             "to": "copy_from_user"
         }));
 
-        // In focus mode, symbol-not-found returns a partial "building" result
+        // In focus mode, symbol-not-found returns a retryable unresolved result
         // (is_error=false) instead of a hard error. Both acceptable outcomes.
         if is_error {
             assert!(
@@ -3268,10 +3346,10 @@ mod tests {
             );
         } else {
             assert!(
-                resp.contains("building")
+                resp.contains("unresolved")
                     || resp.contains("not available")
-                    || resp.contains("partial"),
-                "focus-mode partial result should indicate building state: {resp}"
+                    || resp.contains("retry_after_ms"),
+                "focus-mode response should indicate unresolved retryable state: {resp}"
             );
         }
     }
@@ -3628,6 +3706,7 @@ mod tests {
             precision: None,
             gaps: vec![],
             pending_closure_ids: vec![],
+            pending_extraction_job_ids: vec![],
             closure_id: None,
             seed_symbol_id: None,
             seed_file_id: None,

@@ -119,7 +119,6 @@ pub(crate) mod runtime;
 pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod symbol_selector;
-pub(crate) mod task_manager;
 pub(crate) mod tool_contract;
 pub(crate) mod trace;
 pub(crate) mod usages;
@@ -145,12 +144,9 @@ pub(crate) fn apply_focus_result_to_lr(
         lr = lr.with_coverage_counts(counts.clone());
     }
 
-    let pending = result
-        .job_tracker
-        .as_ref()
-        .map(|tracker| tracker.pending_count_and_eta_ms(&result.pending_closure_ids));
+    let (pending_count, retry_after_ms) = result.pending_work_count_and_eta_ms();
 
-    if pending.is_none_or(|(count, _)| count == 0) {
+    if pending_count == 0 {
         // Terminal: result is ready to use
         let mut lr = lr
             .with_analysis_scope("local".to_string())
@@ -176,12 +172,11 @@ pub(crate) fn apply_focus_result_to_lr(
         }
         lr
     } else {
-        // Non-terminal: background jobs are still running
-        let (pending, retry_after_ms) = pending.expect("non-terminal result has tracker status");
+        // Non-terminal: tracked background closures or raw extraction jobs are still running.
         lr = lr
             .with_analysis_scope("local".to_string())
             .with_analysis_summary(format!(
-                "Focus analysis still expanding: {pending} background job(s) remaining.",
+                "Focus analysis still expanding: {pending_count} pending job(s) remaining.",
             ))
             .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
         lr.with_analysis_retry_after_ms(retry_after_ms)
@@ -322,18 +317,6 @@ impl ToolRouter {
         }
     }
 
-    /// Create a lightweight router bound to an already-active project.
-    ///
-    /// Async task execution uses this to run the normal handler pipeline against
-    /// the project snapshot that was active when the task was accepted.
-    pub(crate) fn from_active_project(project: Arc<ActiveProject>) -> Self {
-        Self {
-            project: ProjectSlot::new(Some(project)),
-            tools: Vec::new(),
-            replay_focus_result: None,
-        }
-    }
-
     fn for_resume(
         project: Arc<ActiveProject>,
         focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
@@ -356,6 +339,39 @@ impl ToolRouter {
     /// Return the backing store.
     pub fn store(&self) -> Arc<Store> {
         self.project().store.clone()
+    }
+
+    fn active_extraction_job_count(&self, job_ids: &[String]) -> usize {
+        job_ids
+            .iter()
+            .filter(|job_id| {
+                self.project()
+                    .store
+                    .get_extraction_job(job_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|job| matches!(job.status.as_str(), "queued" | "building"))
+            })
+            .count()
+    }
+
+    fn focus_pending_count_and_eta_ms(
+        &self,
+        result: &atlas_engine::focus::runtime::FocusResult,
+    ) -> (usize, u64) {
+        let (closure_pending, closure_eta) = result
+            .job_tracker
+            .as_ref()
+            .map(|tracker| tracker.pending_count_and_eta_ms(&result.pending_closure_ids))
+            .unwrap_or((0, 0));
+        let extraction_pending =
+            self.active_extraction_job_count(&result.pending_extraction_job_ids);
+        let pending = closure_pending + extraction_pending;
+        if pending == 0 {
+            return (0, 0);
+        }
+        let extraction_eta = 5000 * extraction_pending as u64;
+        (pending, (closure_eta + extraction_eta).clamp(5000, 60000))
     }
 
     /// Return whether a tool needs the in-memory graph/search/context snapshot.
@@ -408,15 +424,11 @@ impl ToolRouter {
 
     /// Unified focus query preparation carrying request-scoped `include_roots`.
     ///
-    /// This is the entry point that wires MCP `include_roots` through to the
-    /// focus closure engine, so structs defined in header files reached via
-    /// angle-bracket `#include <...>` enter the focus closure instead of
-    /// staying stuck in "building" state.
-    ///
-    /// The roots are applied to the cached foreground closure engine on every
-    /// call — including clearing to an empty `Vec` for queries that carry none —
-    /// so there is no cross-query leakage (the apply → `build_closure` sequence
-    /// is serialised by the `FocusRuntime` Mutex).
+    /// This is the entry point that wires MCP `include_roots` into the focus
+    /// windows for this query, so foreground and background closure builds both
+    /// resolve angle-bracket `#include <...>` directives against the request's
+    /// project headers. Roots are carried by value on the query windows; they
+    /// are never persisted or stored on the cached closure engine.
     pub fn prepare_focus_query_with_roots(
         &self,
         intent: Option<atlas_engine::QueryIntent>,
@@ -426,7 +438,11 @@ impl ToolRouter {
         Vec<String>,
     ) {
         if let Some(result) = self.replay_focus_result.as_ref() {
-            return (Some(result.clone()), vec![]);
+            if result.pending_extraction_job_ids.is_empty()
+                || self.active_extraction_job_count(&result.pending_extraction_job_ids) > 0
+            {
+                return (Some(result.clone()), vec![]);
+            }
         }
 
         let project = self.project();
@@ -553,10 +569,9 @@ impl ToolRouter {
 
         let mut resp = json!({
             "symbol": symbol,
-            "status": "building",
+            "status": "unresolved",
             "message": message,
             "candidate_files": candidate_files,
-            "retry_after_ms": 8000,
         });
         if !suggestions.is_empty() {
             resp["suggestions"] = json!(suggestions);
@@ -1307,6 +1322,7 @@ fn make_graph_tools() -> Vec<Tool> {
                         "items": { "type": "string" },
                         "description": "Edge kinds to follow. Default: [\"calls\",\"instantiates\",\"implements\"]. Use [\"*\"] or [] for all edge kinds (neighbor query mode)."
                     },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
@@ -1326,6 +1342,7 @@ fn make_graph_tools() -> Vec<Tool> {
                     "peer_limit": { "type": "integer", "description": "Max file peer symbols to return. Default: 12." },
                     "include_file_context": { "type": "boolean", "description": "Include imports, exports, and file peers. Default: true." },
                     "include_recommendations": { "type": "boolean", "description": "Include recommended next queries. Default: true." },
+                    "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["symbol".into()]),
             },
@@ -1551,19 +1568,18 @@ fn make_task_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "tasks".into(),
-            description: "List focus/lazy extraction jobs and poll async task results. Without arguments, lists all active jobs. Use query_id to filter refinement work triggered by a specific query. Use task_id to poll an async task's current state from an async timeout response.".into(),
+            description: "List focus/lazy extraction jobs and query refinement state. Without arguments, lists all active jobs. Use query_id to filter refinement work triggered by a specific query.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query_id": { "type": "string", "description": "Optional query_id to filter jobs." },
-                    "task_id": { "type": "string", "description": "Optional async task ID. When provided, returns the task's current state (status, result, progress). Task IDs are returned by async tool timeout responses." },
                 })),
                 required: None,
             },
         },
         Tool {
             name: "resume_query".into(),
-            description: "Re-run a previous query snapshot to get enhanced results after focus/lazy refinement. This uses query_id, not task_id, and returns the same format as the original tool with potentially richer data.".into(),
+            description: "Re-run a previous query snapshot to get enhanced results after focus/lazy refinement. Returns the same format as the original tool with potentially richer data.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -2240,11 +2256,7 @@ impl ToolRouter {
             let (pending, retry_after_ms) = snapshot
                 .focus_result
                 .as_ref()
-                .and_then(|result| {
-                    result.job_tracker.as_ref().map(|tracker| {
-                        tracker.pending_count_and_eta_ms(&result.pending_closure_ids)
-                    })
-                })
+                .map(|result| self.focus_pending_count_and_eta_ms(result))
                 .unwrap_or((0, 0));
             let mut state = json!({
                 "query_id": qid,
@@ -2868,6 +2880,7 @@ mod tests {
                 precision: None,
                 gaps: vec![],
                 pending_closure_ids: vec!["cl_pending".into()],
+                pending_extraction_job_ids: vec![],
                 closure_id: None,
                 seed_symbol_id: None,
                 seed_file_id: None,
@@ -2876,7 +2889,7 @@ mod tests {
                 job_tracker: Some(Arc::clone(&tracker)),
             }),
             created_at: std::time::Instant::now(),
-            status: crate::tools::query_snapshot::QueryStatus::Partial,
+            status: crate::tools::query_snapshot::QueryStatus::Retryable,
         });
 
         let (pending, pending_err) =
@@ -2894,6 +2907,114 @@ mod tests {
         assert_eq!(ready["query"]["status"], "ready");
         assert_eq!(ready["query"]["pending_jobs"], 0);
         assert!(ready["query"].get("retry_after_ms").is_none());
+    }
+
+    #[test]
+    fn tasks_query_status_tracks_raw_extraction_pending_jobs() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "pending.ts");
+        store
+            .claim_file_extraction_job(&file_id, "structural", Some("q_raw"), None, Some(30_000))
+            .unwrap();
+        let job_id = store
+            .find_active_file_extraction_job(&file_id, "structural")
+            .unwrap()
+            .expect("claimed job should be active")
+            .job_id;
+
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        router.store_query_snapshot(QuerySnapshot {
+            query_id: "q_raw".into(),
+            tool_name: "explore".into(),
+            tool_args: serde_json::json!({"symbol": "target"}),
+            focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: None,
+                gaps: vec![],
+                pending_closure_ids: vec![],
+                pending_extraction_job_ids: vec![job_id.clone()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: None,
+            }),
+            created_at: std::time::Instant::now(),
+            status: crate::tools::query_snapshot::QueryStatus::Retryable,
+        });
+
+        let (pending, pending_err) = router.handle_tasks(&serde_json::json!({"query_id": "q_raw"}));
+        assert!(!pending_err);
+        let pending: serde_json::Value = serde_json::from_str(&pending).unwrap();
+        assert_eq!(pending["query"]["status"], "refining");
+        assert_eq!(pending["query"]["pending_jobs"], 1);
+        assert_eq!(pending["query"]["retry_after_ms"], 5000);
+
+        store.complete_extraction_job(&job_id).unwrap();
+        let (ready, ready_err) = router.handle_tasks(&serde_json::json!({"query_id": "q_raw"}));
+        assert!(!ready_err);
+        let ready: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(ready["query"]["status"], "ready");
+        assert_eq!(ready["query"]["pending_jobs"], 0);
+        assert!(
+            ready["query"].get("retry_after_ms").is_none(),
+            "completed raw extraction job must stop query retry: {ready}"
+        );
+    }
+
+    #[test]
+    fn tasks_query_atlas_jobs_do_not_infer_completion_from_missing_rows() {
+        let store = test_store();
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let (resp, is_error) = router.handle_tasks(&serde_json::json!({"query_id": "q_missing"}));
+
+        assert!(!is_error, "tasks failed: {resp}");
+        let resp: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            resp["atlas_jobs"]["message"].as_str(),
+            Some("no active extraction jobs")
+        );
+        assert_ne!(
+            resp["atlas_jobs"]["message"].as_str(),
+            Some("all jobs complete"),
+            "raw extraction_jobs rows are not durable completion evidence"
+        );
+    }
+
+    #[test]
+    fn retryable_symbol_not_found_uses_analysis_retry_only() {
+        let store = test_store();
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+
+        let (resp, is_error) = router.retryable_symbol_not_found_response(
+            "symbol",
+            &serde_json::json!({"symbol": "missing_func"}),
+            "missing_func",
+            Vec::new(),
+            None,
+        );
+
+        assert!(
+            !is_error,
+            "retryable not-found should not be an error: {resp}"
+        );
+        let resp: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(resp["status"], "unresolved");
+        assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+        assert!(
+            resp.get("retry_after_ms").is_none(),
+            "retry guidance belongs only under analysis: {resp}"
+        );
+        assert!(
+            resp.get("gaps").is_none(),
+            "non-terminal retryable response must not expose terminal gaps: {resp}"
+        );
+        assert!(resp.get("query_id").is_some(), "missing query_id: {resp}");
+        assert!(resp.get("partial_result").is_none());
+        assert!(resp.get("background_refinement").is_none());
+        assert!(resp.get("work").is_none());
     }
 
     // ── Regression: include_roots validation produces diagnostics ────
@@ -3766,7 +3887,7 @@ mod tests {
     fn trace_callers_hex_symbol_accepted() {
         // Hex strings are no longer auto-detected — they are treated as
         // qualified names. A hex-looking string won't match any symbol.
-        // In focus mode, this returns a partial "building" result instead
+        // In focus mode, this returns a retryable unresolved result instead
         // of a hard error.
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
@@ -3783,7 +3904,7 @@ mod tests {
         assert!(
             resp_str.contains("not found")
                 || resp_str.contains("not available")
-                || resp_str.contains("building")
+                || resp_str.contains("unresolved")
                 || is_error,
             "Hex string should not resolve as SymbolId: {resp_str}"
         );
@@ -4549,6 +4670,7 @@ mod tests {
                     remaining: 1,
                 }],
                 pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
+                pending_extraction_job_ids: vec![],
                 closure_id: None,
                 seed_symbol_id: None,
                 seed_file_id: None,
@@ -4604,6 +4726,7 @@ mod tests {
                     remaining: 1,
                 }],
                 pending_closure_ids: vec!["cl_test_1".to_string(), "cl_test_2".to_string()],
+                pending_extraction_job_ids: vec![],
                 closure_id: None,
                 seed_symbol_id: None,
                 seed_file_id: None,
@@ -4627,7 +4750,7 @@ mod tests {
             assert_eq!(resp["analysis"]["retry_after_ms"], 5000);
             assert_eq!(
                 resp["analysis"]["summary"],
-                "Focus analysis still expanding: 1 background job(s) remaining."
+                "Focus analysis still expanding: 1 pending job(s) remaining."
             );
             assert!(
                 resp.get("gaps").is_none(),
@@ -4644,6 +4767,48 @@ mod tests {
             );
         }
 
+        // ── Case 2b: Non-terminal — foreground extraction job is in-flight ──
+        {
+            let result = atlas_engine::focus::runtime::FocusResult {
+                mode: atlas_engine::focus::runtime::IndexMode::Focus,
+                precision: Some(Precision {
+                    coverage: CoverageTier::Partial { gaps: vec![] },
+                    confidence: SemanticConfidence::Medium,
+                }),
+                gaps: vec![atlas_engine::structs::KnownGap::BudgetExhausted {
+                    strategy: "should_be_suppressed_while_pending".to_string(),
+                    remaining: 1,
+                }],
+                pending_closure_ids: vec![],
+                pending_extraction_job_ids: vec!["extract_pending".into()],
+                closure_id: None,
+                seed_symbol_id: None,
+                seed_file_id: None,
+                built_files: vec![],
+                coverage_counts: None,
+                job_tracker: None,
+            };
+
+            let (resp, snapshot) = build_json(&result);
+            assert_eq!(resp["analysis"]["retry_after_ms"], 5000);
+            assert_eq!(
+                resp["analysis"]["summary"],
+                "Focus analysis still expanding: 1 pending job(s) remaining."
+            );
+            assert!(
+                resp.get("gaps").is_none(),
+                "raw extraction pending is transient and must not expose gaps: {resp}"
+            );
+            assert_eq!(
+                snapshot.focus_result.unwrap().pending_extraction_job_ids,
+                vec!["extract_pending".to_string()]
+            );
+            assert_eq!(
+                snapshot.status,
+                crate::tools::query_snapshot::QueryStatus::Retryable
+            );
+        }
+
         // ── Case 3: Failed background work is terminal and diagnostic ──
         {
             let tracker = JobTracker::new();
@@ -4657,6 +4822,7 @@ mod tests {
                 }),
                 gaps: vec![],
                 pending_closure_ids: vec!["cl_failed".to_string()],
+                pending_extraction_job_ids: vec![],
                 closure_id: None,
                 seed_symbol_id: None,
                 seed_file_id: None,
@@ -4690,6 +4856,7 @@ mod tests {
             precision: None,
             gaps: vec![],
             pending_closure_ids: vec!["existing_job".into()],
+            pending_extraction_job_ids: vec![],
             closure_id: Some("existing_closure".into()),
             seed_symbol_id: None,
             seed_file_id: None,
@@ -4711,6 +4878,62 @@ mod tests {
         assert!(warnings.is_empty());
         assert_eq!(actual.pending_closure_ids, expected.pending_closure_ids);
         assert!(Arc::ptr_eq(actual.job_tracker.as_ref().unwrap(), &tracker));
+    }
+
+    #[test]
+    fn resume_router_reprepares_after_raw_extraction_job_finishes() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/main.ts");
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "hash1",
+                "complete",
+                atlas_engine::structs::CapabilityMask::default(),
+            )
+            .unwrap();
+        store
+            .claim_file_extraction_job(&file_id, "structural", Some("old_query"), None, None)
+            .unwrap();
+        let job_id = store
+            .find_active_file_extraction_job(&file_id, "structural")
+            .unwrap()
+            .expect("claimed job should be active")
+            .job_id;
+        store.complete_extraction_job(&job_id).unwrap();
+
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let stale = atlas_engine::focus::runtime::FocusResult {
+            mode: atlas_engine::focus::runtime::IndexMode::Focus,
+            precision: None,
+            gaps: vec![],
+            pending_closure_ids: vec![],
+            pending_extraction_job_ids: vec![job_id],
+            closure_id: Some("stale_closure".into()),
+            seed_symbol_id: None,
+            seed_file_id: Some(file_id),
+            built_files: vec![],
+            coverage_counts: None,
+            job_tracker: None,
+        };
+        let replay = ToolRouter::for_resume(router.project(), Some(stale));
+        let intent = atlas_engine::QueryIntent::Calls {
+            symbol_name: "main".into(),
+            file_id: Some(file_id),
+            symbol_id: None,
+            direction: Some("outgoing".into()),
+            depth: None,
+        };
+
+        let (actual, warnings) = replay.prepare_focus_query(Some(intent));
+        let actual = actual.expect("resume should reprepare after raw job completion");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert!(
+            actual.pending_extraction_job_ids.is_empty(),
+            "completed raw extraction job must not keep resume_query pending"
+        );
+        assert_ne!(actual.closure_id.as_deref(), Some("stale_closure"));
     }
 
     #[test]
@@ -4744,6 +4967,7 @@ mod tests {
                 precision: None,
                 gaps: vec![],
                 pending_closure_ids: vec!["finished_job".into()],
+                pending_extraction_job_ids: vec![],
                 closure_id: Some("original_closure".into()),
                 seed_symbol_id: Some(caller),
                 seed_file_id: Some(caller_file),
@@ -4752,7 +4976,7 @@ mod tests {
                 job_tracker: Some(tracker),
             }),
             created_at: std::time::Instant::now(),
-            status: QueryStatus::Partial,
+            status: QueryStatus::Retryable,
         });
 
         let (response, is_error) =
@@ -5292,6 +5516,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn lifecycle_unsupported_language_returns_terminal_gap() {
+        let store = test_store();
+        let file_id = register_test_file(&store, "a.ts");
+        let symbol_id = insert_trace_test_symbol(
+            &store,
+            file_id,
+            "handler",
+            "handler",
+            atlas_engine::SymbolKind::Function,
+        );
+        let entry = atlas_engine::CfgNode::entry(&symbol_id);
+        let exit = atlas_engine::CfgNode::exit(&symbol_id);
+        let edge =
+            atlas_engine::CfgEdge::new(&entry.id, &exit.id, atlas_engine::CfgEdgeKind::Normal);
+        store.insert_cfg_nodes(&[entry, exit]).unwrap();
+        store.insert_cfg_edges(&[edge]).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let router = ToolRouter::new_empty(store, tmp.path().to_path_buf());
+        let ctx = ToolCallContext::empty();
+        let result = router.call_tool(
+            &ctx,
+            "lifecycle",
+            &serde_json::json!({"symbol": "handler", "field": "ptr"}),
+        );
+        let text = extract_text(&result);
+        let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(result.is_error, Some(false), "{text}");
+        assert_eq!(val["ok"], serde_json::json!(false), "{text}");
+        assert_eq!(
+            val["error"],
+            serde_json::json!("unsupported_language"),
+            "{text}"
+        );
+        assert!(
+            val.get("verdict").is_none(),
+            "unsupported language is a capability gap, not an analysis verdict: {text}"
+        );
+        assert_eq!(
+            val["gaps"][0]["reason"],
+            serde_json::json!("unsupported_language"),
+            "{text}"
+        );
+        assert!(
+            val["analysis"].get("retry_after_ms").is_none(),
+            "unsupported language is terminal for lifecycle and should not be retryable: {text}"
+        );
+    }
+
     /// Contract dispatch returns error for branch_diff without symbol.
     #[test]
     fn branch_diff_missing_symbol_returns_error() {
@@ -5321,7 +5596,7 @@ mod tests {
 
         // view=detail → StoreFactQuery (no graph needed)
         // In focus mode, symbol-not-found can return either a hard error or
-        // a partial "building" result (is_error=false with analysis.state="building").
+        // a retryable unresolved result (is_error=false with analysis.retry_after_ms).
         let r1 = router.call_tool(
             &ctx,
             "symbol",
@@ -5332,7 +5607,7 @@ mod tests {
             r1.is_error == Some(true)
                 || t1.contains("not found")
                 || t1.contains("error")
-                || t1.contains("building")
+                || t1.contains("unresolved")
                 || t1.contains("not available"),
             "symbol view=detail should not panic, got: {t1}"
         );
@@ -5348,7 +5623,7 @@ mod tests {
             r2.is_error == Some(true)
                 || t2.contains("not found")
                 || t2.contains("error")
-                || t2.contains("building")
+                || t2.contains("unresolved")
                 || t2.contains("not available"),
             "symbol view=context should not panic, got: {t2}"
         );
@@ -5364,7 +5639,7 @@ mod tests {
             r3.is_error == Some(true)
                 || t3.contains("not found")
                 || t3.contains("error")
-                || t3.contains("building")
+                || t3.contains("unresolved")
                 || t3.contains("not available"),
             "symbol view=usages should not panic, got: {t3}"
         );

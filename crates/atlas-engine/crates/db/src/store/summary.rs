@@ -547,7 +547,6 @@ mod tests {
             30,
         );
 
-        #[allow(deprecated)]
         FunctionSummary {
             function_id: *function_id,
             node_count: 5,
@@ -576,7 +575,6 @@ mod tests {
                 confidence: 1.0,
                 provenance: "intraprocedural_dataflow".to_string(),
             }],
-            return_sources: vec![param_id],
         }
     }
 

@@ -39,7 +39,7 @@ use types::ids::{FileId, SymbolId};
 use types::structs::{KnownGap, SymbolDef};
 
 use crate::LazyDataflowService;
-use crate::closure_planner::{ClosurePlanner, IncludeRoot};
+use crate::closure_planner::ClosurePlanner;
 use crate::focus::focus_graph_builder::FocusGraphBuilder;
 use crate::focus::visibility_filter::{VisibilityContext, VisibilityFilterRegistry};
 use crate::lazy_budget::LazyBudget;
@@ -81,7 +81,6 @@ pub struct ClosureEngine {
     pub(crate) resolver: RefCell<ReferenceResolver>,
     pub(crate) graph_builder: FocusGraphBuilder,
     pub(crate) project_root: Option<std::path::PathBuf>,
-    pub(crate) include_roots: Vec<IncludeRoot>,
 }
 
 impl ClosureEngine {
@@ -90,7 +89,6 @@ impl ClosureEngine {
         lazy_structural: LazyStructuralService,
         lazy_dataflow: LazyDataflowService,
         project_root: Option<std::path::PathBuf>,
-        include_roots: Vec<IncludeRoot>,
     ) -> Self {
         let resolver = RefCell::new(ReferenceResolver::new(store.clone()));
         let graph_builder = FocusGraphBuilder::new(store.clone());
@@ -101,26 +99,7 @@ impl ClosureEngine {
             resolver,
             graph_builder,
             project_root,
-            include_roots,
         }
-    }
-
-    /// Set the request-scoped include roots used by [`materialize_import_dependencies`]
-    /// to resolve angle-bracket `#include <...>` directives.
-    ///
-    /// The engine is cached (created once per project by [`FocusRuntime::ensure_closure_engine`])
-    /// and reused across queries, but `include_roots` are **per-query** (validated by the MCP
-    /// layer and never persisted). To prevent cross-query leakage, the caller MUST overwrite
-    /// this field on every query — including clearing it to `vec![]` for queries that carry no
-    /// roots — before invoking [`build_closure`]. The foreground path in
-    /// [`FocusRuntime::prepare`] does exactly this, serialised by the `FocusRuntime` Mutex so the
-    /// set → `build_closure` → release sequence is atomic.
-    ///
-    /// The background scheduler engine is intentionally NOT touched here: its engine is detached
-    /// and processed on a separate thread, so per-query mutation cannot be made leak-free without
-    /// threading roots through the job/window (see focus/ARCHITECTURE note in the task report).
-    pub(crate) fn set_include_roots(&mut self, roots: Vec<IncludeRoot>) {
-        self.include_roots = roots;
     }
 
     /// Build a focus closure with bounded fixed-point iteration.
@@ -134,6 +113,7 @@ impl ClosureEngine {
     pub fn build_closure(&self, window: &FocusWindow, closure_id: &str) -> Result<FocusClosure> {
         let started_at = Instant::now();
         let deadline = started_at + Duration::from_millis(window.budget.max_time_ms);
+        let extraction_budget = LazyBudget::for_duration_ms(window.budget.max_time_ms);
         // Insert closure generation record
         self.store.insert_closure_generation(closure_id)?;
 
@@ -146,10 +126,9 @@ impl ClosureEngine {
         let seed_files = self.locate_seed(&window.seed)?;
         let generation: i64 = 0; // generation 0 = seed extraction
         for file_id in &seed_files {
-            // Design note: the first seed file is intentionally exempted from
-            // the time budget (the check only fires when `!closure.files.is_empty()`).
-            // This ensures at least one file is extracted even under tight deadlines —
-            // returning an empty closure would be useless to the caller.
+            // Cached seed files may still enter the closure under a tight time
+            // window, but cold structural extraction respects the shared window
+            // budget. This keeps large-file seeds from bypassing focus bounds.
             if !closure.files.is_empty() && Instant::now() >= deadline {
                 closure.record_gap(KnownGap::BudgetExhausted {
                     strategy: "seed_time_budget".to_string(),
@@ -157,7 +136,7 @@ impl ClosureEngine {
                 });
                 break;
             }
-            let result = self.extract_file(file_id)?;
+            let result = self.extract_file(file_id, &extraction_budget)?;
             tracing::debug!(
                 closure_id,
                 file_id = %file_id,
@@ -189,6 +168,7 @@ impl ClosureEngine {
         }
 
         for gap in self.materialize_import_dependencies(
+            window,
             &closure,
             &window.strategies,
             closure_id,
@@ -301,7 +281,7 @@ impl ClosureEngine {
                     break;
                 }
                 let file_started_at = Instant::now();
-                let result = self.extract_file(file_id)?;
+                let result = self.extract_file(file_id, &extraction_budget)?;
                 tracing::debug!(
                     closure_id,
                     iteration,
@@ -325,6 +305,7 @@ impl ClosureEngine {
             }
 
             for gap in self.materialize_import_dependencies(
+                window,
                 &closure,
                 &window.strategies,
                 closure_id,
@@ -668,18 +649,20 @@ impl ClosureEngine {
     }
 
     /// Extract a single file using LazyStructuralService.
-    fn extract_file(&self, file_id: &FileId) -> Result<EnsureStructuralResult> {
-        // Create a budget for this extraction — LazyBudget implements CancelCheck
-        // so extraction can be cancelled at checkpoints when time/quota exhausted.
-        let budget = LazyBudget::structural();
+    fn extract_file(
+        &self,
+        file_id: &FileId,
+        budget: &LazyBudget,
+    ) -> Result<EnsureStructuralResult> {
         let result = self
             .lazy_structural
-            .ensure_structural_for_file_in_closure(file_id, Some(&budget))?;
+            .ensure_structural_for_file_in_closure(file_id, Some(budget))?;
         Ok(result)
     }
 
     fn materialize_import_dependencies(
         &self,
+        window: &FocusWindow,
         closure: &FocusClosure,
         strategies: &[ClosureStrategy],
         closure_id: &str,
@@ -699,7 +682,7 @@ impl ClosureEngine {
         }
 
         let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
-            .with_include_roots(self.include_roots.clone())
+            .with_include_roots(window.include_roots.clone())
             .with_limits(depth, max_files.max(1));
         let mut dependencies = HashSet::new();
         for file_id in &closure.files {
@@ -762,6 +745,10 @@ impl ClosureEngine {
         }
 
         closure.visited.insert(file_id);
+        if result.files_pending > 0 {
+            closure.record_pending_extraction_jobs(result.pending_job_ids.clone());
+            return false;
+        }
         if let Some((_, reason)) = result
             .failed_files
             .iter()

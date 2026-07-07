@@ -751,7 +751,6 @@ impl GraphSnapshot {
                 edges: vec![],
                 confidence: 1.0,
                 breakpoints: vec![],
-                edge_indices: vec![],
                 total_weight: 0.0,
                 test_hops: if self.nodes[from].is_test_file { 1 } else { 0 },
                 indirect_hops: 0,
@@ -924,7 +923,6 @@ impl GraphSnapshot {
 
         GraphPath {
             node_indices: path_nodes,
-            edge_indices: raw_edges,
             edges,
             confidence,
             breakpoints,
@@ -1153,12 +1151,19 @@ impl GraphSnapshot {
         let mut seen_edge_lists: HashSet<Vec<EdgeIx>> = HashSet::new();
         seen_edge_lists.insert(primary_edge_id(&candidates[0].path));
 
-        for edge_idx in 0..candidates[0].path.edge_indices.len() {
+        let primary_edges: Vec<EdgeIx> = candidates[0]
+            .path
+            .edges
+            .iter()
+            .map(|edge| edge.edge_ix)
+            .collect();
+
+        for &edge_ix in &primary_edges {
             if candidates.len() >= k {
                 break;
             }
             let mut excluded = HashSet::new();
-            excluded.insert(candidates[0].path.edge_indices[edge_idx]);
+            excluded.insert(edge_ix);
             let alt = if prefer_production {
                 self.shortest_path_weighted_prod_ex(
                     from,
@@ -1190,16 +1195,16 @@ impl GraphSnapshot {
             }
         }
 
-        if candidates.len() < k && candidates[0].path.edge_indices.len() >= 2 {
-            let n = candidates[0].path.edge_indices.len();
+        if candidates.len() < k && primary_edges.len() >= 2 {
+            let n = primary_edges.len();
             'outer: for i in 0..n {
                 for j in (i + 1)..n {
                     if candidates.len() >= k {
                         break 'outer;
                     }
                     let mut excluded = HashSet::new();
-                    excluded.insert(candidates[0].path.edge_indices[i]);
-                    excluded.insert(candidates[0].path.edge_indices[j]);
+                    excluded.insert(primary_edges[i]);
+                    excluded.insert(primary_edges[j]);
                     let alt = if prefer_production {
                         self.shortest_path_weighted_prod_ex(
                             from,
@@ -1264,13 +1269,13 @@ impl GraphSnapshot {
             })
             .sum::<f64>()
             / n as f64;
-        let topology: f64 = if path.edge_indices.is_empty() {
+        let topology: f64 = if path.edges.is_empty() {
             1.0
         } else {
-            path.edge_indices
+            path.edges
                 .iter()
-                .map(|&eix| {
-                    let e = &self.edges[eix];
+                .map(|path_edge| {
+                    let e = &self.edges[path_edge.edge_ix];
                     let b = e.confidence.as_f32() as f64;
                     if is_indirect_edge(&e.kind) {
                         b * 0.7
@@ -1279,7 +1284,7 @@ impl GraphSnapshot {
                     }
                 })
                 .sum::<f64>()
-                / path.edge_indices.len() as f64
+                / path.edges.len() as f64
         };
         let centrality: f64 = if n <= 2 {
             0.7
@@ -1618,9 +1623,6 @@ pub struct GraphPath {
     /// Breakpoints describing indirections, low-confidence hops, or other
     /// structural notes. Empty for a clean direct call chain.
     pub breakpoints: Vec<PathBreakpoint>,
-    /// Convenience: raw edge indices (computed from edges field).
-    /// Kept for backward compatibility with existing callers.
-    pub edge_indices: Vec<EdgeIx>,
     /// Total traversal weight of this path (sum of per-edge weights).
     /// Lower = more semantically direct; higher = passes through
     /// edge-case code (proxy/fallback patterns, low-confidence edges).
@@ -1634,7 +1636,7 @@ pub struct GraphPath {
 
 /// Produce a stable identifier for a path's edge set for deduplication.
 fn primary_edge_id(path: &GraphPath) -> Vec<EdgeIx> {
-    let mut ids: Vec<EdgeIx> = path.edge_indices.clone();
+    let mut ids: Vec<EdgeIx> = path.edges.iter().map(|edge| edge.edge_ix).collect();
     ids.sort_unstable();
     ids
 }
@@ -1817,7 +1819,7 @@ mod tests {
             .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
             .unwrap();
         assert_eq!(path.node_indices.len(), 3);
-        assert_eq!(path.edge_indices.len(), 2); // a→b, b→c
+        assert_eq!(path.edges.len(), 2); // a→b, b→c
         assert!((path.confidence - 1.0).abs() < 0.001);
         assert!(path.breakpoints.is_empty());
         // Edges should be forward (a calls b, b calls c)
@@ -1863,7 +1865,7 @@ mod tests {
             .shortest_path(a_ix, c_ix, 5, None, TraversalDirection::Both, false)
             .unwrap();
         assert_eq!(path.node_indices.len(), 3);
-        assert_eq!(path.edge_indices.len(), 2);
+        assert_eq!(path.edges.len(), 2);
     }
 
     #[test]
@@ -1885,7 +1887,7 @@ mod tests {
             .shortest_path(b_ix, a_ix, 5, None, TraversalDirection::Both, false)
             .unwrap();
         assert_eq!(path.node_indices.len(), 2);
-        assert_eq!(path.edge_indices.len(), 1);
+        assert_eq!(path.edges.len(), 1);
         assert_eq!(path.edges[0].direction, PathEdgeDirection::Reverse);
         // Should have a ReversedEdge breakpoint
         assert!(

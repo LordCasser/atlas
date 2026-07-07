@@ -16,7 +16,12 @@
 //! use atlas_engine::Engine;
 //!
 //! let engine = Engine::open_in_memory()?;
-//! engine.extract_file("test.ts", "function f() {}")?;
+//! engine.extract_file_with_mode(
+//!     std::path::Path::new("test.ts"),
+//!     "function f() {}",
+//!     atlas_engine::Language::TypeScript,
+//!     atlas_engine::ExtractionMode::Full,
+//! )?;
 //! ```
 //!
 //! # Feature flags
@@ -36,8 +41,6 @@ pub use lazy_crate::LazyDataflowService;
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
-/// Precision method tests: validations for best(), worst(), is_exact(), is_unavailable().
-mod compat;
 /// Focus-driven incremental analysis types: FocusSeed, FocusWindow, FocusClosure.
 pub mod focus;
 mod index_precision;
@@ -190,12 +193,11 @@ pub use extraction::{
 /// Sync layer internals: dirty-set tracking, phase functions, pipeline runners.
 pub use filesync::{
     DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, GraphResult, IndexPipelineStats,
-    IndexProgress, IndexProgressCallback, SyncStats, WriteBatchStats, build_dirty_set,
-    clean_stale_file_ids, clean_stale_file_paths, discovery, phase_build_summaries,
-    phase_cleanup_file_ids, phase_cleanup_stale, phase_commit_path_alias_config, phase_dirty_check,
-    phase_discover, phase_extract_serial, phase_finalize, phase_init_frontends,
-    phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
-    phase_write_single, run_index_pipeline, source_file_id,
+    SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths,
+    discovery, phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
+    phase_commit_path_alias_config, phase_dirty_check, phase_discover, phase_extract_serial,
+    phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
+    phase_write_batched, phase_write_single, run_index_pipeline, source_file_id,
 };
 
 /// Graph layer internals: advanced query types and path internals.
@@ -229,7 +231,7 @@ pub use workspace::{ProjectRoot, SourcePath};
 ///
 /// ```text
 ///   open() / open_in_memory()
-///     └── extract_file()          # parse + extract FileFacts
+///     └── extract_file_with_mode()# parse + extract FileFacts
 ///     └── language_capability()   # query language profiles
 ///     └── trace_variable()        # backward dataflow trace
 ///     └── trace_callers()         # reverse call-graph exploration
@@ -394,19 +396,6 @@ impl Engine {
     }
 
     // ── Extraction ─────────────────────────────────────────────────────
-
-    /// Extract facts from a single source file.
-    ///
-    /// Uses [`ExtractionMode::Full`] by default for backward compatibility.
-    /// For index-time usage, prefer the mode-aware variant.
-    pub fn extract_file(
-        &self,
-        path: &Path,
-        source: &str,
-        language: Language,
-    ) -> anyhow::Result<FileFacts> {
-        self.extract_file_with_mode(path, source, language, extraction::ExtractionMode::Full)
-    }
 
     /// Extract facts from a single source file with explicit mode control.
     pub fn extract_file_with_mode(
@@ -652,7 +641,12 @@ mod tests {
         let file_path = Path::new("test.ts");
 
         let facts = engine
-            .extract_file(file_path, source, Language::TypeScript)
+            .extract_file_with_mode(
+                file_path,
+                source,
+                Language::TypeScript,
+                extraction::ExtractionMode::Full,
+            )
             .expect("should extract TS file");
 
         assert!(!facts.symbols.is_empty(), "should have symbols");

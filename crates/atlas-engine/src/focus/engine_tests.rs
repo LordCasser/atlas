@@ -33,7 +33,14 @@ fn test_store() -> Arc<Store> {
 fn test_engine(store: Arc<Store>) -> ClosureEngine {
     let lazy_structural = LazyStructuralService::new(store.clone(), None);
     let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-    ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
+    ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
+}
+
+fn test_engine_with_root(store: Arc<Store>, root: &std::path::Path) -> ClosureEngine {
+    let project_root = Some(root.to_path_buf());
+    let lazy_structural = LazyStructuralService::new(store.clone(), project_root.clone());
+    let lazy_dataflow = LazyDataflowService::new(store.clone(), project_root.clone());
+    ClosureEngine::new(store, lazy_structural, lazy_dataflow, project_root)
 }
 
 /// Insert a file and mark its structural layer as complete.
@@ -59,6 +66,19 @@ fn insert_file_structural_complete(store: &Store, path: &str) -> FileId {
     file_id
 }
 
+fn insert_cold_file(store: &Store, path: &str, source: &str) -> FileId {
+    let file_id = FileId::generate(path);
+    let file_info = FileInfo {
+        file_id,
+        path: path.to_string(),
+        language: Language::C,
+        content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+        status: ParseStatus::Success,
+    };
+    store.upsert_file(&file_info).unwrap();
+    file_id
+}
+
 /// Create a FocusWindow with a File seed and default budget/strategies.
 fn file_window(file_id: FileId) -> FocusWindow {
     FocusWindow {
@@ -67,6 +87,7 @@ fn file_window(file_id: FileId) -> FocusWindow {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 2 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -169,6 +190,7 @@ fn test_build_closure_empty_strategies() {
             language: Language::C,
         },
         strategies: vec![], // no strategies
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -250,7 +272,6 @@ fn test_locate_seed_symbol() {
         lazy_structural,
         LazyDataflowService::new(df_store, None),
         None,
-        vec![],
     );
 
     let window = FocusWindow {
@@ -261,6 +282,7 @@ fn test_locate_seed_symbol() {
             file_id: None,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -296,6 +318,7 @@ fn test_build_closure_max_iterations_limit() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::SameDirectory],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 0,
@@ -325,6 +348,7 @@ fn test_build_closure_with_position_seed() {
             column: 10,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::Rust,
         max_iterations: 3,
@@ -369,6 +393,7 @@ fn test_build_closure_with_imports() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 1 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -403,6 +428,7 @@ fn test_build_closure_budget_exhausted() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::SameDirectory],
+        include_roots: Vec::new(),
         budget: WindowBudget {
             max_files: 0, // any addition exhausts budget
             ..WindowBudget::default()
@@ -448,6 +474,7 @@ fn test_build_closure_truncates_oversized_plan_to_budget() {
                     language: Language::C,
                 },
                 strategies: vec![ClosureStrategy::SameDirectory],
+                include_roots: Vec::new(),
                 budget: WindowBudget {
                     max_files: 1,
                     ..WindowBudget::default()
@@ -479,6 +506,7 @@ fn test_build_closure_time_budget_records_gap() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::SameDirectory],
+        include_roots: Vec::new(),
         budget: WindowBudget {
             max_time_ms: 0,
             ..WindowBudget::default()
@@ -503,6 +531,134 @@ fn test_build_closure_time_budget_records_gap() {
         )),
         "closure must record a time budget gap: {:?}",
         closure.gaps
+    );
+}
+
+#[test]
+fn test_cold_seed_respects_exhausted_window_budget() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    let source = "int cold_seed(void) { return 1; }\n";
+    std::fs::write(root.path().join("src/main.c"), source).unwrap();
+
+    let store = test_store();
+    let seed_id = insert_cold_file(&store, "src/main.c", source);
+    let engine = test_engine_with_root(store.clone(), root.path());
+
+    let closure = engine
+        .build_closure(
+            &FocusWindow {
+                seed: FocusSeed::File {
+                    file_id: seed_id,
+                    language: Language::C,
+                },
+                strategies: Vec::new(),
+                include_roots: Vec::new(),
+                budget: WindowBudget {
+                    max_time_ms: 0,
+                    ..WindowBudget::default()
+                },
+                language: Language::C,
+                max_iterations: 1,
+            },
+            "test-cold-seed-window-budget",
+        )
+        .expect("build_closure should return a terminal budget gap, not fail");
+
+    assert!(
+        !closure.files.contains(&seed_id),
+        "cold seed must not be marked covered when the shared window budget is already exhausted"
+    );
+    assert!(
+        closure.gaps.iter().any(|gap| matches!(
+            gap,
+            types::structs::KnownGap::BudgetExhausted {
+                strategy,
+                remaining: 1
+            } if strategy == "structural_extraction"
+        )),
+        "cold seed cancellation should be surfaced as a structural budget gap: {:?}",
+        closure.gaps
+    );
+    assert!(
+        !engine
+            .lazy_structural
+            .has_structural_layer(&seed_id)
+            .unwrap(),
+        "cancelled cold seed extraction must not write a structural layer"
+    );
+}
+
+#[test]
+fn test_cold_seed_already_building_is_pending_not_budget_gap() {
+    let store = test_store();
+    let source = "int pending_seed(void) { return 1; }\n";
+    let seed_id = insert_cold_file(&store, "src/pending.c", source);
+    let claim = store
+        .claim_file_extraction_job(
+            &seed_id,
+            layer::STRUCTURAL,
+            Some("other"),
+            None,
+            Some(30_000),
+        )
+        .unwrap();
+    let job_id = match claim {
+        db::ClaimResult::Claimed { job_id } => job_id,
+        db::ClaimResult::AlreadyBuilding { .. } => panic!("first claim should own the job"),
+    };
+    let engine = test_engine(store.clone());
+
+    let closure = engine
+        .build_closure(
+            &FocusWindow {
+                seed: FocusSeed::File {
+                    file_id: seed_id,
+                    language: Language::C,
+                },
+                strategies: Vec::new(),
+                include_roots: Vec::new(),
+                budget: WindowBudget::default(),
+                language: Language::C,
+                max_iterations: 1,
+            },
+            "test-cold-seed-already-building",
+        )
+        .expect("build_closure should surface retryable pending state");
+
+    assert!(
+        !closure.files.contains(&seed_id),
+        "a file owned by another active extraction job is not covered yet"
+    );
+    assert!(
+        closure.visited.contains(&seed_id),
+        "already-building seed should be marked visited to avoid duplicate planning"
+    );
+    assert_eq!(closure.pending_extraction_job_ids, vec![job_id.clone()]);
+    assert!(
+        closure.gaps.iter().all(|gap| !matches!(
+            gap,
+            types::structs::KnownGap::BudgetExhausted {
+                strategy,
+                remaining: 1
+            } if strategy == "structural_extraction"
+        )),
+        "retryable AlreadyBuilding must not be reported as a terminal budget gap: {:?}",
+        closure.gaps
+    );
+    assert!(
+        !engine
+            .lazy_structural
+            .has_structural_layer(&seed_id)
+            .unwrap(),
+        "non-owner must not write structural facts"
+    );
+    assert!(
+        store
+            .find_active_file_extraction_job(&seed_id, layer::STRUCTURAL)
+            .unwrap()
+            .is_some(),
+        "owner job should remain active"
     );
 }
 
@@ -533,6 +689,7 @@ fn test_time_budget_still_materializes_seed_call_edges() {
             direction: Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget {
             max_time_ms: 0,
             ..WindowBudget::default()
@@ -570,7 +727,6 @@ fn test_build_closure_records_gap_on_missing_file() {
         lazy_structural,
         LazyDataflowService::new(df_store, None),
         None,
-        vec![],
     );
 
     let window = FocusWindow {
@@ -581,6 +737,7 @@ fn test_build_closure_records_gap_on_missing_file() {
             file_id: None,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -636,6 +793,7 @@ fn test_build_closure_field_seed() {
             field_path: "count".to_string(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -732,6 +890,7 @@ fn test_build_closure_duplicate_files_deduped() {
             ClosureStrategy::SameDirectory,
             ClosureStrategy::SameDirectory,
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -769,6 +928,7 @@ fn test_build_closure_empty_project() {
             language: Language::C,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -800,6 +960,7 @@ fn test_locate_seed_file_not_found() {
             language: Language::C,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -831,6 +992,7 @@ fn test_build_closure_zero_budget() {
             language: Language::C,
         },
         strategies: vec![], // No strategies → no additions
+        include_roots: Vec::new(),
         budget: WindowBudget {
             max_files: 0,
             ..WindowBudget::default()
@@ -868,6 +1030,7 @@ fn test_build_closure_callgraph_stub() {
             direction: super::types::Direction::Outgoing,
             depth: 2,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1023,6 +1186,7 @@ fn test_typegraph_adds_direct_type_dependency() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1081,6 +1245,7 @@ fn test_typegraph_max_depth_1_direct_only() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1137,6 +1302,7 @@ fn test_typegraph_max_depth_2_transitive() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::TypeGraph { max_depth: 2 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1170,6 +1336,7 @@ fn test_typegraph_empty_closure() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::TypeGraph { max_depth: 3 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1236,6 +1403,7 @@ fn test_typegraph_dedup_same_type_multiple_refs() {
             language: Language::C,
         },
         strategies: vec![ClosureStrategy::TypeGraph { max_depth: 1 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1291,6 +1459,7 @@ fn test_callgraph_expansion_finds_callee_file() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1352,6 +1521,7 @@ fn symbol_seed_does_not_expand_unrelated_calls_from_the_same_file() {
             direction: Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 2,
@@ -1397,6 +1567,7 @@ fn test_callgraph_depth_control() {
                 direction: super::types::Direction::Outgoing,
                 depth: 1,
             }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language: Language::C,
             max_iterations: 3,
@@ -1422,6 +1593,7 @@ fn test_callgraph_depth_control() {
                 direction: super::types::Direction::Outgoing,
                 depth: 2,
             }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language: Language::C,
             max_iterations: 3,
@@ -1484,6 +1656,7 @@ fn test_callgraph_dedup_same_callee_file() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1528,6 +1701,7 @@ fn test_callgraph_empty_closure_no_symbols() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1588,6 +1762,7 @@ fn test_callgraph_incoming_finds_caller_file() {
                 depth: 1,
             },
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1639,7 +1814,7 @@ fn cold_incoming_callgraph_materializes_reference_candidates() {
     let lazy_structural =
         LazyStructuralService::with_provider(store.clone(), None, Box::new(provider));
     let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-    let engine = ClosureEngine::new(store.clone(), lazy_structural, lazy_dataflow, None, vec![]);
+    let engine = ClosureEngine::new(store.clone(), lazy_structural, lazy_dataflow, None);
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
             name: "target".into(),
@@ -1651,6 +1826,7 @@ fn cold_incoming_callgraph_materializes_reference_candidates() {
             direction: Direction::Incoming,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 2,
@@ -1711,6 +1887,7 @@ fn test_callgraph_both_finds_both_directions() {
                 depth: 1,
             },
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1774,6 +1951,7 @@ fn test_callgraph_incoming_crosses_multiple_edges() {
                 depth: 1,
             },
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1838,6 +2016,7 @@ fn test_callgraph_incoming_dedup_caller_files() {
                 depth: 1,
             },
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1910,6 +2089,7 @@ fn test_callgraph_from_scoped_resolution() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -1980,6 +2160,7 @@ fn test_callgraph_incoming_from_scoped_resolution() {
                 depth: 1,
             },
         ],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2041,6 +2222,7 @@ fn test_callgraph_uses_resolution_not_edges() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2153,6 +2335,7 @@ fn test_scoped_resolution_writes_reference_resolutions() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2205,6 +2388,7 @@ fn test_scoped_resolution_committed_visible() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2267,6 +2451,7 @@ fn test_scoped_resolution_does_not_pollute_references_table() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2316,7 +2501,6 @@ fn test_scoped_resolution_empty_closure_no_crash() {
         lazy_structural,
         LazyDataflowService::new(store.clone(), None),
         None,
-        vec![],
     );
 
     let window = FocusWindow {
@@ -2327,6 +2511,7 @@ fn test_scoped_resolution_empty_closure_no_crash() {
             file_id: None,
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2386,6 +2571,7 @@ fn test_graph_builder_produces_canonical_edges() {
             direction: super::types::Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2452,6 +2638,7 @@ fn test_graph_builder_preserves_existing_edges() {
                 direction: super::types::Direction::Outgoing,
                 depth: 1,
             }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language: Language::C,
             max_iterations: 3,
@@ -2483,6 +2670,7 @@ fn test_graph_builder_preserves_existing_edges() {
                 direction: super::types::Direction::Outgoing,
                 depth: 1,
             }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language: Language::C,
             max_iterations: 3,
@@ -2665,6 +2853,7 @@ fn test_visibility_filter_c_static_excluded() {
             direction: Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,
@@ -2751,6 +2940,7 @@ fn test_visibility_filter_rust_private_excluded() {
             direction: Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::Rust,
         max_iterations: 3,
@@ -2805,6 +2995,7 @@ fn test_visibility_filter_public_visible() {
             direction: Direction::Outgoing,
             depth: 1,
         }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Language::C,
         max_iterations: 3,

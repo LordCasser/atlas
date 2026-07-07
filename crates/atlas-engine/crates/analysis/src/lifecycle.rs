@@ -66,6 +66,7 @@ impl FieldState {
 pub enum BranchPath {
     TruePath,
     FalsePath,
+    CasePath,
 }
 
 /// One frame in a nested branch context stack.
@@ -311,6 +312,19 @@ impl FieldLifecycleEngine {
                                     branch_node_line: node.stmt_range.start_line,
                                     path: BranchPath::FalsePath,
                                 });
+                            }
+                            CfgEdgeKind::CaseBranch => {
+                                let target_is_join = graph
+                                    .nodes
+                                    .get(&edge.target)
+                                    .map(|n| n.kind == CfgNodeKind::Join)
+                                    .unwrap_or(false);
+                                if !target_is_join {
+                                    next_ctx.push(BranchFrame {
+                                        branch_node_line: node.stmt_range.start_line,
+                                        path: BranchPath::CasePath,
+                                    });
+                                }
                             }
                             _ => {
                                 // Pop branch context when arriving at Join via normal edge
@@ -992,6 +1006,71 @@ mod tests {
         // At join, one path is freed, the other is assigned → MaybeFreed
         assert_eq!(result.final_state, FieldState::MaybeFreed);
         assert!(!result.partial);
+    }
+
+    #[test]
+    fn test_switch_case_branch_context_is_path_sensitive() {
+        let fid = test_fid();
+        let entry = CfgNode::entry(&fid);
+        let exit = CfgNode::exit(&fid);
+        let branch = make_node(Vec::new(), 10, CfgNodeKind::Branch, 1);
+        let free_id = CfgNodeId::generate(&fid, "test", 2);
+        let alloc_id = CfgNodeId::generate(&fid, "test", 3);
+        let post_id = CfgNodeId::generate(&fid, "test", 5);
+        let free_case = make_stmt_node(vec![se_free(free_id, 0, "ptr")], 11, 2);
+        let alloc_case = make_stmt_node(vec![se_alloc(alloc_id, 0, "ptr")], 12, 3);
+        let join = make_node(Vec::new(), 13, CfgNodeKind::Join, 4);
+        let post_switch = make_stmt_node(vec![se_store(post_id, 0, "ptr")], 20, 5);
+
+        let all_nodes = vec![
+            entry.clone(),
+            branch.clone(),
+            free_case.clone(),
+            alloc_case.clone(),
+            join.clone(),
+            post_switch.clone(),
+            exit.clone(),
+        ];
+        let edges = vec![
+            CfgEdge::new(&entry.id, &branch.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&branch.id, &free_case.id, CfgEdgeKind::CaseBranch),
+            CfgEdge::new(&branch.id, &alloc_case.id, CfgEdgeKind::CaseBranch),
+            CfgEdge::new(&branch.id, &join.id, CfgEdgeKind::CaseBranch),
+            CfgEdge::new(&free_case.id, &join.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&alloc_case.id, &join.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&join.id, &post_switch.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&post_switch.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+
+        let result = FieldLifecycleEngine::analyze_field_lifecycle(
+            &all_nodes,
+            &edges,
+            "ptr",
+            &OwnershipRules::default(),
+        );
+
+        let case_transitions: Vec<_> = result
+            .transitions
+            .iter()
+            .filter(|transition| transition.node_line == 11 || transition.node_line == 12)
+            .collect();
+        assert_eq!(case_transitions.len(), 2);
+        assert!(case_transitions.iter().all(|transition| {
+            transition
+                .branch_frames
+                .iter()
+                .any(|frame| frame.path == BranchPath::CasePath)
+        }));
+
+        let post_transition = result
+            .transitions
+            .iter()
+            .find(|transition| transition.node_line == 20)
+            .expect("post-switch transition");
+        assert!(
+            post_transition.branch_frames.is_empty(),
+            "case branch context must be popped at the switch join"
+        );
     }
 
     #[test]

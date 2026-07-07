@@ -144,11 +144,16 @@ Continue expanding end-to-end smoke tests for all languages.
 
 ### 3.4 FP dispatches: struct function-pointer field indexing
 
-`fp_dispatches` tool can map a struct's data-typed field (e.g., `rtnl_link_ops.kind`) to a target function via user annotation, but **function-pointer fields** (e.g., `rtnl_link_ops.changelink`, `.newlink`, `.doit`) are not individually indexed as symbols. Without a per-field symbol, `fp_dispatches` cannot declare `changelink → ipip6_changelink`. This blocks the only escape hatch for function-pointer call graph boundaries — trace/path queries stop at indirect calls.
+`fp_dispatches` maps a struct function-pointer field (for example `rtnl_link_ops.changelink`) to a concrete target function via user annotation. C/C++ extraction now indexes parenthesized function-pointer fields such as `int (*do_it)(int)` as normal `Field` symbols, so this does not require a separate function-pointer-field entity or schema path.
 
-**Why**: Kernel code (and C generally) uses function-pointer tables pervasively (e.g., `rtnl_link_ops`, `proto_ops`, `file_operations`). Today, `atlas_trace(forward)` cannot find `ipip6_changelink → ns_capable` because the `changelink` dispatch is opaque. Annotations that map `struct.field → target_fn` would bridge this gap: the tracer walks `rtnl_link_ops` callers, finds the annotated `changelink` field, and follows the declared target.
+The validated path is:
 
-**Effect**: Unlocks cross-function-pointer trace, path, and call-graph queries for all struct-based dispatch patterns in the Linux kernel (and C generally). Currently the #1 precision ceiling for kernel vulnerability analysis.
+1. extraction emits `struct.field` / `Class::field` as `SymbolKind::Field`;
+2. reference resolution can bind a field access such as `ops->do_it(...)` to that field symbol;
+3. `fp_dispatches` stores the user annotation;
+4. annotation materialization writes both the direct `field → target` edge and the caller bridge `caller → target` edge with `user_annotation` provenance.
+
+**Remaining validation:** keep large-kernel smoke coverage for real tables such as `rtnl_link_ops`, `proto_ops`, and `file_operations`, especially initializer-heavy patterns and multi-file include/focus paths. Do not add new persistent entities unless a real fixture proves the existing field-symbol model cannot represent a needed dispatch.
 
 ## 4. Graph and performance evolution
 
@@ -166,11 +171,13 @@ Continue expanding end-to-end smoke tests for all languages.
 
 ### 4.3 Large-file lazy extraction budget
 
-Lazy structural extraction has a budget cap (~18s / 30 files for foreground, ~60s / 100 files for background). Very large source files (>2000-line functions like `copy_user_syms` in `kernel/trace/bpf_trace.c`) can exhaust this budget before completing structural extraction, causing tools (`calls`, `trace`, `explore`) to time out on those symbols. The file then stays "building" across retries without converging.
+Lazy structural extraction has a budget cap (~18s / 30 files for foreground, ~60s / 100 files for background). Very large source files (>2000-line functions like `copy_user_syms` in `kernel/trace/bpf_trace.c`) can exhaust this budget before completing structural extraction, causing tools (`calls`, `trace`, `explore`) to return bounded retryable responses until background refinement or a terminal gap resolves the query.
 
 **Why**: Linux kernel has ~70 files with >10,000 lines and individual functions exceeding 2,000 lines. When an agent queries a symbol in one of these files, the lazy window processes the entire file (not just the target function). Tree-sitter parse + SCM query + dataflow/CFG build for a single huge file can independently exceed the per-window time budget, even when the file is the only unit in the window.
 
-**Effect**: Makes `calls`, `trace(forward)`, and `explore` reliably available for all kernel symbols regardless of file size. Currently ~5-10% of kernel functions are unreachable through lazy extraction on first query.
+**Current mitigation**: Focus structural extraction now uses the enclosing `FocusWindow` wall-clock budget as one shared cancellation token instead of resetting a fresh 18s token per file. Foreground work remains bounded by the foreground window; background closures can use their wider window for a genuinely expensive file without inventing a new function-level structural store.
+
+**Remaining validation**: Keep large-kernel smoke coverage for `calls`, `trace(forward)`, and `explore` on oversized files. If a real fixture still proves whole-file structural extraction cannot converge, prefer a measured extraction-slice design over adding another persistent indexing entity.
 
 ## 5. Public API stabilization
 
@@ -239,7 +246,7 @@ CFG + DataFlow
     - **Fall-through semantics are not modeled.** Each case body is an independent path from the dispatch `Branch` to `Join`; a C-style `case` without a terminating `break` is treated as if it broke. Case tails only connect to `Join`, never to the next case, so the CFG is a safe under-approximation of inter-case flow (never a spurious inter-case edge).
     - **False-positive avoidance (contract: may under-report, must NOT over-report).** Because fall-through is invisible, both engines flag only the *all-but-one* shape — a resource freed/allocated in exactly `n-1` of the effectful cases with a single conspicuous gap — and require ≥ 3 effectful cases. Effect-less paths (empty fall-through labels, the synthetic no-match `Branch→Join` skip edge) are ignored, so a bare `case N:` fall-through can never be the flagged outlier. A resource touched by only one case is treated as an intentional special-case, not an asymmetry.
       - **Residual false positive — non-empty intentional fall-through.** The empty-body guard above only neutralizes *bare* fall-through labels. A case with a *non-empty* body that intentionally falls through to the next case (e.g. `case 1: log(); /* fall through */ case 2: free(x); break;`) is still modeled as two independent paths, so case 2 can look like the *unique freer* and case 1 like a conspicuous gap. This is a known residual outside the safe contract; it is rare in resource-cleanup code (which normally `break`s) and is accepted until fall-through edges are modeled.
-    - **`lifecycle.rs` branch-context frames do not track case paths.** The successor-context `match edge.kind` at `lifecycle.rs` ~302–327 has explicit `TrueBranch`/`FalseBranch` arms; `CaseBranch` falls into the `_` wildcard. Dataflow state still propagates through case edges (all successors are enqueued), but no per-case `BranchFrame` is pushed, so switch cases are not path-sensitive in lifecycle analysis, and a switch nested inside an if/else can pop the outer branch frame early when a `CaseBranch`/`Normal` edge reaches the switch `Join` (guarded against stack underflow). Making lifecycle path-sensitive for cases is the next increment.
+    - **Lifecycle case-path context implemented.** `lifecycle.rs` now treats `CaseBranch` as a path-sensitive branch frame (`CasePath`) for real case/default bodies, while the synthetic `Branch→Join` no-match edge carries no frame. Normal edges into the switch `Join` still pop the case frame, so post-switch transitions do not inherit stale case context. Remaining lifecycle precision limits are the CFG-level fall-through model and cross-function boundaries, not branch-frame propagation.
     - Non-C-family `switch`-like constructs remain deferred as single statements: Rust `match_expression`, Python `match`, Kotlin `when`, Cangjie `match`, Ruby `case`/`when` (pattern-matching semantics with guards/bindings; their ASTs are not yet wired into `walk_switch`). `try_statement` is likewise still deferred.
 
 - **Cross-function lifecycle tracking**: `lifecycle` currently tracks field transitions only within the queried function (intra-procedural). A common C vulnerability pattern is `alloc() in function_A` → `free() in function_B` — the lifecycle tool cannot detect mismatches across this boundary because CFG + dataflow facts are file-scoped. A bounded cross-function extension would compose call path edges with intra-procedural summaries to answer "is this pointer freed along all call paths?" at 1-2 call depths.
@@ -280,10 +287,8 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - 长期：继续收敛 extraction/focus 内部 precision 类型，保持 MCP 公共边界稳定且最小。
 - 长期：以真实大型仓库 smoke 和受控 fixtures 持续测量 cold incoming candidate discovery；
   只有测量证明现有 bounded provider 不足时才引入新的索引实体。
-- **Include-header structs in focus closure** — *foreground path implemented*: request-scoped `include_roots` now thread from the MCP tool boundary (`context`/`trace`/`graph` handlers) through `prepare_focus_query_with_roots` → `QueryRuntime::prepare` → `FocusRuntime::apply_query_include_roots` into the cached foreground `ClosureEngine` before each `build_closure`. Angle includes like `#include <net/dst.h>` resolve against the provided roots, so a struct such as `dst_entry` defined in `include/net/dst.h` enters the closure and `atlas_explore` returns its definition instead of "building". The set-roots→prepare→build_closure sequence is held under a single `QueryRuntime` mutex guard, so roots are per-query and never leak across queries (regression test: `include_roots_resolve_angle_include_and_do_not_leak_across_queries`).
-  - **NOT yet handled:**
-    - **Background `sched_engine` does not receive per-query roots.** The foreground fix mutates only the cached foreground engine. The background scheduler detaches its engine via `engine.take()` and processes it on a worker thread outside the `QueryRuntime` mutex, so applying roots to it with the same setter is not leak-free (a later query's background job could observe an earlier query's roots). A correct fix requires per-job roots carried on `FocusWindow` (`focus/types.rs`) and read inside `build_closure`/`materialize_import_dependencies`, plus a scheduler call-site change. Until then, background pre-warming does not resolve angle includes; foreground queries resolve them on demand.
-    - **`search.rs` focus path does not pass `include_roots`.** `SearchService` already forwards roots to its own `ScopedSearchService`, but its `prepare_focus_query` call sites do not use the roots-aware variant, so angle-include resolution does not apply during search-triggered focus extraction. Upgrading those call sites to `prepare_focus_query_with_roots` is the same one-line-per-site change already applied to `context`/`trace`/`graph`.
+- **Include-header structs in focus closure** — *foreground/background path implemented*: request-scoped `include_roots` thread from the MCP tool boundary through `prepare_focus_query_with_roots` → `QueryRuntime::prepare` → `FocusRuntime::prepare`, then are copied onto each `FocusWindow`. `ClosureEngine` no longer stores mutable per-query roots; `materialize_import_dependencies` reads roots from the window, so foreground closures, scheduled background closures, and hot-region extension windows all use the roots of the query that created them. Non-request prewarming still carries an empty roots vector by design.
+  - **Remaining validation:** keep C/C++ angle-include fixtures and large-repo smoke coverage for `search`, `symbol(detail/usages)`, `context`, `calls`, `explore`, `trace`, `path`, `lifecycle`, and `branch_diff`; avoid reintroducing mutable include roots on cached engines.
 
 ### 9.4 不变边界
 

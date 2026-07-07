@@ -83,6 +83,14 @@
     (function_declarator
       (field_identifier) @definition.field)))
 
+;; Function pointer field with parenthesized pointer declarator:
+;; int (*handler)(int);
+(field_declaration
+  (function_declarator
+    (parenthesized_declarator
+      (pointer_declarator
+        (field_identifier) @definition.field))))
+
 ;; Regular data field: int value_;
 (field_declaration
   (type_identifier)

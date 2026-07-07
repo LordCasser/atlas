@@ -278,7 +278,6 @@ impl IncrementalPipeline {
                 &to_extract_rel,
                 &frontends,
                 self.mode.clone(),
-                None, // on_progress (once at end) — unused
                 Some(&on_file_progress),
                 Some(&cancel_token),
             );

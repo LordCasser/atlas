@@ -291,15 +291,16 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
 
     assert!(
         !err,
-        "scoped explore miss should be a retryable partial response: {resp:.500}"
+        "scoped explore miss should be a retryable unresolved response: {resp:.500}"
     );
-    assert_eq!(resp["status"], "building");
+    assert_eq!(resp["status"], "unresolved");
     assert_eq!(resp["scope"], "a");
     assert!(
         resp.get("subject").is_none(),
         "explore must not return a dossier for a symbol outside the requested scope: {resp:.500}"
     );
     assert!(resp.get("background_refinement").is_none());
+    assert!(resp.get("retry_after_ms").is_none());
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -326,9 +327,9 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
 
     assert!(
         !err,
-        "unscoped cold explore should be a retryable partial response: {resp:.500}"
+        "unscoped cold explore should be a retryable unresolved response: {resp:.500}"
     );
-    assert_eq!(resp["status"], "building");
+    assert_eq!(resp["status"], "unresolved");
     assert!(
         resp.get("subject").is_none(),
         "unscoped cold explore should not synchronously return a dossier: {resp:.500}"
@@ -340,6 +341,7 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
         "unscoped cold explore should expose bounded candidate files: {resp:.500}",
     );
     assert!(resp.get("background_refinement").is_none());
+    assert!(resp.get("retry_after_ms").is_none());
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -386,24 +388,26 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return retryable partial for unscoped cold symbol: {resp:.500}"
+            "{tool} should return retryable unresolved response for unscoped cold symbol: {resp:.500}"
         );
-        if resp["status"] == "building" {
+        if resp["status"] == "unresolved" {
             assert!(
                 resp["candidate_files"]
                     .as_array()
                     .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
                 "{tool} should expose bounded candidate files while unresolved: {resp:.500}",
             );
-            // Retry guidance lives in the flat retry_after_ms field and the
-            // analysis block; legacy background_refinement is not emitted.
+            // Retry guidance lives only in the analysis block; legacy
+            // background_refinement and flat retry_after_ms are not emitted.
             assert_eq!(
-                resp["retry_after_ms"], 8000,
-                "{tool} should expose flat retry_after_ms while building: {resp:.500}",
+                resp["analysis"]["retry_after_ms"], 8000,
+                "{tool} should expose analysis retry_after_ms while unresolved: {resp:.500}",
+            );
+            assert!(
+                resp.get("retry_after_ms").is_none(),
+                "{tool} should not expose flat retry_after_ms: {resp:.500}"
             );
         } else {
-            // Phase 1.4: apply_focus_result_to_lr no longer sets partial_result.
-            // The retry guidance is expressed via retry_after_ms presence in the analysis block.
             assert!(
                 resp["analysis"]["scope"].as_str().is_some(),
                 "{tool} should have analysis scope for local materialized result: {resp:.500}",
@@ -473,17 +477,17 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return a retryable partial response for cold symbols: {resp:.500}"
+            "{tool} should return a retryable unresolved response for cold symbols: {resp:.500}"
         );
-        assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
-        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
+        assert_eq!(resp["status"], "unresolved", "{tool}: {resp:.500}");
         assert_eq!(
             resp["analysis"]["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
-        // Phase 1.5: background_refinement removed — the flat retry_after_ms
-        // field carries the retry contract instead.
-        assert_eq!(resp["retry_after_ms"], 8000, "{tool}: {resp:.500}");
+        assert!(
+            resp.get("retry_after_ms").is_none(),
+            "{tool} should not expose flat retry_after_ms: {resp:.500}"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -523,17 +527,17 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return a retryable partial response for missing symbols: {resp:.500}"
+            "{tool} should return a retryable unresolved response for missing symbols: {resp:.500}"
         );
-        assert_eq!(resp["status"], "building", "{tool}: {resp:.500}");
-        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
+        assert_eq!(resp["status"], "unresolved", "{tool}: {resp:.500}");
         assert_eq!(
             resp["analysis"]["retry_after_ms"], 8000,
             "{tool}: {resp:.500}"
         );
-        // Phase 1.5: background_refinement removed — the flat retry_after_ms
-        // field carries the retry contract instead.
-        assert_eq!(resp["retry_after_ms"], 8000, "{tool}: {resp:.500}");
+        assert!(
+            resp.get("retry_after_ms").is_none(),
+            "{tool} should not expose flat retry_after_ms: {resp:.500}"
+        );
     }
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -556,9 +560,8 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
         "lifecycle",
         &json!({"symbol": "NonExistentFunction_XYZ_999", "field": "ptr"}),
     );
-    assert_eq!(resp["status"], "building", "lifecycle: {resp:.300}");
-    // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms flat & analysis.
-    assert_eq!(resp["retry_after_ms"], 8000);
+    assert_eq!(resp["status"], "unresolved", "lifecycle: {resp:.300}");
+    assert!(resp.get("retry_after_ms").is_none());
     assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
 
     // ── branch_diff with non-existent symbol ─────────────────────────
@@ -567,8 +570,8 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
         "branch_diff",
         &json!({"symbol": "NonExistentFunction_XYZ_999"}),
     );
-    assert_eq!(resp2["status"], "building", "branch_diff: {resp2:.300}");
-    assert_eq!(resp2["retry_after_ms"], 8000);
+    assert_eq!(resp2["status"], "unresolved", "branch_diff: {resp2:.300}");
+    assert!(resp2.get("retry_after_ms").is_none());
     assert_eq!(resp2["analysis"]["retry_after_ms"], 8000);
 }
 
@@ -1027,18 +1030,19 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
         let text = extract_text(&result);
         let resp: Value = serde_json::from_str(text).expect("graph tool should return JSON");
         assert_eq!(result.is_error, Some(false), "{tool}: {text}");
-        assert_eq!(resp["status"], "building", "{tool}: {text}");
-        // Phase 1.5: retryable_symbol_not_found_response uses 8000 ms.
+        assert_eq!(resp["status"], "unresolved", "{tool}: {text}");
         assert_eq!(resp["analysis"]["retry_after_ms"], 8000, "{tool}: {text}");
+        assert!(resp.get("retry_after_ms").is_none(), "{tool}: {text}");
     }
 
-    // explore uses its own inline not-found handler (unchanged in Phase 1.5).
+    // explore uses its own shorter retry delay.
     let result = router.call_tool(&ctx, "explore", &json!({"symbol": "nonexistent"}));
     let text = extract_text(&result);
     let resp: Value = serde_json::from_str(text).expect("explore should return JSON");
     assert_eq!(result.is_error, Some(false));
-    assert_eq!(resp["status"], "building");
+    assert_eq!(resp["status"], "unresolved");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(resp.get("retry_after_ms").is_none());
 }
 
 // =========================================================================

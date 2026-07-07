@@ -483,7 +483,6 @@ mod tests {
         store.insert_references(&[reference])?;
 
         // Build summary for caller
-        #[allow(deprecated)]
         let summary = types::summary::FunctionSummary {
             function_id: caller_id,
             node_count: 3,
@@ -507,7 +506,6 @@ mod tests {
                 confidence: 1.0,
                 provenance: "intraprocedural_dataflow".into(),
             }],
-            return_sources: vec![],
         };
         SummaryStore::build_for_function(&store, &caller_id, |_, _fid| Ok(summary.clone()))?;
 

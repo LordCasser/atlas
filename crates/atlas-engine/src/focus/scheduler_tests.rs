@@ -33,6 +33,7 @@ fn test_file_window() -> FocusWindow {
             language: Default::default(),
         },
         strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 1 }],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -66,7 +67,7 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
 fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
     let lazy_structural = crate::lazy_structural::LazyStructuralService::new(store.clone(), None);
     let lazy_dataflow = crate::LazyDataflowService::new(store.clone(), None);
-    super::engine::ClosureEngine::new(store, lazy_structural, lazy_dataflow, None, vec![])
+    super::engine::ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -240,6 +241,7 @@ fn test_process_sync_drains_queue() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -273,6 +275,7 @@ fn test_priority_ordering_sync_before_speculative() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -283,6 +286,7 @@ fn test_priority_ordering_sync_before_speculative() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -371,6 +375,7 @@ fn test_process_all_queues_drains_all_levels() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -428,6 +433,7 @@ fn failed_focus_job_is_terminal_for_its_query() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -456,6 +462,7 @@ fn test_process_all_queues_priority_order() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -512,6 +519,7 @@ fn test_background_worker_drains_all_queues() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -569,6 +577,7 @@ fn test_background_worker_stops_on_cancel() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -619,6 +628,7 @@ fn test_background_worker_processes_in_correct_order() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -681,6 +691,7 @@ fn test_coordinator_acquired_for_sync_jobs() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,
@@ -732,6 +743,7 @@ fn test_background_worker_yields_to_cancellation() {
             language: Default::default(),
         },
         strategies: vec![],
+        include_roots: Vec::new(),
         budget: WindowBudget::default(),
         language: Default::default(),
         max_iterations: 1,

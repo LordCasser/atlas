@@ -2,7 +2,7 @@
 
 本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowFull 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
 
-> 当前实现基线：Atlas `1.5.1`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。本文描述当前主干，不保留旧 schema 或旧 MCP 表面的兼容说明。版本号以 workspace manifests 为准，schema 版本以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` 和 `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前实现基线：Atlas `1.5.2`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。本文描述当前主干，不保留旧 schema 或旧 MCP 表面的兼容说明。版本号以 workspace manifests 为准，schema 版本以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` 和 `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -16,7 +16,7 @@
 8. **信号最小**：响应中每个字段，Agent 必须有明确的 consume 路径；非 trace 公共信封不暴露 `partial_result`、`background_refinement`、`analysis.state` 等伪信号。冻结的 trace 内层契约继续保留自己的 `partial_result`。
 9. **内部状态不透出**：引擎层专有概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
 10. **事实，非指令**：响应字段提供事实（缺了什么），不提供 Agent 无法执行的指令（如"去索引这个"）。
-11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封，差异仅在 handler 的阻塞/超时策略。
+11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封；progress token 只增加观测通知，不改变终态、重试或恢复语义。
 
 ## 2. 模块边界与依赖方向
 
@@ -537,7 +537,8 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 已知限制：
 - CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、标签跳转和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
 - ArkTS 和 PHP 当前不声明 CFG 支持；其余语言已覆盖核心 branch/loop body traversal，部分语言另有 resource/context 结构覆盖。
-- per-file timeout 尚未完全强制。
+- 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
+  `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 
 ### 10.1 查询时 lazy index 架构
 
@@ -556,9 +557,9 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 
 Layer 通过 `SymbolDef.layer` 和 `extraction_state.layer` 字段标识。
 
-#### 10.1.2 Extraction job 生命周期
+#### 10.1.2 Extraction job 活跃边界
 
-所有 lazy extraction 触发均通过 `extraction_jobs` 表追踪，确保可观测性和并发去重：
+Lazy extraction 的 in-flight 工作通过 `extraction_jobs` 表追踪，确保可观测性和并发去重：
 
 ```
 queued → building → complete
@@ -571,6 +572,11 @@ queued → building → complete
 - **failed**: 提取失败（`error_msg` 记录原因）。
 
 Job ID 基于时间戳生成（`extract_{microsecond_hex}`）。同一 `(file_id, unit_id, layer)` 在 `queued`/`building` 状态下有且仅有一条活跃记录；文件级 job 的 `unit_id` 为 `NULL`。并发请求通过 claim API 的 dedup 语义使用同一 job_id。
+
+`extraction_jobs` 不是长期审计日志。文件级 structural rebuild 会原子替换 `files`
+行，相关 job 可能随 FK cascade 被清理；完成事实以 fresh `extraction_state`
+和实际 facts 为准。公开查询只依赖 active job 是否存在、pending job id、以及
+`analysis.retry_after_ms` / 终态 `gaps`，不得把缺少历史 complete job 解释为仍在 building。
 
 Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs` 表。
 
@@ -625,7 +631,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 `extraction_state` / `extraction_jobs` 两个表：
 
 - **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
-- **进行中状态**：所有 on-demand structural、resolution_symbols 和 dataflow 构建都必须 claim extraction job。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。
+- **进行中状态**：on-demand structural 和 dataflow 构建必须 claim extraction job；已有 active job 时返回 pending job id，不重复构建。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。`resolution_symbols` 只服务 closure 内依赖符号物化，当前不作为独立可等待 job 暴露。
 - **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。Agent 判断是否可用、是否等待、是否重试只能读取 public `analysis` 字段，不能读取 raw extraction job 或 pending/partial 旧字段。
 - **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
 
@@ -670,7 +676,7 @@ MCP 分析响应采用**三态终局模型**，Agent 通过 `analysis.retry_afte
   "result": {...},
   "analysis": {
     "scope": "local",
-    "summary": "Focus analysis still expanding: 2 background job(s) remaining.",
+    "summary": "Focus analysis still expanding: 2 pending job(s) remaining.",
     "basis": ["manifest", "structural"],
     "retry_after_ms": 10000
   }
@@ -769,10 +775,13 @@ analysis/retry_after_ms/gaps。
   失败与成功都必须退出 pending；失败原因映射为终态 `background_refinement_failed`
   gap，不能以永久 running 隐藏。`FocusRuntime` 持有
   `Arc<JobTracker>` 并在 `prepare()` 中通过 `FocusResult.job_tracker` 传递给 MCP 层。
-  MCP `apply_focus_result_to_lr()` 通过 `tracker.are_all_done(&pending)` 判定终态。
+  MCP `apply_focus_result_to_lr()` 通过 `FocusResult` 的 closure pending 与 raw
+  extraction pending 共同判定 retry/终态。
 - `EnsureStructuralResult` 只把实际 built/cached 文件计入 closure。抽取失败记录
-  `extraction_failed` gap；取消或未完成记录 budget gap。请求过但没有事实的文件不能计入
-  coverage，也不能提升为 `ClosureComplete/High`。
+  `extraction_failed` gap；取消或预算截断记录 budget gap；`AlreadyBuilding`
+  记录为 retryable pending extraction job，并通过 `analysis.retry_after_ms`
+  收敛，不作为终态 `gaps` 暴露。请求过但没有事实的文件不能计入 coverage，也不能提升为
+  `ClosureComplete/High`。
 - `ClosureComplete/High` 只适用于非空且无 gap 的结构化闭包；只有 manifest、只有
   resolution symbols、空闭包或存在 gap 时必须诚实降级。
 - Focus 是内部机制，不是 public response surface。默认 MCP 响应和
@@ -915,7 +924,8 @@ analysis response
 | 终态—完整 | 不存在 | 不存在 | `use_with_confidence(result)` |
 | 终态—永久缺口 | 不存在 | 存在 | `use_with_caution(result)` |
 
-**终态判定**：由 `FocusRuntime.job_tracker.are_all_done(&pending_closure_ids)` 判定。
+**终态判定**：由 `FocusResult` 中的 tracked closure pending 与 raw extraction pending
+共同判定；任一仍 active 时响应保持 `analysis.retry_after_ms`。
 终态保证可达——`JobTracker` 在 `FocusScheduler::process_detached_job` 每个闭包构建
 成功后调用 `mark_done(closure_id)`，失败后调用 `mark_failed(closure_id, reason)`；
 `FocusRuntime::prepare()` 在前台闭包完成后立即标记终态，前台闭包 ID 不进入
@@ -991,33 +1001,25 @@ pub fn resolve_symbol_input(
 
 `normalize_and_validate_path` 拒绝 `..` 逃逸路径和绝对路径，在计分前返回参数错误。
 
-### 10.7 三种客户端模式的介入差异
+### 10.7 客户端介入差异
 
-TUI / MCP+progress / MCP-no-progress 使用**完全相同的响应信封**（见 §10.4 三态终局），差异仅在 handler 的阻塞/超时策略：
+TUI / MCP+progress / MCP-no-progress 使用**完全相同的响应信封**（见 §10.4 三态终局）。
+非终态只由查询层的 Focus/lazy 状态决定：handler 在当前 bounded window 内产出
+`query_id`、当前可用结果和可选 `analysis.retry_after_ms`；客户端随后用
+`resume_query(query_id)` 重放查询。MCP service 层不再提供第二套 waitable task、
+`task_id` 或按请求超时派生的 polling contract。
 
-```
-engine.prepare(params)  →  产出 query_id + 初始 result
+Progress token 只影响观测通道，不改变终态策略：
 
-  loop:
-    if tracker.is_terminal(query_id):
-      return terminal_response(result)
+| 模式 | Progress 通知 | 非终态判断 | 恢复入口 |
+|------|---------------|------------|----------|
+| TUI | 界面显示 worker activity | `analysis.retry_after_ms` / `gaps` | `resume_query` |
+| MCP + progress token | 走 `notifications/progress` | `analysis.retry_after_ms` / `gaps` | `resume_query` |
+| MCP 无 progress token | 无 transport notification | `analysis.retry_after_ms` / `gaps` | `resume_query` |
 
-    if mode == Timeout(threshold) && elapsed > threshold:
-      return non_terminal_response(result, tracker.eta_ms(query_id))
-
-    if mode == Progress(token):
-      send_notification(token, tracker.progress(query_id))
-
-    sleep(POLL_INTERVAL)
-```
-
-| 模式 | 超时 | Progress 通知 | 非终态返回 |
-|------|------|--------------|-----------|
-| TUI | 与无 progress MCP 相同的 bounded wait | 无 transport notification；界面显示 worker activity | 超时返回；保留 `query_id` 并由 `resume_query` 继续 |
-| MCP + progress token | 无限 | 走 `notifications/progress` | 不发生（阻塞到终态） |
-| MCP 无 progress token | THRESHOLD | 无 | 超时返回 + `analysis.retry_after_ms` |
-
-带 progress token 的同步请求在 handler 返回后必须先释放 request-scoped `ToolCallContext`（关闭 progress sender），再等待 notification forwarder 排空退出；反向顺序会让请求永久等待仍由自身持有的 sender。
+带 progress token 的同步请求在 handler 返回后必须先释放 request-scoped
+`ToolCallContext`（关闭 progress sender），再等待 notification forwarder 排空退出；
+反向顺序会让请求永久等待仍由自身持有的 sender。
 
 ## 11. Search、Context、MCP、CLI
 
@@ -1196,7 +1198,7 @@ DoubleFree/UseAfterFree 检测基于每次状态转换。C/C++ 默认资源语�
 
 ### Lazy Indexing
 
-- **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 extraction job 时，它立即返回而不等待构建完成。同一 MCP 会话中的后续请求可能观察到过期数据。客户端应在短暂延迟后重试。
+- **构建期间的并发读取**：当请求遇到处于 `AlreadyBuilding` 状态的 extraction job 时，它立即返回而不等待构建完成。MCP 响应通过 `analysis.retry_after_ms` 和 `query_id` 表达可恢复 pending；`resume_query` 重新观察 fresh `extraction_state` 和 facts，完成或失败后收敛为终态结果。
 
 - **Include root auto-detection**: `project_root/include/` is auto-detected.
   Additional directories can be passed per-request via the `include_roots`

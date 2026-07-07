@@ -28,12 +28,9 @@ pub use index_phases::{
     phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
     phase_write_batched, phase_write_single,
 };
-pub use index_pipeline::{
-    IndexPipelineOptions, IndexPipelineStats, IndexProgress, IndexProgressCallback,
-    run_index_pipeline,
-};
+pub use index_pipeline::{IndexPipelineOptions, IndexPipelineStats, run_index_pipeline};
 pub use index_pipeline_orchestrator::IndexPipeline;
-pub use progress::{CallbackSink, MultiplexSink, NoopSink, PhaseName, ProgressEvent, ProgressSink};
+pub use progress::{MultiplexSink, NoopSink, PhaseName, ProgressEvent, ProgressSink};
 pub use sync_engine::{SyncEngine, SyncStats, load_graph, load_snapshot};
 
 #[cfg(feature = "sync")]

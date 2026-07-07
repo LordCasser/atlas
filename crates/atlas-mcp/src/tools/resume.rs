@@ -150,7 +150,7 @@ impl ToolRouter {
 
         // Patch response: keep original query_id so the client can correlate,
         // and add a `resumed_from` field to indicate this is a resume.
-        let (patched, remains_partial, generated_query_id) =
+        let (patched, remains_retryable, generated_query_id) =
             Self::patch_resume_response(&resp_str, &original_query_id)
                 .unwrap_or((resp_str, false, None));
 
@@ -174,8 +174,8 @@ impl ToolRouter {
             .unwrap_or_else(|e| e.into_inner())
             .get_mut(&original_query_id)
         {
-            s.status = if remains_partial {
-                QueryStatus::Partial
+            s.status = if remains_retryable {
+                QueryStatus::Retryable
             } else {
                 QueryStatus::Ready
             };
@@ -195,7 +195,7 @@ impl ToolRouter {
             .get("query_id")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let remains_partial = resp
+        let remains_retryable = resp
             .get("analysis")
             .and_then(|analysis| analysis.get("retry_after_ms"))
             .is_some();
@@ -203,7 +203,7 @@ impl ToolRouter {
         resp["resumed_from"] = json!(original_query_id);
         Some((
             serde_json::to_string_pretty(&resp).ok()?,
-            remains_partial,
+            remains_retryable,
             generated_query_id,
         ))
     }
@@ -214,18 +214,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn patch_resume_response_preserves_partial_state_and_generated_id() {
+    fn patch_resume_response_preserves_retryable_state_and_generated_id() {
         let response = json!({
             "query_id": "q_generated",
             "analysis": {"retry_after_ms": 5000},
-            "result": "partial"
+            "result": "retryable"
         })
         .to_string();
 
-        let (patched, remains_partial, generated) =
+        let (patched, remains_retryable, generated) =
             ToolRouter::patch_resume_response(&response, "q_original").unwrap();
         let patched: Value = serde_json::from_str(&patched).unwrap();
-        assert!(remains_partial);
+        assert!(remains_retryable);
         assert_eq!(generated.as_deref(), Some("q_generated"));
         assert_eq!(patched["query_id"], "q_original");
         assert_eq!(patched["resumed_from"], "q_original");
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn patch_resume_response_marks_terminal_without_retry() {
         let response = json!({"query_id": "q_generated", "result": "ready"}).to_string();
-        let (_, remains_partial, _) =
+        let (_, remains_retryable, _) =
             ToolRouter::patch_resume_response(&response, "q_original").unwrap();
-        assert!(!remains_partial);
+        assert!(!remains_retryable);
     }
 }

@@ -35,11 +35,11 @@
 //!       │
 //!       ├─ Handler (graph.rs, search.rs, …)
 //!       │    │
-//!       │    ├─ prepare_focus_query(intent) ──► query_runtime.prepare()
+//!       │    ├─ prepare_focus_query(intent, include_roots) ──► query_runtime.prepare()
 //!       │    │       │                           │
 //!       │    │       │                           ├─ cache_state.has_full_index()
 //!       │    │       │                           ├─ focus_runtime.lock().detect_index_mode()
-//!       │    │       │                           └─ focus_runtime.lock().prepare(intent)
+//!       │    │       │                           └─ focus_runtime.lock().prepare(intent, include_roots)
 //!       │    │       │
 //!       │    │       └─ Post: lazy_refresh_queue.record_writes()
 //!       │    │                 maybe_refresh_graph()
@@ -70,8 +70,7 @@
 //!
 //! # Concurrency Model
 //!
-//! - **ToolRouter** is immutable orchestration state. Async requests create lightweight routers
-//!   over the same `Arc<ActiveProject>` and execute concurrently under `TaskManager`'s semaphore.
+//! - **ToolRouter** is immutable orchestration state over the active project.
 //! - **engine** (`Mutex<Engine>`) is only accessed from trace handlers — held briefly.
 //! - **focus_runtime** (`Mutex<FocusRuntime>`) serializes foreground closure preparation per
 //!   active project. Other store reads and graph snapshot queries remain concurrent.

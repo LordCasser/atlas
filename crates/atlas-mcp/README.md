@@ -73,7 +73,9 @@ Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
 
 For C/C++ projects, pass `include_roots` to help resolve `#include <...>` during
 lazy structural extraction. The roots are project-relative, request-scoped, and
-not persisted. Default auto-detection includes `project_root/include/`.
+not persisted. Default auto-detection includes `project_root/include/`. Tools
+that prepare focus closures accept the same parameter, including `search`,
+`symbol`, `calls`, `explore`, `path`, `trace`, `lifecycle`, and `branch_diff`.
 
 ```json
 {"query": "do_sched", "scope": "kernel/sched", "include_roots": ["include"]}

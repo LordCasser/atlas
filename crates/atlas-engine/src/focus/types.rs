@@ -14,6 +14,8 @@
 
 use std::collections::HashSet;
 
+use crate::closure_planner::IncludeRoot;
+
 use types::enums::{Language, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::KnownGap;
@@ -125,6 +127,7 @@ impl WindowBudget {
 pub struct FocusWindow {
     pub seed: FocusSeed,
     pub strategies: Vec<ClosureStrategy>,
+    pub include_roots: Vec<IncludeRoot>,
     pub budget: WindowBudget,
     pub language: Language,
     pub max_iterations: u32,
@@ -135,6 +138,7 @@ impl FocusWindow {
         FocusWindow {
             seed,
             strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 2 }],
+            include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language,
             max_iterations: 3,
@@ -154,6 +158,9 @@ pub struct FocusClosure {
     pub symbols: HashSet<SymbolId>,
     pub visited: HashSet<FileId>,
     pub gaps: Vec<KnownGap>,
+    /// Raw extraction jobs encountered through LazyStructuralService
+    /// in-flight de-duplication. These are retryable work, not terminal gaps.
+    pub pending_extraction_job_ids: Vec<String>,
 }
 
 impl FocusClosure {
@@ -164,6 +171,7 @@ impl FocusClosure {
             symbols: HashSet::new(),
             visited: HashSet::new(),
             gaps: Vec::new(),
+            pending_extraction_job_ids: Vec::new(),
         }
     }
 
@@ -174,6 +182,14 @@ impl FocusClosure {
 
     pub fn record_gap(&mut self, gap: KnownGap) {
         self.gaps.push(gap);
+    }
+
+    pub fn record_pending_extraction_jobs(&mut self, job_ids: impl IntoIterator<Item = String>) {
+        for job_id in job_ids {
+            if !self.pending_extraction_job_ids.contains(&job_id) {
+                self.pending_extraction_job_ids.push(job_id);
+            }
+        }
     }
 }
 

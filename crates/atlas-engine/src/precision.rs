@@ -40,7 +40,7 @@ pub fn next_action_structural(precision: &Precision) -> Option<&'static str> {
         if precision.confidence == SemanticConfidence::High {
             Some("structural complete, dataflow truncated — increase budget or narrow scope")
         } else {
-            Some("budget exceeded — increase LAZY_STRUCTURAL_BUDGET_MS or reduce scope")
+            Some("budget exceeded — reduce query scope or run a full index")
         }
     } else {
         // ClosureComplete or other repo-complete-like state
@@ -150,6 +150,32 @@ mod tests {
     #[test]
     fn precision_is_exact_returns_false_for_worst() {
         assert!(!Precision::worst().is_exact());
+    }
+
+    #[test]
+    fn boundary_precision_is_not_unavailable_or_exact() {
+        for confidence in [SemanticConfidence::Medium, SemanticConfidence::High] {
+            let p = Precision {
+                coverage: CoverageTier::Boundary {
+                    target_tier: SymbolTier::Full,
+                },
+                confidence,
+            };
+            assert!(!p.is_unavailable());
+            assert!(!p.is_exact());
+        }
+    }
+
+    #[test]
+    fn closure_complete_certain_is_not_repo_exact() {
+        let p = Precision {
+            coverage: CoverageTier::ClosureComplete {
+                closure_id: "c1".into(),
+            },
+            confidence: SemanticConfidence::Certain,
+        };
+        assert!(!p.is_unavailable());
+        assert!(!p.is_exact());
     }
 
     #[test]

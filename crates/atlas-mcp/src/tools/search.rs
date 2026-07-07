@@ -292,7 +292,7 @@ impl ToolRouter {
             .get("includeCode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let (_, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         let mut lr = AnalysisEnvelope::new("symbol", args);
         let resolution =
@@ -311,12 +311,14 @@ impl ToolRouter {
                             .read_symbol_source(&s.id)
                             .is_none();
                     if source_missing {
-                        let (focus_result, focus_warnings) =
-                            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
+                        let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+                            Some(atlas_engine::QueryIntent::Context {
                                 symbol_name: qname.to_string(),
                                 file_id: Some(s.file_id),
                                 symbol_id: None,
-                            }));
+                            }),
+                            include_roots.clone(),
+                        );
                         if let Some(ref result) = focus_result {
                             lr = crate::tools::apply_focus_result_to_lr(lr, result);
                         }
@@ -373,19 +375,24 @@ impl ToolRouter {
                 );
                 let mut selector_file_id = self.resolve_selector_file_id(&symbol_input);
                 if selector_file_id.is_none() && has_file_hint {
-                    let _ = self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
-                        symbol_name: qname.to_string(),
-                        file_id: None,
-                        symbol_id: None,
-                    }));
+                    let _ = self.prepare_focus_query_with_roots(
+                        Some(atlas_engine::QueryIntent::Context {
+                            symbol_name: qname.to_string(),
+                            file_id: None,
+                            symbol_id: None,
+                        }),
+                        include_roots.clone(),
+                    );
                     selector_file_id = self.resolve_selector_file_id(&symbol_input);
                 }
-                let (focus_result, focus_warnings) =
-                    self.prepare_focus_query(Some(atlas_engine::QueryIntent::Context {
+                let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+                    Some(atlas_engine::QueryIntent::Context {
                         symbol_name: qname.to_string(),
                         file_id: selector_file_id,
                         symbol_id: None,
-                    }));
+                    }),
+                    include_roots.clone(),
+                );
                 if let Some(ref result) = focus_result {
                     lr = crate::tools::apply_focus_result_to_lr(lr, result);
                 }

@@ -1218,7 +1218,12 @@ mod tests {
         }
     }
 
-    fn plain_node(id: CfgNodeId, fid: types::ids::SymbolId, kind: CfgNodeKind, byte: u32) -> CfgNode {
+    fn plain_node(
+        id: CfgNodeId,
+        fid: types::ids::SymbolId,
+        kind: CfgNodeKind,
+        byte: u32,
+    ) -> CfgNode {
         CfgNode {
             id,
             function_id: fid,

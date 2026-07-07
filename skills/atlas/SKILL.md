@@ -82,8 +82,8 @@ The 15 MCP tools use short names in the native server. Note: some MCP client env
 | `project` | Open project, check status, list files | — | `action` (`open`/`status`/`files`; default `status`), `project_path` (required with `open`), `verbose`, `limit`, `language`, `path_prefix` |
 | `search` | Symbol search by name within a directory scope | `query`, `scope` | `kind` (e.g., `function`, `class`), `limit` (default 20, max 200), `include_roots` |
 | `symbol` | Symbol details, rich context, or usages | `symbol` (string or SymbolSelector) | `file_path`+`line`+`column` for position-based lookup, `view` (`detail`/`context`/`usages`; default `detail`), `includeCode`, `includeFilePeers`, `limit` (usages only), `include_roots` |
-| `calls` | Call graph: callers, callees, multi-hop | `symbol` | `direction` (`incoming`/`outgoing`/`both`; default `both`), `depth` (1-5, default 1), `limit`, `edge_kinds` (default `["calls","instantiates","implements"]`; use `["*"]` for all) |
-| `explore` | Symbol dossier: source, call evidence, relations, file context | `symbol` | `scope` (directory), `source_mode` (`excerpt`/`full`/`none`), `source_lines` (default 40), `evidence_limit` (default 5), `relation_limit` (default 20), `peer_limit` (default 12), `include_file_context`, `include_recommendations` |
+| `calls` | Call graph: callers, callees, multi-hop | `symbol` | `direction` (`incoming`/`outgoing`/`both`; default `both`), `depth` (1-5, default 1), `limit`, `edge_kinds` (default `["calls","instantiates","implements"]`; use `["*"]` for all), `include_roots` |
+| `explore` | Symbol dossier: source, call evidence, relations, file context | `symbol` | `scope` (directory), `source_mode` (`excerpt`/`full`/`none`), `source_lines` (default 40), `evidence_limit` (default 5), `relation_limit` (default 20), `peer_limit` (default 12), `include_file_context`, `include_recommendations`, `include_roots` |
 | `path` | Shortest path between two symbols through the graph | `from`, `to` | `max_depth` (1-10, default 5), `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `prefer_production`, `edge_kinds` (default `["calls","instantiates","implements","registers_callback"]`), `includeCode`, `include_roots` |
 | `impact` | Bidirectional impact analysis (what would break?) | `symbol` | `depth` (1-5, default 3), `semantic` (include lifecycle invariants and branch diffs) |
 | `file_dependencies` | File-level import/include graph | `file_path` | `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `limit` (default 50), `analysis` (`manifest`/`structural`; default `manifest`) |
@@ -98,7 +98,7 @@ The 15 MCP tools use short names in the native server. Note: some MCP client env
 `lifecycle` is function-local: it composes ownership effects at query time and does not
 need call-graph expansion. C/C++ defaults recognize common libc and Linux kernel alloc/free
 APIs. An `unknown` final state does not imply zero analysis; inspect transitions, proof
-paths, and `partial`.
+paths, and any terminal `gaps`.
 
 ### Trace `kind` parameter details
 

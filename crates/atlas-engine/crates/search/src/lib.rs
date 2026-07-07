@@ -13,7 +13,7 @@ pub mod scoring;
 use db::Store;
 use graph::GraphEngine;
 use std::sync::{Arc, RwLock};
-use types::{FileId, Language, SymbolDef, SymbolKind};
+use types::{Language, SymbolDef, SymbolKind};
 
 use self::scoring::SearchScore;
 
@@ -320,42 +320,6 @@ impl SearchEngine {
         Ok(results)
     }
 
-    /// Convenience: search without options (backward-compatible).
-    pub fn search_simple(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchResult>> {
-        self.search(query, limit, &SearchOptions::default())
-    }
-
-    /// Search for symbols of a specific kind.
-    pub fn search_by_kind(
-        &self,
-        query: &str,
-        kind: SymbolKind,
-        limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>> {
-        self.search(query, limit, &SearchOptions::new().with_kind(kind))
-    }
-
-    /// Search for symbols within a specific file.
-    pub fn search_in_file(
-        &self,
-        query: &str,
-        file_id: &FileId,
-        limit: usize,
-    ) -> anyhow::Result<Vec<SearchResult>> {
-        let file_path = self
-            .store
-            .get_file(file_id)
-            .ok()
-            .flatten()
-            .map(|info| info.path)
-            .unwrap_or_default();
-        self.search(
-            query,
-            limit,
-            &SearchOptions::new().with_file_path(&file_path),
-        )
-    }
-
     /// Fuzzy name search — useful for typo-tolerant symbol lookup.
     pub fn fuzzy_search(
         &self,
@@ -507,7 +471,7 @@ mod tests {
     use db::Store;
     use graph::GraphEngine;
     use std::sync::Arc;
-    use types::{FileInfo, Language, ParseStatus, SymbolDef};
+    use types::{FileId, FileInfo, Language, ParseStatus, SymbolDef};
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();
@@ -589,7 +553,9 @@ mod tests {
         seed_symbols(&store);
         let engine = test_engine(store);
 
-        let results = engine.search_simple("User", 10).unwrap();
+        let results = engine
+            .search("User", 10, &SearchOptions::default())
+            .unwrap();
         assert!(!results.is_empty());
         let top_name = &results[0].symbol.name;
         assert!(top_name.contains("User"));
@@ -599,18 +565,22 @@ mod tests {
     fn test_search_empty() {
         let store = test_store();
         let engine = test_engine(store);
-        let results = engine.search_simple("", 10).unwrap();
+        let results = engine.search("", 10, &SearchOptions::default()).unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_search_by_kind() {
+    fn test_search_with_kind_filter() {
         let store = test_store();
         seed_symbols(&store);
         let engine = test_engine(store);
 
         let results = engine
-            .search_by_kind("User", SymbolKind::Method, 10)
+            .search(
+                "User",
+                10,
+                &SearchOptions::new().with_kind(SymbolKind::Method),
+            )
             .unwrap();
         for r in &results {
             assert_eq!(r.symbol.kind, SymbolKind::Method);
@@ -671,7 +641,9 @@ mod tests {
         let engine = test_engine(store);
 
         // "anager" won't match FTS5 prefix, but LIKE should find "UserManager"
-        let results = engine.search_simple("anager", 10).unwrap();
+        let results = engine
+            .search("anager", 10, &SearchOptions::default())
+            .unwrap();
         assert!(
             !results.is_empty(),
             "LIKE fallback should find 'UserManager'"
@@ -1005,7 +977,7 @@ mod tests {
         assert_eq!(store.dominant_language().unwrap(), Some(Language::Rust));
         let engine = test_engine(store);
 
-        let results = engine.search_simple("App", 10).unwrap();
+        let results = engine.search("App", 10, &SearchOptions::default()).unwrap();
         assert!(
             results
                 .iter()

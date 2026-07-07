@@ -1,6 +1,6 @@
 //! Trace tools: symbol and variable trace queries with dataflow/caller-path
-//! traversal.  Includes transparent lazy structural extraction with progress
-//! notifications to prevent MCP timeout during on-demand extraction.
+//! traversal.  Includes transparent lazy structural extraction with optional
+//! request-scoped MCP progress notifications.
 
 use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
@@ -99,15 +99,14 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
-        let (focus_result, focus_warnings) =
-            self.prepare_focus_query_with_roots(
-                Some(atlas_engine::QueryIntent::TracePoint {
-                    file_id,
-                    line,
-                    column,
-                }),
-                include_roots,
-            );
+        let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::TracePoint {
+                file_id,
+                line,
+                column,
+            }),
+            include_roots,
+        );
         if let Some(ref result) = focus_result {
             lr = super::apply_focus_result_to_lr(lr, result);
         }
@@ -219,15 +218,14 @@ impl ToolRouter {
         let mut lr = AnalysisEnvelope::new("trace", args);
 
         // Ensure structural before tracing
-        let (focus_result, focus_warnings) =
-            self.prepare_focus_query_with_roots(
-                Some(atlas_engine::QueryIntent::TraceVariable {
-                    file_id,
-                    line,
-                    column,
-                }),
-                include_roots,
-            );
+        let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::TraceVariable {
+                file_id,
+                line,
+                column,
+            }),
+            include_roots,
+        );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -296,17 +294,16 @@ impl ToolRouter {
         }
 
         let mut lr = AnalysisEnvelope::new("trace", args);
-        let (focus_result, lazy_warnings) =
-            self.prepare_focus_query_with_roots(
-                Some(atlas_engine::QueryIntent::Calls {
-                    symbol_name: symbol_str.to_string(),
-                    file_id: self.resolve_selector_file_id(&input),
-                    symbol_id: None,
-                    direction: Some("incoming".to_string()),
-                    depth: Some(max_depth),
-                }),
-                include_roots,
-            );
+        let (focus_result, lazy_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::Calls {
+                symbol_name: symbol_str.to_string(),
+                file_id: self.resolve_selector_file_id(&input),
+                symbol_id: None,
+                direction: Some("incoming".to_string()),
+                depth: Some(max_depth),
+            }),
+            include_roots,
+        );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
@@ -462,6 +459,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::BestEffortSingle,
             Some("outgoing".to_string()),
             Some(max_depth),
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -516,6 +514,7 @@ impl ToolRouter {
             SymbolResolutionPolicy::BestEffortSingle,
             None,
             Some(max_depth),
+            &include_roots,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -781,7 +780,7 @@ mod tests {
     fn trace_callers_hex_input_returns_not_found() {
         // Hex strings are no longer auto-detected — they are treated as
         // qualified names. A hex-looking string won't match any symbol.
-        // In focus mode (no full index), this returns a partial "building"
+        // In focus mode (no full index), this returns a retryable unresolved
         // result instead of a hard error — the symbol may exist but hasn't
         // been materialized in the local closure yet.
         let store = test_store();
@@ -795,7 +794,7 @@ mod tests {
         assert!(
             resp_str.contains("not found")
                 || resp_str.contains("not available")
-                || resp_str.contains("building")
+                || resp_str.contains("unresolved")
                 || is_error,
             "hex string should not resolve as SymbolId: {resp_str}"
         );
@@ -859,9 +858,9 @@ mod tests {
         let args = serde_json::json!({"from": "sender", "to": "copy_from_user"});
         let (resp, is_error) = router.handle_trace_forward(&args);
 
-        // In focus mode, the response is a partial "building" result (is_error=false)
+        // In focus mode, the response is a retryable unresolved result (is_error=false)
         // instead of a hard error. The symbol may exist but hasn't been materialized
-        // in the local closure yet. Both error and partial-result are acceptable.
+        // in the local closure yet. Both error and retryable unresolved result are acceptable.
         if is_error {
             assert!(
                 resp.contains("unresolved call token") && resp.contains("trace(kind=\"point\")"),
@@ -869,10 +868,10 @@ mod tests {
             );
         } else {
             assert!(
-                resp.contains("building")
+                resp.contains("unresolved")
                     || resp.contains("not available")
-                    || resp.contains("partial"),
-                "focus-mode partial result should indicate building state: {resp}"
+                    || resp.contains("retry_after_ms"),
+                "focus-mode response should indicate unresolved retryable state: {resp}"
             );
         }
     }

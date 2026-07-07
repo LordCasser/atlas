@@ -22,14 +22,17 @@ impl ToolRouter {
             SymbolInput::Name(s) => s.clone(),
             SymbolInput::Selector(sel) => sel.qualified_name.clone(),
         };
-        let (focus_opt, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::Calls {
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (focus_opt, focus_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::Calls {
                 symbol_name: symbol_display.clone(),
                 direction: None,
                 depth: None,
                 file_id: self.resolve_selector_file_id(&input),
                 symbol_id: None,
-            }));
+            }),
+            include_roots,
+        );
         let resolution =
             match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle) {
                 Ok(r) => r,
@@ -59,7 +62,7 @@ impl ToolRouter {
             .active_investigation
             .clone();
 
-        let mut lr = AnalysisEnvelope::new("symbol", args);
+        let mut lr = AnalysisEnvelope::new("symbol", args).with_root_warnings(root_warnings);
         if !focus_warnings.is_empty() {
             lr = lr.with_lazy_warnings(focus_warnings);
         }

@@ -25,7 +25,6 @@
 //! let cancel = AtomicBool::new(false);
 //! let extracted = phase_extract_parallel_cancellable(
 //!     root, &files, &frontends, mode,
-//!     None,                                      // on_progress (once at end)
 //!     Some(&|completed, total| { ... }),         // on_file_progress (every 50 files)
 //!     Some(&cancel),                             // cancel_token
 //! );
@@ -443,7 +442,6 @@ pub fn phase_extract_serial(
 ///
 /// Shares a single [`ParseWorkerPool`] across all rayon threads.  Atomic
 /// counters track per-file success/failure/symbol counts thread-safely.
-/// `on_progress` is called once at the end with `(succeeded, total)`.
 /// `on_file_progress` is called every 50 files with `(completed, total)`.
 ///
 /// Delegates to [`phase_extract_parallel_cancellable`] with
@@ -453,18 +451,9 @@ pub fn phase_extract_parallel(
     files: &[PathBuf],
     frontends: &HashMap<Language, LanguageFrontend>,
     mode: ExtractionMode,
-    on_progress: Option<&dyn Fn(usize, usize)>,
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> ExtractedFiles {
-    phase_extract_parallel_cancellable(
-        root,
-        files,
-        frontends,
-        mode,
-        on_progress,
-        on_file_progress,
-        None,
-    )
+    phase_extract_parallel_cancellable(root, files, frontends, mode, on_file_progress, None)
 }
 
 /// Extract facts from files in parallel using rayon — cancellable variant.
@@ -490,7 +479,6 @@ pub fn phase_extract_parallel_cancellable(
     files: &[PathBuf],
     frontends: &HashMap<Language, LanguageFrontend>,
     mode: ExtractionMode,
-    on_progress: Option<&dyn Fn(usize, usize)>,
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     cancel_token: Option<&std::sync::atomic::AtomicBool>,
 ) -> ExtractedFiles {
@@ -556,11 +544,6 @@ pub fn phase_extract_parallel_cancellable(
             })
             .collect()
     });
-
-    // Call on_progress once at the end if provided (backward-compat hook)
-    if let Some(cb) = on_progress {
-        cb(succeeded.load(Ordering::Relaxed), total);
-    }
 
     ExtractedFiles {
         items,
@@ -1284,7 +1267,6 @@ mod tests {
             &paths,
             &frontends,
             ExtractionMode::Manifest,
-            None, // on_progress — unused
             Some(&|completed, total| {
                 calls.lock().unwrap().push((completed, total));
             }),
@@ -1333,7 +1315,6 @@ mod tests {
             &paths,
             &frontends,
             ExtractionMode::Manifest,
-            None,
             None, // on_file_progress — unused
             Some(&cancel),
         );
@@ -1370,7 +1351,6 @@ mod tests {
             ExtractionMode::Manifest,
             None,
             None,
-            None,
         );
         assert_eq!(result.stats.succeeded, 5);
         assert_eq!(result.items.len(), 5);
@@ -1389,7 +1369,6 @@ mod tests {
             &files,
             &frontends,
             ExtractionMode::Manifest,
-            None,
             None,
             None,
         );

@@ -127,14 +127,17 @@ impl ToolRouter {
             return ("Missing required parameter: symbol".to_string(), true);
         }
 
-        let mut lr = AnalysisEnvelope::new("branch_diff", args);
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let mut lr = AnalysisEnvelope::new("branch_diff", args).with_root_warnings(root_warnings);
         let query_id = lr.query_id().to_string();
-        let (focus_result, focus_warnings) =
-            self.prepare_focus_query(Some(atlas_engine::QueryIntent::SemanticFunction {
+        let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
+            Some(atlas_engine::QueryIntent::SemanticFunction {
                 symbol_name: symbol.clone(),
                 file_id: self.resolve_selector_file_id(&input),
                 symbol_id: None,
-            }));
+            }),
+            include_roots,
+        );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }

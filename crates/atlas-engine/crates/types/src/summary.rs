@@ -50,11 +50,6 @@ pub struct FunctionSummary {
     pub return_flows: Vec<ReturnFlow>,
     /// Call arguments and their upstream source nodes.
     pub call_arg_flows: Vec<CallArgFlow>,
-    /// Data node IDs whose data (transitively) flows into a return node.
-    #[deprecated(
-        note = "use `return_flows[*].sources` instead; this field will be removed in a future version"
-    )]
-    pub return_sources: Vec<DataNodeId>,
 }
 
 /// Downstream reachability from one parameter.

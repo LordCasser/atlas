@@ -28,8 +28,8 @@ pub(crate) struct QuerySnapshot {
 /// Lifecycle status of a query snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum QueryStatus {
-    /// Result is incomplete — lazy extraction is still pending or partial.
-    Partial,
+    /// Result is non-terminal and should be resumed after analysis.retry_after_ms.
+    Retryable,
     /// Background refinement is in progress.
     Refining,
     /// All extraction is complete — result is final.
@@ -118,9 +118,9 @@ mod tests {
 
     #[test]
     fn test_query_status_default() {
-        let status = QueryStatus::Partial;
+        let status = QueryStatus::Retryable;
         match status {
-            QueryStatus::Partial => {}
+            QueryStatus::Retryable => {}
             QueryStatus::Refining => {}
             QueryStatus::Ready => {}
         }
@@ -178,7 +178,7 @@ mod tests {
             tool_args: serde_json::json!({"line": 1}),
             focus_result: None,
             created_at: std::time::Instant::now(),
-            status: QueryStatus::Partial,
+            status: QueryStatus::Retryable,
         };
         assert_eq!(snapshot.query_id, "q_test");
         assert_eq!(snapshot.tool_name, "trace");

@@ -331,7 +331,6 @@ impl IndexPipeline {
                 &files_to_extract,
                 &frontend_cache,
                 self.options.mode.clone(),
-                None, // on_progress (once at end) — unused
                 Some(&on_file_progress),
                 Some(&cancel_token),
             );

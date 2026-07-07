@@ -11,7 +11,6 @@
 //! 3. For each parameter node, BFS forward through outgoing edges.
 //! 4. Classify visited nodes by kind (Return, CallArg, Field) into
 //!    `ParameterFlow`.
-//! 5. Collect all nodes that flow into return nodes as `return_sources`.
 //!
 //! ## Limitations (by design)
 //!
@@ -43,7 +42,6 @@ impl SummaryBuilder {
     /// Falls back to file-level nodes only when function-scoped query returns
     /// empty (pre-existing data from older index runs where function_id was
     /// not resolved).
-    #[allow(deprecated)]
     pub fn build(
         store: &dyn TraceStore,
         function_id: &SymbolId,
@@ -113,7 +111,6 @@ impl SummaryBuilder {
             .collect();
 
         let mut param_flows: Vec<ParameterFlow> = Vec::with_capacity(param_nodes.len());
-        let mut all_return_contributors: HashSet<DataNodeId> = HashSet::new();
         // Collect return nodes with their upstream sources
         let mut return_flows_map: HashMap<DataNodeId, Vec<DataNodeId>> = HashMap::new();
         // Collect call-arg flows: (callsite_id, arg_index, arg_node, source_node)
@@ -143,7 +140,6 @@ impl SummaryBuilder {
                             match kind {
                                 DataNodeKind::Return | DataNodeKind::CallReturn => {
                                     returns.push(target_id);
-                                    all_return_contributors.insert(current);
                                     return_flows_map.entry(target_id).or_default().push(current);
                                 }
                                 DataNodeKind::CallArg => {
@@ -214,7 +210,6 @@ impl SummaryBuilder {
                 let entry = return_flows_map.entry(node.id).or_default();
                 for edge in edges {
                     entry.push(edge.source);
-                    all_return_contributors.insert(edge.source);
                 }
             }
         }
@@ -261,10 +256,6 @@ impl SummaryBuilder {
             })
             .collect();
 
-        // ── 5. Collect return sources: all node IDs that feed into any Return
-        //    (deprecated: use return_flows[*].sources instead)
-        let return_sources: Vec<DataNodeId> = all_return_contributors.into_iter().collect();
-
         Ok(FunctionSummary {
             function_id: *function_id,
             node_count: nodes.len(),
@@ -272,13 +263,11 @@ impl SummaryBuilder {
             param_flows,
             return_flows,
             call_arg_flows,
-            return_sources,
         })
     }
 }
 
 /// Build an empty summary for a function with no DataNodes.
-#[allow(deprecated)]
 fn empty_summary(function_id: &SymbolId) -> FunctionSummary {
     FunctionSummary {
         function_id: *function_id,
@@ -287,8 +276,6 @@ fn empty_summary(function_id: &SymbolId) -> FunctionSummary {
         param_flows: vec![],
         return_flows: vec![],
         call_arg_flows: vec![],
-        #[allow(deprecated)]
-        return_sources: vec![],
     }
 }
 
@@ -428,7 +415,6 @@ function process(data: string): string {
 
     #[cfg(feature = "typescript")]
     #[test]
-    #[allow(deprecated)]
     fn empty_summary_for_function_without_dataflow() {
         let source = r#"
 function noop() {
@@ -453,7 +439,7 @@ function noop() {
         let body_range = function_body_range(source, "noop");
         let summary = SummaryBuilder::build(&store, &fn_sym.id, Some(body_range)).unwrap();
         assert!(summary.param_flows.is_empty());
-        assert!(summary.return_sources.is_empty());
+        assert!(summary.return_flows.is_empty());
         assert!(summary.is_empty());
     }
 }

@@ -15,21 +15,7 @@ use db::Store;
 use extraction::ExtractionMode;
 
 use crate::index_pipeline_orchestrator::IndexPipeline;
-use crate::progress::{CallbackSink, NoopSink, ProgressSink};
-
-/// Progress callback payload emitted by [`run_index_pipeline`].
-#[derive(Debug, Clone)]
-pub struct IndexProgress {
-    /// Fraction in the range 0.0..=1.0.
-    pub fraction: f64,
-    /// Optional total for clients that support progress totals.
-    pub total: Option<f64>,
-    /// Human-readable phase message.
-    pub message: Option<String>,
-}
-
-/// Callback type for index progress events.
-pub type IndexProgressCallback = Arc<dyn Fn(IndexProgress) + Send + Sync>;
+use crate::progress::{NoopSink, ProgressSink};
 
 /// Options controlling one index pipeline run.
 #[derive(Clone)]
@@ -37,7 +23,6 @@ pub struct IndexPipelineOptions {
     pub mode: ExtractionMode,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
-    pub progress: Option<IndexProgressCallback>,
 }
 
 impl IndexPipelineOptions {
@@ -46,7 +31,6 @@ impl IndexPipelineOptions {
             mode,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
-            progress: None,
         }
     }
 
@@ -57,11 +41,6 @@ impl IndexPipelineOptions {
 
     pub fn with_exclude_patterns(mut self, exclude_patterns: Vec<String>) -> Self {
         self.exclude_patterns = exclude_patterns;
-        self
-    }
-
-    pub fn with_progress(mut self, progress: IndexProgressCallback) -> Self {
-        self.progress = Some(progress);
         self
     }
 }
@@ -125,12 +104,7 @@ pub fn run_index_pipeline(
     project_root: &Path,
     options: IndexPipelineOptions,
 ) -> anyhow::Result<IndexPipelineStats> {
-    // Route progress through the new ProgressSink / CallbackSink mechanism,
-    // then delegate entirely to IndexPipeline::run.
-    let sink: Box<dyn ProgressSink> = match &options.progress {
-        Some(cb) => Box::new(CallbackSink::new(Arc::clone(cb))),
-        None => Box::new(NoopSink),
-    };
+    let sink: Box<dyn ProgressSink> = Box::new(NoopSink);
 
     let pipeline = IndexPipeline::new(
         Arc::clone(store),
@@ -139,7 +113,6 @@ pub fn run_index_pipeline(
             mode: options.mode,
             include_patterns: options.include_patterns,
             exclude_patterns: options.exclude_patterns,
-            progress: None,
         },
     );
 

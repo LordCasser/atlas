@@ -269,7 +269,7 @@ fn test_prepare_full_index_returns_immediately() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::FullIndex);
     assert!(
         result.precision.is_none(),
@@ -293,7 +293,7 @@ fn test_prepare_focus_with_calls_file_id() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.closure_id.is_some(),
@@ -323,7 +323,7 @@ fn test_prepare_focus_with_calls_symbol_name() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.closure_id.is_some(),
@@ -346,7 +346,7 @@ fn test_prepare_focus_with_calls_symbol_id() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert_eq!(
         result.seed_symbol_id,
@@ -374,7 +374,7 @@ fn test_prepare_focus_returns_precision_and_closure_id() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.precision.is_some(),
@@ -404,7 +404,7 @@ fn test_prepare_focus_enqueues_background() {
         direction: None,
         depth: None,
     };
-    let _result = rt.prepare(&intent).unwrap();
+    let _result = rt.prepare(&intent, Vec::new()).unwrap();
     // After prepare, the scheduler should have at least one pending job
     // (the background expansion enqueued at UserFocus priority)
     assert!(
@@ -419,11 +419,14 @@ fn semantic_function_prepare_does_not_enqueue_graph_expansion() {
     let file_id = insert_file_structural_complete(&store, "src/semantic.c");
     let mut rt = test_runtime_focus_mode(store);
     let result = rt
-        .prepare(&QueryIntent::SemanticFunction {
-            symbol_name: "semantic".into(),
-            file_id: Some(file_id),
-            symbol_id: None,
-        })
+        .prepare(
+            &QueryIntent::SemanticFunction {
+                symbol_name: "semantic".into(),
+                file_id: Some(file_id),
+                symbol_id: None,
+            },
+            Vec::new(),
+        )
         .unwrap();
 
     assert!(result.pending_closure_ids.is_empty());
@@ -444,7 +447,7 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
         depth: None,
     };
 
-    let first = rt.prepare(&intent).unwrap();
+    let first = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(
         first.pending_closure_ids.len(),
         1,
@@ -457,7 +460,7 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
     );
     let first_depth = rt.hot_regions.regions[0].depth;
 
-    let second = rt.prepare(&intent).unwrap();
+    let second = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(
         second.pending_closure_ids.len(),
         2,
@@ -490,7 +493,7 @@ fn test_memory_hot_region_lru_keeps_recent_region() {
             direction: None,
             depth: None,
         };
-        rt.prepare(&intent).unwrap();
+        rt.prepare(&intent, Vec::new()).unwrap();
     }
     assert_eq!(rt.hot_regions.regions.len(), 10);
 
@@ -501,7 +504,7 @@ fn test_memory_hot_region_lru_keeps_recent_region() {
         direction: None,
         depth: None,
     };
-    rt.prepare(&recent_intent).unwrap();
+    rt.prepare(&recent_intent, Vec::new()).unwrap();
 
     let cold_intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -510,7 +513,7 @@ fn test_memory_hot_region_lru_keeps_recent_region() {
         direction: None,
         depth: None,
     };
-    rt.prepare(&cold_intent).unwrap();
+    rt.prepare(&cold_intent, Vec::new()).unwrap();
 
     assert_eq!(
         rt.hot_regions.regions.len(),
@@ -549,7 +552,7 @@ fn test_prepare_after_memory_hot_region_eviction_still_commits_closure() {
             direction: None,
             depth: None,
         };
-        rt.prepare(&intent).unwrap();
+        rt.prepare(&intent, Vec::new()).unwrap();
     }
     assert_eq!(rt.hot_regions.regions.len(), 10);
     assert!(
@@ -567,7 +570,7 @@ fn test_prepare_after_memory_hot_region_eviction_still_commits_closure() {
         direction: None,
         depth: None,
     };
-    let replay = rt.prepare(&replay_intent).unwrap();
+    let replay = rt.prepare(&replay_intent, Vec::new()).unwrap();
     let closure_id = replay
         .closure_id
         .expect("prepare should return a foreground closure id");
@@ -598,7 +601,7 @@ fn test_persistent_hot_regions_are_not_lru_evicted() {
             direction: None,
             depth: None,
         };
-        rt.prepare(&intent).unwrap();
+        rt.prepare(&intent, Vec::new()).unwrap();
     }
 
     assert_eq!(
@@ -620,7 +623,7 @@ fn test_prepare_focus_with_trace_point() {
         line: 10,
         column: 5,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert_eq!(
         result.seed_file_id,
@@ -690,7 +693,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::FullIndex);
     assert!(
         result.coverage_counts.is_none(),
@@ -710,7 +713,7 @@ fn test_prepare_focus_populates_coverage_counts() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.coverage_counts.is_some(),
@@ -739,7 +742,7 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.coverage_counts.is_some(),
@@ -761,7 +764,7 @@ fn test_prepare_does_not_enqueue_redundant_recent_closures() {
         direction: None,
         depth: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
 
     // The single tracked UserFocus expansion is sufficient. Re-enqueuing one
     // Recent closure per foreground file creates hidden N+1 work after tasks
@@ -809,7 +812,7 @@ fn test_prepare_explore_intent() {
         file_id: Some(file_id),
         symbol_id: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.closure_id.is_some(),
@@ -834,7 +837,7 @@ fn test_prepare_context_intent() {
         file_id: Some(file_id),
         symbol_id: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert!(
         result.closure_id.is_some(),
@@ -854,7 +857,7 @@ fn test_prepare_trace_variable_intent() {
         line: 10,
         column: 5,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.mode, IndexMode::Focus);
     assert_eq!(
         result.seed_file_id,
@@ -874,7 +877,7 @@ fn test_prepare_search_intent() {
         query: "foo".to_string(),
         scope: None,
     };
-    let result = rt.prepare(&intent).unwrap();
+    let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(
         result.mode,
         IndexMode::Focus,
@@ -943,7 +946,7 @@ fn test_prepare_full_index_all_intents() {
     ];
 
     for intent in &intents {
-        let result = rt.prepare(intent).unwrap();
+        let result = rt.prepare(intent, Vec::new()).unwrap();
         assert_eq!(
             result.mode,
             IndexMode::FullIndex,
@@ -977,8 +980,8 @@ fn test_locate_seed_explore_vs_calls_same_behavior() {
         symbol_id: None,
     };
 
-    let calls_result = rt.prepare(&calls_intent).unwrap();
-    let explore_result = rt.prepare(&explore_intent).unwrap();
+    let calls_result = rt.prepare(&calls_intent, Vec::new()).unwrap();
+    let explore_result = rt.prepare(&explore_intent, Vec::new()).unwrap();
 
     assert_eq!(calls_result.mode, IndexMode::Focus);
     assert_eq!(explore_result.mode, IndexMode::Focus);
@@ -1018,7 +1021,7 @@ fn calls_direction_incoming_maps_to_callgraph_strategy() {
         file_id: Some(file_id),
         symbol_id: None,
     };
-    let result = rt.prepare(&intent);
+    let result = rt.prepare(&intent, Vec::new());
     assert!(
         result.is_ok(),
         "prepare() should succeed for Calls with incoming direction"
@@ -1037,7 +1040,7 @@ fn calls_direction_outgoing_maps_to_callgraph_strategy() {
         file_id: Some(file_id),
         symbol_id: None,
     };
-    let result = rt.prepare(&intent);
+    let result = rt.prepare(&intent, Vec::new());
     assert!(
         result.is_ok(),
         "prepare() should succeed for Calls with outgoing direction"
@@ -1056,7 +1059,7 @@ fn calls_direction_none_maps_to_callgraph_strategy() {
         file_id: Some(file_id),
         symbol_id: None,
     };
-    let result = rt.prepare(&intent);
+    let result = rt.prepare(&intent, Vec::new());
     assert!(
         result.is_ok(),
         "prepare() should succeed for Calls with None direction (maps to Both)"

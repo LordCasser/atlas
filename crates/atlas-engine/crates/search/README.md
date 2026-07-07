@@ -38,7 +38,6 @@ Final ranking: combined score from all matching layers.
 
 ```rust
 SearchEngine::new(store: Arc<Store>, graph: Arc<GraphEngine>)
-SearchEngine::search_simple(query, limit)              → Vec<SearchEntry>
-SearchEngine::search_by_kind(query, kind, limit)       → Vec<SearchEntry>
+SearchEngine::search(query, limit, &SearchOptions)     → Vec<SearchEntry>
 SearchEngine::refresh_graph(graph)                     // after external index changes
 ```
