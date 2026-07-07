@@ -87,9 +87,31 @@ fn status_has_required_fields() {
     let (s, err) = router.handle_status();
     assert!(!err, "status error: {s}");
     let r = parse_json(&s);
-    for field in ["project", "summary", "index"] {
+    for field in ["project", "summary", "index", "server"] {
         assert!(r.get(field).is_some(), "status missing '{field}'");
     }
+    let server = r["server"]
+        .as_object()
+        .expect("status.server must be an object");
+    assert!(
+        server
+            .get("atlas_version")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| !v.is_empty()),
+        "status.server.atlas_version must be a non-empty string"
+    );
+    assert_eq!(
+        server.get("tool_contract_version").and_then(|v| v.as_u64()),
+        Some(1),
+        "status.server.tool_contract_version must lock the MCP V1 contract"
+    );
+    assert!(
+        server
+            .get("compiled_features")
+            .and_then(|v| v.as_array())
+            .is_some_and(|features| !features.is_empty()),
+        "status.server.compiled_features must be a non-empty array"
+    );
 }
 
 // =========================================================================

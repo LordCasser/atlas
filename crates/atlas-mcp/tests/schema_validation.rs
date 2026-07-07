@@ -9,6 +9,33 @@
 use atlas_mcp::make_all_tools;
 
 #[test]
+fn v1_tool_names_are_frozen() {
+    let tools = make_all_tools();
+    let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "branch_diff",
+            "calls",
+            "domain_rules",
+            "explore",
+            "file_dependencies",
+            "fp_dispatches",
+            "impact",
+            "lifecycle",
+            "path",
+            "project",
+            "resume_query",
+            "search",
+            "symbol",
+            "tasks",
+            "trace",
+        ]
+    );
+}
+
+#[test]
 fn removed_background_index_tools_are_not_registered() {
     let tools = make_all_tools();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();

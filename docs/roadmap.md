@@ -23,7 +23,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 
 - Freeze V1 MCP tool naming: short names without `atlas_` prefix. ✅ Done.
 - Freeze V1 tool schemas and document argument requirements.
-- Add machine-readable version metadata for MCP clients.
+- Add machine-readable version metadata for MCP clients. ✅ Done: `project(status)`
+  returns `server.atlas_version`, `server.tool_contract_version`, and
+  `server.compiled_features`, with regression coverage.
 - Finalize graph snapshot refresh semantics.
 - Keep all MCP outputs bounded and ensure truncation is visible in the response.
 
