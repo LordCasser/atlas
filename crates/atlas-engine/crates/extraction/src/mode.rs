@@ -1,12 +1,12 @@
-//! Extraction mode: controls which analysis phases `extract_file` executes.
+//! Extraction mode: controls which analysis phases `extract_file_with_mode` executes.
 //!
 //! This is an internal enum — it is NOT exposed outside the `extraction` crate.
 //! External callers (CLI, lazy crate) pass an `ExtractionMode` value through
-//! the `extract_file()` function signature.
+//! the `extract_file_with_mode()` function signature.
 
 use types::lazy::LazyWindow;
 
-/// Controls the set of extraction phases executed by [`extract_file`].
+/// Controls the set of extraction phases executed by `extract_file_with_mode`.
 ///
 /// # Phase matrix
 ///

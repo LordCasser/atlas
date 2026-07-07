@@ -285,13 +285,30 @@ mod tests {
     #[cfg(feature = "typescript")]
     use db::Store;
     #[cfg(feature = "typescript")]
-    use extraction::create_frontend;
-    #[cfg(feature = "typescript")]
-    use extraction::extract_file;
+    use extraction::{ExtractionMode, LanguageFrontend, create_frontend, extract_file_with_mode};
     #[cfg(feature = "typescript")]
     use types::Language;
     #[cfg(feature = "typescript")]
     use types::enums::SymbolKind;
+
+    #[cfg(feature = "typescript")]
+    fn extract_full(
+        frontend: &LanguageFrontend,
+        file_id: types::ids::FileId,
+        path: &std::path::Path,
+        source: &str,
+        content_hash: &str,
+    ) -> anyhow::Result<types::FileFacts> {
+        extract_file_with_mode(
+            frontend,
+            file_id,
+            path,
+            source,
+            content_hash,
+            ExtractionMode::Full,
+            &(),
+        )
+    }
 
     /// Helper: find the tree-sitter node for a function by name, and return
     /// its full byte range (function declaration including body).
@@ -344,7 +361,7 @@ function greet(name: string): string {
         let frontend = create_frontend(Language::TypeScript).unwrap();
         let path = std::path::PathBuf::from("greet.ts");
 
-        let facts = extract_file(&frontend, file_id, &path, source, "test_hash").unwrap();
+        let facts = extract_full(&frontend, file_id, &path, source, "test_hash").unwrap();
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         store.insert_file_facts(&facts).unwrap();
@@ -391,7 +408,7 @@ function process(data: string): string {
         let frontend = create_frontend(Language::TypeScript).unwrap();
         let path = std::path::PathBuf::from("process.ts");
 
-        let facts = extract_file(&frontend, file_id, &path, source, "test_hash").unwrap();
+        let facts = extract_full(&frontend, file_id, &path, source, "test_hash").unwrap();
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         store.insert_file_facts(&facts).unwrap();
@@ -425,7 +442,7 @@ function noop() {
         let frontend = create_frontend(Language::TypeScript).unwrap();
         let path = std::path::PathBuf::from("noop.ts");
 
-        let facts = extract_file(&frontend, file_id, &path, source, "test_hash").unwrap();
+        let facts = extract_full(&frontend, file_id, &path, source, "test_hash").unwrap();
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         store.insert_file_facts(&facts).unwrap();

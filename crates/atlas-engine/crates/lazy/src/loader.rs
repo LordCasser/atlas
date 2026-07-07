@@ -198,11 +198,7 @@ impl LazyDataflowLoader {
             // DATAFLOW is always set: an empty result for an empty function is a
             // successful outcome, not a missing capability.
             let profile = LanguageCapabilityProfile::for_language(file_lang);
-            let cfg_supported = profile
-                .features
-                .as_ref()
-                .map(|f| f.cfg.is_supported())
-                .unwrap_or(false);
+            let cfg_supported = profile.features.cfg.is_supported();
 
             for (unit, job_id) in &claimed {
                 // Interleaved budget guard: exit early if over budget
@@ -325,11 +321,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             // DATAFLOW is always set: pre-existing data nodes confirm a prior
             // successful extraction.
             let profile = LanguageCapabilityProfile::for_language(file_lang);
-            let cfg_supported = profile
-                .features
-                .as_ref()
-                .map(|f| f.cfg.is_supported())
-                .unwrap_or(false);
+            let cfg_supported = profile.features.cfg.is_supported();
 
             let mut mask_bits = CapabilityMask::MANIFEST
                 | CapabilityMask::STRUCTURAL
@@ -423,6 +415,7 @@ fn build_dataflow_for_file(
         ExtractionMode::LazyDataflow {
             window: window.clone(),
         },
+        &(),
     )?;
 
     Ok(DataflowPayload {
@@ -639,33 +632,21 @@ mod tests {
     #[test]
     fn php_profile_cfg_unsupported() {
         let profile = LanguageCapabilityProfile::for_language(Language::Php);
-        let cfg_support = profile
-            .features
-            .as_ref()
-            .map(|f| f.cfg.is_supported())
-            .unwrap_or(false);
+        let cfg_support = profile.features.cfg.is_supported();
         assert!(!cfg_support, "PHP profile must report CFG as unsupported");
     }
 
     #[test]
     fn ruby_profile_cfg_supported() {
         let profile = LanguageCapabilityProfile::for_language(Language::Ruby);
-        let cfg_support = profile
-            .features
-            .as_ref()
-            .map(|f| f.cfg.is_supported())
-            .unwrap_or(false);
+        let cfg_support = profile.features.cfg.is_supported();
         assert!(cfg_support, "Ruby profile must report CFG as supported");
     }
 
     #[test]
     fn typescript_profile_cfg_supported() {
         let profile = LanguageCapabilityProfile::for_language(Language::TypeScript);
-        let cfg_support = profile
-            .features
-            .as_ref()
-            .map(|f| f.cfg.is_supported())
-            .unwrap_or(false);
+        let cfg_support = profile.features.cfg.is_supported();
         assert!(
             cfg_support,
             "TypeScript profile must report CFG as supported"

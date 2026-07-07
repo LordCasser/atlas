@@ -255,7 +255,7 @@ mod tests {
     fn test_detect_db_hash_changes_tempdir() {
         use db::Store;
         use extraction::create_frontend;
-        use extraction::extract_file;
+        use extraction::{ExtractionMode, extract_file_with_mode};
         use types::Language;
         use types::ids::FileId;
 
@@ -284,7 +284,16 @@ mod tests {
         let frontend = create_frontend(lang).unwrap();
         let source = "const x = 1;";
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let facts = extract_file(&frontend, file_id, &relative, source, &content_hash).unwrap();
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            &relative,
+            source,
+            &content_hash,
+            ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
         store.insert_file_facts(&facts).unwrap();
 
         // After indexing: DB hash matches disk hash → no changes

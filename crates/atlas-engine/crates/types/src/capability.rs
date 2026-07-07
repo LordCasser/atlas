@@ -265,11 +265,8 @@ pub struct LanguageCapabilityProfile {
     /// Current capability ceiling for this language.
     pub capability_level: CapabilityLevel,
     /// Capabilities that are delivered (feature names like "call_graph",
-    /// "intra_statement_dataflow", "cfg").
-    ///
-    /// **Prefer using `features` for type-safe queries.** This field is
-    /// retained for backward compatibility with MCP `atlas_status` and
-    /// existing consumers.
+    /// "intra_statement_dataflow", "cfg"). Kept as a human-readable mirror
+    /// of [`Self::features`]; capability gates must use the typed matrix.
     pub supported_features: Vec<String>,
     /// Capabilities that the pipeline cannot yet provide for this language.
     ///
@@ -283,8 +280,7 @@ pub struct LanguageCapabilityProfile {
     /// Typed per-feature support matrix.  Use this for capability-gated
     /// execution (e.g. `cap.features.local_dataflow.is_supported()`) instead
     /// of string-contains on `supported_features`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub features: Option<FeatureMatrix>,
+    pub features: FeatureMatrix,
 }
 
 impl LanguageCapabilityProfile {
@@ -471,7 +467,7 @@ mod profiles {
             unsupported_features: spec.unsupported.iter().map(|s| s.to_string()).collect(),
             limitations: spec.limitations.iter().map(|s| s.to_string()).collect(),
             confidence_floor: spec.confidence_floor,
-            features: Some(fm),
+            features: fm,
         }
     }
 
@@ -1654,7 +1650,7 @@ mod tests {
         ] {
             let p = LanguageCapabilityProfile::for_language(*lang);
             assert!(
-                p.supported_features.contains(&"access_path".to_string()),
+                p.features.field_access.is_supported(),
                 "{} should support access_path",
                 p.language
             );
@@ -1696,7 +1692,7 @@ mod tests {
     fn test_feature_matrix_derive_capability_level() {
         // TS: DataflowFull (all features including interprocedural_summaries supported)
         let ts = LanguageCapabilityProfile::for_language(Language::TypeScript);
-        let matrix = ts.features.as_ref().expect("TS should have FeatureMatrix");
+        let matrix = &ts.features;
         assert_eq!(
             matrix.derive_capability_level(),
             CapabilityLevel::DataflowFull
@@ -1704,10 +1700,7 @@ mod tests {
 
         // Java: all DataflowFull preconditions met (local_dataflow + use_def + interprocedural_summaries + returns_flow + call_arguments)
         let java = LanguageCapabilityProfile::for_language(Language::Java);
-        let matrix = java
-            .features
-            .as_ref()
-            .expect("Java should have FeatureMatrix");
+        let matrix = &java.features;
         assert_eq!(
             matrix.derive_capability_level(),
             CapabilityLevel::DataflowFull
@@ -1770,8 +1763,8 @@ mod tests {
         let profiles = LanguageCapabilityProfile::all_compiled();
         for p in &profiles {
             assert!(
-                p.features.is_some(),
-                "{} should have FeatureMatrix",
+                p.features.symbols.is_supported(),
+                "{} should expose a typed FeatureMatrix",
                 p.language
             );
         }
@@ -1780,7 +1773,7 @@ mod tests {
     #[test]
     fn test_ts_feature_matrix_local_dataflow_supported() {
         let ts = LanguageCapabilityProfile::for_language(Language::TypeScript);
-        let matrix = ts.features.as_ref().unwrap();
+        let matrix = &ts.features;
         assert!(
             matrix.local_dataflow.is_supported(),
             "TS local_dataflow should be supported"
@@ -1802,7 +1795,7 @@ mod tests {
     #[test]
     fn test_python_feature_matrix_lexical_bindings_supported() {
         let py = LanguageCapabilityProfile::for_language(Language::Python);
-        let matrix = py.features.as_ref().unwrap();
+        let matrix = &py.features;
         assert!(
             matrix.lexical_bindings.is_supported(),
             "Python lexical_bindings should be supported"
@@ -1817,7 +1810,7 @@ mod tests {
     #[test]
     fn test_java_feature_matrix_dataflow_supported() {
         let java = LanguageCapabilityProfile::for_language(Language::Java);
-        let matrix = java.features.as_ref().unwrap();
+        let matrix = &java.features;
         assert!(
             matrix.local_dataflow.is_supported(),
             "Java local_dataflow should be supported"
@@ -1835,7 +1828,7 @@ mod tests {
     #[test]
     fn test_cangjie_feature_matrix_dataflow_full() {
         let cj = LanguageCapabilityProfile::for_language(Language::Cangjie);
-        let matrix = cj.features.as_ref().unwrap();
+        let matrix = &cj.features;
         assert_eq!(
             cj.capability_level,
             CapabilityLevel::DataflowFull,
@@ -1866,7 +1859,7 @@ mod tests {
     #[test]
     fn test_feature_matrix_min_confidence_floor() {
         let ts = LanguageCapabilityProfile::for_language(Language::TypeScript);
-        let matrix = ts.features.as_ref().unwrap();
+        let matrix = &ts.features;
         let min = matrix.min_confidence_floor();
         assert!(
             (0.0..=1.0).contains(&min),
@@ -1877,15 +1870,14 @@ mod tests {
     #[test]
     fn test_cfg_known_limitation() {
         for profile in LanguageCapabilityProfile::all_compiled() {
-            if let Some(fm) = &profile.features {
-                if fm.cfg.is_supported() {
-                    // Every supported CFG should declare body traversal as implemented
-                    let msg = format!(
-                        "Language {}: CFG is supported but body traversal not declared as implemented",
-                        profile.language
-                    );
-                    assert!(has_cfg_body_traversal_implemented(&fm.cfg), "{}", msg);
-                }
+            let fm = &profile.features;
+            if fm.cfg.is_supported() {
+                // Every supported CFG should declare body traversal as implemented
+                let msg = format!(
+                    "Language {}: CFG is supported but body traversal not declared as implemented",
+                    profile.language
+                );
+                assert!(has_cfg_body_traversal_implemented(&fm.cfg), "{}", msg);
             }
         }
     }
@@ -1899,10 +1891,8 @@ mod tests {
         }
     }
 
-    /// Regression: `extract.rs` previously gated CFG on the legacy
-    /// `supported_features.contains("cfg")` string list instead of
-    /// `FeatureMatrix.cfg.is_supported()`.  Cangjie had CFG in the matrix
-    /// but NOT in the string list, causing a runtime mismatch.
+    /// Regression guard: runtime gates use `FeatureMatrix.cfg.is_supported()`,
+    /// and the human-readable `supported_features` mirror must stay aligned.
     ///
     /// This test iterates all compiled language profiles and asserts that
     /// `FeatureMatrix.cfg.is_supported()` and the presence of `"cfg"` in
@@ -1916,18 +1906,14 @@ mod tests {
         );
 
         for profile in &profiles {
-            let matrix = profile
-                .features
-                .as_ref()
-                .unwrap_or_else(|| panic!("{} has no FeatureMatrix", profile.language));
-
+            let matrix = &profile.features;
             let matrix_says_cfg = matrix.cfg.is_supported();
             let string_list_says_cfg = profile.supported_features.contains(&"cfg".to_string());
 
             assert_eq!(
                 matrix_says_cfg, string_list_says_cfg,
                 "{}: FeatureMatrix.cfg.is_supported()={} but supported_features contains 'cfg'={}. \
-                 The two authorities must agree.",
+                 The typed matrix and human-readable mirror must agree.",
                 profile.language, matrix_says_cfg, string_list_says_cfg,
             );
         }
@@ -1974,7 +1960,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.78, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.78));
@@ -2084,7 +2070,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.72, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.72));
@@ -2187,7 +2173,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
@@ -2291,7 +2277,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
@@ -2395,7 +2381,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.75, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.75));
@@ -2503,7 +2489,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.73, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.73));
@@ -2610,7 +2596,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.70, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.70));
@@ -2709,7 +2695,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.60, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.60));
@@ -2817,7 +2803,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.65, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.65));
@@ -2920,7 +2906,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.72, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.72));
@@ -3029,7 +3015,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.70, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.70));
@@ -3130,7 +3116,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.62, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.62));
@@ -3231,7 +3217,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.65, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.65));
@@ -3331,7 +3317,7 @@ mod tests {
             ]
         );
 
-        let fm = p.features.as_ref().unwrap();
+        let fm = &p.features;
 
         // Default features (confidence_floor = 0.67, no limitations)
         assert_eq!(fm.symbols, FeatureSupport::supported_with_confidence(0.67));

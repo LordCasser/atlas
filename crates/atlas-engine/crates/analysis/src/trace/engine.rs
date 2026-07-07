@@ -159,21 +159,6 @@ impl TraceEngine {
         }
     }
 
-    /// Create a new trace engine with a [`Workspace`] for snippet extraction.
-    ///
-    /// Convenience wrapper around [`Self::new_with_root`] that uses the
-    /// workspace's canonical project root.
-    pub fn new_with_workspace(store: Arc<Store>, workspace: &workspace::Workspace) -> Self {
-        let project_root = workspace.root().to_path_buf();
-        let canonical_root = project_root.canonicalize().ok();
-        Self {
-            store,
-            project_root: Some(project_root),
-            canonical_root,
-            file_cache: RefCell::new(HashMap::new()),
-        }
-    }
-
     // ── Public query methods ───────────────────────────────────────────
 
     /// Resolve a source position to a full [`TracePoint`].
@@ -198,7 +183,7 @@ impl TraceEngine {
 
     /// Trace dataflow backward from a source position.
     ///
-    /// Requires `CapabilityLevel::DataflowBasic` or higher.  If the language
+    /// Requires local dataflow support in the language feature matrix. If the language
     /// does not support dataflow, the response is partial with an
     /// `unsupported_language` diagnostic.
     pub fn trace_variable(
@@ -210,24 +195,15 @@ impl TraceEngine {
     ) -> TraceQueryResponse<TracePath> {
         let cap = self.resolve_capability(file_id);
 
-        // Capability gate: prefer FeatureMatrix (type-safe), fallback to CapabilityLevel
+        // Capability gate: FeatureMatrix is the single capability authority.
         let dataflow_supported = cap
             .as_ref()
-            .and_then(|c| c.features.as_ref())
-            .map(|f| f.local_dataflow.is_supported())
-            .unwrap_or_else(|| {
-                // Fallback for profiles without FeatureMatrix
-                let level = cap
-                    .as_ref()
-                    .map(|c| c.capability_level)
-                    .unwrap_or(CapabilityLevel::None);
-                level >= CapabilityLevel::DataflowBasic
-            });
+            .map(|c| c.features.local_dataflow.is_supported())
+            .unwrap_or(false);
         if !dataflow_supported {
             let reason = cap
                 .as_ref()
-                .and_then(|c| c.features.as_ref())
-                .and_then(|f| match &f.local_dataflow {
+                .and_then(|c| match &c.features.local_dataflow {
                     FeatureSupport::Unsupported { reason } => Some(reason.clone()),
                     _ => None,
                 })
@@ -914,13 +890,8 @@ impl TraceEngine {
     /// Check whether the given capability profile supports call-graph traversal.
     fn has_call_graph_cap(&self, cap: &Option<LanguageCapabilityProfile>) -> bool {
         cap.as_ref()
-            .and_then(|c| c.features.as_ref())
-            .map(|f| f.call_graph.is_supported())
-            .unwrap_or_else(|| {
-                cap.as_ref()
-                    .map(|c| c.supported_features.contains(&"call_graph".to_string()))
-                    .unwrap_or(false)
-            })
+            .map(|c| c.features.call_graph.is_supported())
+            .unwrap_or(false)
     }
 }
 

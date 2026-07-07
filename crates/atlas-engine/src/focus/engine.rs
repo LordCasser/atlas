@@ -136,7 +136,7 @@ impl ClosureEngine {
                 });
                 break;
             }
-            let result = self.extract_file(file_id, &extraction_budget)?;
+            let result = self.extract_file_for_closure(file_id, &extraction_budget)?;
             tracing::debug!(
                 closure_id,
                 file_id = %file_id,
@@ -281,7 +281,7 @@ impl ClosureEngine {
                     break;
                 }
                 let file_started_at = Instant::now();
-                let result = self.extract_file(file_id, &extraction_budget)?;
+                let result = self.extract_file_for_closure(file_id, &extraction_budget)?;
                 tracing::debug!(
                     closure_id,
                     iteration,
@@ -649,7 +649,7 @@ impl ClosureEngine {
     }
 
     /// Extract a single file using LazyStructuralService.
-    fn extract_file(
+    fn extract_file_for_closure(
         &self,
         file_id: &FileId,
         budget: &LazyBudget,

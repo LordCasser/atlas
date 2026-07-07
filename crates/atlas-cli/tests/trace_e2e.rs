@@ -16,11 +16,11 @@ use atlas_engine::GraphBuilder;
 use atlas_engine::Store;
 use atlas_engine::create_frontend;
 use atlas_engine::enums::{DataFlowKind, DataNodeKind, Language};
-use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::virtual_edges::TraceEdgeProvider;
 use atlas_engine::trace::{CallerPathExplorer, Locator, Slicer, TraceEngine};
-use atlas_engine::{ReferenceResolver, ResolutionStats};
+use atlas_engine::{ExtractionMode, LanguageFrontend, ReferenceResolver, ResolutionStats};
+use atlas_engine::{FileFacts, extract_file_with_mode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -38,6 +38,24 @@ struct PipelineStats {
     edges_built: usize,
 }
 
+fn extract_full(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    path: &Path,
+    source: &str,
+    content_hash: &str,
+) -> anyhow::Result<FileFacts> {
+    extract_file_with_mode(
+        frontend,
+        file_id,
+        path,
+        source,
+        content_hash,
+        ExtractionMode::Full,
+        &(),
+    )
+}
+
 /// Run the full pipeline on a set of source files.
 fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
     let store = Arc::new(Store::open_in_memory().unwrap());
@@ -50,7 +68,7 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
         let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
-        let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
+        let facts = extract_full(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
             .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
@@ -59,7 +77,9 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
 
     // Resolve references, then build structural edges.
     let mut resolver = ReferenceResolver::new(store.clone());
-    let (resolved, resolution) = resolver.resolve_all().expect("resolution failed");
+    let (resolved, resolution) = resolver
+        .resolve_all_parallel(store.clone(), None, None)
+        .expect("resolution failed");
 
     let builder = GraphBuilder::new(store.clone());
     let build_stats = builder.build_all(&resolved);
@@ -1209,7 +1229,7 @@ fun process(name: String): String {
 "#;
     let frontend = create_frontend(Language::Kotlin).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("provenance.kt"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("provenance.kt"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
@@ -1269,7 +1289,7 @@ function process($req) {
 }
 "#;
     let frontend = create_frontend(Language::Php).unwrap();
-    let facts = extract_file(&frontend, file_id, Path::new("provenance.php"), source, "h")
+    let facts = extract_full(&frontend, file_id, Path::new("provenance.php"), source, "h")
         .expect("extract");
     store.insert_file_facts(&facts).expect("insert");
 
@@ -2383,7 +2403,7 @@ fn sem_f_expression_decomposition_trace_to_parameters() {
 }
 "#;
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("expr_decomp.ts"),
@@ -2437,7 +2457,7 @@ fn vfy_ts_field_assignment_produces_field_store() {
     let file_id = FileId::generate("field.ts");
     let source = "class C { f: number = 0; set(v: number) { this.f = v; } }";
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("field.ts"),
@@ -2473,7 +2493,7 @@ fn vfy_ts_return_trace_reaches_parameter() {
     let file_id = FileId::generate("ret.ts");
     let source = "function f(x: number): number { const y = x + 1; return y; }";
     let frontend = create_frontend(Language::TypeScript).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("ret.ts"),
@@ -2510,7 +2530,7 @@ fn vfy_java_method_call_produces_call_nodes() {
     let file_id = FileId::generate("Call.java");
     let source = "class C { void bar(int x) { helper(x, 42); } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("Call.java"),
@@ -2558,7 +2578,7 @@ fn vfy_java_field_access_produces_field_node() {
     let file_id = FileId::generate("Field.java");
     let source = "class C { void bar() { Object o = null; o.field = 1; } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("Field.java"),
@@ -2598,7 +2618,7 @@ fn vfy_go_short_var_produces_local_and_edges() {
     let file_id = FileId::generate("short.go");
     let source = "package p\nfunc f(x int) int {\n\ty := x + 1\n\treturn y\n}\n";
     let frontend = create_frontend(Language::Go).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("short.go"),
@@ -2654,7 +2674,7 @@ fn vfy_go_field_access_produces_field_edges() {
     let file_id = FileId::generate("field.go");
     let source = "package p\ntype S struct { F int }\nfunc f(s *S, x int) {\n\ts.F = x\n}\n";
     let frontend = create_frontend(Language::Go).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("field.go"),
@@ -2695,7 +2715,7 @@ fn vfy_python_call_and_return_data_nodes() {
     let file_id = FileId::generate("callret.py");
     let source = "def f(x):\n    y = sanitize(x, 42)\n    return y\n";
     let frontend = create_frontend(Language::Python).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("callret.py"),
@@ -2750,7 +2770,7 @@ fn vfy_c_pointer_field_access_dataflow() {
     let source =
         "struct S { int field; };\nint f(struct S *p) {\n\tint y = p->field;\n\treturn y;\n}\n";
     let frontend = create_frontend(Language::C).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("ptr.c"),
@@ -2807,7 +2827,7 @@ fn vfy_rust_let_declaration_dataflow() {
     let file_id = FileId::generate("let.rs");
     let source = "fn f(x: i32) -> i32 {\n    let y = x + 1;\n    y\n}\n";
     let frontend = create_frontend(Language::Rust).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("let.rs"),
@@ -2851,7 +2871,7 @@ fn vfy_cpp_reference_and_constructor_dataflow() {
     let file_id = FileId::generate("ref.cpp");
     let source = "#include <string>\nvoid f() {\n    int x = 1;\n    int& ref = x;\n    auto p = new std::string(\"hi\");\n}\n";
     let frontend = create_frontend(Language::Cpp).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("ref.cpp"),
@@ -2892,7 +2912,7 @@ fn vfy_csharp_local_decl_and_method_invocation() {
     let file_id = FileId::generate("local.cs");
     let source = "class C { void M() { int x = 1; Helper(x, 42); } }";
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("local.cs"),
@@ -2937,7 +2957,7 @@ fn vfy_csharp_field_assignment_produces_field_store() {
     let file_id = FileId::generate("field.cs");
     let source = "class C {\n    int F;\n    void M() {\n        int x = 1;\n        this.F = x;\n        Helper(x, 42);\n    }\n}";
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("field.cs"),
@@ -2973,7 +2993,7 @@ fn vfy_kotlin_var_decl_and_function_call() {
     let file_id = FileId::generate("Data.kt");
     let source = "fun foo(x: Int): Int {\n    val y = bar(x, 42)\n    return y\n}\n";
     let frontend = create_frontend(Language::Kotlin).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("Data.kt"),
@@ -3031,7 +3051,7 @@ fn vfy_php_superglobal_and_function_call() {
     let file_id = FileId::generate("sg.php");
     let source = "<?php\nfunction f($req) {\n    $name = $_GET['name'];\n    $clean = sanitize($name);\n    return $clean;\n}\n";
     let frontend = create_frontend(Language::Php).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("sg.php"),
@@ -3097,7 +3117,7 @@ fn vfy_ruby_hash_access_and_return() {
     let file_id = FileId::generate("hash.rb");
     let source = "def f(params)\n  name = params[:name]\n  clean = sanitize(name)\n  clean\nend\n";
     let frontend = create_frontend(Language::Ruby).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("hash.rb"),
@@ -3152,7 +3172,7 @@ fn vfy_arkts_basic_extraction() {
     let file_id = FileId::generate("basic.ets");
     let source = "function hello(name: string): string {\n  return name;\n}\n";
     let frontend = create_frontend(Language::ArkTS).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("basic.ets"),
@@ -3487,7 +3507,7 @@ fn vfy_csharp_canonical_provenance_path_call_to_return() {
 }
 "#;
     let frontend = create_frontend(Language::CSharp).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         std::path::Path::new("Provenance.cs"),
@@ -3680,7 +3700,7 @@ fn vfy_rust_match_arm_binding_creates_local_data_node() {
 "#;
     let frontend = create_frontend(Language::Rust).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("match.rs"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("match.rs"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3716,7 +3736,7 @@ fn vfy_python_destructuring_produces_assign_to_locals() {
 "#;
     let frontend = create_frontend(Language::Python).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("destruct.py"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("destruct.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3763,7 +3783,7 @@ fn vfy_csharp_same_class_method_call_dataflow() {
 "#;
     let frontend = create_frontend(Language::CSharp).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("samecls.cs"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("samecls.cs"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3811,7 +3831,7 @@ fn vfy_cpp_variable_and_return_dataflow() {
 "#;
     let frontend = create_frontend(Language::Cpp).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("var.cpp"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("var.cpp"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3851,7 +3871,7 @@ fn vfy_arkts_parameter_to_return_dataflow() {
     let source = "function process(input: string): string {\n  let x = input;\n  return x;\n}\n";
     let frontend = create_frontend(Language::ArkTS).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("flow.ets"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("flow.ets"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3891,7 +3911,7 @@ fn vfy_python_for_loop_variable_creates_local_data_node() {
     let source = "def f(items):\n    for x in items:\n        print(x)\n";
     let frontend = create_frontend(Language::Python).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("forloop.py"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("forloop.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3919,7 +3939,7 @@ fn vfy_java_array_access_produces_data_nodes() {
     let file_id = FileId::generate("ArrayAccess.java");
     let source = "class C { void f(int[] arr, int i, int v) { arr[i] = v; } }";
     let frontend = create_frontend(Language::Java).unwrap();
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         Path::new("ArrayAccess.java"),
@@ -3958,7 +3978,7 @@ fn vfy_go_multi_return_short_var_declaration() {
     let source = "package p\nfunc f() (int, error) { return 0, nil }\nfunc g() { a, err := f(); _ = a; _ = err }\n";
     let frontend = create_frontend(Language::Go).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("multiret.go"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("multiret.go"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -3994,7 +4014,7 @@ fn vfy_python_shadowing_inner_scope_independent() {
         "def f():\n    x = 1\n    def g():\n        x = 2\n        return x\n    return x\n";
     let frontend = create_frontend(Language::Python).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("shadow.py"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("shadow.py"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     // Both outer and inner `x` should create Local DataNodes
@@ -4031,7 +4051,7 @@ function callHelper($fn, $arg) {
 "#;
     let frontend = create_frontend(Language::Php).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("dynamic.php"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("dynamic.php"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -4055,7 +4075,7 @@ fn vfy_kotlin_expression_body_function() {
     let source = "fun double(x: Int): Int = x * 2\n";
     let frontend = create_frontend(Language::Kotlin).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("expr.kt"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("expr.kt"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(
@@ -4086,7 +4106,7 @@ fn vfy_cpp_reference_binding_dataflow() {
 "#;
     let frontend = create_frontend(Language::Cpp).unwrap();
     let facts =
-        extract_file(&frontend, file_id, Path::new("refbind.cpp"), source, "h").expect("extract");
+        extract_full(&frontend, file_id, Path::new("refbind.cpp"), source, "h").expect("extract");
     store.insert_file_facts(&facts).expect("insert");
     let nodes = store.find_data_nodes_by_file(&file_id).expect("nodes");
     assert!(

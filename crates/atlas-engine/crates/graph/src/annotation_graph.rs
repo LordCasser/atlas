@@ -186,12 +186,14 @@ int invoke(struct dispatch_ops *ops, int value) {
 }
 "#;
         let frontend = extraction::create_frontend(Language::C).unwrap();
-        let facts = extraction::extract_file(
+        let facts = extraction::extract_file_with_mode(
             &frontend,
             file_id,
             &std::path::PathBuf::from("src/fp_ops.c"),
             source,
             "fp-ops",
+            extraction::ExtractionMode::Full,
+            &(),
         )
         .unwrap();
         store.insert_file_facts(&facts).unwrap();

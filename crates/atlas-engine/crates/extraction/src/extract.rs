@@ -22,7 +22,6 @@ use types::{
 };
 
 use super::callsite_spec::CallsiteParts;
-use super::cancel;
 use super::cancel::CancelCheck;
 use super::cfg_builder::CfgResult;
 use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
@@ -84,10 +83,9 @@ fn tl_parse(
 
 /// Like [`extract_file_with_mode`] but cancellation-aware.
 ///
-/// Checks `token.is_cancelled()` at strategic checkpoints and returns
-/// `Err` with a "cancelled" error if the budget is exhausted.
-/// The caller must distinguish cancellation from real extraction failure.
-pub fn extract_file_with_mode_cancellable(
+/// Checks `token.is_cancelled()` at strategic checkpoints and returns a typed
+/// [`ExtractionFailureKind::Cancelled`] error if the budget is exhausted.
+pub fn extract_file_with_mode(
     frontend: &LanguageFrontend,
     file_id: FileId,
     file_path: &Path,
@@ -99,15 +97,15 @@ pub fn extract_file_with_mode_cancellable(
     let _span =
         info_span!(target: "atlas_extract", "extract.file", path = %file_path.display()).entered();
     let mut diagnostics = Vec::new();
+    let language = frontend.language();
 
     // CP1: Check cancellation before expensive parse.
     if token.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(cancelled_error(file_path, language));
     }
 
     // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
     let ts_lang = frontend.parser.tree_sitter_language();
-    let language = frontend.language();
     let source_bytes = source.as_bytes();
     let tree = tl_parse(&ts_lang, source_bytes, file_path, language)?;
     let root = tree.root_node();
@@ -148,7 +146,7 @@ pub fn extract_file_with_mode_cancellable(
 
     // CP2: Check cancellation after symbol extraction.
     if token.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(cancelled_error(file_path, language));
     }
 
     // Recovery hook: recover tree-sitter parse artifacts (e.g., ArkTS struct).
@@ -216,7 +214,7 @@ pub fn extract_file_with_mode_cancellable(
 
     // CP3: Check cancellation after reference extraction.
     if token.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(cancelled_error(file_path, language));
     }
 
     // 4. Extract and normalize imports
@@ -241,7 +239,7 @@ pub fn extract_file_with_mode_cancellable(
 
     // CP4: Check cancellation after imports + scopes extraction.
     if token.is_cancelled() {
-        anyhow::bail!("cancelled");
+        return Err(cancelled_error(file_path, language));
     }
 
     // 5a. Merge recovery scopes (from recover_definitions) and run scope recovery.
@@ -429,29 +427,23 @@ pub fn extract_file_with_mode_cancellable(
 
     // 7e. Build per-function control-flow graphs (P7: skip in Structural mode)
     let mut cfg_failed = false;
-    let (cfg_nodes, cfg_edges) = if mode.produces_cfg()
-        && frontend
-            .capability
-            .features
-            .as_ref()
-            .map(|f| f.cfg.is_supported())
-            .unwrap_or(false)
-    {
-        let cfg_result =
-            super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
-                .unwrap_or_else(|e| {
-                    diagnostics.push(ExtractDiagnostic {
-                        level: DiagnosticLevel::Warning,
-                        message: format!("CFG builder failed: {e}"),
-                        range: None,
+    let (cfg_nodes, cfg_edges) =
+        if mode.produces_cfg() && frontend.capability.features.cfg.is_supported() {
+            let cfg_result =
+                super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
+                    .unwrap_or_else(|e| {
+                        diagnostics.push(ExtractDiagnostic {
+                            level: DiagnosticLevel::Warning,
+                            message: format!("CFG builder failed: {e}"),
+                            range: None,
+                        });
+                        cfg_failed = true;
+                        CfgResult::default()
                     });
-                    cfg_failed = true;
-                    CfgResult::default()
-                });
-        (cfg_result.nodes, cfg_result.edges)
-    } else {
-        (vec![], vec![])
-    };
+            (cfg_result.nodes, cfg_result.edges)
+        } else {
+            (vec![], vec![])
+        };
 
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
@@ -766,58 +758,6 @@ pub fn extract_file_with_mode_cancellable(
     })
 }
 
-/// Extract a single file's facts using the given language frontend.
-///
-/// `mode` controls which extraction phases are executed:
-///   - [`ExtractionMode::Structural`] — default indexing (no dataflow/CFG)
-///   - [`ExtractionMode::LazyDataflow`] — on-demand dataflow for a window of units
-///   - [`ExtractionMode::Full`] — complete analysis, all phases
-///
-/// This is a backward-compatible wrapper around
-/// [`extract_file_with_mode_cancellable`] using a [`NeverCancel`] token.
-#[inline]
-pub fn extract_file_with_mode(
-    frontend: &LanguageFrontend,
-    file_id: FileId,
-    file_path: &Path,
-    source: &str,
-    content_hash: &str,
-    mode: ExtractionMode,
-) -> Result<FileFacts> {
-    extract_file_with_mode_cancellable(
-        frontend,
-        file_id,
-        file_path,
-        source,
-        content_hash,
-        mode,
-        &cancel::NeverCancel,
-    )
-}
-
-/// Extract a single file's facts with full analysis (all phases).
-///
-/// This is the backward-compatible entry point — existing callers that
-/// do not specify a mode get [`ExtractionMode::Full`].  New production
-/// code should use [`extract_file_with_mode`] with an explicit mode.
-#[inline]
-pub fn extract_file(
-    frontend: &LanguageFrontend,
-    file_id: FileId,
-    file_path: &Path,
-    source: &str,
-    content_hash: &str,
-) -> Result<FileFacts> {
-    extract_file_with_mode(
-        frontend,
-        file_id,
-        file_path,
-        source,
-        content_hash,
-        ExtractionMode::Full,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -953,11 +893,23 @@ fn build_reference_binding_uses(
     Ok(uses)
 }
 
+fn cancelled_error(file_path: &Path, language: Language) -> anyhow::Error {
+    anyhow::Error::new(
+        ExtractionFailure::new(
+            ExtractionFailureKind::Cancelled,
+            file_path.to_string_lossy().to_string(),
+            language,
+        )
+        .with_message("cancelled"),
+    )
+}
+
 /// Run a query and normalize each capture through the provided function.
 ///
 /// `token` is an optional [`CancelCheck`] — when `Some`, the capture loop
-/// checks cancellation every 100 captures and returns early if cancelled.
-/// Pass `None` for backward-compatible callers that do not support cancellation.
+/// checks cancellation every 100 captures and returns a typed cancellation
+/// error instead of partial facts.
+/// Pass `None` only for internal phases that do not have a cancellation budget.
 fn extract_and_normalize<'a, T>(
     ctx: &ExtractionCtx<'a>,
     query_src: &str,
@@ -1115,6 +1067,24 @@ mod tests {
         crate::languages::python::python_frontend()
     }
 
+    fn extract_full(
+        frontend: &LanguageFrontend,
+        file_id: FileId,
+        file_path: &std::path::Path,
+        source: &str,
+        content_hash: &str,
+    ) -> Result<FileFacts> {
+        extract_file_with_mode(
+            frontend,
+            file_id,
+            file_path,
+            source,
+            content_hash,
+            ExtractionMode::Full,
+            &(),
+        )
+    }
+
     fn assert_sources_are_known(facts: &FileFacts) {
         let known: std::collections::HashSet<_> = facts.symbols.iter().map(|s| s.id).collect();
         for edge in &facts.raw_edges {
@@ -1157,7 +1127,7 @@ int tcp_v4_rcv(void) {
         let frontend = create_frontend(Language::C).unwrap();
         let file_path = PathBuf::from("test_enum_owner.c");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         let caller = facts
             .symbols
             .iter()
@@ -1197,6 +1167,7 @@ int tcp_v4_rcv(void) {
             source,
             "type-range",
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
         let symbol = facts
@@ -1227,6 +1198,7 @@ int tcp_v4_rcv(void) {
             source,
             "enum-range",
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
         let symbol = facts
@@ -1245,7 +1217,7 @@ int tcp_v4_rcv(void) {
         let source = "struct dispatch_ops {\n    int (*do_it)(int);\n};\n";
         let file_id = FileId::generate("fp_field.c");
         let frontend = create_frontend(Language::C).unwrap();
-        let facts = extract_file(
+        let facts = extract_full(
             &frontend,
             file_id,
             &PathBuf::from("fp_field.c"),
@@ -1282,6 +1254,7 @@ int tcp_v4_rcv(void) {
             source,
             "type-range",
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
         let symbol = facts
@@ -1315,7 +1288,7 @@ export function f() {
         let frontend = ts_frontend();
         let file_path = PathBuf::from("arrow.ts");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
@@ -1340,7 +1313,7 @@ function g() {
         let frontend = create_frontend(Language::JavaScript).unwrap();
         let file_path = PathBuf::from("arrow.js");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.language, Language::JavaScript);
         assert_sources_are_known(&facts);
 
@@ -1358,7 +1331,7 @@ function g() {
         let frontend = create_frontend(Language::ArkTS).unwrap();
         let file_path = PathBuf::from("test.ets");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.language, Language::ArkTS);
         assert_sources_are_known(&facts);
         assert!(
@@ -1390,7 +1363,7 @@ void C::m() {
         let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("out_of_class.cpp");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_sources_are_known(&facts);
 
         let store = Store::open_in_memory().unwrap();
@@ -1405,7 +1378,7 @@ void C::m() {
         let source = "struct DispatchOps {\n    int (*do_it)(int);\n};\n";
         let file_id = FileId::generate("fp_field.cpp");
         let frontend = create_frontend(Language::Cpp).unwrap();
-        let facts = extract_file(
+        let facts = extract_full(
             &frontend,
             file_id,
             &PathBuf::from("fp_field.cpp"),
@@ -1436,7 +1409,7 @@ void C::m() {
         let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.path, "test.ts");
         assert_eq!(facts.file.language, Language::TypeScript);
         assert!(
@@ -1454,7 +1427,7 @@ void C::m() {
         let frontend = py_frontend();
         let file_path = PathBuf::from("test.py");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert_eq!(facts.file.language, Language::Python);
         assert!(!facts.symbols.is_empty(), "Should have symbols");
     }
@@ -1468,7 +1441,7 @@ void C::m() {
         let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.data_nodes.is_empty(), "Should have dataflow nodes");
         assert!(
             !facts.dataflow_edges.is_empty(),
@@ -1486,7 +1459,7 @@ void C::m() {
         let frontend = py_frontend();
         let file_path = PathBuf::from("test.py");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.symbols.is_empty(), "Should have symbols");
         assert!(facts.raw_edges.is_empty(), "Old dataflow path removed");
     }
@@ -1499,7 +1472,7 @@ void C::m() {
         let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
@@ -1545,7 +1518,7 @@ calc.add(1, 2);
         let frontend = ts_frontend();
         let file_path = PathBuf::from("test.ts");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         assert!(!facts.symbols.is_empty());
 
         let store = Store::open_in_memory().unwrap();
@@ -1576,7 +1549,7 @@ public class UserService {
         let frontend = create_frontend(Language::Java).unwrap();
         let file_path = PathBuf::from("test.java");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("Java Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
@@ -1645,7 +1618,7 @@ char* user_greet(const User* u) {
         let frontend = create_frontend(Language::C).unwrap();
         let file_path = PathBuf::from("test.c");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
@@ -1702,7 +1675,7 @@ private:
         let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("test.cpp");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C++ Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
@@ -1792,7 +1765,7 @@ int main() {
         let frontend = create_frontend(Language::Cpp).unwrap();
         let file_path = PathBuf::from("test.cpp");
 
-        let facts = extract_file(&frontend, file_id, &file_path, source, "abc").unwrap();
+        let facts = extract_full(&frontend, file_id, &file_path, source, "abc").unwrap();
         println!("C++ E2E Symbols: {}", facts.symbols.len());
         for s in &facts.symbols {
             let sid = s.id.to_hex();
@@ -1843,6 +1816,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::ResolutionSymbols,
+            &(),
         )
         .unwrap();
 
@@ -1906,6 +1880,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
 
@@ -1936,16 +1911,16 @@ int main() {
         // so binding_uses only has declaration-site uses
     }
 
-    /// 7d: Full mode produces the same data as the backward-compat extract_file().
+    /// 7d: Full mode produces the same data as the explicit Full-mode extraction.
     #[test]
     #[cfg(feature = "typescript")]
-    fn full_mode_identical_to_backward_compat() {
+    fn full_mode_matches_test_helper() {
         let frontend = ts_frontend();
         let source = "const x = 1;\nfunction f() { return x + 2; }\nf();\n";
         let file_id = FileId::generate("test_7d.ts");
         let path = std::path::Path::new("test_7d.ts");
 
-        let facts_compat = extract_file(&frontend, file_id, path, source, "abc").unwrap();
+        let facts_full_helper = extract_full(&frontend, file_id, path, source, "abc").unwrap();
         let facts_full = extract_file_with_mode(
             &frontend,
             file_id,
@@ -1953,16 +1928,20 @@ int main() {
             source,
             "abc",
             ExtractionMode::Full,
+            &(),
         )
         .unwrap();
 
-        assert_eq!(facts_compat.symbols.len(), facts_full.symbols.len());
-        assert_eq!(facts_compat.data_nodes.len(), facts_full.data_nodes.len());
+        assert_eq!(facts_full_helper.symbols.len(), facts_full.symbols.len());
         assert_eq!(
-            facts_compat.dataflow_edges.len(),
+            facts_full_helper.data_nodes.len(),
+            facts_full.data_nodes.len()
+        );
+        assert_eq!(
+            facts_full_helper.dataflow_edges.len(),
             facts_full.dataflow_edges.len()
         );
-        assert_eq!(facts_compat.bindings.len(), facts_full.bindings.len());
+        assert_eq!(facts_full_helper.bindings.len(), facts_full.bindings.len());
     }
 
     /// 7e: Budget truncation — a file with many nodes triggers budget_exceeded.
@@ -1989,6 +1968,7 @@ int main() {
                 &source,
                 "abc",
                 ExtractionMode::Full, // need symbols for unit construction
+                &(),
             )
             .unwrap();
             facts.symbols
@@ -2022,6 +2002,7 @@ int main() {
             &source,
             "abc",
             ExtractionMode::LazyDataflow { window },
+            &(),
         )
         .unwrap();
 
@@ -2058,6 +2039,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::Full,
+            &(),
         )
         .unwrap();
 
@@ -2097,6 +2079,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::LazyDataflow { window },
+            &(),
         )
         .unwrap();
 
@@ -2131,6 +2114,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::Full,
+            &(),
         )
         .unwrap();
 
@@ -2158,6 +2142,7 @@ int main() {
             source,
             "abc",
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
 

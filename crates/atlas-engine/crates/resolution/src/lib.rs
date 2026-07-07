@@ -572,20 +572,20 @@ impl ResolutionSession {
 
 /// Three-stage reference resolution orchestrator.
 ///
-/// P2: `resolve_all()` only resolves references and updates the `"references"`
+/// Project resolution only resolves references and updates the `"references"`
 /// table. Edge creation is delegated to `GraphBuilder`.
 ///
 /// P4: Uses `GlobalSymbolIndex` for project-wide name search instead of
 /// per-reference FTS5 queries. The global index is built once at the start
 /// of resolution.
 ///
-/// P6: `resolve_all_parallel()` uses rayon to parallelize per-file resolution,
+/// `resolve_all_parallel()` uses rayon to parallelize per-file resolution,
 /// with a Phase-1 (parallel matching) → Phase-2 (serial write) model.
 pub struct ReferenceResolver {
     store: Arc<Store>,
     import_resolver: ImportResolver,
     name_matcher: NameMatcher,
-    /// P4: Global in-memory symbol index (built once per resolve_all).
+    /// Global in-memory symbol index used by scoped file resolution.
     global_index: Option<GlobalSymbolIndex>,
 }
 
@@ -609,26 +609,10 @@ impl ReferenceResolver {
         }
     }
 
-    /// Resolve all unresolved references in the project (serial — kept for
-    /// backwards compatibility and small projects).
-    pub fn resolve_all(
-        &mut self,
-    ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
-        let unresolved = self.store.find_unresolved_references()?;
-        let total_refs = unresolved.len();
-
-        let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
-        for r in &unresolved {
-            by_file.entry(r.file_id).or_default().push(r.clone());
-        }
-
-        self.resolve_grouped_refs(by_file, total_refs)
-    }
-
     /// Resolve a pre-grouped map of references (file_id → references).
     ///
-    /// Shared by [`resolve_all`] and [`resolve_for_files`] — the only
-    /// difference between the two is how references are collected.
+    /// Used by scoped file resolution after the caller has selected the exact
+    /// files whose references should be resolved.
     fn resolve_grouped_refs(
         &mut self,
         by_file: HashMap<FileId, Vec<ReferenceUse>>,
@@ -1679,10 +1663,28 @@ mod tests {
     use super::*;
     use db::Store;
     use extraction::create_frontend;
-    use extraction::extract_file;
+    use extraction::{ExtractionMode, extract_file_with_mode};
     use graph::{GraphBuilder, GraphEngine};
     use std::path::PathBuf;
     use types::FileFacts;
+
+    fn extract_full(
+        frontend: &extraction::LanguageFrontend,
+        file_id: FileId,
+        path: &PathBuf,
+        source: &str,
+        content_hash: &str,
+    ) -> anyhow::Result<FileFacts> {
+        extract_file_with_mode(
+            frontend,
+            file_id,
+            path,
+            source,
+            content_hash,
+            ExtractionMode::Full,
+            &(),
+        )
+    }
 
     #[test]
     fn closure_resolution_does_not_build_the_project_wide_symbol_index() {
@@ -1704,7 +1706,7 @@ mod tests {
         let frontend = create_frontend(Language::C).unwrap();
         let target_id = FileId::generate("target.c");
         let caller_id = FileId::generate("caller.c");
-        let target = extract_file(
+        let target = extract_full(
             &frontend,
             target_id,
             &PathBuf::from("target.c"),
@@ -1712,7 +1714,7 @@ mod tests {
             "target",
         )
         .unwrap();
-        let caller = extract_file(
+        let caller = extract_full(
             &frontend,
             caller_id,
             &PathBuf::from("caller.c"),
@@ -1728,10 +1730,11 @@ mod tests {
             .iter()
             .find(|symbol| symbol.name == "external_fn")
             .unwrap();
-        let mut resolver = ReferenceResolver::new(store);
-        let (resolved, _) = resolver.resolve_all().unwrap();
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .unwrap();
 
-        assert!(resolver.global_index.is_some());
         assert!(resolved.iter().any(|(reference, resolved_target)| {
             reference.name == "external_fn" && resolved_target.symbol_id == target_symbol.id
         }));
@@ -1877,7 +1880,7 @@ mod tests {
 "#;
         let lib_id = FileId::generate("lib.ts");
         let ts_frontend = create_frontend(Language::TypeScript).unwrap();
-        let lib_facts = extract_file(
+        let lib_facts = extract_full(
             &ts_frontend,
             lib_id,
             &PathBuf::from("lib.ts"),
@@ -1896,7 +1899,7 @@ function main() {
 main();
 "#;
         let main_id = FileId::generate("main.ts");
-        let main_facts = extract_file(
+        let main_facts = extract_full(
             &ts_frontend,
             main_id,
             &PathBuf::from("main.ts"),
@@ -1915,7 +1918,9 @@ main();
 
         // ── Resolve ──
         let mut resolver = ReferenceResolver::new(Arc::clone(&store));
-        let (resolved, stats) = resolver.resolve_all().expect("resolution failed");
+        let (resolved, stats) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolution failed");
 
         // Verify resolution happened
         assert!(
@@ -1947,7 +1952,7 @@ export function farewell(name: string): string {
 "#;
         let lib_id = FileId::generate("lib.ts");
         let ts_frontend = create_frontend(Language::TypeScript).unwrap();
-        let lib_facts = extract_file(
+        let lib_facts = extract_full(
             &ts_frontend,
             lib_id,
             &PathBuf::from("lib.ts"),
@@ -1971,7 +1976,7 @@ main();
 shutdown();
 "#;
         let main_id = FileId::generate("main.ts");
-        let main_facts = extract_file(
+        let main_facts = extract_full(
             &ts_frontend,
             main_id,
             &PathBuf::from("main.ts"),
@@ -1989,7 +1994,9 @@ shutdown();
             .expect("insert main.ts");
 
         let mut resolver = ReferenceResolver::new(Arc::clone(&store));
-        let (resolved, _) = resolver.resolve_all().expect("resolution failed");
+        let (resolved, _) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolution failed");
 
         // ── Build edges ──
         let builder = GraphBuilder::new(Arc::clone(&store));
@@ -2048,7 +2055,7 @@ shutdown();
 "#;
         let lib_id = FileId::generate("lib.ts");
         let ts_frontend = create_frontend(Language::TypeScript).unwrap();
-        let lib_facts = extract_file(
+        let lib_facts = extract_full(
             &ts_frontend,
             lib_id,
             &PathBuf::from("lib.ts"),
@@ -2066,7 +2073,7 @@ function main() {
 main();
 "#;
         let main_id = FileId::generate("main.ts");
-        let main_facts = extract_file(
+        let main_facts = extract_full(
             &ts_frontend,
             main_id,
             &PathBuf::from("main.ts"),
@@ -2084,7 +2091,9 @@ main();
             .expect("insert main.ts");
 
         let mut resolver = ReferenceResolver::new(Arc::clone(&store));
-        let (resolved, _stats) = resolver.resolve_all().expect("resolution failed");
+        let (resolved, _stats) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolution failed");
 
         // Build edges
         let builder = GraphBuilder::new(Arc::clone(&store));
@@ -2154,16 +2163,18 @@ main();
             let ts = create_frontend(Language::TypeScript).unwrap();
 
             let lib_id = FileId::generate("lib.ts");
-            let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
+            let lib = extract_full(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
             store.insert_file_facts(&lib).unwrap();
 
             let main_id = FileId::generate("main.ts");
             let main =
-                extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
+                extract_full(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
             store.insert_file_facts(&main).unwrap();
 
             let mut resolver = ReferenceResolver::new(Arc::clone(&store));
-            let (_resolved, stats) = resolver.resolve_all().unwrap();
+            let (_resolved, stats) = resolver
+                .resolve_all_parallel(store.clone(), None, None)
+                .unwrap();
             assert!(
                 stats.resolved > 0,
                 "expected at least 1 resolved reference, got {}",
@@ -2180,15 +2191,10 @@ main();
     }
 
     /// Regression: after callsite.callee denormalization was eliminated,
-    /// `find_resolved_callsites_by_callee()` must return identical results
-    /// from both `resolve_all()` (synchronous path) and
-    /// `resolve_all_parallel()` (parallel path).
-    ///
-    /// If the two paths diverge, queries that JOIN callsites + references
-    /// would return different callees depending on which resolution path
-    /// was used.
+    /// `find_resolved_callsites_by_callee()` must return deterministic results
+    /// from fresh stores resolved through the project-wide parallel path.
     #[test]
-    fn resolved_callsites_consistent_across_resolution_paths() {
+    fn resolved_callsites_consistent_across_parallel_runs() {
         let ts = create_frontend(Language::TypeScript).unwrap();
         let lib_id = FileId::generate("lib.ts");
         let main_id = FileId::generate("main.ts");
@@ -2201,23 +2207,25 @@ function main() { return helper(21); }
 function other() { return "no call"; }
 "#;
 
-        let extract = |_store: Arc<Store>, fid: &FileId, src: &str, path: &str| -> FileFacts {
-            extract_file(&ts, *fid, &PathBuf::from(path), src, "hash").unwrap()
+        let extract = |fid: &FileId, src: &str, path: &str| -> FileFacts {
+            extract_full(&ts, *fid, &PathBuf::from(path), src, "hash").unwrap()
         };
 
-        // ── Path A: resolve_all (synchronous) ──
+        // ── Run A ──
         let store_a = Arc::new(Store::open_in_memory().unwrap());
         store_a.init_schema().unwrap();
-        let lib_facts_a = extract(store_a.clone(), &lib_id, lib_src, "lib.ts");
-        let main_facts_a = extract(store_a.clone(), &main_id, main_src, "main.ts");
+        let lib_facts_a = extract(&lib_id, lib_src, "lib.ts");
+        let main_facts_a = extract(&main_id, main_src, "main.ts");
         store_a.insert_file_facts(&lib_facts_a).unwrap();
         store_a.insert_file_facts(&main_facts_a).unwrap();
 
         let mut resolver_a = ReferenceResolver::new(store_a.clone());
-        let (_resolved_a, stats_a) = resolver_a.resolve_all().unwrap();
+        let (_resolved_a, stats_a) = resolver_a
+            .resolve_all_parallel(store_a.clone(), None, None)
+            .unwrap();
         assert!(
             stats_a.resolved > 0,
-            "sync resolution should resolve at least one reference"
+            "first resolution should resolve at least one reference"
         );
 
         let callee_id = store_a
@@ -2231,11 +2239,11 @@ function other() { return "no call"; }
             .find_resolved_callsites_by_callee(&callee_id)
             .unwrap();
 
-        // ── Path B: resolve_all_parallel (parallel) ──
+        // ── Run B ──
         let store_b = Arc::new(Store::open_in_memory().unwrap());
         store_b.init_schema().unwrap();
-        let lib_facts_b = extract(store_b.clone(), &lib_id, lib_src, "lib.ts");
-        let main_facts_b = extract(store_b.clone(), &main_id, main_src, "main.ts");
+        let lib_facts_b = extract(&lib_id, lib_src, "lib.ts");
+        let main_facts_b = extract(&main_id, main_src, "main.ts");
         store_b.insert_file_facts(&lib_facts_b).unwrap();
         store_b.insert_file_facts(&main_facts_b).unwrap();
 
@@ -2255,16 +2263,16 @@ function other() { return "no call"; }
         // ── Assertions ──
         assert!(
             !callsites_a.is_empty(),
-            "sync path should find callsites targeting helper()"
+            "first run should find callsites targeting helper()"
         );
         assert!(
             !callsites_b.is_empty(),
-            "parallel path should find callsites targeting helper()"
+            "second run should find callsites targeting helper()"
         );
         assert_eq!(
             callsites_a.len(),
             callsites_b.len(),
-            "both paths should find the same number of callsites targeting helper()"
+            "both runs should find the same number of callsites targeting helper()"
         );
 
         for (a, b) in callsites_a.iter().zip(callsites_b.iter()) {
@@ -2273,10 +2281,7 @@ function other() { return "no call"; }
                 a.callsite.caller, b.callsite.caller,
                 "callsite callers should match"
             );
-            assert_eq!(
-                a.callee, b.callee,
-                "callee symbols should match — resolution paths diverged!"
-            );
+            assert_eq!(a.callee, b.callee, "callee symbols should match");
         }
     }
 
@@ -2300,11 +2305,11 @@ main();
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
+        let lib = extract_full(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
+        let main = extract_full(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);
@@ -2343,11 +2348,11 @@ main();
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
+        let lib = extract_full(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
+        let main = extract_full(&ts, main_id, &PathBuf::from("main.ts"), main_src, "abc").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);
@@ -2379,11 +2384,11 @@ function other() { return "no call"; }
 "#;
 
         let lib_id = FileId::generate("lib.ts");
-        let lib = extract_file(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "hash").unwrap();
+        let lib = extract_full(&ts, lib_id, &PathBuf::from("lib.ts"), lib_src, "hash").unwrap();
         store.insert_file_facts(&lib).unwrap();
 
         let main_id = FileId::generate("main.ts");
-        let main = extract_file(&ts, main_id, &PathBuf::from("main.ts"), main_src, "hash").unwrap();
+        let main = extract_full(&ts, main_id, &PathBuf::from("main.ts"), main_src, "hash").unwrap();
         store.insert_file_facts(&main).unwrap();
 
         let _ = (lib_id, main_id);

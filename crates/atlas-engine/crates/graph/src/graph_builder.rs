@@ -482,14 +482,31 @@ pub struct GraphBuilderStats {
 mod tests {
     use super::*;
     use extraction::LanguageFrontend;
-    use extraction::create_frontend;
-    use extraction::extract_file;
+    use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
     use resolution::ReferenceResolver;
     use std::path::PathBuf;
     use types::Language;
 
     fn ts_frontend() -> LanguageFrontend {
         create_frontend(Language::TypeScript).unwrap()
+    }
+
+    fn extract_full(
+        frontend: &LanguageFrontend,
+        file_id: FileId,
+        path: &std::path::Path,
+        source: &str,
+        content_hash: &str,
+    ) -> anyhow::Result<FileFacts> {
+        extract_file_with_mode(
+            frontend,
+            file_id,
+            path,
+            source,
+            content_hash,
+            ExtractionMode::Full,
+            &(),
+        )
     }
 
     /// Test that GraphBuilder produces edges from resolved references.
@@ -501,7 +518,7 @@ mod tests {
 "#;
         let lib_id = FileId::generate("lib.ts");
         let frontend = ts_frontend();
-        let lib_facts = extract_file(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
+        let lib_facts = extract_full(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
             .expect("lib.ts extraction failed");
 
         let main_src = r#"import { greet } from './lib';
@@ -512,7 +529,7 @@ function main() {
 main();
 "#;
         let main_id = FileId::generate("main.ts");
-        let main_facts = extract_file(
+        let main_facts = extract_full(
             &frontend,
             main_id,
             &PathBuf::from("main.ts"),
@@ -530,7 +547,9 @@ main();
 
         // Resolve
         let mut resolver = ReferenceResolver::new(store.clone());
-        let (resolved, _res_stats) = resolver.resolve_all().expect("resolution failed");
+        let (resolved, _res_stats) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolution failed");
 
         // Build edges
         let builder = GraphBuilder::new(store.clone());
@@ -753,7 +772,7 @@ main();
 "#;
         let main_id = FileId::generate("main.ts");
         let frontend = ts_frontend();
-        let main_facts = extract_file(
+        let main_facts = extract_full(
             &frontend,
             main_id,
             &PathBuf::from("main.ts"),
@@ -767,7 +786,7 @@ main();
 }
 "#;
         let lib_id = FileId::generate("lib.ts");
-        let lib_facts = extract_file(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
+        let lib_facts = extract_full(&frontend, lib_id, &PathBuf::from("lib.ts"), lib_src, "abc")
             .expect("lib.ts extraction failed");
 
         let store = Arc::new(Store::open_in_memory().unwrap());
@@ -778,7 +797,9 @@ main();
         store.insert_file_facts(&lib_facts).expect("insert lib.ts");
 
         let mut resolver = ReferenceResolver::new(store.clone());
-        let (resolved, _res_stats) = resolver.resolve_all().expect("resolution failed");
+        let (resolved, _res_stats) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolution failed");
 
         let builder = GraphBuilder::new(store.clone());
         let stats = builder.build_all(&resolved);

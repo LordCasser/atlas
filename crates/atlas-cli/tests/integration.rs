@@ -9,8 +9,8 @@
 use atlas_engine::GraphBuilder;
 use atlas_engine::Store;
 use atlas_engine::enums::{EdgeKind, Language};
-use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
+use atlas_engine::{ExtractionMode, LanguageFrontend, extract_file_with_mode};
 use atlas_engine::{ReferenceResolver, ResolutionStats};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +25,24 @@ struct PipelineStats {
     edges_built: usize,
 }
 
+fn extract_full(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    path: &Path,
+    source: &str,
+    content_hash: &str,
+) -> anyhow::Result<atlas_engine::FileFacts> {
+    extract_file_with_mode(
+        frontend,
+        file_id,
+        path,
+        source,
+        content_hash,
+        ExtractionMode::Full,
+        &(),
+    )
+}
+
 /// Run the full pipeline on a set of source files and return the store + stats.
 fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
     let store = Arc::new(Store::open_in_memory().unwrap());
@@ -37,7 +55,7 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
         let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
-        let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
+        let facts = extract_full(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
             .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
@@ -46,7 +64,9 @@ fn index_files(files: &[(&str, &str)]) -> (Arc<Store>, PipelineStats) {
 
     // P2: two-step pipeline — resolve then build edges
     let mut resolver = ReferenceResolver::new(store.clone());
-    let (resolved, resolution) = resolver.resolve_all().expect("resolution failed");
+    let (resolved, resolution) = resolver
+        .resolve_all_parallel(store.clone(), None, None)
+        .expect("resolution failed");
 
     let builder = GraphBuilder::new(store.clone());
     let build_stats = builder.build_all(&resolved);

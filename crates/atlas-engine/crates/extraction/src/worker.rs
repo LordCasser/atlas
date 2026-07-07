@@ -1,6 +1,6 @@
 //! Parse worker pool: managed extraction with panic isolation and error reporting.
 //!
-//! Wraps `extract_file` with:
+//! Wraps extraction with:
 //! - `panic::catch_unwind` to isolate grammar crashes
 //! - max file size check before parsing
 //! - structured `ExtractionError` collection for the `IndexReport`
@@ -21,8 +21,7 @@ use types::IndexReport;
 use types::ids::FileId;
 
 use super::CancelCheck;
-use super::cancel::NeverCancel;
-use super::extract_file_with_mode_cancellable;
+use super::extract_file_with_mode;
 use super::frontend::LanguageFrontend;
 use crate::mode::ExtractionMode;
 
@@ -135,13 +134,14 @@ impl ParseWorkerPool {
         }
 
         // 2. Extract with panic isolation
+        let no_cancel = ();
         let token: &dyn CancelCheck = self
             .config
             .cancel_token
             .as_deref()
-            .map_or(&NeverCancel, |t| t);
+            .map_or(&no_cancel, |t| t);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            extract_file_with_mode_cancellable(
+            extract_file_with_mode(
                 frontend,
                 file_id,
                 file_path,
@@ -169,13 +169,11 @@ impl ParseWorkerPool {
                         "extraction failed"
                     );
                 } else {
-                    // Untyped error — fall back to string classification
-                    let fallback_msg = format!("{extraction_err}");
-                    let cat = classify_anyhow(&extraction_err);
+                    let message = format!("{extraction_err}");
                     tracing::warn!(
                         file = %file_path_str,
-                        category = ?cat,
-                        message = %fallback_msg,
+                        category = ?FailureCategory::QueryError,
+                        message = %message,
                         "extraction failed (untyped)"
                     );
                 }
@@ -275,14 +273,14 @@ impl ParseWorkerPool {
 
 /// Classify an `anyhow::Error` from `extract_file` into a `FailureCategory`.
 ///
-/// Phase 4: tries to downcast to [`ExtractionFailure`] first for precise
-/// classification via [`ExtractionFailureKind`].  Falls back to legacy
-/// string-matching for errors that haven't been migrated yet.
+/// Downcast typed extraction failures into the stable report category.
+/// Untyped errors are query errors; extraction-originated failures should use
+/// [`ExtractionFailure`] rather than relying on message text.
 fn classify_anyhow(err: &anyhow::Error) -> FailureCategory {
-    // 1. Downcast to typed error (Phase 4 migration)
     if let Some(ef) = err.downcast_ref::<ExtractionFailure>() {
         return match ef.kind {
             ExtractionFailureKind::ParseTimeout => FailureCategory::ParseTimeout,
+            ExtractionFailureKind::Cancelled => FailureCategory::Cancelled,
             ExtractionFailureKind::MaxFileSizeExceeded => FailureCategory::MaxFileSizeExceeded,
             ExtractionFailureKind::GrammarPanic => FailureCategory::GrammarPanic,
             ExtractionFailureKind::Io => FailureCategory::IoError,
@@ -292,15 +290,7 @@ fn classify_anyhow(err: &anyhow::Error) -> FailureCategory {
         };
     }
 
-    // 2. Legacy string-based fallback
-    let msg = format!("{err}").to_lowercase();
-    if msg.contains("timeout") || msg.contains("timed out") {
-        FailureCategory::ParseTimeout
-    } else if msg.contains("io") || msg.contains("read") || msg.contains("utf8") {
-        FailureCategory::IoError
-    } else {
-        FailureCategory::QueryError
-    }
+    FailureCategory::QueryError
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +300,14 @@ fn classify_anyhow(err: &anyhow::Error) -> FailureCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AlwaysCancel;
+
+    impl CancelCheck for AlwaysCancel {
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn test_worker_config_default() {
@@ -365,7 +363,7 @@ mod tests {
     fn test_classify_anyhow() {
         assert_eq!(
             classify_anyhow(&anyhow::anyhow!("read error: permission denied")),
-            FailureCategory::IoError
+            FailureCategory::QueryError
         );
         assert_eq!(
             classify_anyhow(&anyhow::anyhow!("some query failed")),
@@ -373,13 +371,12 @@ mod tests {
         );
         assert_eq!(
             classify_anyhow(&anyhow::anyhow!("operation timed out")),
-            FailureCategory::ParseTimeout
+            FailureCategory::QueryError
         );
     }
 
     #[test]
     fn test_classify_anyhow_downcast() {
-        // Phase 4: ExtractionFailure downcast path
         use crate::error::{ExtractionFailure, ExtractionFailureKind};
         use types::Language;
 
@@ -392,6 +389,15 @@ mod tests {
         .with_message("timed out after 30s");
         let err = anyhow::Error::from(ef);
         assert_eq!(classify_anyhow(&err), FailureCategory::ParseTimeout);
+
+        let ef = ExtractionFailure::new(
+            ExtractionFailureKind::Cancelled,
+            "test.ts",
+            Language::TypeScript,
+        )
+        .with_message("cancelled");
+        let err = anyhow::Error::from(ef);
+        assert_eq!(classify_anyhow(&err), FailureCategory::Cancelled);
 
         let ef = ExtractionFailure::new(
             ExtractionFailureKind::MaxFileSizeExceeded,
@@ -416,5 +422,32 @@ mod tests {
             .with_message("permission denied");
         let err = anyhow::Error::from(ef);
         assert_eq!(classify_anyhow(&err), FailureCategory::IoError);
+    }
+
+    #[test]
+    fn extract_one_reports_typed_cancellation() {
+        let config = WorkerConfig {
+            cancel_token: Some(Arc::new(AlwaysCancel)),
+            ..Default::default()
+        };
+        let pool = ParseWorkerPool::new(config);
+        let frontend = crate::create_frontend(types::Language::TypeScript)
+            .expect("TypeScript frontend available");
+
+        let result = pool.extract_one(
+            &frontend,
+            FileId::generate("test.ts"),
+            Path::new("test.ts"),
+            "function test() {}",
+            "abc",
+            ExtractionMode::Full,
+        );
+
+        let err = result.expect_err("cancelled extraction should fail");
+        assert_eq!(err.category, FailureCategory::Cancelled);
+
+        let report = pool.into_report(1, 100);
+        assert_eq!(report.files_failed, 1);
+        assert_eq!(*report.failures_by_category.get("cancelled").unwrap(), 1);
     }
 }

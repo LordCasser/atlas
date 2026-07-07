@@ -18,6 +18,8 @@ use crate::error::{ExtractionFailure, ExtractionFailureKind};
 /// `slot` identifies the query that failed (e.g. `"symbols"`, `"lexical"`)
 /// and is attached to the typed [`ExtractionFailure`] on error so the worker
 /// can report which query phase triggered the failure.
+/// If `cancel_token` is set, cancellation returns
+/// [`ExtractionFailureKind::Cancelled`] instead of partial captures.
 pub(crate) fn collect_captures<'a>(
     ts_lang: &tree_sitter::Language,
     query_src: &str,
@@ -71,7 +73,13 @@ pub(crate) fn collect_captures<'a>(
         if count % 100 == 0 {
             if let Some(t) = cancel_token {
                 if t.is_cancelled() {
-                    break;
+                    return Err(ExtractionFailure {
+                        kind: ExtractionFailureKind::Cancelled,
+                        file_path: String::new(), // caller fills if needed
+                        language: types::Language::TypeScript, // placeholder — caller fills
+                        slot: Some(slot),
+                        message: "cancelled".to_string(),
+                    });
                 }
             }
         }

@@ -410,6 +410,7 @@ fn extract_hints_for_path(
         &source,
         &content_hash,
         ExtractionMode::Manifest,
+        &(),
     ) {
         Ok(f) => f,
         Err(_) => return Ok(Vec::new()),
@@ -509,6 +510,7 @@ pub(crate) fn bootstrap_tier2(
                 &source,
                 &content_hash,
                 ExtractionMode::Manifest,
+                &(),
             ) {
                 Ok(f) => f,
                 Err(e) => {

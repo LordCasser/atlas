@@ -118,12 +118,7 @@ pub struct SymbolDef {
     pub namespace_path: Vec<String>,
 
     /// Extraction layer: "manifest" (top-level only), "structural" (full), "dataflow".
-    #[serde(default = "default_layer")]
     pub layer: String,
-}
-
-fn default_layer() -> String {
-    "structural".to_string()
 }
 
 /// Named constants for `SymbolDef.layer` and `extraction_state.layer` values.
@@ -789,8 +784,7 @@ pub struct FileFacts {
     pub cfg_failed: bool,
 
     /// Extraction layer: "manifest" (top-level only), "structural" (full symbols+refs),
-    /// or "dataflow". Defaults to "structural" for backward compatibility.
-    #[serde(default = "default_layer")]
+    /// or "dataflow".
     pub layer: String,
 }
 
@@ -928,6 +922,8 @@ pub fn canonicalize_field_path(raw: &str) -> String {
 pub enum FailureCategory {
     /// tree-sitter parse exceeded the per-file timeout.
     ParseTimeout,
+    /// Extraction was cancelled by the active job budget or user request.
+    Cancelled,
     /// A tree-sitter query returned an unexpected capture or malformed node.
     QueryError,
     /// File I/O failure (read error, encoding issue).
@@ -943,6 +939,7 @@ impl FailureCategory {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ParseTimeout => "parse_timeout",
+            Self::Cancelled => "cancelled",
             Self::QueryError => "query_error",
             Self::IoError => "io_error",
             Self::MaxFileSizeExceeded => "max_file_size_exceeded",
@@ -1345,6 +1342,7 @@ mod tests {
     #[test]
     fn test_failure_category_as_str() {
         assert_eq!(FailureCategory::ParseTimeout.as_str(), "parse_timeout");
+        assert_eq!(FailureCategory::Cancelled.as_str(), "cancelled");
         assert_eq!(FailureCategory::QueryError.as_str(), "query_error");
         assert_eq!(FailureCategory::IoError.as_str(), "io_error");
         assert_eq!(

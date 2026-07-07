@@ -39,7 +39,7 @@ pub use cancel::CancelCheck;
 pub use cfg_builder::{CfgBuilder, CfgResult};
 pub use dataflow_builder::{DataFlowBuilder, DataFlowResult};
 pub use error::{ExtractionFailure, ExtractionFailureKind};
-pub use extract::{extract_file, extract_file_with_mode, extract_file_with_mode_cancellable};
+pub use extract::extract_file_with_mode;
 pub use extraction_pool::{EXTRACTION_POOL, EXTRACTION_STACK_SIZE, extraction_pool};
 pub use frontend::{
     FrontendParts, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, ParserSpec,

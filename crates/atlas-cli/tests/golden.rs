@@ -23,8 +23,8 @@
 //! ```
 
 use atlas_engine::enums::Language;
-use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
+use atlas_engine::{ExtractionMode, LanguageFrontend, extract_file_with_mode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -104,6 +104,24 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+fn extract_full(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    path: &Path,
+    source: &str,
+    content_hash: &str,
+) -> anyhow::Result<atlas_engine::FileFacts> {
+    extract_file_with_mode(
+        frontend,
+        file_id,
+        path,
+        source,
+        content_hash,
+        ExtractionMode::Full,
+        &(),
+    )
+}
+
 /// Run a golden test for the given fixture.
 ///
 /// - `lang_dir`: e.g. "typescript"
@@ -121,7 +139,7 @@ fn run_golden(lang_dir: &str, stem: &str, ext: &str, lang: Language) {
         atlas_engine::create_frontend(lang).unwrap_or_else(|| panic!("No frontend for {lang:?}"));
 
     let file_id = FileId::generate(&rel_path);
-    let facts = extract_file(
+    let facts = extract_full(
         &frontend,
         file_id,
         Path::new(&rel_path),

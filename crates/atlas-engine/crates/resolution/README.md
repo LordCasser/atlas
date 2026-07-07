@@ -30,7 +30,7 @@ ResolvedTarget { symbol_id, confidence, strategy, provenance }
 - **`ReferenceResolver`** — orchestrator, produces `Vec<(ReferenceUse, ResolvedTarget)>`
 - **`ImportResolver`** — resolves import/include statements to target symbols
 - **`NameMatcher`** — fuzzy name matching with edit-distance scoring
-- **`GlobalSymbolIndex`** — in-memory index of all symbols for project-wide search (built once per `resolve_all()`)
+- **`GlobalSymbolIndex`** — in-memory index of all symbols for project-wide search
 - **`PathAliasResolver`** — tsconfig paths / jsconfig module alias support
 
 ## Design note

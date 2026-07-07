@@ -120,6 +120,10 @@ impl CandidateProvider for MockCandidateProvider {
     fn candidates_for_symbol(&self, _name: &str) -> anyhow::Result<Vec<FileId>> {
         Ok(self.candidates.clone())
     }
+
+    fn candidates_for_references(&self, _name: &str) -> anyhow::Result<Vec<FileId>> {
+        Ok(self.candidates.clone())
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

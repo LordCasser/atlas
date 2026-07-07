@@ -471,8 +471,10 @@ LanguageCapabilityProfile
   unsupported_features
   known_limitations
   confidence_floor       → 0.0-1.0
-  features               → FeatureMatrix（类型安全的逐 feature 查询）
+  features               → FeatureMatrix（必填；类型安全的逐 feature 查询）
 ```
+
+`features` 是能力门控的唯一权威。`supported_features` / `unsupported_features` 只是面向人类和 JSON 输出的镜像列表，必须与 `features` 保持一致，但运行时不得以字符串列表作为能力判断来源。
 
 ### 9.2 权威能力表
 
@@ -639,16 +641,16 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"：
 
-- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。`NeverCancel` 作为不需要取消能力的 no-op sentinel。
-- **`extract_file_with_mode_cancellable`**（`extraction/extract.rs`）：在以下检查点插入 token 检查（CP1-CP4）：
+- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。不需要取消能力的调用显式传 `&()`，因为 unit type 实现 no-op `CancelCheck`。
+- **`extract_file_with_mode`**（`extraction/extract.rs`）：唯一 extraction 入口，调用者必须显式传入 `ExtractionMode` 和 `CancelCheck`；在以下检查点插入 token 检查（CP1-CP4）：
   - CP1: `tl_parse()` 之前 — 进入时预算已耗尽则跳过 parse
   - CP2: 符号查询之后
   - CP3: 引用查询之后
   - CP4: 导入/作用域查询之后
-- **`collect_captures`**（`extraction/query_helpers.rs`）：流式捕获循环中每 ~100 次迭代检查取消
-- **`ReindexOutcome`**（`lazy_structural.rs`）：`Built` / `Cancelled` 枚举，在 DB 写入前（CP5）和 `extract_file` 调用前（CP6）检查。`Cancelled` 设置 `budget_exceeded=true` 但不计入 `files_built`
+- **`collect_captures`**（`extraction/query_helpers.rs`）：流式捕获循环中每 ~100 次迭代检查取消；取消返回 typed failure，不返回截断后的 partial captures
+- **取消分类**：抽取入口和 query capture loop 在取消时返回 `ExtractionFailureKind::Cancelled`，worker 记录为 `FailureCategory::Cancelled`。取消不得通过字符串匹配推断，也不得把已截断的 partial captures 写成成功 facts。
+- **`ReindexOutcome`**（`lazy_structural.rs`）：`Built` / `Cancelled` 枚举，在 DB 写入前（CP5）和 extraction 调用前（CP6）检查。`Cancelled` 设置 `budget_exceeded=true` 但不计入 `files_built`
 - **`LazyBudget`** 实现 `CancelCheck`（`is_cancelled = cancelled || time_exceeded`）。`can_continue()` 超时时自动调用 `cancel()`
-- `extract_file_with_mode` 保留原签名，作为 `_cancellable` + `&NeverCancel` 的包装器
 
 此设计不修改 tree-sitter C FFI，不引入 signal，不增加线程。Cancellation 是正常降级路径，产生 precision 降级而非 MCP tool error。
 

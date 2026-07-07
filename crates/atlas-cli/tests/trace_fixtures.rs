@@ -17,15 +17,33 @@ use atlas_engine::Store;
 use atlas_engine::enums::{
     CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind,
 };
-use atlas_engine::extract_file;
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::{Locator, Slicer, TraceEngine};
+use atlas_engine::{ExtractionMode, LanguageFrontend, extract_file_with_mode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────
+
+fn extract_full(
+    frontend: &LanguageFrontend,
+    file_id: FileId,
+    path: &Path,
+    source: &str,
+    content_hash: &str,
+) -> anyhow::Result<atlas_engine::FileFacts> {
+    extract_file_with_mode(
+        frontend,
+        file_id,
+        path,
+        source,
+        content_hash,
+        ExtractionMode::Full,
+        &(),
+    )
+}
 
 /// Run the full extraction→resolution→graph pipeline on inline source files.
 fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
@@ -39,7 +57,7 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
         let frontend = atlas_engine::create_frontend(lang)
             .unwrap_or_else(|| panic!("no frontend for {rel_path} (lang={lang:?})"));
         let file_id = FileId::generate(rel_path);
-        let facts = extract_file(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
+        let facts = extract_full(&frontend, file_id, &PathBuf::from(rel_path), content, "abc")
             .unwrap_or_else(|e| panic!("extract {rel_path} failed: {e:?}"));
         store
             .insert_file_facts(&facts)
@@ -47,7 +65,9 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
     }
 
     let mut resolver = ReferenceResolver::new(store.clone());
-    let (resolved, _resolution) = resolver.resolve_all().expect("resolution failed");
+    let (resolved, _resolution) = resolver
+        .resolve_all_parallel(store.clone(), None, None)
+        .expect("resolution failed");
 
     let builder = GraphBuilder::new(store.clone());
     let _build_stats = builder.build_all(&resolved);
@@ -545,19 +565,10 @@ fn fx6_python_cfg_supported_in_capability() {
         .expect("Python capability must exist");
     assert_eq!(cap.language, "python");
 
-    // Check feature matrix for CFG support.
-    if let Some(ref features) = cap.features {
-        assert!(
-            features.cfg.is_supported(),
-            "Python CFG must be Supported in FeatureMatrix, got {:?}",
-            features.cfg
-        );
-    }
-
-    // The CFG must appear in the supported_features list.
     assert!(
-        cap.supported_features.contains(&"cfg".to_string()),
-        "cfg must be in Python supported_features"
+        cap.features.cfg.is_supported(),
+        "Python CFG must be Supported in FeatureMatrix, got {:?}",
+        cap.features.cfg
     );
 }
 

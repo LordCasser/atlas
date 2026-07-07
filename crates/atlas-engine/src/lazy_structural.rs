@@ -18,7 +18,7 @@
 //!
 //! # Design constraints
 //!
-//! - Does NOT call `resolve_all()` or `GraphBuilder::build_all()` — uses
+//! - Does NOT run project-wide resolution or global graph rebuilds — uses
 //!   incremental `resolve_for_files` / `build_for_files` instead.
 //! - Leverages file-level extraction state for cache decisions.
 //! - Respects the same `ExtractionMode::Structural` pipeline as `atlas index`.
@@ -33,10 +33,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use db::{ClaimResult, Store};
-use extraction::{
-    CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode,
-    extract_file_with_mode_cancellable,
-};
+use extraction::{CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode};
 use types::ids::FileId;
 use types::structs::Precision;
 use types::{FileInfo, Language, ParseStatus, layer, status};
@@ -78,13 +75,7 @@ pub trait CandidateProvider: Send + Sync {
     fn candidates_for_symbol(&self, name: &str) -> Result<Vec<FileId>>;
 
     /// Find files that may reference `name`.
-    ///
-    /// The default keeps custom providers source-compatible. The production
-    /// provider overrides this to search source text even when a definition is
-    /// already present in the manifest index.
-    fn candidates_for_references(&self, name: &str) -> Result<Vec<FileId>> {
-        self.candidates_for_symbol(name)
-    }
+    fn candidates_for_references(&self, name: &str) -> Result<Vec<FileId>>;
 
     /// Find files matching the given path pattern.
     ///
@@ -624,6 +615,7 @@ impl LazyStructuralService {
             &source,
             &content_hash,
             ExtractionMode::ResolutionSymbols,
+            &(),
         )?;
 
         // Post-extraction: enrich with kernel-specific semantics
@@ -817,7 +809,7 @@ impl LazyStructuralService {
         // Extract BEFORE any destructive invalidation — if extraction fails,
         // no destructive operations have been performed.
         let mut facts = if let Some(t) = token {
-            extract_file_with_mode_cancellable(
+            extract_file_with_mode(
                 &frontend,
                 *file_id,
                 std::path::Path::new(&file_info.path),
@@ -834,6 +826,7 @@ impl LazyStructuralService {
                 &source,
                 &content_hash,
                 ExtractionMode::Structural,
+                &(),
             )?
         };
 
@@ -1280,6 +1273,7 @@ pub(crate) fn rebuild_structural_for_file(
         &source,
         &content_hash,
         ExtractionMode::Structural,
+        &(),
     )?;
 
     // Post-extraction: enrich with kernel-specific semantics
@@ -1526,6 +1520,7 @@ mod tests {
             source,
             &hash,
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
         let stale = facts
@@ -1579,6 +1574,7 @@ mod tests {
             source,
             &hash,
             ExtractionMode::Structural,
+            &(),
         )
         .unwrap();
         let stale = facts

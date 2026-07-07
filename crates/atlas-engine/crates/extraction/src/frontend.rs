@@ -326,66 +326,9 @@ impl LanguageFrontend {
     ///
     /// The `LanguageCapabilityProfile::features` field is the single
     /// authoritative source of truth for per-feature capability.  This
-    /// method returns it directly (cloned).  Only if the profile does not
-    /// carry a `features` matrix (legacy/migration path) does it fall back
-    /// to deriving a matrix from the slot capabilities.
+    /// method returns it directly.
     pub fn feature_matrix(&self) -> FeatureMatrix {
-        if let Some(ref features) = self.capability.features {
-            return features.clone();
-        }
-        // Fallback for legacy profiles without a typed feature matrix.
-        FeatureMatrix {
-            symbols: self.symbols.capability(),
-            references: self.references.capability(),
-            imports: self.imports.capability(),
-            scopes: self.scopes.capability(),
-            call_graph: FeatureSupport::supported_with_confidence(self.capability.confidence_floor),
-            lexical_bindings: self.lexical.capability(),
-            local_dataflow: self.dataflow.capability(),
-            use_def: if self.lexical.capability().is_supported()
-                && self.dataflow.capability().is_supported()
-            {
-                FeatureSupport::supported_with_limitations(
-                    self.capability.confidence_floor,
-                    vec!["name-based binding (no proper shadowing)"],
-                )
-            } else if self.dataflow.capability().is_supported() {
-                FeatureSupport::supported_with_limitations(
-                    self.capability.confidence_floor,
-                    vec![
-                        "no lexical binding extraction",
-                        "name-based use-def (may conflate same-named variables)",
-                    ],
-                )
-            } else {
-                FeatureSupport::unsupported("requires lexical bindings and dataflow")
-            },
-            field_access: if self.dataflow.capability().is_supported() {
-                FeatureSupport::supported_with_confidence(self.capability.confidence_floor)
-            } else {
-                FeatureSupport::unsupported("requires dataflow")
-            },
-            call_arguments: if self.dataflow.capability().is_supported() {
-                FeatureSupport::supported_with_confidence(self.capability.confidence_floor)
-            } else {
-                FeatureSupport::unsupported("requires dataflow")
-            },
-            returns_flow: if self.dataflow.capability().is_supported() {
-                FeatureSupport::supported_with_confidence(self.capability.confidence_floor)
-            } else {
-                FeatureSupport::unsupported("requires dataflow")
-            },
-            cfg: if self
-                .capability
-                .supported_features
-                .contains(&"cfg".to_string())
-            {
-                FeatureSupport::supported_with_confidence(self.capability.confidence_floor)
-            } else {
-                FeatureSupport::unsupported("CFG builder not available")
-            },
-            interprocedural_summaries: FeatureSupport::unsupported("not implemented"),
-        }
+        self.capability.features.clone()
     }
 
     /// Derive a complete [`LanguageCapabilityProfile`] from the slot implementations.
@@ -402,12 +345,12 @@ impl LanguageFrontend {
             unsupported_features: fm.unsupported_feature_names(),
             limitations: self.capability.limitations.clone(),
             confidence_floor: fm.min_confidence_floor(),
-            features: Some(fm),
+            features: fm,
         }
     }
 
-    /// Build a [`FeatureMatrix`] exclusively from slot capabilities,
-    /// ignoring any static `capability.features` cache.
+    /// Build a [`FeatureMatrix`] from slot capabilities plus typed profile
+    /// facts for capabilities that are not represented by frontend slots.
     fn feature_matrix_from_slots(&self) -> FeatureMatrix {
         FeatureMatrix {
             symbols: self.symbols.capability(),
@@ -450,21 +393,8 @@ impl LanguageFrontend {
             } else {
                 FeatureSupport::unsupported("requires dataflow")
             },
-            cfg: if self
-                .capability
-                .supported_features
-                .contains(&"cfg".to_string())
-            {
-                FeatureSupport::supported_with_confidence(self.capability.confidence_floor)
-            } else {
-                FeatureSupport::unsupported("CFG builder not available")
-            },
-            interprocedural_summaries: self
-                .capability
-                .features
-                .as_ref()
-                .map(|fm| fm.interprocedural_summaries.clone())
-                .unwrap_or_else(|| FeatureSupport::unsupported("not implemented")),
+            cfg: self.capability.features.cfg.clone(),
+            interprocedural_summaries: self.capability.features.interprocedural_summaries.clone(),
         }
     }
 }
@@ -743,10 +673,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("create_frontend failed for {lang:?}"));
 
             let profile = frontend.capability;
-            let fm = profile
-                .features
-                .as_ref()
-                .expect("profile must have FeatureMatrix");
+            let fm = &profile.features;
 
             // dataflow: slot says unsupported → profile must not claim main dataflow support
             if !frontend.dataflow.capability().is_supported() {
@@ -825,15 +752,8 @@ mod tests {
                 lang, derived.capability_level, static_profile.capability_level
             );
 
-            // Both must have FeatureMatrix
-            let df = derived
-                .features
-                .as_ref()
-                .expect("derived must have FeatureMatrix");
-            let sf = static_profile
-                .features
-                .as_ref()
-                .expect("static must have FeatureMatrix");
+            let df = &derived.features;
+            let sf = &static_profile.features;
 
             // Derived profile should NOT under-report capability vs static.
             // Static may be outdated (claim unsupported when adapter actually implements it);
@@ -932,8 +852,8 @@ fn test_all_lexical_queries_compile() {
 /// Verify that each dataflow language produces at least some DataNodes and edges.
 #[test]
 fn test_all_dataflow_languages_produce_facts() {
-    use crate::extract::extract_file;
     use crate::languages::create_frontend;
+    use crate::{ExtractionMode, extract_file_with_mode};
     use types::enums::Language;
     use types::ids::FileId;
 
@@ -1016,12 +936,14 @@ fn test_all_dataflow_languages_produce_facts() {
             continue;
         }
         let file_id = FileId::generate(&format!("smoke.{ext}"));
-        let facts = extract_file(
+        let facts = extract_file_with_mode(
             &frontend,
             file_id,
             std::path::Path::new(&format!("smoke.{ext}")),
             source,
             "t",
+            ExtractionMode::Full,
+            &(),
         )
         .unwrap_or_else(|e| panic!("{lang:?} extraction failed: {e}"));
 

@@ -66,7 +66,7 @@ pub mod symbol_selector;
 
 /// Extraction: entry points and mode control.
 pub use extraction::{
-    ExtractionMode, create_frontend, extract_file, extract_file_with_mode, parse_analysis_mode,
+    ExtractionMode, create_frontend, extract_file_with_mode, parse_analysis_mode,
 };
 
 /// Sync layer: core indexing pipeline and progress protocol.
@@ -187,7 +187,6 @@ pub use domain_rules as rule_engine;
 /// Extraction internals: language frontends, parser pool, grammar registry.
 pub use extraction::{
     LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig, available_languages,
-    extract_file_with_mode_cancellable,
 };
 
 /// Sync layer internals: dirty-set tracking, phase functions, pipeline runners.
@@ -416,6 +415,7 @@ impl Engine {
             source,
             &content_hash,
             mode,
+            &(),
         )?;
         Ok(facts)
     }
@@ -484,8 +484,7 @@ impl Engine {
         // Check dataflow support
         let dataflow_supported = cap
             .as_ref()
-            .and_then(|c| c.features.as_ref())
-            .map(|f| f.local_dataflow.is_supported())
+            .map(|c| c.features.local_dataflow.is_supported())
             .unwrap_or(false);
 
         if !dataflow_supported {
@@ -708,6 +707,7 @@ mod tests {
             source,
             &content_hash,
             extraction::ExtractionMode::Structural,
+            &(),
         )
         .expect("extract structural");
         engine.insert_facts(&facts).expect("insert structural");
@@ -757,6 +757,7 @@ mod tests {
             source,
             &content_hash,
             extraction::ExtractionMode::Structural,
+            &(),
         )
         .expect("extract structural");
         engine.insert_facts(&facts).expect("insert");

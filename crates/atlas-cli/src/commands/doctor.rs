@@ -154,34 +154,33 @@ fn print_capabilities() {
     println!();
     println!("  Unsupported Features:");
     for p in &profiles {
-        if let Some(ref feats) = p.features {
-            let unsupported: Vec<&str> = [
-                ("symbols", &feats.symbols),
-                ("references", &feats.references),
-                ("imports", &feats.imports),
-                ("scopes", &feats.scopes),
-                ("call_graph", &feats.call_graph),
-                ("lexical_bindings", &feats.lexical_bindings),
-                ("local_dataflow", &feats.local_dataflow),
-                ("use_def", &feats.use_def),
-                ("field_access", &feats.field_access),
-                ("call_arguments", &feats.call_arguments),
-                ("returns_flow", &feats.returns_flow),
-                ("cfg", &feats.cfg),
-                ("interprocedural", &feats.interprocedural_summaries),
-            ]
-            .iter()
-            .filter_map(|(name, fs)| {
-                if !fs.is_supported() {
-                    Some(*name)
-                } else {
-                    None
-                }
-            })
-            .collect();
-            if !unsupported.is_empty() {
-                println!("    {:<16}  {}", p.language, unsupported.join(", "));
+        let feats = &p.features;
+        let unsupported: Vec<&str> = [
+            ("symbols", &feats.symbols),
+            ("references", &feats.references),
+            ("imports", &feats.imports),
+            ("scopes", &feats.scopes),
+            ("call_graph", &feats.call_graph),
+            ("lexical_bindings", &feats.lexical_bindings),
+            ("local_dataflow", &feats.local_dataflow),
+            ("use_def", &feats.use_def),
+            ("field_access", &feats.field_access),
+            ("call_arguments", &feats.call_arguments),
+            ("returns_flow", &feats.returns_flow),
+            ("cfg", &feats.cfg),
+            ("interprocedural", &feats.interprocedural_summaries),
+        ]
+        .iter()
+        .filter_map(|(name, fs)| {
+            if !fs.is_supported() {
+                Some(*name)
+            } else {
+                None
             }
+        })
+        .collect();
+        if !unsupported.is_empty() {
+            println!("    {:<16}  {}", p.language, unsupported.join(", "));
         }
     }
 }

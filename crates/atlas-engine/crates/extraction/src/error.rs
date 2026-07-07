@@ -5,9 +5,9 @@
 //! an [`ExtractionFailure`] that can be attached to `anyhow::Error` via
 //! `.context()` at every origination point in the extraction pipeline.
 //!
-//! The worker then downcasts to `ExtractionFailure` first; only falls back
-//! to string matching for errors that entered the pipeline from untyped
-//! sources (e.g. I/O errors from tree-sitter).
+//! The worker then downcasts to `ExtractionFailure` for category selection.
+//! Untyped errors are reported as query errors; extraction-originated failures
+//! should use this type.
 //!
 //! ## Corresponding tracing events
 //!
@@ -33,6 +33,8 @@ pub enum ExtractionFailureKind {
     QueryCompile,
     /// Per-file parse exceeded the configured timeout (reserved).
     ParseTimeout,
+    /// Extraction was cancelled by the active job budget or user request.
+    Cancelled,
     /// The grammar's tree-sitter bindings or a normalizer panicked.
     GrammarPanic,
     /// A normalizer returned data that failed downstream validation.
@@ -48,6 +50,7 @@ impl ExtractionFailureKind {
             Self::ParserInit => "parser_init",
             Self::QueryCompile => "query_compile",
             Self::ParseTimeout => "parse_timeout",
+            Self::Cancelled => "cancelled",
             Self::GrammarPanic => "grammar_panic",
             Self::Normalization => "normalization",
             Self::MaxFileSizeExceeded => "max_file_size_exceeded",
@@ -79,8 +82,7 @@ impl std::fmt::Display for ExtractionFailureKind {
 /// }));
 /// ```
 ///
-/// The [`ParseWorkerPool`] will downcast to this type before falling back
-/// to string matching.
+/// The [`ParseWorkerPool`] will downcast to this type for category selection.
 #[derive(Debug, Clone)]
 pub struct ExtractionFailure {
     pub kind: ExtractionFailureKind,

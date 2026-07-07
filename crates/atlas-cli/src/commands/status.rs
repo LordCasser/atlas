@@ -98,23 +98,21 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
                 profile.capability_level.as_str(),
                 profile.confidence_floor * 100.0
             );
-            // If FeatureMatrix is available, show fine-grained capabilities
-            if let Some(ref features) = profile.features {
-                println!("    Features:");
-                print_feature("symbols", &features.symbols);
-                print_feature("references", &features.references);
-                print_feature("imports", &features.imports);
-                print_feature("scopes", &features.scopes);
-                print_feature("call_graph", &features.call_graph);
-                print_feature("lexical_bindings", &features.lexical_bindings);
-                print_feature("local_dataflow", &features.local_dataflow);
-                print_feature("use_def", &features.use_def);
-                print_feature("field_access", &features.field_access);
-                print_feature("call_arguments", &features.call_arguments);
-                print_feature("returns_flow", &features.returns_flow);
-                print_feature("cfg", &features.cfg);
-                print_feature("interprocedural", &features.interprocedural_summaries);
-            }
+            let features = &profile.features;
+            println!("    Features:");
+            print_feature("symbols", &features.symbols);
+            print_feature("references", &features.references);
+            print_feature("imports", &features.imports);
+            print_feature("scopes", &features.scopes);
+            print_feature("call_graph", &features.call_graph);
+            print_feature("lexical_bindings", &features.lexical_bindings);
+            print_feature("local_dataflow", &features.local_dataflow);
+            print_feature("use_def", &features.use_def);
+            print_feature("field_access", &features.field_access);
+            print_feature("call_arguments", &features.call_arguments);
+            print_feature("returns_flow", &features.returns_flow);
+            print_feature("cfg", &features.cfg);
+            print_feature("interprocedural", &features.interprocedural_summaries);
         }
     }
 }
