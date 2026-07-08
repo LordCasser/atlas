@@ -134,6 +134,37 @@ fn seed_persistent_symbol(
     file_id
 }
 
+fn assert_trace_contract_fields(resp: &Value) {
+    for field in [
+        "ok",
+        "kind",
+        "capability",
+        "partial_result",
+        "diagnostics",
+        "result",
+    ] {
+        assert!(
+            resp.get(field).is_some(),
+            "trace response missing contract field '{field}': {resp:.500}"
+        );
+    }
+    assert!(
+        resp.get("query_id").and_then(|v| v.as_str()).is_some(),
+        "MCP trace response must include query_id: {resp:.500}"
+    );
+    assert!(
+        resp.get("analysis").is_some(),
+        "MCP trace response must include analysis block: {resp:.500}"
+    );
+
+    for retired in ["precision", "work", "lazy_diagnostics", "analysis_contract"] {
+        assert!(
+            resp.get(retired).is_none(),
+            "MCP trace response must not expose retired field '{retired}': {resp:.500}"
+        );
+    }
+}
+
 // =========================================================================
 // Test 1: Graph tools return expected JSON structure
 // =========================================================================
@@ -1043,6 +1074,40 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
     assert_eq!(resp["status"], "unresolved");
     assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
     assert!(resp.get("retry_after_ms").is_none());
+}
+
+#[test]
+fn trace_point_mcp_response_keeps_v1_contract_fields() {
+    let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
+    store.init_schema().expect("init_schema");
+    store
+        .upsert_file(&FileInfo {
+            file_id: atlas_engine::FileId::generate("main.c"),
+            path: "main.c".to_string(),
+            language: Language::C,
+            content_hash: "trace-contract-fixture".to_string(),
+            status: ParseStatus::Success,
+        })
+        .expect("seed file");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("main.c"), "int main(void) { return 0; }\n")
+        .expect("write source");
+    let mut router = ToolRouter::new_empty(store, dir.path().to_path_buf());
+
+    let (resp, is_error) = call_tool(
+        &mut router,
+        "trace",
+        &json!({"kind": "point", "file_path": "main.c", "line": 1, "column": 1}),
+    );
+
+    assert!(
+        !is_error,
+        "trace point contract fixture should be a non-error response: {resp:.500}"
+    );
+    assert_trace_contract_fields(&resp);
+    assert_eq!(resp["kind"], "trace_point", "{resp:.500}");
+    assert_eq!(resp["capability"]["language"], "c", "{resp:.500}");
 }
 
 // =========================================================================

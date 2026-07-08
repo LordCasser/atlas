@@ -55,7 +55,11 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible
   development databases.
 - Keep MCP and trace JSON output stable for scripted/agent use; CLI stdout JSON
-  is not part of the current 1.5.x command surface.
+  is not part of the current 1.5.x command surface. ✅ Done: engine trace
+  envelope tests lock the serialized V1 fields, MCP schema validation freezes
+  tool argument shapes, and `handler_regression` covers the `trace` tool through
+  `ToolRouter::call_tool()` including `query_id`/`analysis` and retired-field
+  exclusions.
 - Publish verified performance baselines. ✅ Done: `docs/performance.md`
   includes the 2026-07-08 release-mode Atlas self-index smoke baseline on a
   clean `git archive HEAD` checkout, plus historical large-project baselines.
