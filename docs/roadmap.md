@@ -28,7 +28,12 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 - Add machine-readable version metadata for MCP clients. ✅ Done: `project(status)`
   returns `server.atlas_version`, `server.tool_contract_version`, and
   `server.compiled_features`, with regression coverage.
-- Finalize graph snapshot refresh semantics.
+- Finalize graph snapshot refresh semantics. ✅ Done: lazy writes enter
+  `record_lazy_writes()`, graph-backed requests flush `maybe_refresh_graph()`,
+  handler-local structural writes can call `force_refresh_graph()`, cumulative
+  writes schedule deferred full rebuild, and generation changes force visible
+  refresh; regression tests cover empty batches, external writes, preservation
+  across refresh, queue deduplication, and rebuild threshold behavior.
 - Keep all MCP outputs bounded and ensure truncation is visible in the response.
 
 ### 1.4 CLI and database release gates
