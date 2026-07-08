@@ -45,7 +45,11 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   prints Atlas version, Schema V2 state, canonical index mode from `Store`, compiled
   features, and per-language capability profiles; helper tests cover schema and
   index-mode reads.
-- Compatibility: Schema V2 with no migration chain for older development schemas (direct DDL changes + re-index).
+- Compatibility: Schema V2 with no migration chain for older development schemas
+  (direct DDL changes + re-index). ✅ Done: `init_schema()` only initializes
+  empty unversioned databases or current-version databases, stamps fresh DBs
+  with `CURRENT_SCHEMA_VERSION`, and rejects non-empty v0 development databases
+  with rebuild guidance.
 - Make `.atlas/` cleanup and rebuild guidance explicit. ✅ Done: failing
   database/schema/index-mode checks print explicit `atlas index --project ...`
   rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible

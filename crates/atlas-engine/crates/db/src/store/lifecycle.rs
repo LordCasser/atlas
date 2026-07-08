@@ -10,39 +10,6 @@ use std::sync::Mutex;
 
 use super::{Store, StoreReader};
 
-// ── Focus schema migration ──────────────────────────────────────────────────
-
-/// Apply focus schema migration: add `closure_id` and `generation` columns
-/// to `extraction_jobs`, and create the supporting index.
-///
-/// Uses `PRAGMA table_info` to check column existence before ALTER TABLE,
-/// so repeated calls are idempotent without relying on error suppression.
-fn apply_focus_schema_migration(conn: &Connection) -> anyhow::Result<()> {
-    // Check existing columns on extraction_jobs
-    let mut stmt = conn.prepare("PRAGMA table_info('extraction_jobs')")?;
-    let columns: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(1))? // column name is at index 1
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if !columns.iter().any(|c| c == "closure_id") {
-        conn.execute("ALTER TABLE extraction_jobs ADD COLUMN closure_id TEXT", [])?;
-    }
-    if !columns.iter().any(|c| c == "generation") {
-        conn.execute(
-            "ALTER TABLE extraction_jobs ADD COLUMN generation INTEGER",
-            [],
-        )?;
-    }
-
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_extraction_jobs_closure
-             ON extraction_jobs(closure_id, generation);",
-    )?;
-
-    Ok(())
-}
-
 // ── Generation tracking ─────────────────────────────────────────────────────
 
 /// Analysis mode for generation tracking.
@@ -175,18 +142,8 @@ impl Store {
     /// all DDL uses `CREATE TABLE IF NOT EXISTS`.
     pub fn init_schema(&self) -> anyhow::Result<()> {
         let conn = self.lock();
+        validate_schema_version_for_init(&conn)?;
         conn.execute_batch(SCHEMA_DDL)?;
-
-        // Migration: P3 per-file resolution fingerprint column.
-        // New DBs get it from CREATE TABLE; existing DBs get it via ALTER TABLE.
-        // Ignore error if column already exists (idempotent).
-        let _ = conn.execute(
-            "ALTER TABLE extraction_state ADD COLUMN resolution_fingerprint TEXT",
-            [],
-        );
-
-        // Focus schema migration: extraction_jobs closure tracking columns.
-        apply_focus_schema_migration(&conn)?;
         conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
 
         Ok(())
@@ -371,6 +328,28 @@ impl Store {
     }
 }
 
+fn validate_schema_version_for_init(conn: &Connection) -> anyhow::Result<()> {
+    let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == CURRENT_SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    let user_table_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table'
+           AND name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if version == 0 && user_table_count == 0 {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Atlas database schema version is v{version}, expected v{CURRENT_SCHEMA_VERSION}. Remove the project .atlas/atlas.db or .atlas/ directory, then rerun atlas index to rebuild it."
+    );
+}
+
 // ── Generation tracking tests ───────────────────────────────────────────────
 
 #[cfg(test)]
@@ -399,6 +378,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn init_schema_rejects_nonempty_unversioned_database() {
+        let store = Store::open_in_memory().unwrap();
+        {
+            let conn = store.lock();
+            conn.execute("CREATE TABLE legacy_table (id INTEGER)", [])
+                .unwrap();
+        }
+
+        let err = store
+            .init_schema()
+            .expect_err("non-empty unversioned database must not be migrated");
+
+        assert!(
+            err.to_string().contains("schema version is v0"),
+            "error should name the incompatible schema version: {err:#}"
+        );
+        assert!(
+            err.to_string().contains("rerun atlas index"),
+            "error should point to rebuild instead of migration: {err:#}"
+        );
     }
 
     #[test]
