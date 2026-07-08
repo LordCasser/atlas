@@ -66,6 +66,35 @@ You can also install the local binary into Cargo's bin directory:
 cargo install --path crates/atlas-cli --features mcp
 ```
 
+### Release builds
+
+Atlas releases are distributed as source plus release binaries. The GitHub
+release workflow builds `atlas-cli` with `--features mcp`, so release binaries
+include the CLI, TUI, and MCP server.
+
+Repeatable local release build:
+
+```bash
+cargo build --release -p atlas-cli --features mcp
+```
+
+Release profile choices are defined in `Cargo.toml`: `opt-level=3`, fat LTO,
+single codegen unit, and stripped binaries.
+
+Published binary matrix:
+
+| Platform | Target | Asset |
+| --- | --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-musl` | `atlas-linux-x86_64.tar.gz` |
+| Linux arm64 | `aarch64-unknown-linux-musl` | `atlas-linux-arm64.tar.gz` |
+| Linux riscv64 | `riscv64gc-unknown-linux-gnu` | `atlas-linux-riscv64.tar.gz` |
+| macOS arm64 | `aarch64-apple-darwin` | `atlas-macos-arm64.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `atlas-windows-x86_64.zip` |
+| Windows arm64 | `aarch64-pc-windows-msvc` | `atlas-windows-arm64.zip` |
+
+Linux musl binaries are checked for static linking in CI. Source builds require
+Rust 1.85+; release CI uses the stable Rust toolchain for the configured target.
+
 ## Quick start
 
 ```bash

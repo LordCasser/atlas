@@ -4,6 +4,25 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## Unreleased
+
+### Release hardening
+
+- `atlas doctor` now reports Atlas version, Schema V2 state, canonical index
+  mode, compiled features, and per-language capability profiles.
+- Fresh databases are stamped with `CURRENT_SCHEMA_VERSION`; non-empty
+  unversioned development databases are rejected with rebuild guidance instead
+  of being silently migrated.
+- MCP trace JSON contract coverage now exercises the full
+  `ToolRouter::call_tool()` path and locks `query_id`, `analysis`, V1 trace
+  envelope fields, and retired-field exclusions.
+- `docs/performance.md` includes a release-mode Atlas self-index smoke baseline
+  for the 1.5.x line.
+- README release documentation now records the source/binary distribution
+  decision, release build command, feature choice, and platform asset matrix.
+
+---
+
 ## [1.5.2] — 2026-06-23
 
 ### Focus Runtime — Cold Start & Fixed-Point Precision

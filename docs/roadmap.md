@@ -9,9 +9,17 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 ### 1.1 Packaging and installation
 
 - Publish or document a repeatable release build flow for macOS, Linux, and Windows.
+  ✅ Done: README documents the local release build command and the GitHub
+  release workflow builds the same `atlas-cli --features mcp` binary for the
+  release targets.
 - Document verified platform matrix, minimum Rust version, and feature choices.
+  ✅ Done: README lists release assets for Linux x86_64/arm64/riscv64, macOS
+  arm64, Windows x86_64/arm64, Rust 1.85+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
-- Add release notes / changelog entry for the first public version.
+  ✅ Done: README states releases are source plus binaries.
+- Add release notes / changelog entry for the first public version. ✅ Done:
+  `CHANGELOG.md` contains 1.5.x release notes and an Unreleased release-hardening
+  entry.
 
 ### 1.2 User-facing documentation
 
