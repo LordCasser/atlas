@@ -4,7 +4,46 @@
 
 - **Machine**: Apple Silicon (aarch64), macOS
 - **Atlas build**: `cargo build --release -p atlas-cli`
-- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5), 2026-06-18 (Baseline 6), 2026-06-22 (Baseline 7)
+- **Date**: 2026-05-23 (Baselines 1-2), 2026-06-10 (Baseline 3), 2026-06-11 (Baseline 4), 2026-06-12 (Baseline 5), 2026-06-18 (Baseline 6), 2026-06-22 (Baseline 7), 2026-07-08 (Baseline 8)
+
+## Baseline 8: Atlas self-index release smoke
+
+- **Repository**: clean temporary copy from `git archive HEAD` of Atlas at
+  `5a0656bd`.
+- **Build**: `cargo build --release -p atlas-cli`, then
+  `target/release/atlas --verbose index --project <tmp> --analysis structural`.
+- **Machine**: Apple M4 Pro, 24 GiB RAM, macOS 26.5.1 (Darwin 25.5.0), arm64.
+- **Result**: `real 3.12s`, `user 12.90s`, `sys 0.52s`.
+
+### Project Profile
+
+- **Files indexed**: 346
+- **Languages**: Rust 290, C# 7, Go 7, Kotlin 7, TypeScript 6, PHP 5, Ruby 5,
+  Python 4, ArkTS 3, C 3, Cangjie 3, Java 3, C++ 2, JavaScript 1
+- **Symbols extracted**: 15,662
+- **References extracted**: 104,346
+- **Resolution rate**: 71.3% (74,365 resolved / 29,981 unresolved)
+- **Edges built**: 74,968
+- **Database size**: 115 MiB
+
+### Phase Timings
+
+| Phase | Time |
+|-------|------|
+| Discovery | <0.1s |
+| Hash check | <0.1s |
+| Cleanup | <0.1s |
+| Language init | <0.1s |
+| Parse/extract | 0.6s |
+| DB write | 0.9s |
+| Resolution | 0.7s |
+| Graph build | 0.4s |
+
+Fresh structural indexing also emitted one existing `atlas_db` warning about
+repairing 11 missing schema indexes during finalization. The run completed and
+`atlas doctor` reported Schema v2 plus `Index mode (structural)`, so this is not
+a failed baseline, but the warning remains worth tightening before broader
+release polish.
 
 ## Baseline 7: Linux TUI startup responsiveness
 

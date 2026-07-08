@@ -56,7 +56,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   development databases.
 - Keep MCP and trace JSON output stable for scripted/agent use; CLI stdout JSON
   is not part of the current 1.5.x command surface.
-- Publish verified performance baselines.
+- Publish verified performance baselines. ✅ Done: `docs/performance.md`
+  includes the 2026-07-08 release-mode Atlas self-index smoke baseline on a
+  clean `git archive HEAD` checkout, plus historical large-project baselines.
 
 ### 1.5 Release smoke tests
 
