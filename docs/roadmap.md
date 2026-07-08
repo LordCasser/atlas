@@ -173,6 +173,9 @@ Continue expanding end-to-end smoke tests for all languages.
 
 - Add per-language Manifest validation fixtures that include both top-level and local declarations.
 - Add shared-pipeline parity tests for Manifest, Structural, and Full against CLI index/sync behavior.
+  ✅ Partial: `pipeline_equivalence` now covers shared `run_index_pipeline`
+  versus structured `IndexPipeline::run` for Manifest, Structural, and Full
+  DB state; CLI command and sync entry parity remain follow-up coverage.
 - Add lazy dataflow tests for build, cache hit, full-index prebuilt cache, pending, partial, no-path trace, and CFG-consuming tool paths.
 
 ### 3.3 Public analysis view consistency

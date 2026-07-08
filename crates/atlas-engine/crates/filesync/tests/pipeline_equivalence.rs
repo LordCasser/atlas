@@ -2,8 +2,8 @@
 //!
 //! Verifies that `run_index_pipeline` (shared), `IndexPipeline` (new), and
 //! `IncrementalPipeline` produce equivalent database state — same files,
-//! symbols, edges, and symbol names — for both full-index and incremental
-//! workflows.  Uses `ExtractionMode::Structural` so edges are built.
+//! symbols, edges, symbol names, and extraction layers — for manifest,
+//! structural, full-index, and incremental workflows.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -115,6 +115,7 @@ struct DbSnapshot {
     symbol_count: i64,
     edge_count: i64,
     symbol_names: Vec<String>,
+    extraction_layers: Vec<(String, String, i64)>,
 }
 
 impl DbSnapshot {
@@ -123,16 +124,93 @@ impl DbSnapshot {
         let symbols = store.get_all_symbols().unwrap();
         let mut names: Vec<String> = symbols.iter().map(|s| s.name.clone()).collect();
         names.sort();
+        let extraction_layers = store.count_file_extraction_state().unwrap();
         Self {
             file_count: stats.total_files,
             symbol_count: stats.total_symbols,
             edge_count: stats.total_edges,
             symbol_names: names,
+            extraction_layers,
         }
     }
 }
 
-// ── Test 1: full-index equivalence ─────────────────────────────────────────
+// ── Test 1: manifest full-index equivalence ────────────────────────────────
+
+/// `run_index_pipeline` and `IndexPipeline::run` must produce the same
+/// top-level symbol database state when indexing the same project from
+/// scratch with `ExtractionMode::Manifest`.
+#[test]
+fn manifest_pipelines_produce_equivalent_db_state() {
+    let project = tempfile::tempdir().unwrap();
+    create_ts_project(project.path());
+
+    // ── A: Shared `run_index_pipeline` ──
+    let store_a = Arc::new(Store::open_in_memory().unwrap());
+    store_a.init_schema().unwrap();
+
+    let stats_a = run_index_pipeline(
+        &store_a,
+        project.path(),
+        IndexPipelineOptions::new(ExtractionMode::Manifest),
+    )
+    .unwrap();
+
+    let snap_a = DbSnapshot::from_store(&store_a);
+
+    // ── B: New `IndexPipeline::run` (structured orchestrator) ──
+    let store_b = Arc::new(Store::open_in_memory().unwrap());
+    store_b.init_schema().unwrap();
+
+    let pipeline = IndexPipeline::new(
+        Arc::clone(&store_b),
+        project.path().to_path_buf(),
+        IndexPipelineOptions::new(ExtractionMode::Manifest),
+    );
+    let stats_b = pipeline.run(&NoopSink, &mut || false).unwrap();
+
+    let snap_b = DbSnapshot::from_store(&store_b);
+
+    // ── Assert equivalence ────────────────────────────────────────
+    assert_eq!(stats_a.resolved, 0, "manifest mode must not resolve refs");
+    assert_eq!(stats_b.resolved, 0, "manifest mode must not resolve refs");
+    assert_eq!(
+        snap_a.file_count, snap_b.file_count,
+        "file count mismatch in Manifest mode (shared={}, structured={})",
+        snap_a.file_count, snap_b.file_count,
+    );
+    assert_eq!(
+        snap_a.symbol_count, snap_b.symbol_count,
+        "symbol count mismatch in Manifest mode (shared={}, structured={})",
+        snap_a.symbol_count, snap_b.symbol_count,
+    );
+    assert_eq!(
+        snap_a.edge_count, snap_b.edge_count,
+        "edge count mismatch in Manifest mode (shared={}, structured={})",
+        snap_a.edge_count, snap_b.edge_count,
+    );
+    assert_eq!(
+        snap_a.symbol_names, snap_b.symbol_names,
+        "symbol names differ in Manifest mode between shared and structured pipeline"
+    );
+    assert_eq!(
+        snap_a.extraction_layers, snap_b.extraction_layers,
+        "extraction layers differ in Manifest mode"
+    );
+    assert_eq!(
+        snap_a.extraction_layers,
+        vec![("manifest".to_string(), "complete".to_string(), 4)],
+        "manifest mode should record one complete manifest layer per file"
+    );
+
+    // Sanity — manifest mode is top-level symbols only and does not build
+    // resolved graph edges.
+    assert_eq!(snap_a.file_count, 4, "expected all project files indexed");
+    assert!(snap_a.symbol_count > 0, "expected manifest symbols");
+    assert_eq!(snap_a.edge_count, 0, "manifest mode must not build edges");
+}
+
+// ── Test 2: structural full-index equivalence ──────────────────────────────
 
 /// `run_index_pipeline` and `IndexPipeline::run` must produce the same
 /// files, symbols, edges, and symbol names when indexing the same project
@@ -197,7 +275,7 @@ fn full_index_pipelines_produce_equivalent_db_state() {
     );
 }
 
-// ── Test 2: incremental equivalence ────────────────────────────────────────
+// ── Test 3: incremental equivalence ────────────────────────────────────────
 
 /// After an initial full index, modifying one file and running
 /// `IncrementalPipeline::sync` must bring the DB to the same state as a
@@ -277,7 +355,7 @@ fn incremental_pipeline_matches_fresh_index_after_file_change() {
     );
 }
 
-// ── Test 3: incremental deletion ───────────────────────────────────────────
+// ── Test 4: incremental deletion ───────────────────────────────────────────
 
 /// After an initial full index, deleting a file and running
 /// `IncrementalPipeline::sync` must clean up the deleted file's symbols and
@@ -362,7 +440,7 @@ fn incremental_pipeline_detects_deleted_files() {
     );
 }
 
-// ── Test 4: path alias config change ───────────────────────────────────────
+// ── Test 5: path alias config change ───────────────────────────────────────
 
 /// After an initial full index, changing tsconfig.json (PathAliasConfig)
 /// and running `IncrementalPipeline::sync` must invalidate references and
@@ -444,7 +522,7 @@ fn incremental_pipeline_handles_alias_config_change() {
     );
 }
 
-// ── Test 5: cancellation ───────────────────────────────────────────────────
+// ── Test 6: cancellation ───────────────────────────────────────────────────
 
 /// Running `IndexPipeline` with an `interrupted` closure that returns `true`
 /// after Phase 2 (HashCheck) must emit a `Cancelled` event, return
@@ -539,7 +617,7 @@ fn index_pipeline_cancellation_leaves_partial_db() {
     );
 }
 
-// ── Test 6: Full mode summary equivalence ──────────────────────────────────
+// ── Test 7: Full mode summary equivalence ──────────────────────────────────
 
 /// `run_index_pipeline` and `IndexPipeline::run` in `ExtractionMode::Full`
 /// must produce the same number of function summaries and equivalent summary
@@ -663,7 +741,7 @@ export function multiply(a: number, b: number): number {\n\
     );
 }
 
-// ── Test 7: index pipeline path alias no-op skip fix ────────────────────────
+// ── Test 8: index pipeline path alias no-op skip fix ────────────────────────
 
 /// Regression: when only `tsconfig.json` path aliases change (no source files
 /// changed), `IndexPipeline` must NOT skip the resolution phase.  The path
@@ -763,7 +841,7 @@ fn index_pipeline_does_not_skip_resolution_when_only_alias_config_changed() {
     );
 }
 
-// ── Test 8: clean-file fast path doesn't resolve to wrong symbol after deletion ──
+// ── Test 9: clean-file fast path doesn't resolve to wrong symbol after deletion ──
 
 /// Regression: P3 clean-file fast path (`resolve_global_only`) only uses
 /// strategy 1 (builtin filter) + strategy 6 (global name search), ignoring
