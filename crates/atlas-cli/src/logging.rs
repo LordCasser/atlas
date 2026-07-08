@@ -51,8 +51,8 @@ pub enum LogFormat {
 /// | Verbose   | `info`             |
 /// | Debug     | `debug`            |
 ///
-/// All output is written to **stderr** so that `--json` and other stdout
-/// protocols are not polluted.
+/// All output is written to **stderr** so machine-readable stdout protocols and
+/// MCP stdio are not polluted.
 pub fn init(verbosity: Verbosity, format: LogFormat) {
     let env_filter = build_env_filter(verbosity);
 

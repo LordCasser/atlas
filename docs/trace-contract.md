@@ -1,9 +1,10 @@
 # Atlas Trace Contract — v1
 
 > **Status**: Frozen for agent consumption. Types documented here are the stable
-> public API for CLI `--json` output and MCP tool responses. Internal
-> implementation may change; the contract (type names, field names, semantics)
-> is version-locked.
+> public API for MCP trace tool responses and Rust trace response serialization.
+> The current CLI does not expose a stdout `--json` trace command; `--log-format
+> json` only controls diagnostic logs on stderr. Internal implementation may
+> change; the contract (type names, field names, semantics) is version-locked.
 >
 > Important: this contract describes provenance tracing and caller-path querying.
 > It is not a vulnerability scanner contract and does not define vulnerability
@@ -27,7 +28,7 @@ User Query
          TraceQueryResponse<T>
               │
               ▼
-         JSON → AI Agent / CLI user
+         JSON → AI Agent / Rust API consumer
 ```
 
 All entry points return **the same envelope** — `TraceQueryResponse<T>` —

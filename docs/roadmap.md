@@ -50,7 +50,8 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   database/schema/index-mode checks print explicit `atlas index --project ...`
   rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible
   development databases.
-- Keep JSON output stable for scripted use.
+- Keep MCP and trace JSON output stable for scripted/agent use; CLI stdout JSON
+  is not part of the current 1.5.x command surface.
 - Publish verified performance baselines.
 
 ### 1.5 Release smoke tests
