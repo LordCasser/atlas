@@ -3,15 +3,17 @@
 
 use std::path::Path;
 
-use atlas_engine::LanguageCapabilityProfile;
+use atlas_engine::{CURRENT_SCHEMA_VERSION, LanguageCapabilityProfile, Store};
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let root = Path::new(project);
     let atlas_dir = root.join(".atlas");
     let mut all_ok = true;
+    let mut needs_rebuild_hint = false;
 
     println!("Atlas Doctor");
     println!("============");
+    println!("  Atlas version: {}", env!("CARGO_PKG_VERSION"));
     println!();
 
     // 1. Project root exists and is a directory
@@ -30,6 +32,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     let db_path = atlas_dir.join("atlas.db");
     let db_exists = db_path.is_file();
     check("Atlas database (atlas.db)", db_exists, &mut all_ok);
+    needs_rebuild_hint |= !db_exists;
 
     // 4. SQLite FTS5 support
     if db_exists {
@@ -47,7 +50,43 @@ pub fn run(project: &str) -> anyhow::Result<()> {
         println!("  [SKIP] SQLite FTS5 support (no database)");
     }
 
-    // 5. Language grammar availability (compile-time feature check)
+    // 5. Schema and index mode
+    if db_exists {
+        match read_schema_version(&db_path) {
+            Ok(version) if version == CURRENT_SCHEMA_VERSION => check(
+                &format!("Schema version (v{CURRENT_SCHEMA_VERSION})"),
+                true,
+                &mut all_ok,
+            ),
+            Ok(version) => {
+                check(
+                    &format!(
+                        "Schema version (found v{version}, expected v{CURRENT_SCHEMA_VERSION})"
+                    ),
+                    false,
+                    &mut all_ok,
+                );
+                needs_rebuild_hint = true;
+            }
+            Err(e) => {
+                check(&format!("Schema version check ({e})"), false, &mut all_ok);
+                needs_rebuild_hint = true;
+            }
+        }
+
+        match read_index_mode(&db_path) {
+            Ok(mode) => check(&format!("Index mode ({mode})"), true, &mut all_ok),
+            Err(e) => {
+                check(&format!("Index mode check ({e})"), false, &mut all_ok);
+                needs_rebuild_hint = true;
+            }
+        }
+    } else {
+        println!("  [SKIP] Schema version (no database)");
+        println!("  [SKIP] Index mode (no database)");
+    }
+
+    // 6. Language grammar availability (compile-time feature check)
     println!();
     println!("  Language grammar support:");
     check_lang("TypeScript", cfg!(feature = "typescript"));
@@ -78,7 +117,10 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     if all_ok {
         println!("All checks passed. Atlas is ready!");
     } else {
-        println!("Some checks failed. Run `atlas index` to fix database issues.");
+        println!("Some checks failed.");
+        if needs_rebuild_hint {
+            print_rebuild_hint(project, &db_path);
+        }
     }
 
     Ok(())
@@ -113,11 +155,33 @@ fn check_experimental_lang(name: &str, enabled: bool) {
 
 /// Check that FTS5 is available in the bundled SQLite.
 fn check_fts5(db_path: &Path) -> anyhow::Result<bool> {
-    let conn = rusqlite::Connection::open(db_path)?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt =
         conn.prepare("SELECT 1 FROM pragma_compile_options WHERE compile_options = 'ENABLE_FTS5'")?;
     let has_fts5 = stmt.exists([])?;
     Ok(has_fts5)
+}
+
+fn read_schema_version(db_path: &Path) -> anyhow::Result<i64> {
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+fn read_index_mode(db_path: &Path) -> anyhow::Result<String> {
+    let store = Store::open_db_read_only(db_path)?;
+    store.read_index_mode()
+}
+
+fn print_rebuild_hint(project: &str, db_path: &Path) {
+    println!(
+        "     Hint: Run `atlas index --project {project}` to rebuild the database for the current schema."
+    );
+    println!(
+        "     Hint: For incompatible development databases, move or remove `{}` or the project `.atlas/` directory, then rerun `atlas index --project {project}`.",
+        db_path.display()
+    );
 }
 
 /// Print per-language capability levels for all compiled-in languages.
@@ -246,4 +310,46 @@ fn compiled_features() -> Vec<&'static str> {
         features.push("cangjie");
     }
     features
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialized_db_path(temp_dir: &tempfile::TempDir) -> std::path::PathBuf {
+        let db_path = temp_dir.path().join("atlas.db");
+        let store = Store::open_db(&db_path).unwrap();
+        store.init_schema().unwrap();
+        db_path
+    }
+
+    #[test]
+    fn read_schema_version_reports_current_initialized_schema() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = initialized_db_path(&temp_dir);
+
+        assert_eq!(
+            read_schema_version(&db_path).unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn read_schema_version_reports_raw_incompatible_schema() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("atlas.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        drop(conn);
+
+        assert_eq!(read_schema_version(&db_path).unwrap(), 1);
+    }
+
+    #[test]
+    fn read_index_mode_uses_store_status_boundary() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = initialized_db_path(&temp_dir);
+
+        assert_eq!(read_index_mode(&db_path).unwrap(), "none");
+    }
 }

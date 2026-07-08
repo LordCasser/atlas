@@ -41,9 +41,15 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 
 ### 1.4 CLI and database release gates
 
-- Ensure `atlas doctor` exposes release-relevant state.
+- Ensure `atlas doctor` exposes release-relevant state. ✅ Done: doctor
+  prints Atlas version, Schema V2 state, canonical index mode from `Store`, compiled
+  features, and per-language capability profiles; helper tests cover schema and
+  index-mode reads.
 - Compatibility: Schema V2 with no migration chain for older development schemas (direct DDL changes + re-index).
-- Make `.atlas/` cleanup and rebuild guidance explicit.
+- Make `.atlas/` cleanup and rebuild guidance explicit. ✅ Done: failing
+  database/schema/index-mode checks print explicit `atlas index --project ...`
+  rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible
+  development databases.
 - Keep JSON output stable for scripted use.
 - Publish verified performance baselines.
 

@@ -1,6 +1,6 @@
 //! Store lifecycle: database open, schema init, cross-process locking.
 
-use crate::schema::SCHEMA_DDL;
+use crate::schema::{CURRENT_SCHEMA_VERSION, SCHEMA_DDL};
 use crate::store_fts::{chrono_now_ms, is_process_alive};
 
 use rusqlite::{Connection, OpenFlags, params};
@@ -187,6 +187,7 @@ impl Store {
 
         // Focus schema migration: extraction_jobs closure tracking columns.
         apply_focus_schema_migration(&conn)?;
+        conn.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
 
         Ok(())
     }
@@ -387,6 +388,17 @@ mod tests {
         let store = test_store();
         let v = store.get_generation("nonexistent.key").unwrap();
         assert_eq!(v, 0);
+    }
+
+    #[test]
+    fn init_schema_sets_sqlite_user_version() {
+        let store = test_store();
+        let conn = store.lock_read();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
