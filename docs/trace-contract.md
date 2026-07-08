@@ -275,8 +275,13 @@ The `kind` parameter selects the trace mode.
     "properties": {
       "kind": {
         "type": "string",
-        "enum": ["point", "variable", "forward", "callers"],
-        "description": "Trace kind: 'point' for source position resolution, 'variable' for backward dataflow, 'forward' for forward call chain, 'callers' for backward call chain."
+        "oneOf": [
+          { "const": "point" },
+          { "const": "variable" },
+          { "const": "forward" },
+          { "const": "callers" }
+        ],
+        "description": "Trace kind. Defaults to 'point' when omitted."
       },
       "file_path": { "type": "string", "description": "File path relative to project root (e.g. 'src/foo.ts')." },
       "file_id": { "type": "string", "description": "File ID in hex (alternative to file_path)." },
@@ -288,10 +293,14 @@ The `kind` parameter selects the trace mode.
       "max_depth": { "type": "integer", "description": "Maximum traversal depth (default varies by kind)." },
       "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots." }
     },
-    "required": ["kind"]
+    "required": []
   }
 }
 ```
+
+Runtime validation remains kind-specific: `point` and `variable` require a
+file (`file_path` or `file_id`) plus `line` and `column`; `callers` requires
+`symbol`; `forward` requires `from` and `to`.
 
 ### The `trace` tool returns `CallToolResult`:
 

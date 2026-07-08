@@ -192,6 +192,26 @@ enabled = true
 | Background work | `tasks`, `resume_query` |
 | FP dispatch (C/C++) | `fp_dispatches` |
 
+Primary required arguments:
+
+| Tool | Required arguments |
+| --- | --- |
+| `project` | none; `project_path` is required when `action="open"` |
+| `search` | `query`, `scope` |
+| `symbol` | `symbol` |
+| `calls` | `symbol` |
+| `explore` | `symbol` |
+| `path` | `from`, `to` |
+| `impact` | `symbol` |
+| `file_dependencies` | `file_path` |
+| `trace` | none at schema level; `kind` defaults to `point`, and each trace kind validates its own position or symbol arguments |
+| `lifecycle` | `symbol`, `field` |
+| `branch_diff` | `symbol` |
+| `domain_rules` | none; actions validate their own required fields |
+| `fp_dispatches` | none; actions validate their own required fields |
+| `tasks` | none |
+| `resume_query` | `query_id` |
+
 > `project(action="open")` supports switching the active project at runtime.
 > It opens the persistent `project/.atlas/atlas.db`; `project` activates a
 > project but never scans or indexes the whole tree.

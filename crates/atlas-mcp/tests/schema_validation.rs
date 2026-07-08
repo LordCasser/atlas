@@ -7,6 +7,7 @@
 //! Run with: `cargo test -p atlas-mcp -- schema`
 
 use atlas_mcp::make_all_tools;
+use std::collections::BTreeSet;
 
 #[test]
 fn v1_tool_names_are_frozen() {
@@ -33,6 +34,194 @@ fn v1_tool_names_are_frozen() {
             "trace",
         ]
     );
+}
+
+#[test]
+fn v1_tool_argument_shapes_are_frozen() {
+    let tools = make_all_tools();
+    let expected = [
+        (
+            "branch_diff",
+            ["include_roots", "symbol"].as_slice(),
+            ["symbol"].as_slice(),
+        ),
+        (
+            "calls",
+            [
+                "depth",
+                "direction",
+                "edge_kinds",
+                "include_roots",
+                "limit",
+                "symbol",
+            ]
+            .as_slice(),
+            ["symbol"].as_slice(),
+        ),
+        (
+            "domain_rules",
+            [
+                "action",
+                "confidence",
+                "min_confidence",
+                "pattern",
+                "rule_id",
+                "rule_kind",
+                "source",
+            ]
+            .as_slice(),
+            [].as_slice(),
+        ),
+        (
+            "explore",
+            [
+                "evidence_limit",
+                "include_file_context",
+                "include_recommendations",
+                "include_roots",
+                "peer_limit",
+                "relation_limit",
+                "scope",
+                "source_lines",
+                "source_mode",
+                "symbol",
+            ]
+            .as_slice(),
+            ["symbol"].as_slice(),
+        ),
+        (
+            "file_dependencies",
+            ["analysis", "direction", "file_path", "limit"].as_slice(),
+            ["file_path"].as_slice(),
+        ),
+        (
+            "fp_dispatches",
+            [
+                "action",
+                "annotation_id",
+                "confidence",
+                "field_qname",
+                "target_qname",
+            ]
+            .as_slice(),
+            [].as_slice(),
+        ),
+        (
+            "impact",
+            ["depth", "direction", "semantic", "symbol"].as_slice(),
+            ["symbol"].as_slice(),
+        ),
+        (
+            "lifecycle",
+            ["field", "include_roots", "symbol"].as_slice(),
+            ["symbol", "field"].as_slice(),
+        ),
+        (
+            "path",
+            [
+                "direction",
+                "edge_kinds",
+                "from",
+                "includeCode",
+                "include_roots",
+                "max_depth",
+                "prefer_production",
+                "to",
+            ]
+            .as_slice(),
+            ["from", "to"].as_slice(),
+        ),
+        (
+            "project",
+            [
+                "action",
+                "language",
+                "limit",
+                "path_prefix",
+                "project_path",
+                "verbose",
+            ]
+            .as_slice(),
+            [].as_slice(),
+        ),
+        (
+            "resume_query",
+            ["query_id"].as_slice(),
+            ["query_id"].as_slice(),
+        ),
+        (
+            "search",
+            ["include_roots", "kind", "limit", "query", "scope"].as_slice(),
+            ["query", "scope"].as_slice(),
+        ),
+        (
+            "symbol",
+            [
+                "column",
+                "file_path",
+                "includeCode",
+                "includeFilePeers",
+                "include_roots",
+                "limit",
+                "line",
+                "symbol",
+                "view",
+            ]
+            .as_slice(),
+            ["symbol"].as_slice(),
+        ),
+        ("tasks", ["query_id"].as_slice(), [].as_slice()),
+        (
+            "trace",
+            [
+                "column",
+                "file_id",
+                "file_path",
+                "from",
+                "include_roots",
+                "kind",
+                "line",
+                "max_depth",
+                "symbol",
+                "to",
+            ]
+            .as_slice(),
+            [].as_slice(),
+        ),
+    ];
+
+    for (name, expected_props, expected_required) in expected {
+        let tool = tools
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} tool must exist"));
+        let actual_props: BTreeSet<&str> = tool
+            .input_schema
+            .properties
+            .as_ref()
+            .and_then(|props| props.as_object())
+            .unwrap_or_else(|| panic!("{name} tool must have object properties"))
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected_props: BTreeSet<&str> = expected_props.iter().copied().collect();
+        assert_eq!(
+            actual_props, expected_props,
+            "{name} V1 schema properties changed"
+        );
+
+        let actual_required: BTreeSet<&str> = tool
+            .input_schema
+            .required
+            .as_ref()
+            .map(|required| required.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let expected_required: BTreeSet<&str> = expected_required.iter().copied().collect();
+        assert_eq!(
+            actual_required, expected_required,
+            "{name} V1 required fields changed"
+        );
+    }
 }
 
 #[test]

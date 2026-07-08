@@ -22,7 +22,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 ### 1.3 MCP production hardening
 
 - Freeze V1 MCP tool naming: short names without `atlas_` prefix. ✅ Done.
-- Freeze V1 tool schemas and document argument requirements.
+- Freeze V1 tool schemas and document argument requirements. ✅ Done: tool
+  names, schema property sets, and required fields are locked by
+  `schema_validation`; README documents primary required arguments.
 - Add machine-readable version metadata for MCP clients. ✅ Done: `project(status)`
   returns `server.atlas_version`, `server.tool_contract_version`, and
   `server.compiled_features`, with regression coverage.
