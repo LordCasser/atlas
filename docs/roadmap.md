@@ -80,6 +80,10 @@ cargo test -p atlas-cli --features mcp
 cargo check -p atlas-cli --features mcp
 ```
 
+✅ Done: verified on 2026-07-08. `cargo test --quiet`,
+`cargo test -p atlas-cli --features mcp --quiet`, and
+`cargo check -p atlas-cli --features mcp` all completed with exit code 0.
+
 ### 1.6 Completed baseline release gates
 
 The original baseline implementation blockers are closed and covered by the release test matrix:
