@@ -9,19 +9,19 @@
 
 (translationUnit
   (functionDefinition
-    name: (funcName) @definition.function))
+    (funcName) @definition.function))
 
 (translationUnit
   (classDefinition
-    name: (className) @definition.class))
+    (className) @definition.class))
 
 (translationUnit
   (interfaceDefinition
-    name: (interfaceName) @definition.interface))
+    (interfaceName) @definition.interface))
 
 (translationUnit
   (enumDefinition) @definition.enum)
 
 (translationUnit
   (variableDeclaration
-    name: (variableName) @definition.variable))
+    (variableName) @definition.variable))

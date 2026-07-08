@@ -172,6 +172,9 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
 Continue expanding end-to-end smoke tests for all languages.
 
 - Add per-language Manifest validation fixtures that include both top-level and local declarations.
+  ✅ Done: extraction tests now cover every `available_languages()` frontend
+  with top-level symbols and nested/local rejects, enforce manifest-only output
+  shape, and require `SymbolDef.layer` to match the manifest layer.
 - Add shared-pipeline parity tests for Manifest, Structural, and Full against CLI index/sync behavior.
   ✅ Partial: `pipeline_equivalence` now covers shared `run_index_pipeline`
   versus structured `IndexPipeline::run` for Manifest, Structural, and Full

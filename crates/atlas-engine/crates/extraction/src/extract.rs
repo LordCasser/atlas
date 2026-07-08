@@ -18,7 +18,7 @@ use types::dataflow::{DataFlowEdge, DataNode};
 use types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use types::{
     ArgumentFact, Callsite, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
-    ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolKind, TextRange,
+    ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolDef, SymbolKind, TextRange,
 };
 
 use super::callsite_spec::CallsiteParts;
@@ -163,6 +163,8 @@ pub fn extract_file_with_mode(
 
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
+        retain_manifest_top_level_symbols(&mut symbols, root);
+        set_symbol_layers(&mut symbols, "manifest");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         return Ok(FileFacts {
             file: FileInfo {
@@ -303,6 +305,7 @@ pub fn extract_file_with_mode(
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
     if matches!(mode, ExtractionMode::ResolutionSymbols) {
+        set_symbol_layers(&mut symbols, "resolution_symbols");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         return Ok(FileFacts {
             file: FileInfo {
@@ -695,8 +698,14 @@ pub fn extract_file_with_mode(
     // In LazyDataflow mode, the caller already has structural facts in DB.
     // We only build dataflow for the window — clear structural fields so
     // the caller does not accidentally overwrite existing DB rows.
+    let output_layer = if mode.produces_dataflow() {
+        "dataflow"
+    } else {
+        "structural"
+    };
+
     let (
-        symbols_out,
+        mut symbols_out,
         scopes_out,
         references_out,
         imports_out,
@@ -710,6 +719,7 @@ pub fn extract_file_with_mode(
             symbols, scopes, references, imports, exports, raw_edges, callsites,
         )
     };
+    set_symbol_layers(&mut symbols_out, output_layer);
 
     // Log extraction degradation flags — callers can inspect FileFacts fields
     // directly, but a warn-level trace ensures operators see these in logs.
@@ -749,18 +759,61 @@ pub fn extract_file_with_mode(
         lexical_failed,
         dataflow_failed,
         cfg_failed,
-        layer: if mode.produces_dataflow() {
-            "dataflow"
-        } else {
-            "structural"
-        }
-        .to_string(),
+        layer: output_layer.to_string(),
     })
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn set_symbol_layers(symbols: &mut [SymbolDef], layer: &str) {
+    for symbol in symbols {
+        symbol.layer = layer.to_string();
+    }
+}
+
+fn retain_manifest_top_level_symbols(symbols: &mut Vec<SymbolDef>, root: tree_sitter::Node<'_>) {
+    symbols.retain(|symbol| is_manifest_top_level_symbol(root, symbol));
+}
+
+fn is_manifest_top_level_symbol(root: tree_sitter::Node<'_>, symbol: &SymbolDef) -> bool {
+    let Some(node) = root.descendant_for_byte_range(
+        symbol.name_range.start_byte as usize,
+        symbol.name_range.end_byte as usize,
+    ) else {
+        return true;
+    };
+
+    let mut current = Some(node);
+    while let Some(node) = current {
+        if node == root {
+            return true;
+        }
+        if is_manifest_nested_barrier(node.kind()) {
+            return false;
+        }
+        current = node.parent();
+    }
+    true
+}
+
+fn is_manifest_nested_barrier(kind: &str) -> bool {
+    matches!(
+        kind,
+        "block"
+            | "body"
+            | "class_body"
+            | "compound_statement"
+            | "declaration_list"
+            | "enum_body"
+            | "field_declaration_list"
+            | "interface_body"
+            | "method_declaration"
+            | "statement_block"
+            | "struct_body"
+    )
+}
 
 /// Scan all `(identifier)` nodes in the AST and create [`BindingUse`] records
 /// for usage sites (not declarations).
@@ -1052,7 +1105,8 @@ struct FilteredDataflow {
 mod tests {
     use super::*;
     use crate::frontend::LanguageFrontend;
-    use crate::languages::create_frontend;
+    use crate::languages::{available_languages, create_frontend};
+    use std::collections::HashSet;
     use std::path::PathBuf;
     use types::{Language, ReferenceKind};
 
@@ -1107,6 +1161,299 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct ManifestBoundaryCase {
+        language: Language,
+        path: &'static str,
+        source: &'static str,
+        expected: &'static [&'static str],
+        rejected: &'static [&'static str],
+    }
+
+    fn manifest_boundary_cases() -> Vec<ManifestBoundaryCase> {
+        vec![
+            ManifestBoundaryCase {
+                language: Language::TypeScript,
+                path: "manifest.ts",
+                source: concat!(
+                    "function topLevel() { const localValue = 1; return localValue; }\n",
+                    "class TopClass { method() { return 1; } }\n",
+                    "const TOP_CONST = 1;\n",
+                ),
+                expected: &["topLevel", "TopClass", "TOP_CONST"],
+                rejected: &["localValue", "method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::JavaScript,
+                path: "manifest.js",
+                source: concat!(
+                    "function topLevel() { const localValue = 1; return localValue; }\n",
+                    "class TopClass { method() { return 1; } }\n",
+                    "const TOP_CONST = 1;\n",
+                ),
+                expected: &["topLevel", "TopClass", "TOP_CONST"],
+                rejected: &["localValue", "method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Python,
+                path: "manifest.py",
+                source: concat!(
+                    "def top_level():\n",
+                    "    local_value = 1\n",
+                    "    return local_value\n",
+                    "\n",
+                    "class TopClass:\n",
+                    "    def method(self):\n",
+                    "        return 1\n",
+                ),
+                expected: &["top_level", "TopClass"],
+                rejected: &["local_value", "method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Java,
+                path: "Manifest.java",
+                source: concat!(
+                    "class TopClass { void method() {} class NestedClass {} }\n",
+                    "interface TopIface {}\n",
+                    "enum TopEnum { A }\n",
+                ),
+                expected: &["TopClass", "TopIface", "TopEnum"],
+                rejected: &["method", "NestedClass"],
+            },
+            ManifestBoundaryCase {
+                language: Language::C,
+                path: "manifest.c",
+                source: concat!(
+                    "struct TopStruct { int field; };\n",
+                    "enum TopEnum { TOP_A };\n",
+                    "typedef int TopAlias;\n",
+                    "int top_global;\n",
+                    "int top_fn(void) { int local_var = 1; return local_var; }\n",
+                ),
+                expected: &["TopStruct", "TopEnum", "TopAlias", "top_global", "top_fn"],
+                rejected: &["field", "local_var"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Cpp,
+                path: "manifest.cpp",
+                source: concat!(
+                    "namespace TopNs { void nested_fn() {} }\n",
+                    "class TopClass { void method() {} };\n",
+                    "int top_global;\n",
+                    "int top_fn() { int local_var = 1; return local_var; }\n",
+                ),
+                expected: &["TopNs", "TopClass", "top_global", "top_fn"],
+                rejected: &["nested_fn", "method", "local_var"],
+            },
+            ManifestBoundaryCase {
+                language: Language::ArkTS,
+                path: "manifest.ets",
+                source: concat!(
+                    "function topLevel() { const localValue = 1; return localValue; }\n",
+                    "class TopClass { method() { return 1; } }\n",
+                    "const TOP_CONST = 1;\n",
+                ),
+                expected: &["topLevel", "TopClass", "TOP_CONST"],
+                rejected: &["localValue", "method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Cangjie,
+                path: "manifest.cj",
+                source: concat!(
+                    "func topLevel(): Int64 {\n",
+                    "    let localValue = 1\n",
+                    "    return localValue\n",
+                    "}\n",
+                    "let topValue = 1\n",
+                ),
+                expected: &["topLevel", "topValue"],
+                rejected: &["localValue"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Go,
+                path: "manifest.go",
+                source: concat!(
+                    "package main\n",
+                    "type TopStruct struct { Field int }\n",
+                    "type TopIface interface { M() }\n",
+                    "type TopAlias int\n",
+                    "func topFn() int { localVar := 1; return localVar }\n",
+                    "func (t TopStruct) method() {}\n",
+                ),
+                expected: &["TopStruct", "TopIface", "TopAlias", "topFn"],
+                rejected: &["Field", "localVar", "method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::CSharp,
+                path: "Manifest.cs",
+                source: concat!(
+                    "namespace TopNs { class NestedInNamespace {} }\n",
+                    "class TopClass { void Method() {} class NestedClass {} }\n",
+                    "interface TopIface {}\n",
+                    "enum TopEnum { A }\n",
+                    "delegate void TopDelegate();\n",
+                ),
+                expected: &["TopNs", "TopClass", "TopIface", "TopEnum", "TopDelegate"],
+                rejected: &["NestedInNamespace", "Method", "NestedClass"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Rust,
+                path: "manifest.rs",
+                source: concat!(
+                    "fn top_fn() { let local_var = 1; }\n",
+                    "struct TopStruct { field: i32 }\n",
+                    "enum TopEnum { A }\n",
+                    "trait TopTrait { fn method(&self); }\n",
+                    "mod top_mod { pub fn nested_fn() {} }\n",
+                    "const TOP_CONST: i32 = 1;\n",
+                    "static TOP_STATIC: i32 = 1;\n",
+                    "type TopAlias = i32;\n",
+                    "macro_rules! top_macro { () => {}; }\n",
+                ),
+                expected: &[
+                    "top_fn",
+                    "TopStruct",
+                    "TopEnum",
+                    "TopTrait",
+                    "top_mod",
+                    "TOP_CONST",
+                    "TOP_STATIC",
+                    "TopAlias",
+                    "top_macro",
+                ],
+                rejected: &["local_var", "field", "method", "nested_fn"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Php,
+                path: "manifest.php",
+                source: concat!(
+                    "<?php\n",
+                    "class TopClass { function innerMethod() {} const INNER_CONST = 1; }\n",
+                    "interface TopIface {}\n",
+                    "trait TopTrait {}\n",
+                    "function top_func() { function nested_func() {} }\n",
+                ),
+                expected: &["TopClass", "TopIface", "TopTrait", "top_func"],
+                rejected: &["innerMethod", "INNER_CONST", "nested_func"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Ruby,
+                path: "manifest.rb",
+                source: concat!(
+                    "class TopClass\n",
+                    "  INNER_CONST = 1\n",
+                    "  def inner_method\n",
+                    "  end\n",
+                    "end\n",
+                    "module TopModule\n",
+                    "end\n",
+                    "def top_method\n",
+                    "end\n",
+                    "TOP_CONST = 1\n",
+                ),
+                expected: &["TopClass", "TopModule", "top_method", "TOP_CONST"],
+                rejected: &["INNER_CONST", "inner_method"],
+            },
+            ManifestBoundaryCase {
+                language: Language::Kotlin,
+                path: "Manifest.kt",
+                source: concat!(
+                    "class TopClass { fun innerFun() {} val innerProp = 1 }\n",
+                    "object TopObject\n",
+                    "fun topFun(): Int { val localVar = 1; return localVar }\n",
+                    "val topProp = 1\n",
+                ),
+                expected: &["TopClass", "TopObject", "topFun", "topProp"],
+                rejected: &["innerFun", "innerProp", "localVar"],
+            },
+        ]
+    }
+
+    #[test]
+    fn manifest_mode_keeps_top_level_boundary_for_all_available_languages() {
+        let cases = manifest_boundary_cases();
+        let case_languages: HashSet<_> = cases.iter().map(|case| case.language).collect();
+        for language in available_languages() {
+            assert!(
+                case_languages.contains(&language),
+                "missing manifest boundary fixture for {}",
+                language.as_str()
+            );
+        }
+
+        let mut checked = 0usize;
+        for case in cases {
+            let Some(frontend) = create_frontend(case.language) else {
+                continue;
+            };
+            checked += 1;
+            let facts = extract_file_with_mode(
+                &frontend,
+                FileId::generate(case.path),
+                &PathBuf::from(case.path),
+                case.source,
+                "manifest-boundary",
+                ExtractionMode::Manifest,
+                &(),
+            )
+            .unwrap_or_else(|err| {
+                panic!(
+                    "manifest extraction failed for {}: {err}",
+                    case.language.as_str()
+                )
+            });
+
+            assert_eq!(facts.layer, "manifest", "{}", case.language.as_str());
+            assert!(
+                facts.references.is_empty()
+                    && facts.imports.is_empty()
+                    && facts.exports.is_empty()
+                    && facts.raw_edges.is_empty()
+                    && facts.callsites.is_empty()
+                    && facts.bindings.is_empty()
+                    && facts.binding_uses.is_empty()
+                    && facts.data_nodes.is_empty()
+                    && facts.dataflow_edges.is_empty()
+                    && facts.cfg_nodes.is_empty()
+                    && facts.cfg_edges.is_empty(),
+                "manifest mode must only emit file/symbol facts for {}",
+                case.language.as_str()
+            );
+
+            let names: HashSet<_> = facts
+                .symbols
+                .iter()
+                .map(|symbol| symbol.name.as_str())
+                .collect();
+            for expected in case.expected {
+                assert!(
+                    names.contains(expected),
+                    "{} manifest missing top-level symbol {expected}; got {names:?}",
+                    case.language.as_str()
+                );
+            }
+            for rejected in case.rejected {
+                assert!(
+                    !names.contains(rejected),
+                    "{} manifest leaked nested/local symbol {rejected}; got {names:?}",
+                    case.language.as_str()
+                );
+            }
+            for symbol in &facts.symbols {
+                assert_eq!(
+                    symbol.layer,
+                    "manifest",
+                    "{} symbol {} used non-manifest layer",
+                    case.language.as_str(),
+                    symbol.name
+                );
+            }
+        }
+        assert!(
+            checked > 0,
+            "expected at least one available language fixture"
+        );
     }
 
     #[cfg(feature = "c")]
