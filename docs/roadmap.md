@@ -23,9 +23,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 
 ### 1.2 User-facing documentation
 
-- Keep `README.md` as the primary user entry point: installation, quickstart, CLI, MCP, architecture, language support, limitations.
-- Keep `docs/trace-contract.md` as the stable reference for trace JSON output.
-- Keep `docs/architecture.md` as the single authoritative architecture document.
+- Keep `README.md` as the primary user entry point: installation, quickstart, CLI, MCP, architecture, language support, limitations. ✅ Done.
+- Keep `docs/trace-contract.md` as the stable reference for trace JSON output. ✅ Done.
+- Keep `docs/architecture.md` as the single authoritative architecture document. ✅ Done.
 
 ### 1.3 MCP production hardening
 

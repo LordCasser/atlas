@@ -141,7 +141,7 @@ atlas mcp
 atlas index --analysis full
 ```
 
-> MCP opens `project/.atlas/atlas.db` and reuses compatible facts when available.
+> MCP opens `project/.atlas/atlas.db` and reuses current-schema facts when available.
 > Without a full CLI-built index, scoped queries expose bounded refinement through
 > `analysis.retry_after_ms`, `query_id`, `tasks`, and `resume_query`; terminal
 > limitations are returned as structured `gaps`.

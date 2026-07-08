@@ -68,7 +68,7 @@ types → (anyhow, blake3, hex, rusqlite, serde)
 |------|------|--------|
 | `types` | ID 类型、enums、IR 结构、capability profiles | 不依赖上层模块 |
 | `workspace` | ProjectRoot、SourcePath、路径抽象 | 不承载语言语义规则 |
-| `db` | schema、读写、迁移 | 不承载语言语义规则 |
+| `db` | schema、初始化、读写 | 不承载语言语义规则 |
 | `extraction` | 单文件 tree-sitter facts 抽取 | 不做跨文件 resolution |
 | `resolution` | 更新 resolved facts | 不直接承担展示格式 |
 | `graph` | 从 resolved facts 构建 symbol graph | 不混入 dataflow/CFG |
