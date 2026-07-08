@@ -35,6 +35,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   refresh; regression tests cover empty batches, external writes, preservation
   across refresh, queue deduplication, and rebuild threshold behavior.
 - Keep all MCP outputs bounded and ensure truncation is visible in the response.
+  ✅ Done: `ToolRouter::call_tool()` bounds returned text blocks to 25KB and
+  emits an extra content block with truncation metadata; regression coverage
+  verifies the marker on oversized tool output.
 
 ### 1.4 CLI and database release gates
 

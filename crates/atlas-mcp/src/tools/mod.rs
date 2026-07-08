@@ -5445,6 +5445,43 @@ mod tests {
     }
 
     #[test]
+    fn call_tool_truncates_large_results_with_visible_marker() {
+        let store = test_store();
+        for i in 0..600 {
+            let path = format!(
+                "src/very_long_directory_name_for_truncation_{i:04}/very_long_file_name_for_mcp_truncation_{i:04}.ts"
+            );
+            register_test_file(&store, &path);
+        }
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let ctx = ToolCallContext::empty();
+
+        let result = router.call_tool(&ctx, "project", &serde_json::json!({"action": "files"}));
+
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            result.content.len(),
+            2,
+            "large MCP responses must include a visible truncation marker"
+        );
+        let first = match &result.content[0] {
+            ContentBlock::Text { text } => text,
+        };
+        assert!(
+            first.len() <= 25000,
+            "first content block must be bounded to 25KB, got {}",
+            first.len()
+        );
+        let marker = match &result.content[1] {
+            ContentBlock::Text { text } => text,
+        };
+        assert!(
+            marker.contains("truncated") && marker.contains("showing first 25000"),
+            "truncation marker must be explicit, got: {marker}"
+        );
+    }
+
+    #[test]
     fn semantic_graph_query_does_not_expose_internal_precision() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
