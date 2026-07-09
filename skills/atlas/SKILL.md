@@ -1,167 +1,212 @@
 ---
 name: atlas
-description: Semantic code graph engine for local repositories. Indexes 14 languages (TypeScript, JavaScript, Python, Java, C, C++, Go, C#, Rust, PHP, Ruby, Kotlin, ArkTS, Cangjie) via tree-sitter 0.26. Exposes deterministic facts through 15 MCP tools: symbol search, call-graph traversal (callers/callees, multi-hop), dependency analysis, variable provenance tracing, shortest-path between symbols, impact analysis, C/C++ field lifecycle analysis, branch-diff comparison, function-pointer dispatch annotation. Use for understanding code structure, tracing data/call flow, reviewing change impact, or building AI context from indexed codebases. Prefer over text search or filename guessing.
+description: >-
+  MCP-first deterministic local code-facts engine (tree-sitter → SQLite) for
+  scoped symbol search, callers/callees, paths, impact, variable/call tracing,
+  and C/C++ lifecycle via Focus-driven on-demand extraction. Use for structure,
+  data/call flow, change impact, or agent context on a local checkout—prefer
+  Atlas over filename guesses or blind text search. Always project(open) then
+  scoped MCP tools; do not run atlas index from the agent (blocks large repos).
 license: MIT
-compatibility: Requires Rust toolchain and a local checkout of the target repository. Build with `cargo build --release -p atlas-cli --features mcp`. A CLI-built index is optional; scoped MCP queries can populate the persistent project database on demand.
+compatibility: >-
+  Requires Atlas MCP (`atlas mcp` / built `atlas` with `--features mcp`) and a
+  local source checkout. Queries need no network. Agent path is MCP-only.
 metadata:
-  version: "1.5.1"
+  version: "1.5.2"
   repository: https://github.com/lordcasser/atlas
 ---
 
-# Atlas
+# Atlas (MCP-first)
 
-Use Atlas as the deterministic code-facts layer before reasoning about a repository. Prefer Atlas facts over guessing from filenames or text search. All facts are derived from tree-sitter Concrete Syntax Trees (CST) via language-specific `.scm` queries and AST-walking dataflow builders.
+Use Atlas as the **deterministic code-facts layer** before reasoning about a repository.
+Prefer Atlas facts over guessing from filenames or text search.
 
-## Language support
+**This skill is for the MCP tool surface.** On large codebases, full-repo
+`atlas index` can take a long time and starve the session. **Agents must not
+start a full CLI index.** Focus already materializes **local structural +
+dataflow** for the query neighborhood (seed closure + lazy unit dataflow). Stay
+inside MCP: open → narrow tools → `resume_query` when asked.
 
-14 languages compile by default. Capability profiles report **DataflowFull** as the overall level, but individual feature support varies by language; always check `project(action="status")`, `atlas doctor`, or trace capability metadata before making precision claims.
+## When to use
 
-| Language | Key capabilities |
-|----------|-----------------|
-| TypeScript, JavaScript | Symbols, references, imports, scopes, call graph, lexical bindings, intra-procedural dataflow, use-def chains, field access, call arguments, return flow, CFG, interprocedural summaries (ArgToParam + ReturnToCall) |
-| Python, Java, C, C++, Go, Rust | Same as above, including CFG and ArgToParam + ReturnToCall summaries; C function pointers limited depth 3; C++ templates/overloads not modeled |
-| C#, Ruby, Kotlin, Cangjie | Symbols, references, imports, call graph, lexical bindings, local dataflow, use-def, CFG, and ArgToParam + ReturnToCall summaries |
-| PHP, ArkTS | DataflowFull local/interprocedural facts; CFG is currently unsupported |
+- “What calls X?” / “Who depends on this file?” / “Where does this value come from?”
+- Impact of changing a symbol; exploring an unfamiliar module
+- C/C++ field/resource lifecycle or branch side effects
+- Building **bounded** agent context from real facts (module/file/function scope)
+
+Do **not** treat Atlas as a compiler or LSP. Always surface capability limits.
+
+## Hard rules for agents
+
+1. **Only MCP tools** from this skill’s workflow. Do **not** shell out to
+   `atlas index`, `atlas index --analysis full`, or long `atlas sync` of the
+   whole tree as part of normal investigation.
+2. Always **`project(action="open", project_path=...)`** before other tools.
+   The server starts unopened; cwd alone is not an open project.
+3. Prefer **scoped** work: `search` always needs `scope`; start from a file/symbol
+   you care about; use `resume_query` instead of “index everything.”
+4. On large repos, **local Focus facts are enough** for most questions:
+   structural edges in the seed/closure, and **on-demand dataflow/CFG** for
+   `trace(kind="variable")`, `lifecycle`, `branch_diff` in that region.
+5. Never block the user waiting for a project-wide index.
+
+Full-repo CLI indexing is an **optional human/operator** action (see
+[references/tool-guide.md](references/tool-guide.md)), not an agent step.
 
 ## Requirements
 
-A compiled Atlas binary (`atlas`) or an Atlas MCP server, plus a local source checkout. MCP uses the client's current working directory by default; switch repositories with `project(action="open")`. A CLI-built index is optional: use `atlas index --project <repo>` when a reusable project-wide cache is desired, otherwise scoped MCP queries populate `project/.atlas/atlas.db` on demand.
+- Atlas MCP available (`atlas mcp` or host-configured server)
+- Local project checkout
+- Open creates/opens `project/.atlas/atlas.db`; **scoped MCP queries populate facts**
+  (structural Focus + lazy dataflow). No pre-built full index required.
 
-## Workflow
+## Language support (summary)
 
-1. **Open the project and inspect current coverage**
-   - CLI: `atlas status --project <repo>` or `atlas doctor --project <repo>`
-   - MCP: `project(action="open", project_path=<repo>)`, then `project(action="status")`
-   - A missing database is initialized by `project(open)` and populated by scoped queries. Run `atlas index --project <repo>` only when a reusable project-wide cache is desired.
+14 languages build by default. Overall **DataflowFull** does **not** mean every
+feature works everywhere (e.g. CFG unsupported for PHP/ArkTS). Check:
 
-2. **Pick the narrowest query**
-   - Symbol lookup: `search` → `symbol`
-   - Callers/callees: `calls(direction="incoming")`, `calls(direction="outgoing")`, `calls(depth=2)`
-   - Dependencies: `file_dependencies(file_path, direction="incoming")`, `file_dependencies(file_path, direction="outgoing")`
-   - Source position: `trace(kind="point")` with `file_path`, `line`, `column`
-   - Value origin: `trace(kind="variable")`
-   - Caller chain: `trace(kind="callers")`
-   - Forward call trace: `trace(kind="forward")`
-   - Shortest path: `path(from="X", to="Y")`
-   - Impact analysis: `impact(symbol="X")`
-   - Agent context: `symbol(view="context")`
-   - Symbol exploration: `explore(symbol="X")`
+- `project(action="status")` (verbose if needed)
+- Trace response `capability` / diagnostics
 
-3. **Respect capability metadata**
-   - Call `project(action="status")` or `atlas doctor` when trace precision matters.
-   - `partial_result: true` and diagnostics are first-class output; explain limitations.
-   - For non-trace analysis, `analysis.retry_after_ms` means the result is not terminal:
-     retain `query_id` and call `resume_query` after that delay. No retry plus no `gaps`
-     is complete; no retry plus `gaps` is terminal with explicit limitations.
-   - A cold scoped query materializes a bounded symbol closure. Import/include
-     neighbors may remain at the lightweight resolution-symbol layer, so do not
-     interpret project-wide structural coverage as a prerequisite for a useful result.
+## Workflow (MCP only)
 
-4. **Refresh after edits**
-   - `atlas sync --project <repo>` after modifying files.
-   - `atlas index --project <repo>` for full rebuild.
+### 1. Open and status
 
-## CLI quick reference
-
-```bash
-atlas index --project <repo>        # auto-initializes schema + indexes
-atlas sync --project <repo>         # incremental update
-atlas status --project <repo>       # index health overview
-atlas doctor --project <repo>       # detailed diagnostics
-atlas                                # from project root: launch TUI (indexes first if needed)
+```
+project(action="open", project_path=<path>)
+project(action="status")   # optional; understand coverage without indexing
 ```
 
-## MCP tools
+Missing DB is created on open. Do **not** “fix empty status” by launching index.
 
-The 15 MCP tools use short names in the native server. Note: some MCP client environments add an `atlas_` prefix (e.g., `atlas_search`, `atlas_calls`). Use the name your environment exposes.
+### 2. Cold / Focus protocol (default on large projects)
 
-### Tools reference
+Without a pre-existing full CLI cache, tools use **Focus**:
 
-| Tool | Purpose | Required params | Key optional params |
-|------|---------|----------------|---------------------|
-| `project` | Open project, check status, list files | — | `action` (`open`/`status`/`files`; default `status`), `project_path` (required with `open`), `verbose`, `limit`, `language`, `path_prefix` |
-| `search` | Symbol search by name within a directory scope | `query`, `scope` | `kind` (e.g., `function`, `class`), `limit` (default 20, max 200), `include_roots` |
-| `symbol` | Symbol details, rich context, or usages | `symbol` (string or SymbolSelector) | `file_path`+`line`+`column` for position-based lookup, `view` (`detail`/`context`/`usages`; default `detail`), `includeCode`, `includeFilePeers`, `limit` (usages only), `include_roots` |
-| `calls` | Call graph: callers, callees, multi-hop | `symbol` | `direction` (`incoming`/`outgoing`/`both`; default `both`), `depth` (1-5, default 1), `limit`, `edge_kinds` (default `["calls","instantiates","implements"]`; use `["*"]` for all), `include_roots` |
-| `explore` | Symbol dossier: source, call evidence, relations, file context | `symbol` | `scope` (directory), `source_mode` (`excerpt`/`full`/`none`), `source_lines` (default 40), `evidence_limit` (default 5), `relation_limit` (default 20), `peer_limit` (default 12), `include_file_context`, `include_recommendations`, `include_roots` |
-| `path` | Shortest path between two symbols through the graph | `from`, `to` | `max_depth` (1-10, default 5), `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `prefer_production`, `edge_kinds` (default `["calls","instantiates","implements","registers_callback"]`), `includeCode`, `include_roots` |
-| `impact` | Bidirectional impact analysis (what would break?) | `symbol` | `depth` (1-5, default 3), `semantic` (include lifecycle invariants and branch diffs) |
-| `file_dependencies` | File-level import/include graph | `file_path` | `direction` (`outgoing`/`incoming`/`both`; default `outgoing`), `limit` (default 50), `analysis` (`manifest`/`structural`; default `manifest`) |
-| `trace` | Source-level trace: point resolution, variable provenance, forward/caller chains | — | `kind` (`point`/`variable`/`forward`/`callers`; default `point`), `file_path`/`file_id`, `line`, `column`, `symbol`, `from`/`to`, `max_depth`, `include_roots` |
-| `lifecycle` | C/C++ field or local-resource lifecycle through CFG/dataflow effects | `symbol`, `field` | `include_roots` |
-| `branch_diff` | Compare branch side effects within a function (C/C++) | `symbol` | `include_roots` |
-| `domain_rules` | Manage lifecycle domain rules (alloc/free/owned patterns) | — | `action` (`add`/`list`/`delete`/`learn`), `rule_kind`, `pattern`, `rule_id`, `source`, `confidence` |
-| `fp_dispatches` | C/C++ function-pointer dispatch annotations | — | `action` (`add`/`list`/`delete`), `field_qname`, `target_qname`, `annotation_id`, `confidence` |
-| `tasks` | List background extraction/lazy-refinement jobs | — | `query_id` |
-| `resume_query` | Re-run a previous query with enhanced results after lazy refinement | `query_id` | — |
+- Foreground builds a **bounded seed closure** (not the whole repo).
+- Import/include peers may stay at lightweight `resolution_symbols` until needed.
+- Lazy **dataflow/CFG** is built for the units involved in trace/lifecycle-style work.
+- Background refinement may continue after the first response.
 
-`lifecycle` is function-local: it composes ownership effects at query time and does not
-need call-graph expansion. C/C++ defaults recognize common libc and Linux kernel alloc/free
-APIs. An `unknown` final state does not imply zero analysis; inspect transitions, proof
-paths, and any terminal `gaps`.
+**Every query:**
 
-### Trace `kind` parameter details
+1. Call the narrowest MCP tool.
+2. Read **`query_id`** and outer **`analysis`**:
+   - **`analysis.retry_after_ms` set** → **not terminal**. Wait (or `tasks`), then
+     **`resume_query(query_id=...)`**. Repeat until retry is gone.
+   - No retry + **`gaps`** → terminal with limits; report them.
+   - No retry + no gaps → complete **for that Focus/local scope**.
+3. **Never** treat empty Focus `callers` / thin `callees` as “no callers in the repo.”
+   Honor `note` / `gaps` about closure scope.
+4. If evidence is still thin: tighten `scope` / symbol selector / `include_roots`,
+   deepen carefully, or **resume**—do **not** start `atlas index`.
 
-| `kind` | Purpose | Required params | Default `max_depth` |
-|--------|---------|----------------|---------------------|
-| `point` | Resolve a source position to its enclosing symbol, scope, and callsite | `file_path`/`file_id`, `line`, `column` | — |
-| `variable` | Trace where a variable's value comes from (backward intra-procedural dataflow) | `file_path`/`file_id`, `line`, `column` | 30 |
-| `forward` | Trace the forward call chain from source to target | `from`, `to` | 20 |
-| `callers` | Trace how a function gets invoked (backward call chain) | `symbol` | 10 |
+### 3. Pick the narrowest MCP tool
 
-## Symbol Selector
+| Goal | Tool |
+|------|------|
+| Find by name | `search` (**requires `scope`**, e.g. `"src"`) → `symbol` |
+| Callers / callees | `calls(direction="incoming"\|"outgoing")` — **depth 1 first** |
+| Multi-hop | `calls` with higher `depth` only after depth 1 + resume if needed |
+| File imports | `file_dependencies` |
+| Position context | `trace(kind="point")` |
+| **Local value origin (dataflow)** | `trace(kind="variable")` — triggers lazy DF for that region |
+| Caller / forward chains | `trace(kind="callers"\|"forward")` |
+| Path / impact | `path`, `impact` (local/closure-quality unless full cache exists) |
+| Dossier / usages | `explore`; `symbol(view="context"\|"usages")` |
+| C/C++ lifecycle / branches | `lifecycle`, `branch_diff` (local CFG/DF on demand) |
+| Wait / refine | `tasks`, **`resume_query`** |
 
-All tools that accept symbol references (`calls`, `impact`, `path`, `explore`,
-`symbol`, `trace`, `usages`) accept two input formats:
+### 4. Response envelopes (do not mix)
 
-1. **String** — qualified symbol name (e.g., `"atlas_engine::Engine"`):
-   - Graph tools (`calls`, `impact`, `path`) auto-aggregate all matching symbols
-   - Detail tools (`symbol`, `explore`) return a candidate list
+**Non-trace tools:** outer `query_id`, `analysis` (`scope`, `summary`, `basis`,
+optional `retry_after_ms`), optional terminal `gaps`, `warnings` / `note`.  
+Outer `partial_result` is not the primary non-trace signal.
 
-2. **SymbolSelector object** — structured selector with fault-tolerant scoring:
-   ```json
-   {
-     "qualified_name": "turn",
-     "file_path": "src/foo.ts",
-     "line": 42,
-     "kind": "function",
-     "language": "typescript"
-   }
-   ```
-   - Only `qualified_name` is required
-   - Other fields are hints for ranking — wrong values never block correct matches
-   - `symbol_ref` from `search` or `symbol` results can be reused directly
+**Trace tools:** inner `ok`, `kind`, `capability`, **`partial_result`**, `diagnostics`,
+optional `lazy_summary`, `result` — plus outer `query_id` / `analysis` when Focus ran.
+
+### 5. After code edits (still MCP-first)
+
+- Re-run the same MCP tools / `resume_query`; Focus re-extracts dirty seed files as needed.
+- Do **not** run whole-tree `atlas sync`/`index` from the agent. If the user already
+  maintains a CLI cache, they manage it outside this skill.
+
+## MCP tools (15)
+
+Native short names (hosts may prefix `atlas_`). Install/config:
+[references/tool-guide.md](references/tool-guide.md).
+
+| Tool | Required | Notes |
+|------|----------|--------|
+| `project` | `project_path` on `open` | `open` / `status` / `files` |
+| `search` | `query`, **`scope`** | Scope = boundary + focus seed |
+| `symbol` | `symbol` or position | `view`: detail / context / usages |
+| `calls` | `symbol` | Prefer depth 1; Focus-scoped on cold DBs |
+| `explore` | `symbol` | Dossier |
+| `path` | `from`, `to` | Both ends must resolve in available facts |
+| `impact` | `symbol` | optional `semantic` (C/C++) |
+| `file_dependencies` | `file_path` | `analysis`: manifest (default) / structural |
+| `trace` | per `kind` | Local DF via lazy load for `variable` |
+| `lifecycle` | `symbol`, `field` | C/C++; function-local |
+| `branch_diff` | `symbol` | C/C++ |
+| `domain_rules` | — | rule store |
+| `fp_dispatches` | — | FP annotations |
+| `tasks` | — | optional `query_id` |
+| `resume_query` | `query_id` | **primary refinement path** |
+
+### Trace kinds
+
+| kind | Need | Default max_depth |
+|------|------|-------------------|
+| `point` | file + line + column | — |
+| `variable` | file + line + column | 30 |
+| `forward` | `from`, `to` | 20 |
+| `callers` | `symbol` | 10 |
+
+## Symbol selector
+
+1. **String** qualified name  
+2. **Object** (only `qualified_name` required):
+
+```json
+{
+  "qualified_name": "turn",
+  "file_path": "src/foo.ts",
+  "line": 42,
+  "kind": "function",
+  "language": "typescript"
+}
+```
+
+Reuse `symbol_ref` from prior results when present.
 
 ## Query tactics
 
-- Start with `search` for names. `search` **requires `scope`** — provide a project-relative directory (e.g., `"src"`, `"drivers/net"`). Use `kind: "function"`, `kind: "class"`, or shorter terms if exact match fails.
-- Prefer shallow graph depths (`depth: 1-2`) to avoid noisy results.
-- For barrel re-export chains (`import { X } from './barrel'` where barrel has `export * from './lib'`), Atlas follows the chain to the original definition via `ExportFrom` facts.
-- For code review, combine `impact` with `symbol(view="usages")` and `symbol(view="context")`.
-- For position-based symbol lookup: `symbol(file_path="src/foo.ts", line=42, column=1, view="context")`.
-- For ambiguous SymbolSelector results, check the error message for `file_path` diagnostics — invalid `file_path` hints are reported inline.
-- For value flow debugging, call `trace(kind="point")` first, then `trace(kind="variable")` at the same position.
+- Always pass **`scope`** to `search`.
+- Stay local: file/dir scope, exact symbol, then expand.
+- Value flow: `trace(point)` then `trace(variable)` — this is how you get **local dataflow**
+  without a full index.
+- Prefer depth 1–2; resume before deepening on cold Focus.
+- C/C++ system headers: pass `include_roots` when needed.
 
-## Trace response handling
+## Anti-patterns (do not)
 
-All trace tools return an envelope:
-
-- `ok` — whether the query completed.
-- `kind` — trace result kind.
-- `capability` — language capability metadata (level, features, confidence).
-- `partial_result` — whether Atlas returned incomplete evidence.
-- `diagnostics` — warnings, unsupported features, lookup ambiguity.
-- `result` — trace-specific payload (path steps with kind, file, range, confidence).
-
-When `partial_result: true` or diagnostics present, summarize the evidence and state the limitation.
+- **`atlas index` / full-tree `atlas sync` from the agent** (especially large repos)
+- Tools before `project(action="open")`
+- `search` without `scope`
+- Treating Focus-empty callers as repo-wide absence
+- Skipping `resume_query` when `retry_after_ms` is set
+- Claiming full-repo completeness without evidence
+- `lifecycle` / `branch_diff` on non-C/C++ without capability check
+- Passing removed `storage` on `project(open)`
 
 ## Answering rules
 
-- Cite Atlas evidence: symbol names, qualified names, file paths, edge kinds, trace diagnostics.
-- Atlas is best-effort static analysis with explicit language capability boundaries. Never claim compiler-grade certainty.
-- If Atlas returns nothing, try broader search (shorter name, no kind filter, larger `limit`), then state no indexed fact matched.
-- Treat `DataflowFull` as an overall capability tier, not a promise that every feature bit is present for every language. Specific features such as CFG and summaries vary; check `project(action="status")` or trace capability metadata.
+- Cite Atlas evidence: names, paths, edge kinds, diagnostics, gaps, notes.
+- State Focus/local scope when results are closure-bounded.
+- If nothing matches: broaden `search` within MCP, then say no fact matched—**do not index the monorepo**.
 
 ## References
 
-See [references/tool-guide.md](references/tool-guide.md) for installation, MCP client configuration, and troubleshooting.
+- MCP install, host config, operator-only CLI notes: [references/tool-guide.md](references/tool-guide.md)

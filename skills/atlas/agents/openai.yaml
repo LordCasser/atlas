@@ -1,4 +1,8 @@
 interface:
   display_name: "Atlas"
-  short_description: "Use Atlas code graph CLI and MCP tools"
-  default_prompt: "Use Atlas to index a repository, query symbols, inspect call graphs, trace variables, and gather code context through the CLI or MCP tools."
+  short_description: "MCP-first code-graph facts (Focus, no full index)"
+  default_prompt: >-
+    Use Atlas via MCP only: project(action="open"), then scoped search/calls/trace.
+    Never run atlas index or whole-tree sync—Focus builds local structural and
+    dataflow on demand. Honor analysis.retry_after_ms with resume_query; do not
+    treat sparse Focus callers as repo-wide proof.
