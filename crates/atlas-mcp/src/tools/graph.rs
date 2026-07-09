@@ -3613,12 +3613,12 @@ mod tests {
             .unwrap();
         let router = test_router(store);
         // After construction, focus_runtime is always present (no Option wrapper).
-        let mode = router.project().query_runtime.detect_index_mode();
-        assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode = router.project().query_runtime.detect_access_strategy();
+        assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
         // init_focus is idempotent.
         router.init_focus();
-        let mode2 = router.project().query_runtime.detect_index_mode();
-        assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode2 = router.project().query_runtime.detect_access_strategy();
+        assert_eq!(mode2, atlas_engine::focus::runtime::AccessStrategy::Focus);
     }
 
     #[test]
@@ -3699,11 +3699,11 @@ mod tests {
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
         use crate::tools::analysis_envelope::AnalysisEnvelope;
-        use atlas_engine::focus::runtime::{FocusResult, IndexMode};
+        use atlas_engine::focus::runtime::{FocusResult, AccessStrategy};
 
         let result = FocusResult {
-            mode: IndexMode::FullIndex,
-            precision: None,
+            access: AccessStrategy::FullCache,
+            quality: None,
             gaps: vec![],
             pending_closure_ids: vec![],
             pending_extraction_job_ids: vec![],

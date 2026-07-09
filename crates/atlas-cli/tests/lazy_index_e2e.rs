@@ -337,7 +337,7 @@ fn p2_lazy_ensure_for_symbol_by_name() {
 #[test]
 #[cfg(all(feature = "typescript", feature = "php"))]
 fn p3_capability_mask_cfg_gated_by_language() {
-    use atlas_engine::CapabilityMask;
+    use atlas_engine::FactCoverage;
     use atlas_engine::LazyDataflowService;
 
     // TypeScript function with if/else — should produce CFG nodes.
@@ -402,23 +402,23 @@ fn p3_capability_mask_cfg_gated_by_language() {
         .expect("TS unit extraction state should exist after lazy dataflow");
     let ts_mask = ts_state.capability_mask;
     assert!(
-        ts_mask.has(CapabilityMask::DATAFLOW),
+        ts_mask.has(FactCoverage::DATAFLOW),
         "TS must have DATAFLOW bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::MANIFEST),
+        ts_mask.has(FactCoverage::MANIFEST),
         "TS must have MANIFEST bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::STRUCTURAL),
+        ts_mask.has(FactCoverage::STRUCTURAL),
         "TS must have STRUCTURAL bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::CALL_EDGES),
+        ts_mask.has(FactCoverage::CALL_EDGES),
         "TS must have CALL_EDGES bit"
     );
     assert!(
-        ts_mask.has(CapabilityMask::CFG),
+        ts_mask.has(FactCoverage::CFG),
         "TS function with control flow must have CFG bit set"
     );
 
@@ -445,23 +445,23 @@ fn p3_capability_mask_cfg_gated_by_language() {
         .expect("PHP unit extraction state should exist after lazy dataflow");
     let php_mask = php_state.capability_mask;
     assert!(
-        php_mask.has(CapabilityMask::DATAFLOW),
+        php_mask.has(FactCoverage::DATAFLOW),
         "PHP must have DATAFLOW bit"
     );
     assert!(
-        php_mask.has(CapabilityMask::MANIFEST),
+        php_mask.has(FactCoverage::MANIFEST),
         "PHP must have MANIFEST bit"
     );
     assert!(
-        php_mask.has(CapabilityMask::STRUCTURAL),
+        php_mask.has(FactCoverage::STRUCTURAL),
         "PHP must have STRUCTURAL bit"
     );
     assert!(
-        php_mask.has(CapabilityMask::CALL_EDGES),
+        php_mask.has(FactCoverage::CALL_EDGES),
         "PHP must have CALL_EDGES bit"
     );
     assert!(
-        !php_mask.has(CapabilityMask::CFG),
+        !php_mask.has(FactCoverage::CFG),
         "PHP must NOT have CFG bit — language profile declares cfg as unsupported"
     );
 }

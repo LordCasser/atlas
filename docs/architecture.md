@@ -1,6 +1,6 @@
 # Atlas 架构文档
 
-本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowFull 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
+本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowInterproc 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
 
 > 当前实现基线：Atlas `1.5.2`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。本文描述当前主干，不保留旧 schema 或旧 MCP 表面的兼容说明。版本号以 workspace manifests 为准，schema 版本以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` 和 `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
@@ -14,9 +14,42 @@
 6. 分析等级相关改动必须验证完整入口矩阵：CLI 自有管线、shared filesync pipeline、sync、lazy structural、lazy dataflow、高层 Engine 和 raw analysis consumer。任何模式或 capability/status/precision 变化都不能只验证单一路径。
 7. **终态必然可达**：每次工具调用必须收敛到终态；不存在永久 `building` / `wait` 状态。MCP 响应的 `analysis.retry_after_ms` 必须最终变为 null。
 8. **信号最小**：响应中每个字段，Agent 必须有明确的 consume 路径；非 trace 公共信封不暴露 `partial_result`、`background_refinement`、`analysis.state` 等伪信号。冻结的 trace 内层契约继续保留自己的 `partial_result`。
-9. **内部状态不透出**：引擎层专有概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
+9. **内部状态不透出**：引擎层专有概念（`AnswerQuality`、closure ID、调度器优先级）不进入 MCP 公共响应。
 10. **事实，非指令**：响应字段提供事实（缺了什么），不提供 Agent 无法执行的指令（如"去索引这个"）。
 11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封；progress token 只增加观测通知，不改变终态、重试或恢复语义。
+12. **精度术语分层（强制）**：见 §1.1。禁止无限定的 `mode` / `full` / `index_mode` 单独出现在 API、日志与文档标题；禁止两个不同语义的类型共用 `IndexMode` 一名。
+
+### 1.1 精度与能力术语分层
+
+概念分五层，**禁止跨层复用同一词根**：
+
+| 层 | 权威类型（代码） | 含义 | 禁止混为 |
+|----|------------------|------|----------|
+| L0 语言理论 | `LanguageCapabilityProfile` + `FeatureMatrix`；派生摘要 `CapabilityLevel` | 语言**能**分析到哪 | 库里已有 facts |
+| L1 已物化证据 | **`FactCoverage`** bits；`read_catalog_tier()` 派生 **CatalogTier** 字符串 | 库/文件**有**哪些 facts | 语言 capability |
+| L2 抽取处方 | `ExtractionMode`（口语 **ExtractRecipe**） | 本次抽取执行哪些 phase | 读路径控制面 |
+| L3 运行时控制面 | **`AccessStrategy`** `{ FullCache, Focus }`；**`PipelineGrade`** `{ Manifest, Structural, Full }`；**`EdgeProvenance`** `{ RepoCanonical, FocusScoped }` | 怎么查 / 配置哈希 / 边出处 | 抽取 phase、答案质量 |
+| L4 答案质量（内部） | **`AnswerQuality`**+ `CoverageTier` + `SemanticConfidence` | 本次查询覆盖×置信 | MCP 公共字段 |
+
+**L3 控制面类型（必须使用下列名称，禁止再引入 `IndexMode`）**：
+
+| 类型 | 变体 |
+|------|------|
+| `AccessStrategy` | `FullCache` \| `Focus` |
+| `PipelineGrade` | `Manifest` \| `Structural` \| `Full` |
+| `EdgeProvenance` | `RepoCanonical` \| `FocusScoped` |
+
+**`Full` 三义消歧**（必须带限定）：
+
+- `ExtractionMode::Full` — 本次抽取含 dataflow/CFG
+- `AccessStrategy::FullCache` — 存在 finalize 的全库缓存可读路径
+- CatalogTier 字符串 `"full"` — `read_catalog_tier()` 聚合后的库状态标签
+- `CapabilityLevel::DataflowInterproc` — 语言派生摘要（**不含** cfg 要求；真值看 `FeatureMatrix`）
+
+**MCP 公共词汇（冻结）**：`capability`（语言+feature）、`analysis.*`、`gaps`、`coverage_counts`、`note`、`query_id`、trace 内层 `partial_result`。  
+**禁止**进入公共 JSON：`AnswerQuality`、`AccessStrategy` 原始枚举名、`PipelineGrade`、`EdgeProvenance`、`FactCoverage` 原始字段。
+
+**状态字段**：`project(status)` 使用 JSON 键 **`catalog_tier`**（`read_catalog_tier()` 派生字符串，L1）；不是 `AccessStrategy`。
 
 ## 2. 模块边界与依赖方向
 
@@ -371,11 +404,16 @@ Source files
 
 analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性 lazy 提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
 
-等级路径约束：
-- `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full` 是 extraction mode；`DataflowBasic/DataflowFull` 是语言 capability；`Precision { coverage, confidence }` 是 Focus 内部结果质量。三者含义不同，禁止混用。
+等级路径约束（与 §1.1 对齐）：
+- L2 `ExtractionMode`：`Manifest` / `ResolutionSymbols` / `Structural` / `LazyDataflow` / `Full` — 抽取处方。
+- L0 `CapabilityLevel`（`DataflowLocal` / `DataflowInterproc` 等）+ `FeatureMatrix` — 语言理论能力；**不是**库状态。
+- L1 `FactCoverage`— 已物化证据 bits。
+- L4 `AnswerQuality`（AnswerQuality）— Focus 内部结果质量，不进 MCP 公共响应。
+- L3 `AccessStrategy` — FullCache vs Focus 读路径；与 L2 `ExtractionMode::Full` 不同。
+- 以上各层含义不同，**禁止混用**；禁止再引入第二个名为 `IndexMode` 的类型。
 - `atlas index` CLI、`filesync::run_index_pipeline`、`atlas sync`、`LazyStructuralService`、`LazyDataflowService` 和 `analysis::TraceEngine` 是不同入口。修改任一等级行为时，必须确认这些入口是否受影响。
 - 高层 `Engine::trace_variable` 负责触发 lazy dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。用户入口应优先走高层 Engine，除非明确只需要底层已持久化数据。
-- `Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 status 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
+- `ExtractionMode::Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 CatalogTier 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
 - lazy 路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。
 
 分析等级的长期语义如下，所有入口必须与此表保持一致：
@@ -406,7 +444,7 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 
 `summaries` bit 代表 summary tables 已针对相关函数构建完成；只有成功执行 summary build 后才能设置。不能仅因为 extraction mode 是 `Full` 就推断 summaries 可用。
 
-### 7.2 跨函数桥接（DataflowFull）
+### 7.2 跨函数桥接（DataflowInterproc）
 
 Schema V2 包含持久化摘要层：
 
@@ -466,7 +504,7 @@ import { bar } from 'lodash'  → bar() 无 edge ❌
 ```text
 LanguageCapabilityProfile
   language
-  capability_level       → None / Symbolic / DataflowBasic / DataflowFull
+  capability_level       → None / Symbolic / DataflowLocal / DataflowInterproc
   supported_features     → 人类可读的 feature 名称列表
   unsupported_features
   known_limitations
@@ -482,20 +520,20 @@ LanguageCapabilityProfile
 
 | Language | Level | CFG | Confidence | Interprocedural | Note |
 |----------|-------|:---:|:---:|:---:|------|
-| TypeScript | DataflowFull | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | Summary tables + CFG |
-| JavaScript | DataflowFull | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | 共享 TS adapter |
-| Python | DataflowFull | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | scope-chain-aware binding |
-| Java | DataflowFull | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
-| C | DataflowFull | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
-| C++ | DataflowFull | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
-| ArkTS | DataflowFull | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar fallback；CFG 未实现 |
-| Go | DataflowFull | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
-| C# | DataflowFull | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
-| Rust | DataflowFull | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |
-| PHP | DataflowFull | ✗ | 0.62 | ✓ (ArgToParam + ReturnToCall) | name-based binding；CFG 未实现 |
-| Ruby | DataflowFull | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | block resource CFG；yield 仍为 best-effort |
-| Kotlin | DataflowFull | ✓ | 0.67 | ✓ (ArgToParam + ReturnToCall) | branch/loop CFG；extension receiver binding 为 best-effort |
-| Cangjie | DataflowFull | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | postfixExpression callSuffix |
+| TypeScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | Summary tables + CFG |
+| JavaScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | 共享 TS adapter |
+| Python | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | scope-chain-aware binding |
+| Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
+| C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
+| C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
+| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar fallback；CFG 未实现 |
+| Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
+| C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
+| Rust | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |
+| PHP | DataflowInterproc | ✗ | 0.62 | ✓ (ArgToParam + ReturnToCall) | name-based binding；CFG 未实现 |
+| Ruby | DataflowInterproc | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | block resource CFG；yield 仍为 best-effort |
+| Kotlin | DataflowInterproc | ✓ | 0.67 | ✓ (ArgToParam + ReturnToCall) | branch/loop CFG；extension receiver binding 为 best-effort |
+| Cangjie | DataflowInterproc | ✓ | 0.65 | ✓ (ArgToParam + ReturnToCall) | postfixExpression callSuffix |
 
 约束：
 - capability profile 属于 engine/analysis 边界；CLI/MCP/context 只能读取并展示。
@@ -510,9 +548,9 @@ LanguageCapabilityProfile
 - `trace_point`：始终可用。
 - `derive_capability_level()` 的升级条件：
   ```
-  DataflowFull = local_dataflow + use_def + interprocedural_summaries
+  DataflowInterproc = local_dataflow + use_def + interprocedural_summaries
                  + returns_flow + call_arguments (all supported)
-  DataflowBasic = local_dataflow + use_def (supported)
+  DataflowLocal = local_dataflow + use_def (supported)
   Symbolic      = symbols + references (supported)
   ```
 
@@ -584,12 +622,12 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 #### 10.1.3 内部精度模型
 
-引擎内部使用 `Precision { coverage, confidence }`，把“覆盖范围”和“语义确定性”分开建模：
+引擎内部使用 `AnswerQuality`（**AnswerQuality**）`{ coverage, confidence }`，把“覆盖范围”和“语义确定性”分开建模（L4，见 §1.1）：
 
 - `CoverageTier`：`RepoComplete`、`ClosureComplete`、`Boundary`、`Partial`、`Manifest`。
 - `SemanticConfidence`：`Low`、`Medium`、`High`、`Certain`。
 
-`Precision` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。不得重新引入已删除的 `PrecisionTier` 公共字段或旧枚举适配层。
+`AnswerQuality` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。不得重新引入已删除的 `PrecisionTier` 公共字段或旧枚举适配层。读路径控制面使用 `AccessStrategy`（FullCache|Focus），不得再使用 focus 侧旧名 `IndexMode`。
 
 #### 10.1.4 In-flight 一致性
 
@@ -625,7 +663,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 **P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
 
-**Lazy UX** — `CapabilityMask`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
+**Lazy UX** — `FactCoverage`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
 
 #### 10.1.7 Lazy 状态与任务边界
 
@@ -739,7 +777,7 @@ else:
 
 **约束**：
 
-- 引擎层概念（`Precision`、`IndexTier`、closure ID、调度器优先级）不进入 MCP 公共响应。
+- 引擎层概念（`AnswerQuality`、`AccessStrategy` 原始枚举、closure ID、调度器优先级）不进入 MCP 公共响应。
 - 非 trace 工具的 `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代；trace 内层 frozen contract 仍保留自己的 `partial_result`。
 - `background_refinement` 字段已淘汰，不进入 MCP 公共响应。
 
@@ -771,7 +809,7 @@ analysis/retry_after_ms/gaps。
 - 每次查询只排入 `FocusResult.pending_closure_ids` 中可追踪的 background/region-extension closure。前台已构建文件不得再逐文件排入隐藏 Recent prewarm；否则 `tasks(query_id)` 会先报告完成，而数据库仍在执行 N+1 closure fan-out。
 - `closure_coverage`、`reference_resolutions` 和 `symbol_edge_candidates` 是 graph materialization 的临时 closure facts，不是永久历史日志。新 MCP session 激活项目时整表清理上一 session 的 control-plane facts；同一 session 每次成功物化后只保留最近 16 个 committed closure。已物化的 canonical graph edge、源码事实和 MCP query snapshot 不依赖这些旧行。
 - 已有持久化 file inventory 或源码事实时，MCP bootstrap 只标记基础层 ready，不启动全项目后台扫描。Closure resolver 的本地 fallback 使用 `symbols.name` 索引，不构建 project-wide `GlobalSymbolIndex`；import scope、测试路径分类和 proximity root 必须按源文件计算一次，不得在每个 reference 上重复查询。
-  `PrecisionTier` 不进入 public MCP contract；当前内部统一使用 `Precision`。
+  `PrecisionTier` 不进入 public MCP contract；当前内部统一使用 `AnswerQuality`。
 - `JobTracker`（`crates/atlas-engine/src/focus/job_tracker.rs`）是 Focus Runtime 的
   完成追踪实体，记录每个 closure 的成功/失败终态、耗时和实际 materialized files。
   失败与成功都必须退出 pending；失败原因映射为终态 `background_refinement_failed`

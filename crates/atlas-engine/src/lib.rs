@@ -51,7 +51,7 @@ pub mod job_context;
 mod lazy_budget;
 mod lazy_structural;
 mod linux_augment;
-/// Precision tier computation for lazy extraction transparency.
+/// AnswerQuality tier computation for lazy extraction transparency.
 pub mod precision;
 /// Scoped search service: shared search orchestration with lazy structural fallback.
 pub mod scoped_search;
@@ -121,7 +121,7 @@ pub use focus::engine::ClosureEngine;
 /// Focus-driven incremental analysis: query intent (MCP tool request).
 pub use focus::query::QueryIntent;
 /// Focus-driven incremental analysis: runtime entry point.
-pub use focus::runtime::{FocusResult, FocusRuntime, IndexMode};
+pub use focus::runtime::{AccessStrategy, FocusResult, FocusRuntime};
 /// Focus-driven incremental analysis: priority scheduler.
 pub use focus::scheduler::{FocusPriority, FocusScheduler};
 /// Focus-driven incremental analysis: core types.
@@ -133,7 +133,7 @@ pub use focus::visibility_filter::VisibilityFilterRegistry;
 pub use closure_planner::IncludeRoot;
 
 /// Index precision: guards and queries for extraction mode stability.
-pub use index_precision::{guard_against_precision_downgrade, is_rich_index_mode};
+pub use index_precision::{guard_against_precision_downgrade, is_rich_catalog_tier};
 
 /// Workspace abstractions.
 pub use workspace::Workspace;
@@ -153,7 +153,7 @@ pub use closure_planner::{ClosurePlanner, DependencyClosure, PrioritizedWorkset}
 
 /// Index precision internals: mode names and downgrade detection helpers.
 pub use index_precision::{
-    extraction_mode_name, recommended_analysis_for, would_downgrade_index_precision,
+    extraction_mode_name, recommended_extract_recipe_for, would_downgrade_index_precision,
 };
 
 /// Lazy structural internals: candidate providers and ensure-structural result.
@@ -464,7 +464,7 @@ impl Engine {
 
     /// Trace dataflow backward from a source position.
     ///
-    /// Requires `DataflowBasic` capability for the language.  If the language
+    /// Requires `DataflowLocal` capability for the language.  If the language
     /// does not support dataflow, returns a partial result with an
     /// `unsupported_language` diagnostic.
     ///
@@ -517,7 +517,7 @@ impl Engine {
                     pending_job_ids: window.pending_job_ids.clone(),
                     truncated: window.truncated,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision: window.precision.clone(),
+                    quality: window.quality.clone(),
                 });
                 if window.truncated {
                     partial = true;
@@ -547,7 +547,7 @@ impl Engine {
                     pending_job_ids: Vec::new(),
                     truncated: true,
                     duration_ms: lazy_start.elapsed().as_millis() as u64,
-                    precision: None,
+                    quality: None,
                 });
                 lazy_diagnostics.push(
                     TraceDiagnostic::warning(&format!("Lazy dataflow build failed: {e}"))
@@ -619,8 +619,8 @@ mod tests {
         let cap = Engine::language_capability(Language::TypeScript);
         assert_eq!(cap.language, "typescript");
         assert!(
-            cap.capability_level >= types::capability::CapabilityLevel::DataflowBasic,
-            "TypeScript should be at least DataflowBasic"
+            cap.capability_level >= types::capability::CapabilityLevel::DataflowLocal,
+            "TypeScript should be at least DataflowLocal"
         );
     }
 

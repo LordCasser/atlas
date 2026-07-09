@@ -2,7 +2,7 @@
 //!
 //! # Responsibilities
 //! - Lazy graph initialization on first graph-backed tool call
-//! - Precision mode detection (FullCanonical vs FocusPartial)
+//! - AnswerQuality mode detection (RepoCanonical vs FocusScoped)
 //! - Incremental graph refresh after lazy extraction writes
 //! - Exposes SearchEngine (BFS/DFS/path) and ContextBuilder (callers/callees/source)
 //! - Generation-based staleness detection via RuntimeInvalidation
@@ -34,16 +34,15 @@ use super::graph_provider::GraphProvider;
 use super::graph_state::GraphState;
 use super::invalidation::RuntimeInvalidation;
 
-// ── Precision types ─────────────────────────────────────────────────────
+// ── Edge provenance (architecture §1.1 L3) ──────────────────────────────
 
-/// The mode of graph edge provenance.
+/// Where in-memory graph edges are sourced from (architecture: EdgeProvenance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GraphMode {
-    /// Full index: all edges are canonical, high-confidence.
-    FullCanonical,
-    /// Focus/closure mode: edges may be partial, lower-confidence.
-    /// The graph may contain both canonical edges and closure-based edges.
-    FocusPartial,
+pub enum EdgeProvenance {
+    /// Full-repo cache: edges are canonical, high-confidence (`RepoCanonical`).
+    RepoCanonical,
+    /// Focus/closure: edges may be partial; graph may mix canonical and closure edges.
+    FocusScoped,
 }
 
 // ── GraphRuntime ────────────────────────────────────────────────────────
@@ -61,9 +60,9 @@ pub struct GraphRuntime {
     pub source_extractor: SourceExtractor,
     pub project_root: PathBuf,
     /// Provenance mode of graph edges (detected on first init).
-    pub mode: Mutex<GraphMode>,
+    pub provenance: Mutex<EdgeProvenance>,
     /// Cached store index mode at graph init time.
-    cached_index_mode: Mutex<Option<String>>,
+    cached_catalog_tier: Mutex<Option<String>>,
     /// Shared invalidation counters for generation-based staleness detection.
     pub invalidation: Arc<RuntimeInvalidation>,
     /// Cached graph_generation at last refresh — compared against current
@@ -94,8 +93,8 @@ impl GraphRuntime {
             store,
             source_extractor,
             project_root,
-            mode: Mutex::new(GraphMode::FocusPartial),
-            cached_index_mode: Mutex::new(None),
+            provenance: Mutex::new(EdgeProvenance::FocusScoped),
+            cached_catalog_tier: Mutex::new(None),
             invalidation,
             last_graph_generation: AtomicU64::new(last_graph_generation),
         }
@@ -137,24 +136,24 @@ impl GraphRuntime {
 
     /// Detect the index precision mode from the store and cache it.
     pub fn detect_and_set_mode(&self, store: &Store) {
-        let index_mode = store.read_index_mode().unwrap_or_default();
-        *self.cached_index_mode.lock().unwrap() = Some(index_mode.clone());
-        *self.mode.lock().unwrap() = if atlas_engine::is_rich_index_mode(&index_mode) {
-            GraphMode::FullCanonical
+        let catalog_tier = store.read_catalog_tier().unwrap_or_default();
+        *self.cached_catalog_tier.lock().unwrap() = Some(catalog_tier.clone());
+        *self.provenance.lock().unwrap() = if atlas_engine::is_rich_catalog_tier(&catalog_tier) {
+            EdgeProvenance::RepoCanonical
         } else {
-            GraphMode::FocusPartial
+            EdgeProvenance::FocusScoped
         };
     }
 
     /// Returns the graph provider for the current scope.
     ///
-    /// Dispatches based on [`GraphMode`]:
-    /// - `FullCanonical` → `&self.state` (full graph)
-    /// - `FocusPartial` → `&self.closure_provider` (closure-scoped)
+    /// Dispatches based on [`EdgeProvenance`]:
+    /// - `RepoCanonical` → `&self.state` (full graph)
+    /// - `FocusScoped` → `&self.closure_provider` (closure-scoped)
     pub(crate) fn provider(&self) -> &dyn GraphProvider {
-        match *self.mode.lock().unwrap() {
-            GraphMode::FullCanonical => &*self.state,
-            GraphMode::FocusPartial => &self.closure_provider,
+        match *self.provenance.lock().unwrap() {
+            EdgeProvenance::RepoCanonical => &*self.state,
+            EdgeProvenance::FocusScoped => &self.closure_provider,
         }
     }
 }
@@ -174,9 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn default_mode_is_focus_partial() {
+    fn default_mode_is_focus_scoped() {
         let gr = create_test_graph_runtime();
-        assert_eq!(*gr.mode.lock().unwrap(), GraphMode::FocusPartial);
+        assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
     }
 
     #[test]
@@ -185,7 +184,7 @@ mod tests {
         // Clone store to avoid simultaneous mutable+immutable borrow.
         let store = gr.store.clone();
         gr.detect_and_set_mode(&store);
-        assert_eq!(*gr.mode.lock().unwrap(), GraphMode::FocusPartial);
+        assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
     }
 
     #[test]

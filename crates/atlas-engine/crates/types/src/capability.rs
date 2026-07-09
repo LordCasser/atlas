@@ -159,7 +159,7 @@ impl FeatureMatrix {
     /// Returns the coarse [`CapabilityLevel`] derived from the matrix.
     ///
     /// This preserves backward compatibility with code that checks
-    /// `level >= DataflowBasic`.
+    /// `level >= DataflowLocal`.
     pub fn derive_capability_level(&self) -> CapabilityLevel {
         let has_dataflow = self.local_dataflow.is_supported() && self.use_def.is_supported();
 
@@ -168,9 +168,9 @@ impl FeatureMatrix {
             && self.returns_flow.is_supported()
             && self.call_arguments.is_supported()
         {
-            CapabilityLevel::DataflowFull
+            CapabilityLevel::DataflowInterproc
         } else if has_dataflow {
-            CapabilityLevel::DataflowBasic
+            CapabilityLevel::DataflowLocal
         } else if self.symbols.is_supported() && self.references.is_supported() {
             CapabilityLevel::Symbolic
         } else {
@@ -222,10 +222,10 @@ pub enum CapabilityLevel {
     /// Lexical bindings + AST-driven intra-statement dataflow (heuristic
     /// name-based binding with language-specific gaps). Use-def resolution
     /// exists but may miss shadowed variables or complex expression trees.
-    DataflowBasic,
+    DataflowLocal,
     /// Cross-statement use-def (scope-aware, shadowing-safe), backward trace
     /// with access-path chains, caller-path exploration, interprocedural flow.
-    DataflowFull,
+    DataflowInterproc,
 }
 
 impl CapabilityLevel {
@@ -234,8 +234,8 @@ impl CapabilityLevel {
         match self {
             Self::None => "none",
             Self::Symbolic => "symbolic",
-            Self::DataflowBasic => "dataflow_basic",
-            Self::DataflowFull => "dataflow_full",
+            Self::DataflowLocal => "dataflow_local",
+            Self::DataflowInterproc => "dataflow_interproc",
         }
     }
 
@@ -245,8 +245,8 @@ impl CapabilityLevel {
         match s {
             "none" => Some(Self::None),
             "symbolic" => Some(Self::Symbolic),
-            "dataflow_basic" => Some(Self::DataflowBasic),
-            "dataflow_full" => Some(Self::DataflowFull),
+            "dataflow_local" => Some(Self::DataflowLocal),
+            "dataflow_interproc" => Some(Self::DataflowInterproc),
             _ => None,
         }
     }
@@ -636,7 +636,7 @@ mod profiles {
         build_profile(&JS_PROFILE_SPEC)
     }
 
-    // ---- Python (DataflowFull) ---------------------------------------------
+    // ---- Python (DataflowInterproc) ---------------------------------------------
     // NOTE: Golden fixtures fx21 (ArgToParam), fx22 (ReturnToCall),
     //       fx_py_shadow (shadowing precision), and fx_py_destructure
     //       (tuple unpacking) exist.
@@ -716,7 +716,7 @@ mod profiles {
         build_profile(&PY_PROFILE_SPEC)
     }
 
-    // ---- Java (DataflowFull) -------------------------------------------------
+    // ---- Java (DataflowInterproc) -------------------------------------------------
 
     const JAVA_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "java",
@@ -789,7 +789,7 @@ mod profiles {
         build_profile(&JAVA_PROFILE_SPEC)
     }
 
-    // ---- C (DataflowFull) --------------------------------------------------
+    // ---- C (DataflowInterproc) --------------------------------------------------
     // NOTE: Golden fixtures fx23 (ArgToParam) and fx24 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
@@ -880,7 +880,7 @@ mod profiles {
         build_profile(&C_PROFILE_SPEC)
     }
 
-    // ---- C++ (DataflowFull) ------------------------------------------------
+    // ---- C++ (DataflowInterproc) ------------------------------------------------
     // NOTE: Golden fixtures fx25 (ArgToParam) and fx26 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
@@ -959,7 +959,7 @@ mod profiles {
         build_profile(&CPP_PROFILE_SPEC)
     }
 
-    // ---- ArkTS (DataflowFull) ---------------------------------------------
+    // ---- ArkTS (DataflowInterproc) ---------------------------------------------
     // NOTE: Golden fixtures fx27 (ArgToParam), fx28 (ReturnToCall),
     //       fx30 (@Component decorator), and fx31 (class-as-struct) exist.
     //       ArkTS delegates to the TypeScript frontend; known gaps:
@@ -1134,7 +1134,7 @@ mod profiles {
         build_profile(&CANGJIE_PROFILE_SPEC)
     }
 
-    // ---- Go (DataflowFull) --------------------------------------------------
+    // ---- Go (DataflowInterproc) --------------------------------------------------
 
     const GO_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "go",
@@ -1208,7 +1208,7 @@ mod profiles {
         build_profile(&GO_PROFILE_SPEC)
     }
 
-    // ---- C# (DataflowFull) ---------------------------------------------------
+    // ---- C# (DataflowInterproc) ---------------------------------------------------
 
     const CSHARP_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "csharp",
@@ -1284,10 +1284,10 @@ mod profiles {
         build_profile(&CSHARP_PROFILE_SPEC)
     }
 
-    // ---- Rust (DataflowFull) -----------------------------------------------
+    // ---- Rust (DataflowInterproc) -----------------------------------------------
     // NOTE: Both ArgToParam (fx13) and ReturnToCall (fx14) cross-function
     //       bridges verified against golden fixtures.  Upgraded to
-    //       DataflowFull.  Confidence raised from 0.62 to 0.70: CFG support
+    //       DataflowInterproc.  Confidence raised from 0.62 to 0.70: CFG support
     //       added (P7), binding description updated to scope-chain-aware.
 
     const RUST_PROFILE_SPEC: ProfileSpec = ProfileSpec {
@@ -1359,7 +1359,7 @@ mod profiles {
         build_profile(&RUST_PROFILE_SPEC)
     }
 
-    // ---- PHP (DataflowFull) --------------------------------------------------
+    // ---- PHP (DataflowInterproc) --------------------------------------------------
     // NOTE: PHP ArgToParam (fx15) and ReturnToCall (fx16) bridges verified.
 
     const PHP_PROFILE_SPEC: ProfileSpec = ProfileSpec {
@@ -1427,9 +1427,9 @@ mod profiles {
         build_profile(&PHP_PROFILE_SPEC)
     }
 
-    // ---- Ruby (DataflowFull) -------------------------------------------------
+    // ---- Ruby (DataflowInterproc) -------------------------------------------------
     // NOTE: ArgToParam bridge fires (fx17 passes); ReturnToCall bridge (fx18) and
-    //       basic local dataflow (fx32) also verified.  Upgraded to DataflowFull;
+    //       basic local dataflow (fx32) also verified.  Upgraded to DataflowInterproc;
     //       gaps tracked via golden fixtures.  CFG support added for
     //       block-managed resource lifecycle (File.open { |f| ... }).
     //
@@ -1505,7 +1505,7 @@ mod profiles {
         build_profile(&RUBY_PROFILE_SPEC)
     }
 
-    // ---- Kotlin (DataflowFull) -----------------------------------------------
+    // ---- Kotlin (DataflowInterproc) -----------------------------------------------
     // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
     //       Bridge behavior may vary — gaps documented via should_panic if
     //       fixtures fail.
@@ -1594,8 +1594,8 @@ mod tests {
         for level in &[
             CapabilityLevel::None,
             CapabilityLevel::Symbolic,
-            CapabilityLevel::DataflowBasic,
-            CapabilityLevel::DataflowFull,
+            CapabilityLevel::DataflowLocal,
+            CapabilityLevel::DataflowInterproc,
         ] {
             let s = level.as_str();
             let parsed = CapabilityLevel::from_str(s);
@@ -1607,7 +1607,7 @@ mod tests {
     fn test_ts_profile_exists() {
         let p = LanguageCapabilityProfile::for_language(Language::TypeScript);
         assert_eq!(p.language, "typescript");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert!(!p.supported_features.is_empty());
         assert!(!p.limitations.is_empty());
     }
@@ -1635,9 +1635,9 @@ mod tests {
     }
 
     #[test]
-    fn test_java_is_dataflow_full() {
+    fn test_java_is_dataflow_interproc() {
         let p = LanguageCapabilityProfile::for_language(Language::Java);
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
     }
 
     #[test]
@@ -1646,7 +1646,7 @@ mod tests {
             Language::TypeScript,
             Language::JavaScript,
             Language::Python,
-            // ArkTS is DataflowFull (delegates to TypeScript frontend, confidence 0.50).
+            // ArkTS is DataflowInterproc (delegates to TypeScript frontend, confidence 0.50).
         ] {
             let p = LanguageCapabilityProfile::for_language(*lang);
             assert!(
@@ -1690,26 +1690,26 @@ mod tests {
 
     #[test]
     fn test_feature_matrix_derive_capability_level() {
-        // TS: DataflowFull (all features including interprocedural_summaries supported)
+        // TS: DataflowInterproc (all features including interprocedural_summaries supported)
         let ts = LanguageCapabilityProfile::for_language(Language::TypeScript);
         let matrix = &ts.features;
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowFull
+            CapabilityLevel::DataflowInterproc
         );
 
-        // Java: all DataflowFull preconditions met (local_dataflow + use_def + interprocedural_summaries + returns_flow + call_arguments)
+        // Java: all DataflowInterproc preconditions met (local_dataflow + use_def + interprocedural_summaries + returns_flow + call_arguments)
         let java = LanguageCapabilityProfile::for_language(Language::Java);
         let matrix = &java.features;
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowFull
+            CapabilityLevel::DataflowInterproc
         );
     }
 
     #[test]
-    fn test_feature_matrix_derive_dataflow_full() {
-        // Construct a synthetic FeatureMatrix where all DataflowFull
+    fn test_feature_matrix_derive_dataflow_interproc() {
+        // Construct a synthetic FeatureMatrix where all DataflowInterproc
         // preconditions are met.
         let matrix = FeatureMatrix {
             symbols: FeatureSupport::supported_with_confidence(0.8),
@@ -1728,13 +1728,13 @@ mod tests {
         };
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowFull,
-            "full matrix should derive DataflowFull"
+            CapabilityLevel::DataflowInterproc,
+            "full matrix should derive DataflowInterproc"
         );
     }
 
     #[test]
-    fn test_feature_matrix_derive_dataflow_basic_when_summaries_missing() {
+    fn test_feature_matrix_derive_dataflow_local_when_summaries_missing() {
         // All dataflow features present EXCEPT interprocedural summaries.
         let matrix = FeatureMatrix {
             symbols: FeatureSupport::supported_with_confidence(0.8),
@@ -1753,8 +1753,8 @@ mod tests {
         };
         assert_eq!(
             matrix.derive_capability_level(),
-            CapabilityLevel::DataflowBasic,
-            "without summaries should still be DataflowBasic"
+            CapabilityLevel::DataflowLocal,
+            "without summaries should still be DataflowLocal"
         );
     }
 
@@ -1826,13 +1826,13 @@ mod tests {
     }
 
     #[test]
-    fn test_cangjie_feature_matrix_dataflow_full() {
+    fn test_cangjie_feature_matrix_dataflow_interproc() {
         let cj = LanguageCapabilityProfile::for_language(Language::Cangjie);
         let matrix = &cj.features;
         assert_eq!(
             cj.capability_level,
-            CapabilityLevel::DataflowFull,
-            "Cangjie should be DataflowFull"
+            CapabilityLevel::DataflowInterproc,
+            "Cangjie should be DataflowInterproc"
         );
         assert!(
             matrix.symbols.is_supported(),
@@ -1927,7 +1927,7 @@ mod tests {
     fn test_go_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Go);
         assert_eq!(p.language, "go");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.78);
 
         // supported_features
@@ -2037,7 +2037,7 @@ mod tests {
     fn test_python_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Python);
         assert_eq!(p.language, "python");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.72);
 
         // supported_features
@@ -2148,7 +2148,7 @@ mod tests {
     fn test_typescript_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::TypeScript);
         assert_eq!(p.language, "typescript");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.60);
 
         let expected_supported: Vec<&str> = vec![
@@ -2251,7 +2251,7 @@ mod tests {
     fn test_javascript_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::JavaScript);
         assert_eq!(p.language, "javascript");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.60);
 
         let expected_supported: Vec<&str> = vec![
@@ -2354,7 +2354,7 @@ mod tests {
     fn test_java_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Java);
         assert_eq!(p.language, "java");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.75);
 
         let expected_supported: Vec<&str> = vec![
@@ -2459,7 +2459,7 @@ mod tests {
     fn test_c_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::C);
         assert_eq!(p.language, "c");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.73);
 
         let expected_supported: Vec<&str> = vec![
@@ -2567,7 +2567,7 @@ mod tests {
     fn test_cpp_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Cpp);
         assert_eq!(p.language, "cpp");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.70);
 
         let expected_supported: Vec<&str> = vec![
@@ -2669,7 +2669,7 @@ mod tests {
     fn test_arkts_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::ArkTS);
         assert_eq!(p.language, "arkts");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.60);
 
         let expected_supported: Vec<&str> = vec![
@@ -2770,7 +2770,7 @@ mod tests {
     fn test_cangjie_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Cangjie);
         assert_eq!(p.language, "cangjie");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.65);
 
         // supported_features: previously derived from fm.supported_feature_names(),
@@ -2878,7 +2878,7 @@ mod tests {
     fn test_csharp_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::CSharp);
         assert_eq!(p.language, "csharp");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.72);
 
         let expected_supported: Vec<&str> = vec![
@@ -2986,7 +2986,7 @@ mod tests {
     fn test_rust_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Rust);
         assert_eq!(p.language, "rust");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.70);
 
         let expected_supported: Vec<&str> = vec![
@@ -3088,7 +3088,7 @@ mod tests {
     fn test_php_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Php);
         assert_eq!(p.language, "php");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.62);
 
         let expected_supported: Vec<&str> = vec![
@@ -3188,7 +3188,7 @@ mod tests {
     fn test_ruby_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Ruby);
         assert_eq!(p.language, "ruby");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.65);
 
         let expected_supported: Vec<&str> = vec![
@@ -3289,7 +3289,7 @@ mod tests {
     fn test_kotlin_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Kotlin);
         assert_eq!(p.language, "kotlin");
-        assert_eq!(p.capability_level, CapabilityLevel::DataflowFull);
+        assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.67);
 
         let expected_supported: Vec<&str> = vec![

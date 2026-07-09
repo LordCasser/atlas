@@ -235,20 +235,20 @@ fn focus_calls_query_intent_works() {
     if let Some(result) = focus_opt {
         eprintln!(
             "Focus result: mode={:?}, closure_id={:?}, built_files={}, precision={:?}",
-            result.mode,
+            result.access,
             result.closure_id,
             result.built_files.len(),
-            result.precision,
+            result.quality,
         );
 
         // In a fresh cold DB, Focus mode is expected.
         assert_eq!(
-            result.mode,
-            atlas_engine::focus::runtime::IndexMode::Focus,
+            result.access,
+            atlas_engine::focus::runtime::AccessStrategy::Focus,
             "Expected Focus mode for manifest-only DB"
         );
         assert!(
-            result.precision.is_some(),
+            result.quality.is_some(),
             "Focus result should have precision"
         );
         assert!(

@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use db::{ClaimResult, Store};
 use extraction::{CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode};
 use types::ids::FileId;
-use types::structs::Precision;
+use types::structs::AnswerQuality;
 use types::{FileInfo, Language, ParseStatus, layer, status};
 
 /// Maximum candidate files to consider for lazy structural loading.
@@ -206,8 +206,8 @@ pub struct EnsureStructuralResult {
     pub built_file_ids: Vec<FileId>,
     /// FileIds that were found to already have up-to-date extraction (cached).
     pub cached_file_ids: Vec<FileId>,
-    /// Precision reflecting data quality after this lazy operation.
-    pub precision: Precision,
+    /// AnswerQuality reflecting data quality after this lazy operation.
+    pub quality: AnswerQuality,
     /// Files that are being built by another job (ClaimResult::AlreadyBuilding).
     pub files_pending: usize,
     /// IDs of extraction jobs that are currently in-flight (AlreadyBuilding).
@@ -271,7 +271,7 @@ impl LazyStructuralService {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 cached_file_ids: vec![],
-                precision: Precision::worst(),
+                quality: AnswerQuality::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: vec![],
@@ -299,7 +299,7 @@ impl LazyStructuralService {
                 budget_exceeded: false,
                 built_file_ids: vec![],
                 cached_file_ids: vec![],
-                precision: Precision::worst(),
+                quality: AnswerQuality::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: vec![],
@@ -330,7 +330,7 @@ impl LazyStructuralService {
                 budget_exceeded: !candidates.is_empty(),
                 built_file_ids: vec![],
                 cached_file_ids: vec![],
-                precision: Precision::worst(),
+                quality: AnswerQuality::worst(),
                 files_pending: 0,
                 pending_job_ids: vec![],
                 deferred_file_ids: candidates,
@@ -348,7 +348,7 @@ impl LazyStructuralService {
         let mut result = self.ensure_structural_for_files(&candidates, None)?;
         result.budget_exceeded |= truncated;
         result.deferred_file_ids = deferred_file_ids;
-        result.precision = crate::precision::structural_precision(
+        result.quality = crate::precision::structural_precision(
             result.files_built,
             result.files_cached,
             result.budget_exceeded,
@@ -539,7 +539,7 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             cached_file_ids: vec![],
-            precision: Precision::worst(),
+            quality: AnswerQuality::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
             deferred_file_ids: vec![],
@@ -573,7 +573,7 @@ impl LazyStructuralService {
             self.incremental_resolve_and_build(&result.built_file_ids)?;
         }
 
-        result.precision = crate::precision::structural_precision(
+        result.quality = crate::precision::structural_precision(
             result.files_built,
             result.files_cached,
             result.budget_exceeded,
@@ -671,7 +671,7 @@ impl LazyStructuralService {
             budget_exceeded: false,
             built_file_ids: vec![],
             cached_file_ids: vec![],
-            precision: Precision::worst(),
+            quality: AnswerQuality::worst(),
             files_pending: 0,
             pending_job_ids: vec![],
             deferred_file_ids: vec![],
@@ -741,7 +741,7 @@ impl LazyStructuralService {
         }
 
         // Compute precision tier from build results
-        result.precision = crate::precision::structural_precision(
+        result.quality = crate::precision::structural_precision(
             result.files_built,
             result.files_cached,
             result.budget_exceeded,
@@ -1303,7 +1303,7 @@ pub(crate) fn rebuild_structural_for_file(
 mod tests {
     use super::*;
     use db::Store;
-    use types::structs::CapabilityMask;
+    use types::structs::FactCoverage;
 
     fn test_store() -> Arc<Store> {
         let store = Store::open_in_memory().unwrap();
@@ -1359,7 +1359,7 @@ mod tests {
                 layer::STRUCTURAL,
                 "abc123",
                 status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 
@@ -1495,7 +1495,7 @@ mod tests {
                 layer::STRUCTURAL,
                 hash,
                 status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 
@@ -1537,7 +1537,7 @@ mod tests {
                 layer::STRUCTURAL,
                 &hash,
                 status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 
@@ -1591,7 +1591,7 @@ mod tests {
                 layer::STRUCTURAL,
                 &hash,
                 status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 

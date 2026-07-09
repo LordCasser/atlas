@@ -42,7 +42,7 @@ so consumers parse one shape regardless of which query was made.
 {
   "ok": true,
   "kind": "trace_variable",
-  "capability": { "language": "TypeScript", "capability_level": "dataflow_full", ... },
+  "capability": { "language": "TypeScript", "capability_level": "dataflow_interproc", ... },
   "partial_result": false,
   "diagnostics": [],
   "result": { ... }
@@ -236,7 +236,7 @@ Shares the same shape as `CallerChain` but the BFS walks **forward** (caller →
 
 ## 7. Capability Model
 
-Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-grained per-feature capability checks. All 14 languages are at `DataflowFull` level.
+Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-grained per-feature capability checks. All 14 languages are at `DataflowInterproc` level.
 
 ### Capability gating
 

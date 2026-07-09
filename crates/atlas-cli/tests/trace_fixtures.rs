@@ -487,7 +487,7 @@ fn fx4_cross_file_return_to_call_bridge() {
 /// because no DataNodes exist for Symbolic‑only languages).
 #[test]
 #[cfg(feature = "java")]
-fn fx5_java_capability_declares_dataflow_full() {
+fn fx5_java_capability_declares_dataflow_interproc() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "App.java",
@@ -503,25 +503,25 @@ fn fx5_java_capability_declares_dataflow_full() {
     let engine = TraceEngine::new(store.clone());
 
     let file_id = FileId::generate("App.java");
-    // Java now has DataflowFull support; trace_point must still expose capability metadata.
+    // Java now has DataflowInterproc support; trace_point must still expose capability metadata.
     let resp = engine.trace_point(&file_id, 3, 20);
 
     // Must NOT crash. Response must be ok=true.
     assert!(resp.ok, "Java trace_point must return ok=true");
 
-    // Capability must be present and indicate DataflowFull level.
+    // Capability must be present and indicate DataflowInterproc level.
     let cap = resp
         .capability
         .as_ref()
         .expect("Java capability must be present");
     assert_eq!(cap.language, "java");
     assert!(
-        cap.capability_level == atlas_engine::capability::CapabilityLevel::DataflowFull,
-        "Java must be DataflowFull, got {:?}",
+        cap.capability_level == atlas_engine::capability::CapabilityLevel::DataflowInterproc,
+        "Java must be DataflowInterproc, got {:?}",
         cap.capability_level
     );
 
-    // Java now supports local_dataflow and use_def at DataflowBasic level.
+    // Java now supports local_dataflow and use_def at DataflowLocal level.
     assert!(
         cap.supported_features
             .iter()
@@ -2897,7 +2897,7 @@ function process(): string {
 }
 
 // ── Cangjie ─────────────────────────────────────────────────────────
-// Cangjie DataflowBasic provides intra-procedural dataflow but
+// Cangjie DataflowLocal provides intra-procedural dataflow but
 // ReturnToCall bridging is not yet fully implemented.  The trace may
 // produce minimal steps (source == sink).  We verify the trace succeeds
 // without crashing and that the envelope is well-formed.

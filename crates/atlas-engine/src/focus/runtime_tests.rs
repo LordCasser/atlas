@@ -11,12 +11,12 @@ use db::Store;
 use tempfile::TempDir;
 use types::enums::{Language, ParseStatus};
 use types::ids::{FileId, SymbolId};
-use types::structs::{CapabilityMask, FileInfo, SymbolDef, TextRange};
+use types::structs::{FactCoverage, FileInfo, SymbolDef, TextRange};
 use types::{layer, status};
 
 use crate::focus::bootstrap::BootstrapManager;
 use crate::focus::query::QueryIntent;
-use crate::focus::runtime::{FocusRuntime, IndexMode};
+use crate::focus::runtime::{FocusRuntime, AccessStrategy};
 use crate::focus::scheduler::FocusPriority;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ fn insert_file_structural_complete(store: &Store, path: &str) -> FileId {
             layer::STRUCTURAL,
             "abc123",
             status::COMPLETE,
-            CapabilityMask::default(),
+            FactCoverage::default(),
         )
         .unwrap();
     file_id
@@ -96,11 +96,11 @@ fn insert_symbol(
 /// Create a FocusRuntime with index mode overridden to Focus.
 ///
 /// Used by tests that pre-populate structural extraction state (so closure
-/// building can use cached results) but need `detect_index_mode()` to return
-/// `IndexMode::Focus` for exercising the Focus code path.
+/// building can use cached results) but need `detect_access_strategy()` to return
+/// `AccessStrategy::Focus` for exercising the Focus code path.
 fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
     let mut rt = FocusRuntime::new(store, None);
-    rt.detect_index_mode_override = Some(IndexMode::Focus);
+    rt.detect_access_strategy_override = Some(AccessStrategy::Focus);
     rt
 }
 
@@ -119,8 +119,8 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
         .unwrap();
     let rt = FocusRuntime::new(store, None);
     assert_eq!(
-        rt.detect_index_mode(),
-        IndexMode::Focus,
+        rt.detect_access_strategy(),
+        AccessStrategy::Focus,
         "metadata keys should not fool detection; must check fresh extraction state"
     );
 }
@@ -129,21 +129,21 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
 fn test_detect_focus_when_no_metadata() {
     let store = test_store();
     let rt = FocusRuntime::new(store, None);
-    assert_eq!(rt.detect_index_mode(), IndexMode::Focus);
+    assert_eq!(rt.detect_access_strategy(), AccessStrategy::Focus);
 }
 
 #[test]
 fn test_detect_full_index_with_finalized_structural_extraction() {
     // A file with fresh complete structural extraction plus CLI finalization
-    // metadata should make read_index_mode() return a reusable rich mode,
+    // metadata should make read_catalog_tier() return a reusable rich mode,
     // triggering FullIndex.
     let store = test_store();
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
     let rt = FocusRuntime::new(store, None);
     assert_eq!(
-        rt.detect_index_mode(),
-        IndexMode::FullIndex,
+        rt.detect_access_strategy(),
+        AccessStrategy::FullCache,
         "finalized structural extraction should be detected as FullIndex"
     );
 }
@@ -157,8 +157,8 @@ fn test_detect_focus_with_unfinalized_structural_extraction() {
     insert_file_structural_complete(&store, "src/main.c");
     let rt = FocusRuntime::new(store, None);
     assert_eq!(
-        rt.detect_index_mode(),
-        IndexMode::Focus,
+        rt.detect_access_strategy(),
+        AccessStrategy::Focus,
         "unfinalized structural extraction is a focus cache, not a full index"
     );
 }
@@ -177,22 +177,22 @@ fn test_detect_focus_with_only_manifest_extraction() {
             types::layer::MANIFEST,
             "abc123",
             types::status::COMPLETE,
-            CapabilityMask::default(),
+            FactCoverage::default(),
         )
         .unwrap();
     let rt = FocusRuntime::new(store, None);
     assert_eq!(
-        rt.detect_index_mode(),
-        IndexMode::Focus,
+        rt.detect_access_strategy(),
+        AccessStrategy::Focus,
         "manifest-only extraction should not be detected as FullIndex"
     );
 }
 
 #[test]
-fn test_detect_index_mode_respects_stale_metadata() {
+fn test_detect_access_strategy_respects_stale_metadata() {
     // Simulate a degraded DB: metadata keys suggest full index,
     // but extraction state is stale (no structural/dataflow rows).
-    // detect_index_mode() MUST return Focus because read_index_mode()
+    // detect_access_strategy() MUST return Focus because read_catalog_tier()
     // only counts fresh extraction state rows.
     let store = test_store();
     store
@@ -204,10 +204,10 @@ fn test_detect_index_mode_respects_stale_metadata() {
     // No extraction state rows — simulates a DB where the index was
     // downgraded or files were changed, making old metadata irrelevant.
     let rt = FocusRuntime::new(store, None);
-    let mode = rt.detect_index_mode();
+    let mode = rt.detect_access_strategy();
     assert_eq!(
         mode,
-        IndexMode::Focus,
+        AccessStrategy::Focus,
         "stale metadata keys should not fool detection; must check fresh extraction state"
     );
 }
@@ -258,7 +258,7 @@ fn test_prepare_full_index_returns_immediately() {
     let store = test_store();
     // FullIndex requires both rich extraction state (structural layer) AND
     // index-finalization metadata (last_index_time).  Focus-written rich layers
-    // alone must NOT trigger FullIndex (detect_index_mode hardening).
+    // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
@@ -270,9 +270,9 @@ fn test_prepare_full_index_returns_immediately() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::FullIndex);
+    assert_eq!(result.access, AccessStrategy::FullCache);
     assert!(
-        result.precision.is_none(),
+        result.quality.is_none(),
         "FullIndex mode should have no precision"
     );
     assert!(result.gaps.is_empty());
@@ -294,7 +294,7 @@ fn test_prepare_focus_with_calls_file_id() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.closure_id.is_some(),
         "focus path should produce a closure_id"
@@ -324,7 +324,7 @@ fn test_prepare_focus_with_calls_symbol_name() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.closure_id.is_some(),
         "focus path with symbol_name should produce a closure_id"
@@ -347,7 +347,7 @@ fn test_prepare_focus_with_calls_symbol_id() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert_eq!(
         result.seed_symbol_id,
         Some(sym_id),
@@ -375,12 +375,12 @@ fn test_prepare_focus_returns_precision_and_closure_id() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
-        result.precision.is_some(),
+        result.quality.is_some(),
         "focus path should return precision"
     );
-    let precision = result.precision.unwrap();
+    let precision = result.quality.unwrap();
     // Confidence is High because the test store has coverage entries
     // for the closure that was built synchronously.
     assert_eq!(
@@ -624,7 +624,7 @@ fn test_prepare_focus_with_trace_point() {
         column: 5,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert_eq!(
         result.seed_file_id,
         Some(file_id),
@@ -682,7 +682,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
     let store = test_store();
     // FullIndex requires both rich extraction state (structural layer) AND
     // index-finalization metadata (last_index_time).  Focus-written rich layers
-    // alone must NOT trigger FullIndex (detect_index_mode hardening).
+    // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
@@ -694,7 +694,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::FullIndex);
+    assert_eq!(result.access, AccessStrategy::FullCache);
     assert!(
         result.coverage_counts.is_none(),
         "FullIndex mode should have no coverage_counts"
@@ -714,7 +714,7 @@ fn test_prepare_focus_populates_coverage_counts() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.coverage_counts.is_some(),
         "focus path should populate coverage_counts"
@@ -743,7 +743,7 @@ fn test_prepare_focus_coverage_counts_with_symbol_id() {
         depth: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.coverage_counts.is_some(),
         "coverage_counts should be populated for symbol_id seed"
@@ -813,7 +813,7 @@ fn test_prepare_explore_intent() {
         symbol_id: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.closure_id.is_some(),
         "focus path should produce a closure_id"
@@ -838,7 +838,7 @@ fn test_prepare_context_intent() {
         symbol_id: None,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert!(
         result.closure_id.is_some(),
         "focus path should produce a closure_id"
@@ -858,7 +858,7 @@ fn test_prepare_trace_variable_intent() {
         column: 5,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
-    assert_eq!(result.mode, IndexMode::Focus);
+    assert_eq!(result.access, AccessStrategy::Focus);
     assert_eq!(
         result.seed_file_id,
         Some(file_id),
@@ -879,8 +879,8 @@ fn test_prepare_search_intent() {
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(
-        result.mode,
-        IndexMode::Focus,
+        result.access,
+        AccessStrategy::Focus,
         "search should enter focus path"
     );
     assert!(
@@ -896,7 +896,7 @@ fn test_prepare_full_index_all_intents() {
     let store = test_store();
     // FullIndex requires both rich extraction state (structural layer) AND
     // index-finalization metadata (last_index_time).  Focus-written rich layers
-    // alone must NOT trigger FullIndex (detect_index_mode hardening).
+    // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
     let mut rt = FocusRuntime::new(store, None);
@@ -948,12 +948,12 @@ fn test_prepare_full_index_all_intents() {
     for intent in &intents {
         let result = rt.prepare(intent, Vec::new()).unwrap();
         assert_eq!(
-            result.mode,
-            IndexMode::FullIndex,
+            result.access,
+            AccessStrategy::FullCache,
             "all intents should return FullIndex when structural extraction exists"
         );
         assert!(
-            result.precision.is_none(),
+            result.quality.is_none(),
             "FullIndex mode should have no precision"
         );
     }
@@ -983,8 +983,8 @@ fn test_locate_seed_explore_vs_calls_same_behavior() {
     let calls_result = rt.prepare(&calls_intent, Vec::new()).unwrap();
     let explore_result = rt.prepare(&explore_intent, Vec::new()).unwrap();
 
-    assert_eq!(calls_result.mode, IndexMode::Focus);
-    assert_eq!(explore_result.mode, IndexMode::Focus);
+    assert_eq!(calls_result.access, AccessStrategy::Focus);
+    assert_eq!(explore_result.access, AccessStrategy::Focus);
     assert_eq!(
         calls_result.seed_file_id, explore_result.seed_file_id,
         "Explore and Calls should produce same seed_file_id"

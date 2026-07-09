@@ -10,7 +10,7 @@
 //!
 //! - [`FocusSeed`] upgrades [`InvestigationFocus`] with `File` variant + `language`.
 //! - [`WindowBudget`] extends the existing lazy budget concepts.
-//! - [`KnownGap`] is shared with the [`Precision`] model in `types::structs`.
+//! - [`KnownGap`] is shared with the [`AnswerQuality`] model in `types::structs`.
 
 use std::collections::HashSet;
 
@@ -19,7 +19,7 @@ use crate::closure_planner::IncludeRoot;
 use types::enums::{Language, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::KnownGap;
-use types::structs::Precision;
+use types::structs::AnswerQuality;
 
 // ---------------------------------------------------------------------------
 // Direction — expansion direction for graph-based strategies
@@ -175,7 +175,7 @@ impl FocusClosure {
         }
     }
 
-    pub fn mark_extracted(&mut self, file_id: FileId, _precision: &Precision) {
+    pub fn mark_extracted(&mut self, file_id: FileId, _precision: &AnswerQuality) {
         self.files.insert(file_id);
         self.visited.insert(file_id);
     }

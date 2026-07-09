@@ -52,7 +52,7 @@ pub(crate) mod reference_resolutions;
 pub mod symbol_edge_candidates;
 #[allow(unused_imports)]
 pub use lifecycle::{
-    IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+    PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
 };
 mod scopes;
 mod stats;
@@ -868,7 +868,7 @@ impl Store {
                 params![
                     file_id,
                     facts.file.content_hash,
-                    CapabilityMask::MANIFEST as i64
+                    FactCoverage::MANIFEST as i64
                 ],
             )?;
             Ok(())
@@ -2299,21 +2299,21 @@ mod tests {
                 "manifest",
                 "abc",
                 "complete",
-                CapabilityMask::from_bits(CapabilityMask::MANIFEST),
+                FactCoverage::from_bits(FactCoverage::MANIFEST),
             )
             .unwrap();
 
         let mask = store.derive_capability_for_files(&[file_id]);
         assert!(
-            mask.has(CapabilityMask::MANIFEST),
+            mask.has(FactCoverage::MANIFEST),
             "should have MANIFEST bit: {mask:?}"
         );
         assert!(
-            !mask.has(CapabilityMask::STRUCTURAL),
+            !mask.has(FactCoverage::STRUCTURAL),
             "should NOT have STRUCTURAL bit with only manifest data: {mask:?}"
         );
         assert!(
-            !mask.has(CapabilityMask::CALL_EDGES),
+            !mask.has(FactCoverage::CALL_EDGES),
             "should NOT have CALL_EDGES bit with only manifest data: {mask:?}"
         );
     }
@@ -2338,21 +2338,21 @@ mod tests {
                 "structural",
                 "abc",
                 "complete",
-                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+                FactCoverage::from_bits(FactCoverage::MANIFEST | FactCoverage::STRUCTURAL),
             )
             .unwrap();
 
         let mask = store.derive_capability_for_files(&[file_id]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
         assert!(
-            !mask.has(CapabilityMask::CALL_EDGES),
+            !mask.has(FactCoverage::CALL_EDGES),
             "should NOT have CALL_EDGES with no edges in store"
         );
     }
 
     #[test]
-    fn read_index_mode_treats_dataflow_layer_as_full_index() {
+    fn read_catalog_tier_treats_dataflow_layer_as_full_index() {
         let store = test_store();
         let file_id = FileId::generate("src/example.ts");
         let file = FileInfo {
@@ -2372,15 +2372,15 @@ mod tests {
                 "dataflow",
                 "abc",
                 "complete",
-                CapabilityMask::from_layers(&["dataflow"]),
+                FactCoverage::from_layers(&["dataflow"]),
             )
             .unwrap();
 
-        assert_eq!(store.read_index_mode().unwrap(), "full");
+        assert_eq!(store.read_catalog_tier().unwrap(), "full");
     }
 
     #[test]
-    fn read_index_mode_treats_mixed_dataflow_as_partial_structural() {
+    fn read_catalog_tier_treats_mixed_dataflow_as_partial_structural() {
         let store = test_store();
         let file_a = FileId::generate("src/a.ts");
         let file_b = FileId::generate("src/b.ts");
@@ -2401,7 +2401,7 @@ mod tests {
                 "dataflow",
                 "abc",
                 "complete",
-                CapabilityMask::from_layers(&["dataflow"]),
+                FactCoverage::from_layers(&["dataflow"]),
             )
             .unwrap();
         store
@@ -2410,11 +2410,11 @@ mod tests {
                 "manifest",
                 "abc",
                 "complete",
-                CapabilityMask::from_layers(&["manifest"]),
+                FactCoverage::from_layers(&["manifest"]),
             )
             .unwrap();
 
-        assert_eq!(store.read_index_mode().unwrap(), "partial_structural");
+        assert_eq!(store.read_catalog_tier().unwrap(), "partial_structural");
     }
 
     #[test]
@@ -2439,7 +2439,7 @@ mod tests {
                 "structural",
                 "abc",
                 "complete",
-                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+                FactCoverage::from_bits(FactCoverage::MANIFEST | FactCoverage::STRUCTURAL),
             )
             .unwrap();
 
@@ -2509,22 +2509,22 @@ mod tests {
         store.insert_edges(&[edge]).unwrap();
 
         let mask = store.derive_capability_for_files(&[file_id]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
         assert!(
-            mask.has(CapabilityMask::CALL_EDGES),
+            mask.has(FactCoverage::CALL_EDGES),
             "should have CALL_EDGES when edges exist in store: {mask:?}"
         );
         assert!(
-            !mask.has(CapabilityMask::CFG),
+            !mask.has(FactCoverage::CFG),
             "CFG not built by lazy structural"
         );
         assert!(
-            !mask.has(CapabilityMask::DATAFLOW),
+            !mask.has(FactCoverage::DATAFLOW),
             "DATAFLOW not built by lazy structural"
         );
         assert!(
-            !mask.has(CapabilityMask::SUMMARIES),
+            !mask.has(FactCoverage::SUMMARIES),
             "SUMMARIES not built by lazy structural"
         );
     }
@@ -2549,7 +2549,7 @@ mod tests {
                 "manifest",
                 "hash_a",
                 "complete",
-                CapabilityMask::from_bits(CapabilityMask::MANIFEST),
+                FactCoverage::from_bits(FactCoverage::MANIFEST),
             )
             .unwrap();
 
@@ -2569,7 +2569,7 @@ mod tests {
                 "structural",
                 "hash_b",
                 "complete",
-                CapabilityMask::from_bits(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL),
+                FactCoverage::from_bits(FactCoverage::MANIFEST | FactCoverage::STRUCTURAL),
             )
             .unwrap();
 
@@ -2616,15 +2616,15 @@ mod tests {
 
         let mask = store.derive_capability_for_files(&[file_a, file_b]);
         assert!(
-            mask.has(CapabilityMask::MANIFEST),
+            mask.has(FactCoverage::MANIFEST),
             "aggregate should have MANIFEST from file_a"
         );
         assert!(
-            mask.has(CapabilityMask::STRUCTURAL),
+            mask.has(FactCoverage::STRUCTURAL),
             "aggregate should have STRUCTURAL from file_b"
         );
         assert!(
-            mask.has(CapabilityMask::CALL_EDGES),
+            mask.has(FactCoverage::CALL_EDGES),
             "aggregate should have CALL_EDGES from file_b edges"
         );
     }
@@ -2649,7 +2649,7 @@ mod tests {
                 "dataflow",
                 "abc",
                 "complete",
-                CapabilityMask::from_layers(&["dataflow"]),
+                FactCoverage::from_layers(&["dataflow"]),
             )
             .unwrap();
 
@@ -2660,23 +2660,23 @@ mod tests {
                 "summaries",
                 "abc",
                 "complete",
-                CapabilityMask::new(CapabilityMask::SUMMARIES),
+                FactCoverage::new(FactCoverage::SUMMARIES),
             )
             .unwrap();
 
         let mask = store.derive_capability_for_files(&[file_id]);
         assert!(
-            mask.has(CapabilityMask::DATAFLOW),
+            mask.has(FactCoverage::DATAFLOW),
             "should have DATAFLOW from capability_mask: {mask:?}"
         );
         assert!(
-            mask.has(CapabilityMask::SUMMARIES),
+            mask.has(FactCoverage::SUMMARIES),
             "should have SUMMARIES from capability_mask: {mask:?}"
         );
         // dataflow layer implies lower bits via from_layers too
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
-        assert!(mask.has(CapabilityMask::CALL_EDGES));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
+        assert!(mask.has(FactCoverage::CALL_EDGES));
     }
 
     #[test]
@@ -2699,23 +2699,23 @@ mod tests {
                 "structural",
                 "abc",
                 "complete",
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 
         let mask = store.derive_capability_for_files(&[file_id]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
         assert!(
-            !mask.has(CapabilityMask::DATAFLOW),
+            !mask.has(FactCoverage::DATAFLOW),
             "should NOT have DATAFLOW with only structural layer: {mask:?}"
         );
         assert!(
-            !mask.has(CapabilityMask::CFG),
+            !mask.has(FactCoverage::CFG),
             "should NOT have CFG with only structural layer: {mask:?}"
         );
         assert!(
-            !mask.has(CapabilityMask::SUMMARIES),
+            !mask.has(FactCoverage::SUMMARIES),
             "should NOT have SUMMARIES with only structural layer: {mask:?}"
         );
     }
@@ -2742,7 +2742,7 @@ mod tests {
                 "dataflow",
                 "old_hash",
                 "complete",
-                CapabilityMask::from_layers(&["dataflow"]),
+                FactCoverage::from_layers(&["dataflow"]),
             )
             .unwrap();
 
@@ -2753,7 +2753,7 @@ mod tests {
                 "structural",
                 "new_hash",
                 "complete",
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 
@@ -2761,12 +2761,12 @@ mod tests {
         // The stale row's content_hash doesn't match files.content_hash,
         // so its DATAFLOW capability should NOT appear.
         assert!(
-            !mask.has(CapabilityMask::DATAFLOW),
+            !mask.has(FactCoverage::DATAFLOW),
             "stale content_hash should be excluded, got DATAFLOW: {mask:?}"
         );
         // The fresh structural row should still contribute via layer fallback
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
     }
 
     // ── Bulk schema management tests ─────────────────────────────────────

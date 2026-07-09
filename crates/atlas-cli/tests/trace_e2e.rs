@@ -1587,8 +1587,8 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         .expect("capability profile must exist");
     assert_eq!(cap.language, "typescript");
     assert!(
-        cap.capability_level >= atlas_engine::capability::CapabilityLevel::DataflowBasic,
-        "TS must have at least DataflowBasic capability"
+        cap.capability_level >= atlas_engine::capability::CapabilityLevel::DataflowLocal,
+        "TS must have at least DataflowLocal capability"
     );
     // ── Envelope fields validation (via JSON) ──
     let ts_json = serde_json::to_value(&resp).expect("serialize trace response");

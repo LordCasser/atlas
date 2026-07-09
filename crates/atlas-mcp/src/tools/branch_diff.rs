@@ -10,7 +10,7 @@ use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 use atlas_engine::LazyWindow;
-use atlas_engine::structs::{CapabilityMask, CoverageTier};
+use atlas_engine::structs::{FactCoverage, CoverageTier};
 use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ fn lazy_window_has_boundary(window: &LazyWindow) -> bool {
     window.truncated
         || window.units_pending > 0
         || !window.pending_job_ids.is_empty()
-        || window.precision.as_ref().is_some_and(|precision| {
+        || window.quality.as_ref().is_some_and(|precision| {
             matches!(
                 precision.coverage,
                 CoverageTier::Boundary { .. }
@@ -54,7 +54,7 @@ fn classify_branch_diff_analysis(
         };
     };
 
-    let has_dataflow = window.capability_mask.has(CapabilityMask::DATAFLOW);
+    let has_dataflow = window.capability_mask.has(FactCoverage::DATAFLOW);
     if has_dataflow && !lazy_window_has_boundary(window) {
         BranchDiffAnalysisMode::SemanticReady
     } else {
@@ -312,7 +312,7 @@ mod tests {
     use super::*;
     use crate::tools::analysis_envelope::SnapshotStore;
     use crate::tools::query_snapshot::QuerySnapshot;
-    use atlas_engine::structs::{Precision, SemanticConfidence, SymbolTier};
+    use atlas_engine::structs::{AnswerQuality, SemanticConfidence, SymbolTier};
     use atlas_engine::{AnalysisUnit, FileId, SymbolId, TextRange};
     use serde_json::json;
     use std::sync::Mutex;
@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    fn lazy_window(capability_mask: CapabilityMask, pending: bool) -> LazyWindow {
+    fn lazy_window(capability_mask: FactCoverage, pending: bool) -> LazyWindow {
         let seed_unit = AnalysisUnit::from_function(
             FileId::default(),
             SymbolId::default(),
@@ -367,15 +367,15 @@ mod tests {
             units_cached: 0,
             units_pending: usize::from(pending),
             pending_job_ids: vec![],
-            precision: Some(if pending {
-                Precision {
+            quality: Some(if pending {
+                AnswerQuality {
                     coverage: CoverageTier::Boundary {
                         target_tier: SymbolTier::Full,
                     },
                     confidence: SemanticConfidence::High,
                 }
             } else {
-                Precision::best()
+                AnswerQuality::best()
             }),
             capability_mask,
         }
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn semantic_branch_diff_empty_dataflow_but_capability_ready_is_function_complete() {
-        let mut mask = CapabilityMask::default();
-        mask.set(CapabilityMask::DATAFLOW);
+        let mut mask = FactCoverage::default();
+        mask.set(FactCoverage::DATAFLOW);
         let window = lazy_window(mask, false);
         let mode = classify_branch_diff_analysis(true, Some(&window), false);
         assert_eq!(mode, BranchDiffAnalysisMode::SemanticReady);
@@ -412,8 +412,8 @@ mod tests {
 
     #[test]
     fn semantic_branch_diff_boundary_with_dataflow_is_waitable() {
-        let mut mask = CapabilityMask::default();
-        mask.set(CapabilityMask::DATAFLOW);
+        let mut mask = FactCoverage::default();
+        mask.set(FactCoverage::DATAFLOW);
         let window = lazy_window(mask, true);
         let mode = classify_branch_diff_analysis(true, Some(&window), false);
         assert_eq!(

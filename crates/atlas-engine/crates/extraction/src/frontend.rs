@@ -440,11 +440,11 @@ mod tests {
         assert!(frontend.references.capability().is_supported());
         assert!(
             frontend.dataflow.capability().is_supported(),
-            "Java dataflow should be supported (DataflowBasic)"
+            "Java dataflow should be supported (DataflowLocal)"
         );
         assert!(
             frontend.lexical.capability().is_supported(),
-            "Java lexical should be supported (DataflowBasic)"
+            "Java lexical should be supported (DataflowLocal)"
         );
     }
 

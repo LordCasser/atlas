@@ -9,7 +9,7 @@ use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 use atlas_engine::Store;
-use atlas_engine::is_rich_index_mode;
+use atlas_engine::is_rich_catalog_tier;
 
 /// Index-signature and manual-full-index detection cache.
 pub(crate) struct CacheState {
@@ -34,9 +34,9 @@ impl CacheState {
     /// The result is cached by store signature; signature changes force
     /// re-detection.
     //
-    // ⚠️ Mirrors the core check in FocusRuntime::detect_index_mode()
+    // ⚠️ Mirrors the core check in FocusRuntime::detect_access_strategy()
     //    (crates/atlas-engine/src/focus/runtime.rs).  Both require
-    //    `is_rich_index_mode() && last_index_time.is_some()`.  Keep in sync.
+    //    `is_rich_catalog_tier() && last_index_time.is_some()`.  Keep in sync.
     pub(crate) fn has_manual_full_index(&self, store: &Store) -> bool {
         let signature = store.index_signature().unwrap_or_default();
         if let Some((cached_signature, cached)) = &*self
@@ -47,15 +47,15 @@ impl CacheState {
         {
             return *cached;
         }
-        let index_mode = store
-            .read_index_mode()
+        let catalog_tier = store
+            .read_catalog_tier()
             .unwrap_or_else(|_| "unknown".to_string());
         let finalized = store
             .get_metadata("last_index_time")
             .ok()
             .flatten()
             .is_some();
-        let result = finalized && is_rich_index_mode(&index_mode);
+        let result = finalized && is_rich_catalog_tier(&catalog_tier);
         *self
             .cached_manual_full_index
             .write()

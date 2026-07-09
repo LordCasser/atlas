@@ -18,18 +18,18 @@ use super::{Store, StoreReader};
 /// mode + path aliases is stored alongside the generation counter so the
 /// pipeline can detect configuration changes without re-reading every file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexMode {
+pub enum PipelineGrade {
     Manifest,
     Structural,
     Full,
 }
 
-impl IndexMode {
+impl PipelineGrade {
     pub fn as_str(&self) -> &'static str {
         match self {
-            IndexMode::Manifest => "manifest",
-            IndexMode::Structural => "structural",
-            IndexMode::Full => "full",
+            PipelineGrade::Manifest => "manifest",
+            PipelineGrade::Structural => "structural",
+            PipelineGrade::Full => "full",
         }
     }
 }
@@ -211,7 +211,7 @@ impl Store {
     /// changes, not just file content changes.
     pub fn resolution_config_hash(
         &self,
-        mode: &IndexMode,
+        mode: &PipelineGrade,
         path_alias: Option<&HashMap<String, String>>,
     ) -> anyhow::Result<String> {
         let mut hasher = blake3::Hasher::new();
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn test_resolution_config_hash_idempotent() {
         let store = test_store();
-        let mode = IndexMode::Structural;
+        let mode = PipelineGrade::Structural;
         let hash1 = store.resolution_config_hash(&mode, None).unwrap();
         let hash2 = store.resolution_config_hash(&mode, None).unwrap();
         assert_eq!(hash1, hash2, "same input must produce same hash");
@@ -435,10 +435,10 @@ mod tests {
     fn test_resolution_config_hash_changes_with_mode() {
         let store = test_store();
         let h1 = store
-            .resolution_config_hash(&IndexMode::Structural, None)
+            .resolution_config_hash(&PipelineGrade::Structural, None)
             .unwrap();
         let h2 = store
-            .resolution_config_hash(&IndexMode::Full, None)
+            .resolution_config_hash(&PipelineGrade::Full, None)
             .unwrap();
         assert_ne!(h1, h2, "different modes must produce different hashes");
     }
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn test_resolution_config_hash_changes_with_alias() {
         let store = test_store();
-        let mode = IndexMode::Structural;
+        let mode = PipelineGrade::Structural;
 
         let mut aliases1 = HashMap::new();
         aliases1.insert("/src".to_string(), "/opt/src".to_string());

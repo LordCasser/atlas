@@ -48,7 +48,7 @@ impl Store {
         layer: &str,
         content_hash: &str,
         status: &str,
-        capability_mask: CapabilityMask,
+        capability_mask: FactCoverage,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
@@ -119,12 +119,12 @@ impl Store {
     /// This is the shared status boundary used by CLI, MCP, and TUI entry
     /// points. Stale extraction rows are ignored so an old structural/full
     /// layer cannot make a downgraded or modified project look protected.
-    pub fn read_index_mode(&self) -> anyhow::Result<String> {
+    pub fn read_catalog_tier(&self) -> anyhow::Result<String> {
         let stats = self.get_stats()?;
         let lazy_stats = self.get_lazy_dataflow_stats().ok();
         let layer_counts = self.count_fresh_file_extraction_state().unwrap_or_default();
 
-        Ok(compute_index_mode(
+        Ok(compute_catalog_tier(
             stats.total_files,
             complete_count(&layer_counts, "manifest"),
             complete_count(&layer_counts, "structural"),
@@ -144,7 +144,7 @@ impl Store {
         &self,
         file_id: &FileId,
         content_hash: &str,
-        required: CapabilityMask,
+        required: FactCoverage,
     ) -> anyhow::Result<bool> {
         if required.is_zero() {
             return Ok(true);
@@ -166,10 +166,10 @@ impl Store {
         for row in rows {
             let (layer, capability_mask) = row?;
             bits |= capability_mask as u16;
-            bits |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
+            bits |= FactCoverage::from_layers(&[layer.as_str()]).bits();
         }
 
-        Ok(CapabilityMask::from_bits(bits).has_all(required.bits()))
+        Ok(FactCoverage::from_bits(bits).has_all(required.bits()))
     }
 
     /// Detect stale structural facts where call references are owned by
@@ -205,7 +205,7 @@ impl Store {
 
     /// Query the aggregate capability mask for a file across all layers.
     /// Returns the bitwise OR of all `capability_mask` values for the file.
-    pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<CapabilityMask> {
+    pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
         let mut stmt =
             conn.prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
@@ -220,7 +220,7 @@ impl Store {
             })
             .collect();
         let mask = rows.iter().fold(0u16, |acc, &m| acc | (m as u16));
-        Ok(CapabilityMask::new(mask))
+        Ok(FactCoverage::new(mask))
     }
 
     /// Query the capability mask for a specific unit within a file.
@@ -228,7 +228,7 @@ impl Store {
         &self,
         file_id: &FileId,
         unit_id: &[u8; 16],
-    ) -> anyhow::Result<CapabilityMask> {
+    ) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
         let unit_blob: &[u8] = unit_id;
         let mask: Option<i64> = conn
@@ -248,7 +248,7 @@ impl Store {
             })
             .ok()
             .flatten();
-        Ok(CapabilityMask::new(mask.unwrap_or(0) as u16))
+        Ok(FactCoverage::new(mask.unwrap_or(0) as u16))
     }
 
     /// Return project-wide counts for capability analytics.
@@ -316,7 +316,7 @@ impl Store {
              WHERE l.content_hash = f.content_hash
                AND (l.capability_mask & ?1) != 0",
         )?;
-        let cfg_bit = CapabilityMask::CFG as i64;
+        let cfg_bit = FactCoverage::CFG as i64;
         let files_with_cfg: usize = stmt
             .query_row(params![cfg_bit], |row| row.get::<_, i64>(0))?
             .max(0) as usize;
@@ -348,9 +348,9 @@ impl Store {
     /// | `CFG`        | Fresh `capability_mask` from full-index rows                   |
     /// | `DATAFLOW`   | Fresh `capability_mask` from full-index rows                   |
     /// | `SUMMARIES`  | Fresh `capability_mask` from full-index rows                   |
-    pub fn derive_capability_for_files(&self, file_ids: &[FileId]) -> CapabilityMask {
+    pub fn derive_capability_for_files(&self, file_ids: &[FileId]) -> FactCoverage {
         if file_ids.is_empty() {
-            return CapabilityMask::default();
+            return FactCoverage::default();
         }
 
         let conn = self.lock_read();
@@ -387,7 +387,7 @@ impl Store {
             }) {
                 for (cap_mask_i64, layer) in rows.flatten() {
                     aggregated |= cap_mask_i64 as u16;
-                    aggregated |= CapabilityMask::from_layers(&[layer.as_str()]).bits();
+                    aggregated |= FactCoverage::from_layers(&[layer.as_str()]).bits();
                 }
             }
         }
@@ -397,7 +397,7 @@ impl Store {
         // Only checked when CALL_EDGES is not already set by stored masks.
         // Any edge whose source or target belongs to one of the given files
         // implies the call-graph layer was built.
-        if aggregated & CapabilityMask::CALL_EDGES == 0 {
+        if aggregated & FactCoverage::CALL_EDGES == 0 {
             let edge_sql = format!(
                 "SELECT 1 FROM symbol_edges
                   WHERE source IN (SELECT symbol_id FROM symbols WHERE file_id IN ({in_clause}))
@@ -407,12 +407,12 @@ impl Store {
 
             if let Ok(mut stmt) = conn.prepare(&edge_sql) {
                 if stmt.query_row(params.as_slice(), |_| Ok(())).is_ok() {
-                    aggregated |= CapabilityMask::CALL_EDGES;
+                    aggregated |= FactCoverage::CALL_EDGES;
                 }
             }
         }
 
-        CapabilityMask::from_bits(aggregated)
+        FactCoverage::from_bits(aggregated)
     }
 }
 
@@ -424,7 +424,7 @@ fn complete_count(layer_counts: &[(String, String, i64)], layer: &str) -> i64 {
         .sum()
 }
 
-fn compute_index_mode(
+fn compute_catalog_tier(
     total_files: i64,
     manifest_complete: i64,
     structural_complete: i64,

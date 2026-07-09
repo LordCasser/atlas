@@ -95,7 +95,7 @@ pub struct App {
     file_count: i64,
     symbol_count: i64,
     edge_count: i64,
-    index_mode: String,
+    catalog_tier: String,
 }
 
 impl App {
@@ -104,7 +104,7 @@ impl App {
         let (file_count, symbol_count, edge_count) = stats
             .map(|s| (s.total_files, s.total_symbols, s.total_edges))
             .unwrap_or_default();
-        let index_mode = detect_index_mode(&store);
+        let catalog_tier = detect_catalog_tier(&store);
 
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
         let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
@@ -135,7 +135,7 @@ impl App {
             file_count,
             symbol_count,
             edge_count,
-            index_mode,
+            catalog_tier,
             last_tool_result: None,
             help_visible: false,
             palette_visible: false,
@@ -1017,7 +1017,7 @@ impl App {
             rows[2],
             (self.file_count, self.symbol_count, self.edge_count),
             self.session.is_initialized(),
-            &self.index_mode,
+            &self.catalog_tier,
             mode,
         );
 
@@ -1036,18 +1036,18 @@ impl App {
             self.file_count = stats.total_files;
             self.symbol_count = stats.total_symbols;
             self.edge_count = stats.total_edges;
-            self.index_mode = detect_index_mode(&self.store);
+            self.catalog_tier = detect_catalog_tier(&self.store);
         }
     }
 }
 
-/// Detect index mode by delegating to the canonical `Store::read_index_mode()`.
+/// Detect index mode by delegating to the canonical `Store::read_catalog_tier()`.
 ///
 /// This is the single source of truth for index-mode detection, shared by
 /// CLI, MCP, and TUI.  Previously the TUI maintained its own divergent
 /// detection logic; see issue 2.1 in the pre-release review.
-fn detect_index_mode(store: &Store) -> String {
-    store.read_index_mode().unwrap_or_else(|_| "unknown".into())
+fn detect_catalog_tier(store: &Store) -> String {
+    store.read_catalog_tier().unwrap_or_else(|_| "unknown".into())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -1138,7 +1138,7 @@ mod tests {
             file_count: 0,
             symbol_count: 0,
             edge_count: 0,
-            index_mode: "none".into(),
+            catalog_tier: "none".into(),
             last_tool_result: None,
             help_visible: false,
             palette_visible: false,

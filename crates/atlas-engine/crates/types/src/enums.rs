@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Cangjie is available behind `#[cfg(feature = "cangjie")]` and is compiled by default.
 ///
-/// Go, C#, Rust, PHP, Ruby, and Kotlin are now at DataflowFull capability level
+/// Go, C#, Rust, PHP, Ruby, and Kotlin are now at DataflowInterproc capability level
 /// and are compiled by default.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,

@@ -62,7 +62,7 @@ Full-repo CLI indexing is an **optional human/operator** action (see
 
 ## Language support (summary)
 
-14 languages build by default. Overall **DataflowFull** does **not** mean every
+14 languages build by default. Overall **DataflowInterproc** does **not** mean every
 feature works everywhere (e.g. CFG unsupported for PHP/ArkTS). Check:
 
 - `project(action="status")` (verbose if needed)

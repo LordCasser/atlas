@@ -166,7 +166,7 @@ impl ToolRouter {
 
         // Unavailable means no data at all — not even manifest extraction.
         // Convert to a clear error instead of returning empty results.
-        if engine_resp.precision.is_unavailable() && engine_resp.scope_file_count == 0 {
+        if engine_resp.quality.is_unavailable() && engine_resp.scope_file_count == 0 {
             let guidance = self.project().store_query_runtime.not_indexed_guidance();
             let mut msg =
                 format!("scope \"{scope}\" has no indexed data and cannot return any results");

@@ -97,9 +97,9 @@ The original baseline implementation blockers are closed and covered by the rele
 
 ## 2. Completed work
 
-### 2.1 DataflowFull + persistent summary layer ✅
+### 2.1 DataflowInterproc + persistent summary layer ✅
 
-All 14 languages are now at `DataflowFull` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
+All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
 > **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 12 capability-enabled languages; ArkTS and PHP remain unsupported. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
 
@@ -119,7 +119,7 @@ P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local 
 
 ### 2.5 Lazy UX and query recovery ✅
 
-- `CapabilityMask` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
+- `FactCoverage` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
 - Lazy MCP responses expose one shared public view: `analysis`, structured `gaps`, `query_id`, and resumable refinement state.
 - MCP query snapshots support `resume_query(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
 - Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
@@ -164,7 +164,7 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
 - Keep `language_capabilities` and `atlas doctor` aligned with actual compiled features.
 - For each language, maintain explicit limitations and confidence floors.
 - Ensure unsupported or partial trace queries return diagnostics rather than silent empty results.
-- Keep `CapabilityMask` synchronized with persisted state: `cfg` requires actual CFG facts, `dataflow` requires dataflow facts, and `summaries` requires successfully built summary tables.
+- Keep `FactCoverage` synchronized with persisted state: `cfg` requires actual CFG facts, `dataflow` requires dataflow facts, and `summaries` requires successfully built summary tables.
 - `analysis.basis` may only advertise facts proven by DB state or verified during the current tool call.
 
 ### 3.2 Path-level validation
@@ -184,7 +184,7 @@ Continue expanding end-to-end smoke tests for all languages.
 ### 3.3 Public analysis view consistency
 
 - Keep all lazy-triggering MCP tools aligned on `analysis`, structured `gaps`, and terminal retry semantics.
-- Keep internal `CapabilityMask` details behind the public `analysis.basis` and `gaps[].reason` boundary.
+- Keep internal `FactCoverage` details behind the public `analysis.basis` and `gaps[].reason` boundary.
 - Keep `query_id`, `resume_query`, and `tasks` behavior documented and covered by tests.
 - No MCP response may return a semantic/CFG result while its contract says that same capability is unavailable.
 - No recoverable lazy query may omit `query_id` or retry state solely because the current trace/search result is empty.
@@ -355,7 +355,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - 每个迁移均以 per-language identity test（`test_<lang>_profile_identity`）验证产出 `LanguageCapabilityProfile` 与迁移前逐字段完全一致；四项一致性测试（`test_all_profiles_are_valid`、`test_all_profiles_have_feature_matrix`、`test_cfg_feature_matrix_consistent_with_supported_features`、`test_cfg_known_limitation`）保持通过。
 - 特殊情形保留：C 的 `include_resolution`+`function_pointer_tracking` 及 call_graph 0.65；C++ 的 `include_resolution`；ArkTS/PHP 的 `cfg` 为 Unsupported；Cangjie 由 `fm.supported_feature_names()` 派生改写为显式列表（13 项全支持、unsupported 为空）；C#/Ruby 的 CFG limitation 文本含 "body traversal"+"implemented"。现有三个 `FeatureOverride` 变体（`Confidence`/`WithLimitations`/`Unsupported`）足以表达全部覆盖，未新增变体。
 
-**Note — `atlas status` 的语言列表语义（避免误判为 Cangjie 缺陷）**：`atlas status`（及 MCP `status`）按设计只列出**项目中实际存在源文件**的语言（遍历 `files_by_language`，见 `status.rs`）；`atlas doctor` 才用 `all_compiled()` 列出所有编译语言。因此若某项目无 `.cj` 文件，`status` 不显示 Cangjie 属正常语义，而非注册/profile 缺陷——`all_compiled()` 已含 Cangjie（`#[cfg(feature="cangjie")]`，默认启用），`atlas doctor` 正确显示 `cangjie dataflow_full 65%`。
+**Note — `atlas status` 的语言列表语义（避免误判为 Cangjie 缺陷）**：`atlas status`（及 MCP `status`）按设计只列出**项目中实际存在源文件**的语言（遍历 `files_by_language`，见 `status.rs`）；`atlas doctor` 才用 `all_compiled()` 列出所有编译语言。因此若某项目无 `.cj` 文件，`status` 不显示 Cangjie 属正常语义，而非注册/profile 缺陷——`all_compiled()` 已含 Cangjie（`#[cfg(feature="cangjie")]`，默认启用），`atlas doctor` 正确显示 `cangjie dataflow_interproc 65%`。
 
 ### 10.2 FeatureMatrix 镜像方法合并
 

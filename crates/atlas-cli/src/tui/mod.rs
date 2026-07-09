@@ -149,7 +149,7 @@ fn preserve_unusable_db(db_path: &Path) -> anyhow::Result<()> {
 
 fn has_basic_or_better_index(store: &Store) -> anyhow::Result<bool> {
     Ok(!matches!(
-        store.read_index_mode()?.as_str(),
+        store.read_catalog_tier()?.as_str(),
         "none" | "unknown"
     ))
 }

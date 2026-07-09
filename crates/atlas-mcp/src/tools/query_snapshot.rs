@@ -76,7 +76,7 @@ impl InvestigationState {
                 focus: focus.clone(),
                 related_symbols: vec![],
                 related_files: vec![],
-                desired_capabilities: atlas_engine::CapabilityMask::default(),
+                desired_capabilities: atlas_engine::FactCoverage::default(),
             });
 
         match &focus {
@@ -85,9 +85,9 @@ impl InvestigationState {
                     inv.related_symbols.push(*sid);
                 }
                 inv.desired_capabilities
-                    .set(atlas_engine::CapabilityMask::CFG);
+                    .set(atlas_engine::FactCoverage::CFG);
                 inv.desired_capabilities
-                    .set(atlas_engine::CapabilityMask::DATAFLOW);
+                    .set(atlas_engine::FactCoverage::DATAFLOW);
             }
             InvestigationFocus::Position { file_id, .. } => {
                 if !inv.related_files.contains(file_id) {
@@ -102,9 +102,9 @@ impl InvestigationState {
                     inv.related_symbols.push(*struct_sym);
                 }
                 inv.desired_capabilities
-                    .set(atlas_engine::CapabilityMask::CFG);
+                    .set(atlas_engine::FactCoverage::CFG);
                 inv.desired_capabilities
-                    .set(atlas_engine::CapabilityMask::DATAFLOW);
+                    .set(atlas_engine::FactCoverage::DATAFLOW);
             }
         }
     }
@@ -113,7 +113,7 @@ impl InvestigationState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::{CapabilityMask, InvestigationFocus};
+    use atlas_engine::{FactCoverage, InvestigationFocus};
     use std::time::Duration;
 
     #[test]
@@ -166,8 +166,8 @@ mod tests {
         state.update(InvestigationFocus::Symbol(Default::default()));
         let inv = state.active_investigation.as_ref().unwrap();
         // Investigation should request CFG and dataflow
-        assert!(inv.desired_capabilities.has(CapabilityMask::CFG));
-        assert!(inv.desired_capabilities.has(CapabilityMask::DATAFLOW));
+        assert!(inv.desired_capabilities.has(FactCoverage::CFG));
+        assert!(inv.desired_capabilities.has(FactCoverage::DATAFLOW));
     }
 
     #[test]

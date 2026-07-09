@@ -11,7 +11,7 @@ use std::sync::Arc;
 use db::Store;
 use types::enums::{Language, ParseStatus, Visibility};
 use types::ids::FileId;
-use types::structs::{CapabilityMask, FileInfo};
+use types::structs::{FactCoverage, FileInfo};
 use types::{layer, status};
 
 use crate::LazyDataflowService;
@@ -60,7 +60,7 @@ fn insert_file_structural_complete(store: &Store, path: &str) -> FileId {
             layer::STRUCTURAL,
             "abc123",
             status::COMPLETE,
-            CapabilityMask::default(),
+            FactCoverage::default(),
         )
         .unwrap();
     file_id
@@ -2903,7 +2903,7 @@ fn test_visibility_filter_rust_private_excluded() {
                 types::layer::STRUCTURAL,
                 "rust_hash",
                 types::status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
         file_id

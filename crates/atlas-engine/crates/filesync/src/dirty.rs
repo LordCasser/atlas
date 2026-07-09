@@ -11,7 +11,7 @@ use anyhow::Result;
 use db::Store;
 use extraction::ExtractionMode;
 use rayon::prelude::*;
-use types::structs::CapabilityMask;
+use types::structs::FactCoverage;
 use workspace::SourcePath;
 
 /// Files that require re-indexing compared with the store.
@@ -31,7 +31,7 @@ pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Re
         store,
         discovered,
         root,
-        CapabilityMask::default(),
+        FactCoverage::default(),
         None,
     )
 }
@@ -62,7 +62,7 @@ fn build_dirty_set_with_required_capability(
     store: &Store,
     discovered: &[PathBuf],
     root: &Path,
-    required: CapabilityMask,
+    required: FactCoverage,
     on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<DirtySet> {
     let current_hashes: HashMap<String, String> = discovered
@@ -144,20 +144,20 @@ fn build_dirty_set_with_required_capability(
     })
 }
 
-fn required_capability_for_mode(mode: &ExtractionMode) -> CapabilityMask {
-    let mut mask = CapabilityMask::default();
+fn required_capability_for_mode(mode: &ExtractionMode) -> FactCoverage {
+    let mut mask = FactCoverage::default();
     match mode {
         ExtractionMode::Manifest | ExtractionMode::ResolutionSymbols => {
-            mask.set(CapabilityMask::MANIFEST);
+            mask.set(FactCoverage::MANIFEST);
         }
         ExtractionMode::Structural => {
-            mask.set(CapabilityMask::STRUCTURAL);
+            mask.set(FactCoverage::STRUCTURAL);
         }
         ExtractionMode::Full => {
-            mask.set(CapabilityMask::DATAFLOW);
+            mask.set(FactCoverage::DATAFLOW);
         }
         ExtractionMode::LazyDataflow { .. } => {
-            mask.set(CapabilityMask::DATAFLOW);
+            mask.set(FactCoverage::DATAFLOW);
         }
     }
     mask
@@ -209,7 +209,7 @@ mod tests {
                 "manifest",
                 &hash,
                 "complete",
-                CapabilityMask::from_layers(&["manifest"]),
+                FactCoverage::from_layers(&["manifest"]),
             )
             .unwrap();
 
@@ -252,7 +252,7 @@ mod tests {
                 "dataflow",
                 &hash,
                 "complete",
-                CapabilityMask::from_layers(&["dataflow"]),
+                FactCoverage::from_layers(&["dataflow"]),
             )
             .unwrap();
 

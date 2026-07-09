@@ -3,7 +3,7 @@
 //! # Architecture
 //!
 //! FocusRuntime detects whether the project has a full index. If so, it returns
-//! `IndexMode::FullIndex` so MCP tools can use the existing resolution + graph
+//! `AccessStrategy::FullCache` so MCP tools can use the existing resolution + graph
 //! code path. If not, it orchestrates:
 //!
 //! ```text
@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use db::Store;
 use types::enums::Language;
 use types::ids::{FileId, SymbolId};
-use types::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier};
+use types::structs::{CoverageTier, KnownGap, AnswerQuality, SemanticConfidence, SymbolTier};
 
 use crate::LazyDataflowService;
 use crate::closure_planner::IncludeRoot;
@@ -130,13 +130,13 @@ fn iterations_for(intent: &QueryIntent, background: bool) -> u32 {
     }
 }
 
-// ── IndexMode ───────────────────────────────────────────────────────────────
+// ── AccessStrategy ───────────────────────────────────────────────────────────────
 
 /// Whether the project has a full index or needs focus-driven analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexMode {
-    /// Full index exists — use existing resolution + graph code path.
-    FullIndex,
+pub enum AccessStrategy {
+    /// Full cache exists — use existing resolution + graph code path.
+    FullCache,
     /// No full index — use focus-driven incremental analysis.
     Focus,
 }
@@ -150,9 +150,9 @@ pub enum IndexMode {
 #[derive(Debug, Clone)]
 pub struct FocusResult {
     /// The index mode. MCP uses this to decide which code path to take.
-    pub mode: IndexMode,
+    pub access: AccessStrategy,
     /// For Focus mode: precision of the returned results.
-    pub precision: Option<Precision>,
+    pub quality: Option<AnswerQuality>,
     /// For Focus mode: known gaps.
     pub gaps: Vec<KnownGap>,
     /// For Focus mode: pending closure IDs being built in background.
@@ -224,9 +224,9 @@ pub struct FocusRuntime {
     started: AtomicBool,
     /// Join handle for the background worker thread (if spawned).
     bg_handle: Option<JoinHandle<()>>,
-    /// Index mode override for testing. When `Some`, `detect_index_mode()`
-    /// returns this value instead of calling `Store::read_index_mode()`.
-    detect_index_mode_override: Option<IndexMode>,
+    /// Index mode override for testing. When `Some`, `detect_access_strategy()`
+    /// returns this value instead of calling `Store::read_catalog_tier()`.
+    detect_access_strategy_override: Option<AccessStrategy>,
     /// Optional shared dataflow service from the MCP analysis runtime.
     /// When set, ensure_closure_engine() uses this instead of creating
     /// a duplicate instance.  The scheduler background engine still
@@ -421,7 +421,7 @@ impl FocusRuntime {
             closure_engine: None,
             started: AtomicBool::new(false),
             bg_handle: None,
-            detect_index_mode_override: None,
+            detect_access_strategy_override: None,
             shared_lazy_dataflow: None,
             hot_regions: HotRegionTracker {
                 is_persistent,
@@ -450,14 +450,14 @@ impl FocusRuntime {
     /// cache entries, but they are not proof that the repository is fully
     /// indexed. A full-index decision therefore requires both fresh rich
     /// extraction state and index-finalization metadata.
-    pub fn detect_index_mode(&self) -> IndexMode {
-        if let Some(mode) = self.detect_index_mode_override {
+    pub fn detect_access_strategy(&self) -> AccessStrategy {
+        if let Some(mode) = self.detect_access_strategy_override {
             return mode;
         }
         let rich = self
             .store
-            .read_index_mode()
-            .is_ok_and(|mode| crate::is_rich_index_mode(&mode));
+            .read_catalog_tier()
+            .is_ok_and(|mode| crate::is_rich_catalog_tier(&mode));
         let finalized = self
             .store
             .get_metadata("last_index_time")
@@ -465,9 +465,9 @@ impl FocusRuntime {
             .flatten()
             .is_some();
         if rich && finalized {
-            IndexMode::FullIndex
+            AccessStrategy::FullCache
         } else {
-            IndexMode::Focus
+            AccessStrategy::Focus
         }
     }
 
@@ -485,12 +485,12 @@ impl FocusRuntime {
         intent: &QueryIntent,
         include_roots: Vec<IncludeRoot>,
     ) -> Result<FocusResult> {
-        let mode = self.detect_index_mode();
+        let mode = self.detect_access_strategy();
 
-        if mode == IndexMode::FullIndex {
+        if mode == AccessStrategy::FullCache {
             return Ok(FocusResult {
-                mode: IndexMode::FullIndex,
-                precision: None,
+                access: AccessStrategy::FullCache,
+                quality: None,
                 gaps: Vec::new(),
                 pending_closure_ids: Vec::new(),
                 pending_extraction_job_ids: Vec::new(),
@@ -564,19 +564,19 @@ impl FocusRuntime {
         // resolution-symbol dependency is useful coverage, but not proof that
         // the requested code closure is structurally complete.
         let precision = if closure.files.is_empty() {
-            Precision {
+            AnswerQuality {
                 coverage: CoverageTier::Boundary {
                     target_tier: SymbolTier::Manifest,
                 },
                 confidence: SemanticConfidence::Low,
             }
         } else if !gaps.is_empty() {
-            Precision {
+            AnswerQuality {
                 coverage: CoverageTier::Partial { gaps: gaps.clone() },
                 confidence: SemanticConfidence::Medium,
             }
         } else {
-            Precision {
+            AnswerQuality {
                 coverage: CoverageTier::ClosureComplete {
                     closure_id: closure_id.clone(),
                 },
@@ -634,8 +634,8 @@ impl FocusRuntime {
         );
 
         Ok(FocusResult {
-            mode: IndexMode::Focus,
-            precision: Some(precision),
+            access: AccessStrategy::Focus,
+            quality: Some(precision),
             gaps,
             pending_closure_ids: pending_ids,
             pending_extraction_job_ids: closure.pending_extraction_job_ids.clone(),
@@ -724,7 +724,7 @@ impl FocusRuntime {
     /// request stays responsive, while the focus scheduler parses the remaining
     /// hot files for a likely follow-up query.
     pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Vec<String>> {
-        if file_ids.is_empty() || self.detect_index_mode() == IndexMode::FullIndex {
+        if file_ids.is_empty() || self.detect_access_strategy() == AccessStrategy::FullCache {
             return Ok(Vec::new());
         }
 
@@ -1065,7 +1065,7 @@ mod tests;
 ///    leak across queries on reused focus runtime state.
 #[cfg(test)]
 mod include_roots_integration {
-    use super::{BoundaryHit, FocusRuntime, IndexMode, hot_region_extension_window};
+    use super::{BoundaryHit, FocusRuntime, AccessStrategy, hot_region_extension_window};
     use crate::closure_planner::IncludeRoot;
     use crate::focus::query::QueryIntent;
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
@@ -1073,7 +1073,7 @@ mod include_roots_integration {
     use std::sync::Arc;
     use types::enums::{Language, ParseStatus};
     use types::ids::{FileId, ImportId};
-    use types::structs::{CapabilityMask, FileInfo, ImportDef};
+    use types::structs::{FactCoverage, FileInfo, ImportDef};
     use types::{ImportKind, layer, status};
 
     fn test_store() -> Arc<Store> {
@@ -1104,7 +1104,7 @@ mod include_roots_integration {
                 layer::STRUCTURAL,
                 "abc123",
                 status::COMPLETE,
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
         file_id
@@ -1131,7 +1131,7 @@ mod include_roots_integration {
 
     fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
         let mut rt = FocusRuntime::new(store, None);
-        rt.detect_index_mode_override = Some(IndexMode::Focus);
+        rt.detect_access_strategy_override = Some(AccessStrategy::Focus);
         rt
     }
 
@@ -1197,7 +1197,7 @@ mod include_roots_integration {
                 }],
             )
             .expect("prepare (q1) must succeed");
-        assert_eq!(q1.mode, IndexMode::Focus);
+        assert_eq!(q1.access, AccessStrategy::Focus);
         let q1_counts: std::collections::HashMap<String, usize> =
             q1.coverage_counts.clone().unwrap_or_default();
         assert!(
@@ -1230,7 +1230,7 @@ mod include_roots_integration {
         let q2 = rt
             .prepare(&intent, Vec::new())
             .expect("prepare (q2) must succeed");
-        assert_eq!(q2.mode, IndexMode::Focus);
+        assert_eq!(q2.access, AccessStrategy::Focus);
         let q2_closure_id = q2.closure_id.as_ref().expect("q2 closure_id");
         let q2_cov_rows = store
             .get_visible_coverage(q2_closure_id)

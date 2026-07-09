@@ -52,17 +52,17 @@ mod cangjie_enabled {
         assert_eq!(query.path_filter.as_deref(), Some("src"));
     }
 
-    /// Cangjie capability profile confirms DataflowFull support.
+    /// Cangjie capability profile confirms DataflowInterproc support.
     #[test]
-    fn cangjie_capability_is_dataflow_full() {
+    fn cangjie_capability_is_dataflow_interproc() {
         let cap = atlas_engine::Engine::language_capability(Language::Cangjie);
         assert_eq!(
             cap.language, "cangjie",
             "Capability profile language name should be 'cangjie'"
         );
         assert!(
-            cap.capability_level >= atlas_engine::CapabilityLevel::DataflowFull,
-            "Cangjie should be at least DataflowFull, got {:?}",
+            cap.capability_level >= atlas_engine::CapabilityLevel::DataflowInterproc,
+            "Cangjie should be at least DataflowInterproc, got {:?}",
             cap.capability_level
         );
     }

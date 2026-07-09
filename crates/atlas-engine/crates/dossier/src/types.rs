@@ -361,7 +361,7 @@ pub struct ExploreDossier {
     pub file_context: Option<FileContext>,
     /// Recommended next queries for further exploration.
     pub recommended_next_queries: Vec<RecommendedQuery>,
-    /// Precision tier of the underlying data.
+    /// AnswerQuality tier of the underlying data.
     pub precision_tier: String,
     /// Non-critical warnings (e.g. truncated results).
     pub warnings: Vec<String>,

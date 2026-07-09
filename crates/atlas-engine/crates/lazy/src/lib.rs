@@ -20,7 +20,7 @@ use db::Store;
 use types::StaleStructuralIndexError;
 use types::ids::{FileId, SymbolId};
 use types::lazy::LazyWindow;
-use types::structs::{CapabilityMask, dataflow_precision};
+use types::structs::{FactCoverage, dataflow_precision};
 
 /// Rebuild callback type: takes a FileId, returns Ok(()) on success.
 /// Injected by the engine layer to enable transparent self-healing.
@@ -158,7 +158,7 @@ impl LazyDataflowService {
             let available = result.units_built + result.units_cached;
             let incomplete = result.budget_exceeded || result.units_pending > 0;
             let precision = dataflow_precision(available, planned, incomplete);
-            window.precision = Some(precision);
+            window.quality = Some(precision);
         }
 
         // Compute capability mask from ensure result.
@@ -169,14 +169,14 @@ impl LazyDataflowService {
         // the loader tracks this per-unit via the language capability
         // profile and per-function CFG node counts.
         if result.units_built > 0 || result.units_cached > 0 {
-            let mut mask_bits = CapabilityMask::MANIFEST
-                | CapabilityMask::STRUCTURAL
-                | CapabilityMask::CALL_EDGES
-                | CapabilityMask::DATAFLOW;
+            let mut mask_bits = FactCoverage::MANIFEST
+                | FactCoverage::STRUCTURAL
+                | FactCoverage::CALL_EDGES
+                | FactCoverage::DATAFLOW;
             if result.has_cfg {
-                mask_bits |= CapabilityMask::CFG;
+                mask_bits |= FactCoverage::CFG;
             }
-            window.capability_mask = CapabilityMask::from_bits(mask_bits);
+            window.capability_mask = FactCoverage::from_bits(mask_bits);
         }
 
         Ok(window)

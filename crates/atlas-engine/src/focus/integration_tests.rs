@@ -4,7 +4,7 @@
 //!   - Types + Engine (FocusSeed, FocusWindow, FocusClosure)
 //!   - Visibility + Edge Policy
 //!   - Scheduler lifecycle
-//!   - Precision model (best, worst, is_exact, is_unavailable)
+//!   - AnswerQuality model (best, worst, is_exact, is_unavailable)
 //!   - Known gap creation and matching
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ mod tests {
     use db::Store;
     use types::enums::{Language, SymbolKind};
     use types::ids::FileId;
-    use types::structs::{CoverageTier, KnownGap, Precision, SemanticConfidence, SymbolTier};
+    use types::structs::{CoverageTier, KnownGap, AnswerQuality, SemanticConfidence, SymbolTier};
 
     use super::super::edge_policy::{EdgeConflictPolicy, EdgeResolution};
     use super::super::scheduler::{FocusPriority, FocusScheduler};
@@ -45,13 +45,13 @@ mod tests {
         let _registry = VisibilityFilterRegistry::new();
 
         // Test C static filtering — Certain edge should never be overwritten
-        let existing = Precision {
+        let existing = AnswerQuality {
             coverage: CoverageTier::ClosureComplete {
                 closure_id: "test".to_string(),
             },
             confidence: SemanticConfidence::Certain,
         };
-        let incoming = Precision {
+        let incoming = AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
@@ -82,11 +82,11 @@ mod tests {
         assert!(scheduler.has_pending());
     }
 
-    // ── End-to-End: Precision Model ─────────────────────────────────────────
+    // ── End-to-End: AnswerQuality Model ─────────────────────────────────────────
 
     #[test]
     fn test_e2e_precision_model() {
-        let precision = Precision {
+        let precision = AnswerQuality {
             coverage: CoverageTier::RepoComplete,
             confidence: SemanticConfidence::Certain,
         };

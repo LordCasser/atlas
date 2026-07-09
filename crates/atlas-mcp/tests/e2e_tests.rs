@@ -339,10 +339,10 @@ fn e2e_focus_runtime_python_example() {
     if let Some(result) = focus_opt {
         // Focus mode is expected for manifest-only DB
         assert!(
-            result.precision.is_some()
-                || result.mode == atlas_engine::focus::runtime::IndexMode::FullIndex,
+            result.quality.is_some()
+                || result.access == atlas_engine::focus::runtime::AccessStrategy::FullCache,
             "Focus result should have precision or be FullIndex. precision={:?}",
-            result.precision
+            result.quality
         );
     }
     // focus_opt==None is acceptable: full index detected

@@ -38,7 +38,7 @@
 //!       │    ├─ prepare_focus_query(intent, include_roots) ──► query_runtime.prepare()
 //!       │    │       │                           │
 //!       │    │       │                           ├─ cache_state.has_full_index()
-//!       │    │       │                           ├─ focus_runtime.lock().detect_index_mode()
+//!       │    │       │                           ├─ focus_runtime.lock().detect_access_strategy()
 //!       │    │       │                           └─ focus_runtime.lock().prepare(intent, include_roots)
 //!       │    │       │
 //!       │    │       └─ Post: lazy_refresh_queue.record_writes()
@@ -84,7 +84,7 @@
 //! When adding new tools or modifying handlers, **avoid**:
 //!
 //! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()` instead.
-//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` or `query_runtime.detect_index_mode()` instead.
+//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` or `query_runtime.detect_access_strategy()` instead.
 //! - **Direct `lazy_service.ensure_for_function()`** — use `analysis_runtime.ensure_dataflow_for_function()` instead.
 //! - **Direct `store.upsert_fp_annotation()`** — use `overlay_runtime.upsert_fp_annotation()` to bump generation.
 //! - **Direct `store.upsert_domain_rule()`** — use `overlay_runtime.upsert_domain_rule()` to bump generation.

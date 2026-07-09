@@ -14,7 +14,7 @@
 
 ### 1.1 分析等级与入口路径覆盖
 
-Atlas 同时存在 extraction mode、capability level、lazy precision tier 和多个用户入口。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/precision/status 展示的 PR，都必须明确列出并验证受影响路径。
+Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、`CapabilityLevel`/`FeatureMatrix`（L0）、`FactCoverage`/CatalogTier（L1）、`AccessStrategy`/`PipelineGrade`/`EdgeProvenance`（L3）、内部 `Precision`/AnswerQuality（L4）。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/AnswerQuality/status 展示的 PR，都必须明确列出并验证受影响路径。不得再引入第二个名为 `IndexMode` 的类型。
 
 最低路径矩阵：
 
@@ -212,7 +212,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 
 ### P5：变量来源追踪与调用路径查询 ✅
 
-全部 14 种 DataflowFull 语言已覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试。
+全部 14 种 DataflowInterproc 语言已覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试。
 
 ### `atlas-engine` facade 稳定阶段
 

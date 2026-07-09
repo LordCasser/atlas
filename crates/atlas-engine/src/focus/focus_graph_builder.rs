@@ -20,7 +20,7 @@ use db::{CandidateEdge, ClosureResolution, Store};
 use graph::GraphBuilderStats;
 use types::enums::{EdgeKind, Provenance, ReferenceKind, ResolutionStrategy, SymbolKind};
 use types::ids::EdgeId;
-use types::structs::{CoverageTier, Precision, SemanticConfidence, SymbolTier};
+use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence, SymbolTier};
 use types::{Confidence, RawEdge, SymbolId};
 
 use super::edge_policy::{EdgeConflictPolicy, EdgeResolution};
@@ -45,7 +45,7 @@ impl FocusGraphBuilder {
     /// 1. Loads all visible reference resolutions for the closure from
     ///    `reference_resolutions`.
     /// 2. For each resolution, loads the reference + target symbol,
-    ///    derives the edge kind, and builds a [`Precision`].
+    ///    derives the edge kind, and builds a [`AnswerQuality`].
     /// 3. Checks for existing canonical edges via conflict policy.
     /// 4. Routes each edge to `symbol_edges` (canonical) or
     ///    `symbol_edge_candidates` (candidate).
@@ -134,7 +134,7 @@ impl FocusGraphBuilder {
                 }
             };
 
-            // 2d. Build Precision for the incoming edge
+            // 2d. Build AnswerQuality for the incoming edge
             let incoming_precision =
                 build_incoming_precision(closure_id, &res.coverage_tier, &res.semantic_confidence);
 
@@ -143,7 +143,7 @@ impl FocusGraphBuilder {
                 self.store
                     .find_edge_by_source_target_kind(&source, &target_sym_id, &edge_kind)?;
 
-            let existing_precision: Option<Precision> = existing
+            let existing_precision: Option<AnswerQuality> = existing
                 .as_ref()
                 .map(|e| edge_to_precision(&e.provenance, e.confidence));
 
@@ -273,7 +273,7 @@ fn derive_edge_kind(ref_kind: &ReferenceKind, target_kind: &SymbolKind) -> Optio
     }
 }
 
-/// Convert the string columns from `reference_resolutions` into a [`Precision`].
+/// Convert the string columns from `reference_resolutions` into a [`AnswerQuality`].
 ///
 /// Focus graph edges always use `ClosureComplete` or `Boundary` coverage
 /// — never `RepoComplete`.
@@ -281,7 +281,7 @@ fn build_incoming_precision(
     closure_id: &str,
     coverage_tier: &str,
     semantic_confidence: &str,
-) -> Precision {
+) -> AnswerQuality {
     let coverage = match coverage_tier {
         "closure_complete" => CoverageTier::ClosureComplete {
             closure_id: closure_id.to_string(),
@@ -306,18 +306,18 @@ fn build_incoming_precision(
         _ => SemanticConfidence::Low,
     };
 
-    Precision {
+    AnswerQuality {
         coverage,
         confidence,
     }
 }
 
-/// Derive a [`Precision`] from an existing edge's provenance and f32 confidence.
+/// Derive a [`AnswerQuality`] from an existing edge's provenance and f32 confidence.
 ///
 /// - `tree_sitter` → `RepoComplete` (from full index)
 /// - Everything else → `Boundary` (conservative — we cannot distinguish
 ///   focus closures from other heuristics in the stored provenance enum)
-fn edge_to_precision(provenance: &Provenance, confidence: Confidence) -> Precision {
+fn edge_to_precision(provenance: &Provenance, confidence: Confidence) -> AnswerQuality {
     let coverage = if provenance.as_str() == "tree_sitter" {
         CoverageTier::RepoComplete
     } else {
@@ -336,7 +336,7 @@ fn edge_to_precision(provenance: &Provenance, confidence: Confidence) -> Precisi
         SemanticConfidence::Low
     };
 
-    Precision {
+    AnswerQuality {
         coverage,
         confidence: semantic,
     }

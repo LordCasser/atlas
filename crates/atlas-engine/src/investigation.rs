@@ -5,7 +5,7 @@
 //! investigation are processed first).
 
 use types::ids::{FileId, SymbolId};
-use types::structs::CapabilityMask;
+use types::structs::FactCoverage;
 
 /// An active investigation — connects the user's current analysis focus to the
 /// lazy extraction scheduler for priority-based job ordering.
@@ -18,7 +18,7 @@ pub struct Investigation {
     /// Related files discovered during the investigation.
     pub related_files: Vec<FileId>,
     /// Desired extraction capabilities for full analysis.
-    pub desired_capabilities: CapabilityMask,
+    pub desired_capabilities: FactCoverage,
 }
 
 /// What the user's current investigation is targeting.
@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     use types::ids::FileId;
     use types::ids::SymbolId;
-    use types::structs::CapabilityMask;
+    use types::structs::FactCoverage;
 
     #[test]
     fn investigation_focus_symbol_roundtrip() {
@@ -103,7 +103,7 @@ mod tests {
             focus: InvestigationFocus::Symbol(sid),
             related_symbols: vec![],
             related_files: vec![],
-            desired_capabilities: CapabilityMask::default(),
+            desired_capabilities: FactCoverage::default(),
         };
         assert!(investigation.related_symbols.is_empty());
         assert!(investigation.related_files.is_empty());

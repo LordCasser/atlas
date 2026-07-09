@@ -11,7 +11,7 @@ mod tests {
     use types::enums::{Language, ParseStatus, SymbolKind};
     use types::ids::{FileId, ImportId, SymbolId};
     use types::structs::{
-        CoverageTier, FileInfo, ImportDef, Precision, SemanticConfidence, SymbolDef, SymbolTier,
+        CoverageTier, FileInfo, ImportDef, AnswerQuality, SemanticConfidence, SymbolDef, SymbolTier,
         TextRange,
     };
     use types::{ImportKind, Visibility, layer, status};
@@ -224,7 +224,7 @@ mod tests {
     ///    Certain edges are never overwritable regardless of incoming coverage.
     #[test]
     fn test_e2e_edge_conflict_chain() {
-        let certain_existing = Precision {
+        let certain_existing = AnswerQuality {
             coverage: CoverageTier::ClosureComplete {
                 closure_id: "original".to_string(),
             },
@@ -232,7 +232,7 @@ mod tests {
         };
 
         // Attempt 1: Low confidence should not override Certain
-        let low_incoming = Precision {
+        let low_incoming = AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
@@ -247,7 +247,7 @@ mod tests {
         );
 
         // Attempt 2: High confidence with ClosureComplete should still not override Certain
-        let high_incoming = Precision {
+        let high_incoming = AnswerQuality {
             coverage: CoverageTier::ClosureComplete {
                 closure_id: "newer".to_string(),
             },

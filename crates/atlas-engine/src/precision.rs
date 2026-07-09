@@ -1,16 +1,16 @@
-use types::structs::{CoverageTier, Precision, SemanticConfidence, SymbolTier};
+use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence, SymbolTier};
 
 /// Compute the precision for structural lazy extraction.
-pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) -> Precision {
+pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) -> AnswerQuality {
     if built == 0 && cached == 0 {
-        Precision::worst()
+        AnswerQuality::worst()
     } else if budget_exceeded {
         if built == 0 {
             // budget exceeded before any file was built (but some were cached)
-            Precision::worst()
+            AnswerQuality::worst()
         } else {
             // some files built, but budget exceeded mid-build
-            Precision {
+            AnswerQuality {
                 coverage: CoverageTier::Boundary {
                     target_tier: SymbolTier::Full,
                 },
@@ -18,12 +18,12 @@ pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) 
             }
         }
     } else {
-        Precision::best()
+        AnswerQuality::best()
     }
 }
 
 /// Suggested next action based on structural precision.
-pub fn next_action_structural(precision: &Precision) -> Option<&'static str> {
+pub fn next_action_structural(precision: &AnswerQuality) -> Option<&'static str> {
     if precision.is_exact() {
         None
     } else if precision.coverage == CoverageTier::Manifest {
@@ -56,16 +56,16 @@ mod tests {
     #[test]
     fn next_action_covers_all_states() {
         // Exact → None (no action needed)
-        assert_eq!(next_action_structural(&Precision::best()), None);
+        assert_eq!(next_action_structural(&AnswerQuality::best()), None);
         // Worst (Manifest + Low) → Some action
-        assert!(next_action_structural(&Precision::worst()).is_some());
+        assert!(next_action_structural(&AnswerQuality::worst()).is_some());
         // Manifest + Medium → Some action
-        assert!(next_action_structural(&Precision::manifest(SemanticConfidence::Medium)).is_some());
+        assert!(next_action_structural(&AnswerQuality::manifest(SemanticConfidence::Medium)).is_some());
         // Partial coverage → Some action
-        let partial = Precision::partial(vec![], SemanticConfidence::Medium);
+        let partial = AnswerQuality::partial(vec![], SemanticConfidence::Medium);
         assert!(next_action_structural(&partial).is_some());
         // Boundary coverage → Some action
-        let boundary = Precision {
+        let boundary = AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
@@ -76,20 +76,20 @@ mod tests {
 
     #[test]
     fn next_action_unavailable() {
-        let hint = next_action_structural(&Precision::worst()).unwrap();
+        let hint = next_action_structural(&AnswerQuality::worst()).unwrap();
         assert!(hint.contains("no structural data"));
     }
 
     #[test]
     fn next_action_manifest_medium() {
         let hint =
-            next_action_structural(&Precision::manifest(SemanticConfidence::Medium)).unwrap();
+            next_action_structural(&AnswerQuality::manifest(SemanticConfidence::Medium)).unwrap();
         assert!(hint.contains("manifest-only"));
     }
 
     #[test]
     fn next_action_partial() {
-        let partial = Precision::partial(
+        let partial = AnswerQuality::partial(
             vec![KnownGap::UnresolvedImport {
                 from: "a".into(),
                 import_path: "b".into(),
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn next_action_boundary_degraded() {
-        let boundary = Precision {
+        let boundary = AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn next_action_boundary_partial_exact() {
-        let boundary = Precision {
+        let boundary = AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
@@ -124,11 +124,11 @@ mod tests {
         assert!(hint.contains("dataflow truncated"));
     }
 
-    // ── Precision convenience methods ───────────────────────────────────
+    // ── AnswerQuality convenience methods ───────────────────────────────────
 
     #[test]
     fn precision_best_is_repo_complete_certain() {
-        let p = Precision::best();
+        let p = AnswerQuality::best();
         assert!(matches!(p.coverage, CoverageTier::RepoComplete));
         assert_eq!(p.confidence, SemanticConfidence::Certain);
         assert!(p.is_exact());
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn precision_worst_is_manifest_low() {
-        let p = Precision::worst();
+        let p = AnswerQuality::worst();
         assert!(matches!(p.coverage, CoverageTier::Manifest));
         assert_eq!(p.confidence, SemanticConfidence::Low);
         assert!(p.is_unavailable());
@@ -144,18 +144,18 @@ mod tests {
 
     #[test]
     fn precision_is_unavailable_returns_false_for_best() {
-        assert!(!Precision::best().is_unavailable());
+        assert!(!AnswerQuality::best().is_unavailable());
     }
 
     #[test]
     fn precision_is_exact_returns_false_for_worst() {
-        assert!(!Precision::worst().is_exact());
+        assert!(!AnswerQuality::worst().is_exact());
     }
 
     #[test]
     fn boundary_precision_is_not_unavailable_or_exact() {
         for confidence in [SemanticConfidence::Medium, SemanticConfidence::High] {
-            let p = Precision {
+            let p = AnswerQuality {
                 coverage: CoverageTier::Boundary {
                     target_tier: SymbolTier::Full,
                 },
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn closure_complete_certain_is_not_repo_exact() {
-        let p = Precision {
+        let p = AnswerQuality {
             coverage: CoverageTier::ClosureComplete {
                 closure_id: "c1".into(),
             },

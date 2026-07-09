@@ -29,7 +29,7 @@ pub(crate) struct CapabilityStats {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProjectStats {
     /// Index analysis mode: "manifest", "structural", or "full".
-    pub index_mode: Option<String>,
+    pub catalog_tier: Option<String>,
     pub total_files: usize,
     pub total_symbols: usize,
     pub total_edges: usize,
@@ -260,8 +260,8 @@ impl AnalysisEnvelope {
             let have_any = ps.is_some() || cs.is_some();
 
             if have_any {
-                let index_mode = ps
-                    .and_then(|p| p.index_mode.as_deref())
+                let catalog_tier = ps
+                    .and_then(|p| p.catalog_tier.as_deref())
                     .unwrap_or("unknown");
                 let total_files = ps.map(|p| p.total_files).unwrap_or(0usize);
                 let total_symbols = ps.map(|p| p.total_symbols).unwrap_or(0usize);
@@ -272,7 +272,7 @@ impl AnalysisEnvelope {
                 let manifest = cs.map(|c| c.files_manifest_only).unwrap_or(0);
 
                 let summary = format!(
-                    "Indexed ({index_mode}): {total_files} files ({dataflow} dataflow, {structural} structural, {manifest} manifest), {total_symbols} symbols, {total_edges} edges"
+                    "Indexed ({catalog_tier}): {total_files} files ({dataflow} dataflow, {structural} structural, {manifest} manifest), {total_symbols} symbols, {total_edges} edges"
                 );
 
                 body["analysis"] = json!({

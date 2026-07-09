@@ -25,7 +25,7 @@ TraceEngine
 
 ### Capability gating
 
-Trace methods check the language's `LanguageCapabilityProfile` before execution. All 14 languages currently report DataflowFull; CFG is unsupported only for ArkTS and PHP. A supported feature can still produce a partial result when facts are missing or traversal is truncated, with the reason in diagnostics.
+Trace methods check the language's `LanguageCapabilityProfile` before execution. All 14 languages currently report DataflowInterproc; CFG is unsupported only for ArkTS and PHP. A supported feature can still produce a partial result when facts are missing or traversal is truncated, with the reason in diagnostics.
 
 ### Response envelope
 
@@ -34,7 +34,7 @@ All queries return `TraceQueryResponse<T>`:
 {
   "ok": true,
   "kind": "trace",
-  "capability": { "language": "typescript", "capability_level": "dataflow_full" },
+  "capability": { "language": "typescript", "capability_level": "dataflow_interproc" },
   "partial_result": false,
   "diagnostics": [],
   "result": { ... }

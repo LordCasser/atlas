@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 use crate::tools::analysis_envelope::{AnalysisEnvelope, SnapshotStore};
 use crate::tools::query_snapshot::QuerySnapshot;
 #[cfg(test)]
-use crate::tools::runtime::graph_runtime::GraphMode;
+use crate::tools::runtime::graph_runtime::EdgeProvenance;
 use symbol_selector::{ScoredCandidate, SymbolInput, parse_symbol_input};
 
 use crate::tools::active_project::ActiveProject;
@@ -133,7 +133,7 @@ pub(crate) fn apply_focus_result_to_lr(
 ) -> analysis_envelope::AnalysisEnvelope {
     let mut lr = lr;
 
-    if result.mode != atlas_engine::focus::runtime::IndexMode::Focus {
+    if result.access != atlas_engine::focus::runtime::AccessStrategy::Focus {
         return lr;
     }
 
@@ -1876,7 +1876,7 @@ impl ToolRouter {
         let mut lazy_warnings = Vec::new();
         let mut built_file_count = 0usize;
         let mut focus_result = None;
-        let mut _capability_mask = atlas_engine::structs::CapabilityMask::default();
+        let mut _capability_mask = atlas_engine::structs::FactCoverage::default();
         let mut _coverage = "full";
         let mut _reason: Option<&str> = None;
 
@@ -2663,7 +2663,7 @@ mod tests {
     #[test]
     fn ensure_graph_initialized_detects_focus_partial_mode() {
         let store = test_store();
-        // In-memory store with no index → read_index_mode returns empty/default,
+        // In-memory store with no index → read_catalog_tier returns empty/default,
         // which is not a rich index mode → FocusPartial.
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         assert!(
@@ -2676,8 +2676,8 @@ mod tests {
         );
 
         assert_eq!(
-            *router.project().graph_runtime.mode.lock().unwrap(),
-            GraphMode::FocusPartial,
+            *router.project().graph_runtime.provenance.lock().unwrap(),
+            EdgeProvenance::FocusScoped,
             "fresh in-memory store should produce FocusPartial mode"
         );
     }
@@ -2686,7 +2686,7 @@ mod tests {
     fn ensure_graph_initialized_detects_full_canonical_mode() {
         let store = test_store();
         // Register a file with a "structural" extraction state so
-        // read_index_mode() returns a rich index mode.
+        // read_catalog_tier() returns a rich index mode.
         let file_id = register_test_file(&store, "test.ts");
         store
             .upsert_file_extraction_state(
@@ -2694,7 +2694,7 @@ mod tests {
                 "structural",
                 "hash1",
                 "complete",
-                atlas_engine::structs::CapabilityMask::default(),
+                atlas_engine::structs::FactCoverage::default(),
             )
             .unwrap();
 
@@ -2702,8 +2702,8 @@ mod tests {
         router.ensure_graph_initialized().unwrap();
 
         assert_eq!(
-            *router.project().graph_runtime.mode.lock().unwrap(),
-            GraphMode::FullCanonical,
+            *router.project().graph_runtime.provenance.lock().unwrap(),
+            EdgeProvenance::RepoCanonical,
             "store with structural extraction should produce FullCanonical mode"
         );
     }
@@ -2826,7 +2826,7 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_manifest_mode_from_fresh_layers() {
+    fn status_reports_manifest_catalog_tier_from_fresh_layers() {
         let store = test_store();
         let file_id = register_test_file(&store, "test.ts");
         store
@@ -2835,7 +2835,7 @@ mod tests {
                 "manifest",
                 "hash1",
                 "complete",
-                atlas_engine::structs::CapabilityMask::default(),
+                atlas_engine::structs::FactCoverage::default(),
             )
             .unwrap();
 
@@ -2843,7 +2843,7 @@ mod tests {
         let (resp_str, is_error) = router.handle_status();
         assert!(!is_error, "status failed: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert_eq!(resp["index"]["mode"].as_str(), Some("manifest"));
+        assert_eq!(resp["index"]["catalog_tier"].as_str(), Some("manifest"));
         assert_eq!(resp["index"]["active_extraction_jobs"].as_u64(), Some(0));
     }
 
@@ -2876,8 +2876,8 @@ mod tests {
             tool_name: "explore".into(),
             tool_args: serde_json::json!({"symbol": "target"}),
             focus_result: Some(atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: None,
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: None,
                 gaps: vec![],
                 pending_closure_ids: vec!["cl_pending".into()],
                 pending_extraction_job_ids: vec![],
@@ -2928,8 +2928,8 @@ mod tests {
             tool_name: "explore".into(),
             tool_args: serde_json::json!({"symbol": "target"}),
             focus_result: Some(atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: None,
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: None,
                 gaps: vec![],
                 pending_closure_ids: vec![],
                 pending_extraction_job_ids: vec![job_id.clone()],
@@ -4571,15 +4571,15 @@ mod tests {
         let store = test_store();
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         // After construction, focus_runtime is always present (no Option wrapper).
-        let mode = router.project().query_runtime.detect_index_mode();
-        // In an empty store, detect_index_mode should return Focus.
-        assert_eq!(mode, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode = router.project().query_runtime.detect_access_strategy();
+        // In an empty store, detect_access_strategy should return Focus.
+        assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
 
         // Calling init_focus again is idempotent — it just re-applies the
         // lazy dataflow service configuration.
         router.init_focus();
-        let mode2 = router.project().query_runtime.detect_index_mode();
-        assert_eq!(mode2, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode2 = router.project().query_runtime.detect_access_strategy();
+        assert_eq!(mode2, atlas_engine::focus::runtime::AccessStrategy::Focus);
     }
 
     #[test]
@@ -4587,14 +4587,14 @@ mod tests {
         let store = test_store();
         let store2 = test_store();
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        let mode_before = router.project().query_runtime.detect_index_mode();
-        assert_eq!(mode_before, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode_before = router.project().query_runtime.detect_access_strategy();
+        assert_eq!(mode_before, atlas_engine::focus::runtime::AccessStrategy::Focus);
 
         // Simulate project switch — activate_project creates a fresh ActiveProject
         // and then calls init_focus(), so focus_runtime is re-initialized.
         router.activate_project(PathBuf::from("/other"), store2);
-        let mode_after = router.project().query_runtime.detect_index_mode();
-        assert_eq!(mode_after, atlas_engine::focus::runtime::IndexMode::Focus);
+        let mode_after = router.project().query_runtime.detect_access_strategy();
+        assert_eq!(mode_after, atlas_engine::focus::runtime::AccessStrategy::Focus);
     }
 
     #[test]
@@ -4640,7 +4640,7 @@ mod tests {
     #[test]
     fn test_focus_result_refinement_guidance_lives_in_analysis_not_work() {
         use atlas_engine::focus::job_tracker::JobTracker;
-        use atlas_engine::structs::{CoverageTier, Precision, SemanticConfidence};
+        use atlas_engine::structs::{CoverageTier, AnswerQuality, SemanticConfidence};
         use std::sync::Arc;
 
         // ── Helper: build JSON from FocusResult ──
@@ -4660,8 +4660,8 @@ mod tests {
         // ── Case 1: Terminal — job_tracker is None → assume all done ──
         {
             let result = atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: Some(Precision {
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: Some(AnswerQuality {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
@@ -4716,8 +4716,8 @@ mod tests {
             tracker.mark_done("cl_test_2");
 
             let result = atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: Some(Precision {
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: Some(AnswerQuality {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
@@ -4770,8 +4770,8 @@ mod tests {
         // ── Case 2b: Non-terminal — foreground extraction job is in-flight ──
         {
             let result = atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: Some(Precision {
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: Some(AnswerQuality {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
@@ -4815,8 +4815,8 @@ mod tests {
             tracker.mark_failed("cl_failed", "fixture extraction failed");
 
             let result = atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: Some(Precision {
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: Some(AnswerQuality {
                     coverage: CoverageTier::Partial { gaps: vec![] },
                     confidence: SemanticConfidence::Medium,
                 }),
@@ -4852,8 +4852,8 @@ mod tests {
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let tracker = Arc::new(JobTracker::new());
         let expected = atlas_engine::focus::runtime::FocusResult {
-            mode: atlas_engine::focus::runtime::IndexMode::Focus,
-            precision: None,
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
             gaps: vec![],
             pending_closure_ids: vec!["existing_job".into()],
             pending_extraction_job_ids: vec![],
@@ -4890,7 +4890,7 @@ mod tests {
                 "structural",
                 "hash1",
                 "complete",
-                atlas_engine::structs::CapabilityMask::default(),
+                atlas_engine::structs::FactCoverage::default(),
             )
             .unwrap();
         store
@@ -4905,8 +4905,8 @@ mod tests {
 
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
         let stale = atlas_engine::focus::runtime::FocusResult {
-            mode: atlas_engine::focus::runtime::IndexMode::Focus,
-            precision: None,
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
             gaps: vec![],
             pending_closure_ids: vec![],
             pending_extraction_job_ids: vec![job_id],
@@ -4963,8 +4963,8 @@ mod tests {
                 "direction": "outgoing"
             }),
             focus_result: Some(atlas_engine::focus::runtime::FocusResult {
-                mode: atlas_engine::focus::runtime::IndexMode::Focus,
-                precision: None,
+                access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+                quality: None,
                 gaps: vec![],
                 pending_closure_ids: vec!["finished_job".into()],
                 pending_extraction_job_ids: vec![],

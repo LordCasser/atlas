@@ -740,7 +740,7 @@ impl ClosureEngine {
         let ready =
             result.built_file_ids.contains(&file_id) || result.cached_file_ids.contains(&file_id);
         if ready {
-            closure.mark_extracted(file_id, &result.precision);
+            closure.mark_extracted(file_id, &result.quality);
             return true;
         }
 

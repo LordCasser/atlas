@@ -74,7 +74,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
             }
         }
 
-        match read_index_mode(&db_path) {
+        match read_catalog_tier(&db_path) {
             Ok(mode) => check(&format!("Index mode ({mode})"), true, &mut all_ok),
             Err(e) => {
                 check(&format!("Index mode check ({e})"), false, &mut all_ok);
@@ -169,9 +169,9 @@ fn read_schema_version(db_path: &Path) -> anyhow::Result<i64> {
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
 }
 
-fn read_index_mode(db_path: &Path) -> anyhow::Result<String> {
+fn read_catalog_tier(db_path: &Path) -> anyhow::Result<String> {
     let store = Store::open_db_read_only(db_path)?;
-    store.read_index_mode()
+    store.read_catalog_tier()
 }
 
 fn print_rebuild_hint(project: &str, db_path: &Path) {
@@ -346,10 +346,10 @@ mod tests {
     }
 
     #[test]
-    fn read_index_mode_uses_store_status_boundary() {
+    fn read_catalog_tier_uses_store_status_boundary() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = initialized_db_path(&temp_dir);
 
-        assert_eq!(read_index_mode(&db_path).unwrap(), "none");
+        assert_eq!(read_catalog_tier(&db_path).unwrap(), "none");
     }
 }

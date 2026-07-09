@@ -4,7 +4,7 @@
 //! may already exist from prior closures, full index, or other focus jobs.
 //! This module defines the conflict resolution policy.
 
-use types::structs::{CoverageTier, Precision, SemanticConfidence};
+use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence};
 
 /// Resolution for an edge conflict between existing and incoming.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,8 +29,8 @@ impl EdgeConflictPolicy {
     /// 3. Same coverage → higher confidence wins.
     /// 4. Low/Medium confidence → candidate edges, not canonical.
     pub fn resolve(
-        existing: Option<&Precision>,
-        incoming: &Precision,
+        existing: Option<&AnswerQuality>,
+        incoming: &AnswerQuality,
         fanout: Option<usize>,
     ) -> EdgeResolution {
         // High fanout names never produce canonical edges
@@ -77,7 +77,7 @@ impl EdgeConflictPolicy {
     }
 
     /// Classify a new edge into canonical vs candidate based on confidence.
-    fn classify_new(precision: &Precision) -> EdgeResolution {
+    fn classify_new(precision: &AnswerQuality) -> EdgeResolution {
         match precision.confidence {
             SemanticConfidence::Certain | SemanticConfidence::High => {
                 EdgeResolution::Replace // canonical edge

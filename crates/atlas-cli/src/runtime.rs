@@ -146,7 +146,7 @@ impl CommandContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::{CapabilityMask, FileInfo, ParseStatus, source_file_id};
+    use atlas_engine::{FactCoverage, FileInfo, ParseStatus, source_file_id};
     use atlas_engine::{ExtractionMode, Language, guard_against_precision_downgrade};
     use tempfile::TempDir;
 
@@ -293,7 +293,7 @@ mod tests {
                     layer,
                     content_hash,
                     "complete",
-                    CapabilityMask::from_layers(&[layer]),
+                    FactCoverage::from_layers(&[layer]),
                 )
                 .expect("insert extraction state");
         }

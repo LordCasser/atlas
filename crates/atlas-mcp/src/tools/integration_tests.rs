@@ -331,8 +331,8 @@ mod focus_tests {
 
         let result = focus_opt.unwrap();
         assert_eq!(
-            result.mode,
-            atlas_engine::focus::runtime::IndexMode::Focus,
+            result.access,
+            atlas_engine::focus::runtime::AccessStrategy::Focus,
             "Expected Focus mode"
         );
         assert!(
@@ -343,7 +343,7 @@ mod focus_tests {
             result.pending_closure_ids
         );
         assert!(
-            result.precision.is_some(),
+            result.quality.is_some(),
             "Focus result should have precision"
         );
     }
@@ -632,14 +632,14 @@ mod focus_tests {
             .expect("calls snapshot must retain its focus result");
         println!(
             "Focus: mode={:?}, built_files={}, precision={:?}",
-            focus_result.mode,
+            focus_result.access,
             focus_result.built_files.len(),
-            focus_result.precision,
+            focus_result.quality,
         );
 
         assert_eq!(
-            focus_result.mode,
-            atlas_engine::focus::runtime::IndexMode::Focus,
+            focus_result.access,
+            atlas_engine::focus::runtime::AccessStrategy::Focus,
             "Expected Focus mode"
         );
 

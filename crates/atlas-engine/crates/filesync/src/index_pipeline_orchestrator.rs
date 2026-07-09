@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use db::{
-    FullRebuildGuard, IndexMode, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
+    FullRebuildGuard, PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
     KEY_RESOLUTION_GENERATION, Store,
 };
 use extraction::ExtractionMode;
@@ -670,17 +670,17 @@ impl IndexPipeline {
         let stored_hash = self.store.get_metadata(KEY_RESOLUTION_CONFIG_HASH)?;
 
         let index_mode = match &self.options.mode {
-            ExtractionMode::Manifest => IndexMode::Manifest,
+            ExtractionMode::Manifest => PipelineGrade::Manifest,
             ExtractionMode::ResolutionSymbols => {
                 // ResolutionSymbols is the lightweight variant that doesn't
                 // produce references — the skip check above already returns
                 // false via produces_references().  Map to Manifest for the
                 // config-hash computation so it has a stable identity.
-                IndexMode::Manifest
+                PipelineGrade::Manifest
             }
-            ExtractionMode::Structural => IndexMode::Structural,
-            ExtractionMode::LazyDataflow { .. } => IndexMode::Full,
-            ExtractionMode::Full => IndexMode::Full,
+            ExtractionMode::Structural => PipelineGrade::Structural,
+            ExtractionMode::LazyDataflow { .. } => PipelineGrade::Full,
+            ExtractionMode::Full => PipelineGrade::Full,
         };
         // Path aliases are not tracked per-run; pass None.  Path-alias
         // config files (tsconfig.json / jsconfig.json) are detected by
@@ -695,11 +695,11 @@ impl IndexPipeline {
     /// a no-op scenario.
     fn record_resolution_complete(&self) -> anyhow::Result<()> {
         let index_mode = match &self.options.mode {
-            ExtractionMode::Manifest => IndexMode::Manifest,
-            ExtractionMode::ResolutionSymbols => IndexMode::Manifest,
-            ExtractionMode::Structural => IndexMode::Structural,
-            ExtractionMode::LazyDataflow { .. } => IndexMode::Full,
-            ExtractionMode::Full => IndexMode::Full,
+            ExtractionMode::Manifest => PipelineGrade::Manifest,
+            ExtractionMode::ResolutionSymbols => PipelineGrade::Manifest,
+            ExtractionMode::Structural => PipelineGrade::Structural,
+            ExtractionMode::LazyDataflow { .. } => PipelineGrade::Full,
+            ExtractionMode::Full => PipelineGrade::Full,
         };
         let current_hash = self.store.resolution_config_hash(&index_mode, None)?;
 

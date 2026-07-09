@@ -18,7 +18,7 @@ use types::capability::LanguageCapabilityProfile;
 use types::enums::Language;
 use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
-use types::structs::CapabilityMask;
+use types::structs::FactCoverage;
 
 use crate::constants::{LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL};
 use crate::planner::estimate_unit_cost;
@@ -247,12 +247,12 @@ impl LazyDataflowLoader {
                     //   result for an empty function is a success).
                     // CFG: only set if the language supports it AND actual CFG
                     //   nodes were produced for this unit.
-                    let mut mask_bits = CapabilityMask::MANIFEST
-                        | CapabilityMask::STRUCTURAL
-                        | CapabilityMask::CALL_EDGES
-                        | CapabilityMask::DATAFLOW;
+                    let mut mask_bits = FactCoverage::MANIFEST
+                        | FactCoverage::STRUCTURAL
+                        | FactCoverage::CALL_EDGES
+                        | FactCoverage::DATAFLOW;
                     if cfg_supported && !unit_payload.cfg_nodes.is_empty() {
-                        mask_bits |= CapabilityMask::CFG;
+                        mask_bits |= FactCoverage::CFG;
                         result.has_cfg = true;
                     }
 
@@ -265,7 +265,7 @@ impl LazyDataflowLoader {
                         node_count: Some(unit_payload.data_nodes.len() as i64),
                         edge_count: Some(unit_payload.dataflow_edges.len() as i64),
                         budget_exceeded: payload.budget_exceeded,
-                        capability_mask: CapabilityMask::from_bits(mask_bits),
+                        capability_mask: FactCoverage::from_bits(mask_bits),
                         built_at: String::new(),
                     })?;
                     Ok(())
@@ -302,7 +302,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
         if unit_state.content_hash == current_hash {
             let mut payload = DataflowPayload::empty();
             payload.budget_exceeded = unit_state.budget_exceeded;
-            payload.has_cfg = unit_state.capability_mask.has(CapabilityMask::CFG);
+            payload.has_cfg = unit_state.capability_mask.has(FactCoverage::CFG);
             return Ok((true, payload));
         }
     }
@@ -323,10 +323,10 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             let profile = LanguageCapabilityProfile::for_language(file_lang);
             let cfg_supported = profile.features.cfg.is_supported();
 
-            let mut mask_bits = CapabilityMask::MANIFEST
-                | CapabilityMask::STRUCTURAL
-                | CapabilityMask::CALL_EDGES
-                | CapabilityMask::DATAFLOW;
+            let mut mask_bits = FactCoverage::MANIFEST
+                | FactCoverage::STRUCTURAL
+                | FactCoverage::CALL_EDGES
+                | FactCoverage::DATAFLOW;
             let unit_has_cfg = cfg_supported
                 && unit
                     .symbol_id
@@ -339,7 +339,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                     })
                     .unwrap_or(false);
             if unit_has_cfg {
-                mask_bits |= CapabilityMask::CFG;
+                mask_bits |= FactCoverage::CFG;
             }
 
             store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
@@ -351,7 +351,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
-                capability_mask: CapabilityMask::from_bits(mask_bits),
+                capability_mask: FactCoverage::from_bits(mask_bits),
                 built_at: String::new(),
             })?;
             let mut payload = DataflowPayload::empty();
@@ -614,15 +614,15 @@ mod tests {
     // Helper that mirrors the mask computation in LazyDataflowLoader::ensure
     // (lines 206–212).  Extracted here to make the regression test self-
     // checking without requiring a full DB + extraction pipeline.
-    fn compute_unit_mask(cfg_supported: bool, has_cfg_nodes: bool) -> CapabilityMask {
-        let mut bits = CapabilityMask::MANIFEST
-            | CapabilityMask::STRUCTURAL
-            | CapabilityMask::CALL_EDGES
-            | CapabilityMask::DATAFLOW;
+    fn compute_unit_mask(cfg_supported: bool, has_cfg_nodes: bool) -> FactCoverage {
+        let mut bits = FactCoverage::MANIFEST
+            | FactCoverage::STRUCTURAL
+            | FactCoverage::CALL_EDGES
+            | FactCoverage::DATAFLOW;
         if cfg_supported && has_cfg_nodes {
-            bits |= CapabilityMask::CFG;
+            bits |= FactCoverage::CFG;
         }
-        CapabilityMask::from_bits(bits)
+        FactCoverage::from_bits(bits)
     }
 
     // ------------------------------------------------------------------
@@ -666,11 +666,11 @@ mod tests {
             /* cfg_supported */ false, /* has_cfg_nodes */ true,
         );
         assert!(
-            !mask.has(CapabilityMask::CFG),
+            !mask.has(FactCoverage::CFG),
             "CFG bit must NOT be set for CFG-unsupported languages"
         );
         assert!(
-            mask.has(CapabilityMask::DATAFLOW),
+            mask.has(FactCoverage::DATAFLOW),
             "DATAFLOW bit must still be set"
         );
     }
@@ -683,11 +683,11 @@ mod tests {
             /* cfg_supported */ true, /* has_cfg_nodes */ false,
         );
         assert!(
-            !mask.has(CapabilityMask::CFG),
+            !mask.has(FactCoverage::CFG),
             "CFG bit must NOT be set when no CFG nodes were produced"
         );
         assert!(
-            mask.has(CapabilityMask::DATAFLOW),
+            mask.has(FactCoverage::DATAFLOW),
             "DATAFLOW bit must still be set"
         );
     }
@@ -697,11 +697,11 @@ mod tests {
         // The normal happy path: CFG-supported language + actual CFG nodes.
         let mask = compute_unit_mask(/* cfg_supported */ true, /* has_cfg_nodes */ true);
         assert!(
-            mask.has(CapabilityMask::CFG),
+            mask.has(FactCoverage::CFG),
             "CFG bit must be set when language supports CFG and nodes are present"
         );
         assert!(
-            mask.has(CapabilityMask::DATAFLOW),
+            mask.has(FactCoverage::DATAFLOW),
             "DATAFLOW bit must also be set"
         );
     }
@@ -713,9 +713,9 @@ mod tests {
         let mask = compute_unit_mask(
             /* cfg_supported */ false, /* has_cfg_nodes */ false,
         );
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
-        assert!(mask.has(CapabilityMask::CALL_EDGES));
-        assert!(mask.has(CapabilityMask::DATAFLOW));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
+        assert!(mask.has(FactCoverage::CALL_EDGES));
+        assert!(mask.has(FactCoverage::DATAFLOW));
     }
 }

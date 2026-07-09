@@ -24,7 +24,7 @@ use anyhow::Result;
 use db::Store;
 use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
 use filesync::discovery::{DiscoveryConfig, discover_files};
-use types::CapabilityMask;
+use types::FactCoverage;
 use types::Language;
 use types::ids::FileId;
 
@@ -531,7 +531,7 @@ pub(crate) fn bootstrap_tier2(
                 "manifest",
                 &content_hash,
                 "complete",
-                CapabilityMask::from_layers(&["manifest"]),
+                FactCoverage::from_layers(&["manifest"]),
             ) {
                 tracing::warn!(?e, path = %rel_path, "Tier2: upsert extraction state failed");
                 // Facts are already inserted — this is non-fatal for the file

@@ -38,8 +38,8 @@ extract_file_with_mode() → FileFacts
 
 Each language implements a `LanguageFrontend` via slot-based composition:
 
-- **14 languages** with DataflowFull capability (all compiled by default)
-- All languages support full structural analysis and DataflowFull tracing.
+- **14 languages** with DataflowInterproc capability (all compiled by default)
+- All languages support full structural analysis and DataflowInterproc tracing.
 - Capability profiles currently declare CFG support for 12 languages; ArkTS and PHP are the exceptions.
 
 For detailed capability profiles, see `types::LanguageCapabilityProfile`.

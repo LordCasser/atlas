@@ -4,7 +4,7 @@
 //! - Owns FocusRuntime, CacheState, and LazyRefreshQueue
 //! - `prepare()`: single entry point for focus-driven lazy analysis
 //! - `has_full_index()`: check whether project has a complete index
-//! - `detect_index_mode()`: inspect FocusRuntime's index mode
+//! - `detect_access_strategy()`: inspect FocusRuntime's index mode
 //!
 //! # Usage pattern
 //! ```ignore
@@ -13,7 +13,7 @@
 //! ```
 //!
 //! # Dependencies
-//! - `atlas_engine::focus::runtime::{FocusRuntime, FocusResult, IndexMode}`
+//! - `atlas_engine::focus::runtime::{FocusRuntime, FocusResult, AccessStrategy}`
 //! - `super::cache_state::CacheState`
 
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use atlas_engine::IncludeRoot;
 use atlas_engine::Store;
 use atlas_engine::focus::query::QueryIntent;
-use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, IndexMode};
+use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, AccessStrategy};
 
 use super::cache_state::CacheState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
@@ -84,8 +84,8 @@ impl QueryRuntime {
         }
 
         // 2. Detect index mode (unlocks after check)
-        let mode = self.detect_index_mode();
-        if mode == IndexMode::FullIndex {
+        let mode = self.detect_access_strategy();
+        if mode == AccessStrategy::FullCache {
             return (None, vec![]);
         }
 
@@ -103,8 +103,8 @@ impl QueryRuntime {
         }
     }
 
-    pub fn detect_index_mode(&self) -> IndexMode {
-        self.focus_runtime.lock().unwrap().detect_index_mode()
+    pub fn detect_access_strategy(&self) -> AccessStrategy {
+        self.focus_runtime.lock().unwrap().detect_access_strategy()
     }
 
     /// Check whether the project has a full (non-manifest) index.
@@ -151,7 +151,7 @@ pub struct PreparedGraphQuery {
 mod tests {
     use super::*;
     use crate::tools::lazy_refresh::LazyRefreshQueue;
-    use atlas_engine::{CapabilityMask, FileId, FileInfo, Language, ParseStatus, Store};
+    use atlas_engine::{FactCoverage, FileId, FileInfo, Language, ParseStatus, Store};
     use std::sync::Arc;
 
     fn create_test_query_runtime() -> QueryRuntime {
@@ -165,10 +165,10 @@ mod tests {
     fn focus_runtime_is_always_present() {
         let qr = create_test_query_runtime();
         // FocusRuntime is always present — no Option wrapper.
-        let mode = qr.detect_index_mode();
-        // For an empty in-memory store with no full index, detect_index_mode
-        // should return IndexMode::Focus (lazy extraction is possible).
-        assert_eq!(mode, IndexMode::Focus);
+        let mode = qr.detect_access_strategy();
+        // For an empty in-memory store with no full index, detect_access_strategy
+        // should return AccessStrategy::Focus (lazy extraction is possible).
+        assert_eq!(mode, AccessStrategy::Focus);
     }
 
     #[test]
@@ -257,7 +257,7 @@ mod tests {
                 "structural",
                 "hash",
                 "complete",
-                CapabilityMask::default(),
+                FactCoverage::default(),
             )
             .unwrap();
 

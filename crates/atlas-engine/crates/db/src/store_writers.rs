@@ -1084,9 +1084,9 @@ fn write_file_facts_inner(
          WHERE file_id = ?1 AND unit_id IS NULL AND layer = ?2",
         params![facts.file.file_id, facts.layer],
     )?;
-    let mut capability_mask = CapabilityMask::from_layers(&[&facts.layer]);
+    let mut capability_mask = FactCoverage::from_layers(&[&facts.layer]);
     if !facts.cfg_nodes.is_empty() {
-        capability_mask.set(CapabilityMask::CFG);
+        capability_mask.set(FactCoverage::CFG);
     }
     conn.execute(
         "INSERT INTO extraction_state

@@ -241,13 +241,18 @@ pub enum SemanticConfidence {
 }
 
 /// Combined precision: coverage scope × semantic certainty.
+///
+/// Architecture §1.1 L4 **AnswerQuality** — Focus-internal only; must not appear
+/// in MCP public JSON. Prefer the name `AnswerQuality` in new docs; `AnswerQuality`
+/// remains the type identifier to avoid a large rename wave.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Precision {
+pub struct AnswerQuality {
     pub coverage: CoverageTier,
     pub confidence: SemanticConfidence,
 }
 
-impl Precision {
+
+impl AnswerQuality {
     /// Best possible state — full repo, all certain.
     pub fn best() -> Self {
         Self {
@@ -294,18 +299,18 @@ impl Precision {
 }
 
 /// Compute precision for lazy dataflow extraction.
-pub fn dataflow_precision(available: usize, planned: usize, budget_exceeded: bool) -> Precision {
+pub fn dataflow_precision(available: usize, planned: usize, budget_exceeded: bool) -> AnswerQuality {
     if planned == 0 || available == 0 {
-        Precision::worst()
+        AnswerQuality::worst()
     } else if budget_exceeded || available < planned {
-        Precision {
+        AnswerQuality {
             coverage: CoverageTier::Boundary {
                 target_tier: SymbolTier::Full,
             },
             confidence: SemanticConfidence::High,
         }
     } else {
-        Precision::best()
+        AnswerQuality::best()
     }
 }
 
@@ -813,15 +818,20 @@ impl FileFacts {
 }
 
 // ---------------------------------------------------------------------------
-// CapabilityMask — bitmask of extraction capabilities available for a file/unit
+// FactCoverage — bitmask of extraction capabilities available for a file/unit
 // ---------------------------------------------------------------------------
 
 /// Bitmask of extraction capabilities available for a file/unit.
 /// Only covers extraction-layer capabilities.
+///
+/// Architecture §1.1 L1 **FactCoverage** — facts already materialized in the DB.
+/// Prefer the name FactCoverage in docs; `FactCoverage` remains the type
+/// identifier. See type alias [`FactCoverage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct CapabilityMask(u16);
+pub struct FactCoverage(u16);
 
-impl CapabilityMask {
+
+impl FactCoverage {
     pub const MANIFEST: u16 = 1 << 0; // top-level symbols known
     pub const STRUCTURAL: u16 = 1 << 1; // full symbols, scopes, refs, callsites
     pub const CALL_EDGES: u16 = 1 << 2; // callsites resolved, call graph edges
@@ -1029,11 +1039,11 @@ impl IndexReport {
 mod tests {
     use super::*;
 
-    // ── CapabilityMask tests ─────────────────────────────────────────────
+    // ── FactCoverage tests ─────────────────────────────────────────────
 
     #[test]
     fn test_capability_mask_default_is_zero() {
-        let mask = CapabilityMask::default();
+        let mask = FactCoverage::default();
         assert!(mask.is_zero());
         assert_eq!(mask.bits(), 0);
         assert_eq!(mask.best_capability_name(), "unavailable");
@@ -1041,103 +1051,122 @@ mod tests {
 
     #[test]
     fn test_capability_mask_single_bit() {
-        let mut mask = CapabilityMask::default();
-        mask.set(CapabilityMask::MANIFEST);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(!mask.has(CapabilityMask::STRUCTURAL));
+        let mut mask = FactCoverage::default();
+        mask.set(FactCoverage::MANIFEST);
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(!mask.has(FactCoverage::STRUCTURAL));
         assert_eq!(mask.best_capability_name(), "manifest");
     }
 
     #[test]
     fn test_capability_mask_multiple_bits() {
-        let mut mask = CapabilityMask::default();
-        mask.set(CapabilityMask::MANIFEST);
-        mask.set(CapabilityMask::STRUCTURAL);
-        mask.set(CapabilityMask::CALL_EDGES);
-        assert!(mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::STRUCTURAL));
-        assert!(!mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG));
+        let mut mask = FactCoverage::default();
+        mask.set(FactCoverage::MANIFEST);
+        mask.set(FactCoverage::STRUCTURAL);
+        mask.set(FactCoverage::CALL_EDGES);
+        assert!(mask.has_all(FactCoverage::MANIFEST | FactCoverage::STRUCTURAL));
+        assert!(!mask.has_all(FactCoverage::MANIFEST | FactCoverage::CFG));
         assert_eq!(mask.best_capability_name(), "call_edges");
     }
 
     #[test]
     fn test_capability_mask_has_all_exact() {
-        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::CFG);
-        assert!(mask.has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG));
+        let mask = FactCoverage::new(FactCoverage::MANIFEST | FactCoverage::CFG);
+        assert!(mask.has_all(FactCoverage::MANIFEST | FactCoverage::CFG));
         assert!(
             !mask
-                .has_all(CapabilityMask::MANIFEST | CapabilityMask::CFG | CapabilityMask::DATAFLOW)
+                .has_all(FactCoverage::MANIFEST | FactCoverage::CFG | FactCoverage::DATAFLOW)
         );
     }
 
     #[test]
     fn test_capability_mask_from_layers_manifest() {
-        let mask = CapabilityMask::from_layers(&["manifest"]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(!mask.has(CapabilityMask::STRUCTURAL));
+        let mask = FactCoverage::from_layers(&["manifest"]);
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(!mask.has(FactCoverage::STRUCTURAL));
     }
 
     #[test]
     fn test_capability_mask_from_layers_structural() {
-        let mask = CapabilityMask::from_layers(&["structural"]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        let mask = FactCoverage::from_layers(&["structural"]);
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
     }
 
     #[test]
     fn test_capability_mask_from_layers_dataflow() {
-        let mask = CapabilityMask::from_layers(&["dataflow"]);
-        assert!(mask.has(CapabilityMask::DATAFLOW));
-        assert!(!mask.has(CapabilityMask::CFG));
-        assert!(mask.has(CapabilityMask::STRUCTURAL));
+        let mask = FactCoverage::from_layers(&["dataflow"]);
+        assert!(mask.has(FactCoverage::DATAFLOW));
+        assert!(!mask.has(FactCoverage::CFG));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
     }
 
     #[test]
     fn test_capability_mask_from_layers_multi() {
-        let mask = CapabilityMask::from_layers(&["manifest", "cfg", "summaries"]);
-        assert!(mask.has(CapabilityMask::MANIFEST));
-        assert!(mask.has(CapabilityMask::CFG));
-        assert!(mask.has(CapabilityMask::SUMMARIES));
-        assert!(!mask.has(CapabilityMask::DATAFLOW));
+        let mask = FactCoverage::from_layers(&["manifest", "cfg", "summaries"]);
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::CFG));
+        assert!(mask.has(FactCoverage::SUMMARIES));
+        assert!(!mask.has(FactCoverage::DATAFLOW));
     }
 
     #[test]
     fn test_capability_mask_best_name_priority() {
-        let mut mask = CapabilityMask::default();
-        mask.set(CapabilityMask::MANIFEST);
-        mask.set(CapabilityMask::STRUCTURAL);
-        mask.set(CapabilityMask::CFG);
-        mask.set(CapabilityMask::DATAFLOW);
-        mask.set(CapabilityMask::SUMMARIES);
+        let mut mask = FactCoverage::default();
+        mask.set(FactCoverage::MANIFEST);
+        mask.set(FactCoverage::STRUCTURAL);
+        mask.set(FactCoverage::CFG);
+        mask.set(FactCoverage::DATAFLOW);
+        mask.set(FactCoverage::SUMMARIES);
         assert_eq!(mask.best_capability_name(), "summaries");
 
-        let mut mask2 = CapabilityMask::default();
-        mask2.set(CapabilityMask::MANIFEST);
-        mask2.set(CapabilityMask::STRUCTURAL);
-        mask2.set(CapabilityMask::CFG);
-        mask2.set(CapabilityMask::DATAFLOW);
+        let mut mask2 = FactCoverage::default();
+        mask2.set(FactCoverage::MANIFEST);
+        mask2.set(FactCoverage::STRUCTURAL);
+        mask2.set(FactCoverage::CFG);
+        mask2.set(FactCoverage::DATAFLOW);
         assert_eq!(mask2.best_capability_name(), "dataflow");
 
-        let mut mask3 = CapabilityMask::default();
-        mask3.set(CapabilityMask::MANIFEST);
-        mask3.set(CapabilityMask::CFG);
+        let mut mask3 = FactCoverage::default();
+        mask3.set(FactCoverage::MANIFEST);
+        mask3.set(FactCoverage::CFG);
         assert_eq!(mask3.best_capability_name(), "cfg");
     }
 
     #[test]
     fn test_capability_mask_serde_roundtrip() {
-        let mask = CapabilityMask::new(CapabilityMask::MANIFEST | CapabilityMask::DATAFLOW);
+        let mask = FactCoverage::new(FactCoverage::MANIFEST | FactCoverage::DATAFLOW);
         let json = serde_json::to_string(&mask).unwrap();
-        let parsed: CapabilityMask = serde_json::from_str(&json).unwrap();
+        let parsed: FactCoverage = serde_json::from_str(&json).unwrap();
         assert_eq!(mask.bits(), parsed.bits());
     }
 
     #[test]
     fn test_capability_mask_new_vs_set() {
-        let a = CapabilityMask::new(CapabilityMask::CFG | CapabilityMask::SUMMARIES);
-        let mut b = CapabilityMask::default();
-        b.set(CapabilityMask::CFG);
-        b.set(CapabilityMask::SUMMARIES);
+        let a = FactCoverage::new(FactCoverage::CFG | FactCoverage::SUMMARIES);
+        let mut b = FactCoverage::default();
+        b.set(FactCoverage::CFG);
+        b.set(FactCoverage::SUMMARIES);
         assert_eq!(a.bits(), b.bits());
+    }
+
+    /// Architecture §1.1: FactCoverage is the L1 name for FactCoverage.
+    #[test]
+    fn fact_coverage_alias_is_capability_mask() {
+        let bits = FactCoverage::STRUCTURAL | FactCoverage::DATAFLOW;
+        let coverage: FactCoverage = FactCoverage::new(bits);
+        let mask: FactCoverage = coverage;
+        assert_eq!(mask.bits(), bits);
+        assert!(mask.has(FactCoverage::STRUCTURAL));
+    }
+
+    /// Architecture §1.1: AnswerQuality is the L4 name for AnswerQuality.
+    #[test]
+    fn answer_quality_alias_is_precision() {
+        let p = AnswerQuality::best();
+        let q: AnswerQuality = p.clone();
+        assert_eq!(q.coverage, CoverageTier::RepoComplete);
+        assert_eq!(q.confidence, SemanticConfidence::Certain);
     }
 
     // ── existing tests below ────────────────────────────────────────────

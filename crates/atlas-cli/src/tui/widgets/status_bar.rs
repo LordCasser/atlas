@@ -16,13 +16,13 @@ pub fn render(
     area: Rect,
     counts: (i64, i64, i64),
     graph_ready: bool,
-    index_mode: &str,
+    catalog_tier: &str,
     activity: &str,
 ) {
     let (file_count, symbol_count, edge_count) = counts;
     let graph = if graph_ready { "graph" } else { "loading" };
     let text = if area.width < 80 {
-        let mode = match index_mode {
+        let mode = match catalog_tier {
             "partial_structural" => "partial",
             "structural+lazy" => "struct+lazy",
             other => other,
@@ -31,7 +31,7 @@ pub fn render(
         format!(" {file_count}f {symbol_count}s {edge_count}e | {mode} | {state} | : ?")
     } else {
         format!(
-            " {file_count}f {symbol_count}s {edge_count}e | {index_mode} | {graph}/{activity} | :cmd ?help"
+            " {file_count}f {symbol_count}s {edge_count}e | {catalog_tier} | {graph}/{activity} | :cmd ?help"
         )
     };
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use db::Store;
 use types::ids::FileId;
-use types::structs::CapabilityMask;
+use types::structs::FactCoverage;
 
 use crate::investigation::{Investigation, InvestigationFocus};
 
@@ -58,7 +58,7 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
             types::layer::STRUCTURAL,
             "abc123",
             types::status::COMPLETE,
-            CapabilityMask::default(),
+            FactCoverage::default(),
         )
         .unwrap();
     file_id
@@ -141,7 +141,7 @@ fn test_prewarm_investigation() {
         )),
         related_symbols: vec![],
         related_files: vec![fid1, fid2],
-        desired_capabilities: CapabilityMask::default(),
+        desired_capabilities: FactCoverage::default(),
     };
 
     scheduler.prewarm_investigation(&investigation);

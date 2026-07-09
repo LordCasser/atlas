@@ -917,7 +917,7 @@ mod tests {
                 "kind": "variable",
                 "capability": {
                     "language": "rust",
-                    "level": "dataflow_full",
+                    "level": "dataflow_interproc",
                     "confidence": 0.92
                 },
                 "partial_result": false,
@@ -930,7 +930,7 @@ mod tests {
         );
 
         assert!(view.hud_text().contains("rust"));
-        assert!(view.hud_text().contains("dataflow full"));
+        assert!(view.hud_text().contains("dataflow interproc"));
         assert!(view.hud_text().contains("92%"));
         assert!(view.fact_text().contains("src/lib.rs:7"));
         assert!(!view.fact_text().contains("capability"));

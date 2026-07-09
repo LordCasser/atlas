@@ -1041,7 +1041,7 @@ pub fn phase_build_summaries(
 /// Only records files that are still content-fresh (content_hash matches
 /// `files`), since stale summaries are not trustworthy.
 fn record_summaries_extraction_state(store: &Arc<Store>) -> Result<()> {
-    use types::structs::CapabilityMask;
+    use types::structs::FactCoverage;
 
     let files = db::summary::SummaryStore::files_with_summaries(store)?;
     for (file_id, content_hash) in &files {
@@ -1050,7 +1050,7 @@ fn record_summaries_extraction_state(store: &Arc<Store>) -> Result<()> {
             "summaries",
             content_hash,
             "complete",
-            CapabilityMask::new(CapabilityMask::SUMMARIES),
+            FactCoverage::new(FactCoverage::SUMMARIES),
         )?;
     }
     Ok(())

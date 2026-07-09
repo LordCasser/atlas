@@ -4,7 +4,7 @@ use super::types::*;
 use types::enums::{Language, SymbolKind};
 use types::ids::FileId;
 use types::structs::KnownGap;
-use types::structs::Precision;
+use types::structs::AnswerQuality;
 
 #[test]
 fn test_default_window_budget() {
@@ -65,7 +65,7 @@ fn test_focus_closure_mark_extracted() {
     };
     let mut closure = FocusClosure::new(&seed);
     let fid = FileId::generate("extracted.rs");
-    closure.mark_extracted(fid, &Precision::best());
+    closure.mark_extracted(fid, &AnswerQuality::best());
     assert!(closure.files.contains(&fid));
     assert!(closure.visited.contains(&fid));
     assert_eq!(closure.files.len(), 1);
@@ -89,7 +89,7 @@ fn test_focus_closure_record_gap() {
 
 #[test]
 fn test_precision_best_method() {
-    let p = Precision::best();
+    let p = AnswerQuality::best();
     assert!(matches!(
         p.coverage,
         types::structs::CoverageTier::RepoComplete
@@ -99,7 +99,7 @@ fn test_precision_best_method() {
 
 #[test]
 fn test_precision_worst_method() {
-    let p = Precision::worst();
+    let p = AnswerQuality::worst();
     assert!(matches!(p.coverage, types::structs::CoverageTier::Manifest));
     assert_eq!(p.confidence, types::structs::SemanticConfidence::Low);
 }

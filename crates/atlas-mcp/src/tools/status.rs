@@ -23,10 +23,10 @@ impl ToolRouter {
             .list_active_extraction_jobs()
             .unwrap_or_default();
 
-        let index_mode = self
+        let catalog_tier = self
             .project()
             .store
-            .read_index_mode()
+            .read_catalog_tier()
             .unwrap_or_else(|_| "unknown".to_string());
 
         // Build per-language capability summary for languages present in the project.
@@ -137,7 +137,7 @@ impl ToolRouter {
                     "unresolved_references": stats.unresolved_references,
                 },
                 "index": {
-                    "mode": index_mode,
+                    "catalog_tier": catalog_tier,
                     "fresh_layers": layer_counts.iter().map(|(layer, status, count)| json!({
                         "layer": layer,
                         "status": status,

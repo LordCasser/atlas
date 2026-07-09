@@ -2338,8 +2338,8 @@ int main() {
             units_cached: 0,
             units_pending: 0,
             pending_job_ids: Vec::new(),
-            precision: None,
-            capability_mask: types::structs::CapabilityMask::default(),
+            quality: None,
+            capability_mask: types::structs::FactCoverage::default(),
         };
 
         let facts = extract_file_with_mode(
@@ -2415,8 +2415,8 @@ int main() {
             units_cached: 0,
             units_pending: 0,
             pending_job_ids: Vec::new(),
-            precision: None,
-            capability_mask: types::structs::CapabilityMask::default(),
+            quality: None,
+            capability_mask: types::structs::FactCoverage::default(),
         };
 
         let facts_lazy = extract_file_with_mode(

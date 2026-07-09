@@ -1,10 +1,10 @@
 //! Tests for edge conflict resolution policy.
 
 use super::edge_policy::*;
-use types::structs::{CoverageTier, Precision, SemanticConfidence};
+use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence};
 
-fn closure_precision(confidence: SemanticConfidence) -> Precision {
-    Precision {
+fn closure_precision(confidence: SemanticConfidence) -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::ClosureComplete {
             closure_id: "test-closure-1".into(),
         },
@@ -12,15 +12,15 @@ fn closure_precision(confidence: SemanticConfidence) -> Precision {
     }
 }
 
-fn manifest_precision(confidence: SemanticConfidence) -> Precision {
-    Precision {
+fn manifest_precision(confidence: SemanticConfidence) -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::Manifest,
         confidence,
     }
 }
 
-fn certain_precision() -> Precision {
-    Precision {
+fn certain_precision() -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::RepoComplete,
         confidence: SemanticConfidence::Certain,
     }
@@ -177,8 +177,8 @@ fn test_edge_persistence_gap() {
 
 // ── Helpers for Boundary / Partial coverage ───────────────────────────
 
-fn boundary_precision(confidence: SemanticConfidence) -> Precision {
-    Precision {
+fn boundary_precision(confidence: SemanticConfidence) -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::Boundary {
             target_tier: types::structs::SymbolTier::Full,
         },
@@ -186,15 +186,15 @@ fn boundary_precision(confidence: SemanticConfidence) -> Precision {
     }
 }
 
-fn partial_precision(confidence: SemanticConfidence) -> Precision {
-    Precision {
+fn partial_precision(confidence: SemanticConfidence) -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::Partial { gaps: vec![] },
         confidence,
     }
 }
 
-fn repo_complete_precision(confidence: SemanticConfidence) -> Precision {
-    Precision {
+fn repo_complete_precision(confidence: SemanticConfidence) -> AnswerQuality {
+    AnswerQuality {
         coverage: CoverageTier::RepoComplete,
         confidence,
     }

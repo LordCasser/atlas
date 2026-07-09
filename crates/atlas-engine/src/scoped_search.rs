@@ -49,8 +49,8 @@ use std::time::{Duration, Instant};
 use db::Store;
 use search::query_parser::parse_query;
 use search::scoring::{ScoreWeights, language_preference_bonus};
-use types::structs::Precision;
-use types::{CapabilityMask, Language, SymbolDef, SymbolKind};
+use types::structs::AnswerQuality;
+use types::{FactCoverage, Language, SymbolDef, SymbolKind};
 
 use crate::Engine;
 
@@ -126,9 +126,9 @@ pub struct ScopedSearchResponse {
     /// Whether lazy structural was triggered on this request.
     pub triggered_lazy: bool,
     /// Capability mask achieved.
-    pub capability_mask: CapabilityMask,
-    /// Precision of lazy extraction (if triggered).
-    pub precision: Precision,
+    pub capability_mask: FactCoverage,
+    /// AnswerQuality of lazy extraction (if triggered).
+    pub quality: AnswerQuality,
     /// Warnings for the user.
     pub warnings: Vec<String>,
     /// File ids that should be parsed by background focus warming.
@@ -251,8 +251,8 @@ impl ScopedSearchService {
                     reason: "No indexed files in scope".to_string(),
                 },
                 triggered_lazy: false,
-                capability_mask: CapabilityMask::default(),
-                precision: Precision::worst(),
+                capability_mask: FactCoverage::default(),
+                quality: AnswerQuality::worst(),
                 warnings,
                 deferred_file_ids: Vec::new(),
             });
@@ -266,8 +266,8 @@ impl ScopedSearchService {
             SearchAnalysis::Auto => scope_file_count <= AUTO_STRUCTURAL_THRESHOLD,
         };
 
-        let mut precision = Precision::worst();
-        let mut capability_mask = CapabilityMask::from_layers(&["manifest"]);
+        let mut quality = AnswerQuality::worst();
+        let mut capability_mask = FactCoverage::from_layers(&["manifest"]);
 
         // If the DB already has full structural data (e.g. after
         // `atlas index --analysis full`), report Exact precision and skip
@@ -287,9 +287,9 @@ impl ScopedSearchService {
             };
             if !file_ids.is_empty() {
                 let capability = self.store.derive_capability_for_files(&file_ids);
-                if capability.has(CapabilityMask::STRUCTURAL) {
-                    precision = Precision::best();
-                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+                if capability.has(FactCoverage::STRUCTURAL) {
+                    quality = AnswerQuality::best();
+                    capability_mask = FactCoverage::from_layers(&["manifest", "structural"]);
                     if should_trigger_lazy {
                         should_trigger_lazy = false;
                         warnings.push(
@@ -340,8 +340,8 @@ impl ScopedSearchService {
                 lazy_covered_scope = scope_file_count <= ensured.files_built + ensured.files_cached
                     && !ensured.budget_exceeded;
                 if triggered_lazy {
-                    precision = ensured.precision.clone();
-                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+                    quality = ensured.quality.clone();
+                    capability_mask = FactCoverage::from_layers(&["manifest", "structural"]);
                 }
                 if ensured.budget_exceeded {
                     warnings.push(
@@ -398,8 +398,8 @@ impl ScopedSearchService {
                     lazy_covered_scope = requested_files >= scope_file_count
                         && !ensured.budget_exceeded
                         && !truncated_for_latency;
-                    precision = ensured.precision.clone();
-                    capability_mask = CapabilityMask::from_layers(&["manifest", "structural"]);
+                    quality = ensured.quality.clone();
+                    capability_mask = FactCoverage::from_layers(&["manifest", "structural"]);
 
                     if truncated_for_latency {
                         warnings.push(
@@ -475,7 +475,7 @@ impl ScopedSearchService {
             coverage,
             triggered_lazy,
             capability_mask,
-            precision,
+            quality,
             warnings,
             deferred_file_ids,
         })
@@ -934,7 +934,7 @@ mod tests {
                 "structural",
                 &content_hash,
                 "complete",
-                CapabilityMask::from_layers(&["manifest", "structural"]),
+                FactCoverage::from_layers(&["manifest", "structural"]),
             )
             .unwrap();
 
@@ -960,11 +960,11 @@ mod tests {
             "should warn about existing structural data"
         );
         assert!(
-            resp.precision.is_exact(),
+            resp.quality.is_exact(),
             "precision should be Exact when structural data exists"
         );
         assert!(
-            resp.capability_mask.has(CapabilityMask::STRUCTURAL),
+            resp.capability_mask.has(FactCoverage::STRUCTURAL),
             "capability_mask should include STRUCTURAL when structural data exists"
         );
     }
@@ -992,7 +992,7 @@ mod tests {
                 "structural",
                 &content_hash,
                 "complete",
-                CapabilityMask::from_layers(&["manifest", "structural"]),
+                FactCoverage::from_layers(&["manifest", "structural"]),
             )
             .unwrap();
 
@@ -1011,11 +1011,11 @@ mod tests {
             "Manifest mode should never trigger lazy"
         );
         assert!(
-            resp.precision.is_exact(),
+            resp.quality.is_exact(),
             "precision should be Exact when structural data exists"
         );
         assert!(
-            resp.capability_mask.has(CapabilityMask::STRUCTURAL),
+            resp.capability_mask.has(FactCoverage::STRUCTURAL),
             "capability_mask should include STRUCTURAL when structural data exists"
         );
     }
