@@ -97,10 +97,10 @@ tree-sitter queries + LanguageAdapter -> FileFacts
 
 分析等级必须有稳定的用户可见语义：
 
-- `Manifest`：只产出顶层声明符号，用于快速初始索引和 lazy structural 候选；不得写入函数体内部局部定义。
-- `ResolutionSymbols`：只作为 dependency/lazy resolution 目标层，不对用户宣称完整 structural。
+- `Manifest`：只产出顶层声明符号，用于快速初始索引和 Focus materialize 候选；不得写入函数体内部局部定义。
+- `ResolutionSymbols`：只作为 dependency / Focus dependency 物化目标层，不对用户宣称完整 structural。
 - `Structural`：产出 symbols/scopes/references/callsites/call graph，可支持结构性搜索、context、callers/callees。
-- `LazyDataflow`：按需为查询窗口产出 dataflow/CFG facts；内部记录 budget/pending 状态，MCP 映射为 `analysis.retry_after_ms` 或终态 `gaps`。
+- `LazyDataflow`：L2 机制处方——按需为查询窗口产出 dataflow/CFG facts（挂在 Focus materialize 下，不是第三条产品路径）；内部记录 budget/pending，MCP 映射为 `analysis.retry_after_ms` 或终态 `gaps`。
 - `Full`：产出 structural + dataflow + CFG（语言支持时）+ persistent summaries；summary capability 只能在 summary tables 成功构建后对用户可见。
 
 索引重跑必须按请求的 analysis mode 判断是否已满足目标能力，不能只比较文件 hash：

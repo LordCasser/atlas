@@ -17,3 +17,11 @@ configured dataflow service only via `FocusMaterialize::open`.
 
 `LazyDataflowService` / `LazyWindow` remain as **mechanism** type names (L2
 extraction / window IR). They are not an AccessStrategy or parallel product line.
+
+## Construction
+
+- Production: only via `atlas_engine::FocusMaterialize::open`.
+- Factory: `LazyDataflowService::with_structural_rebuilder` is `#[doc(hidden)]`
+  and always requires a rebuilder.
+- Unit write FK: invalid `data_node.binding_id` is cleared (SET NULL), not dropped
+  with the whole node — see `db::fk_guards::filter_data_nodes`.

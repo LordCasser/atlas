@@ -14,26 +14,27 @@
 
 ### 1.1 分析等级与入口路径覆盖
 
-Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、`CapabilityLevel`/`FeatureMatrix`（L0）、`FactCoverage`/CatalogTier（L1）、`AccessStrategy`/`PipelineGrade`/`EdgeProvenance`（L3）、内部 `Precision`/AnswerQuality（L4）。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/AnswerQuality/status 展示的 PR，都必须明确列出并验证受影响路径。不得再引入第二个名为 `IndexMode` 的类型。
+Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、`CapabilityLevel`/`FeatureMatrix`（L0）、`FactCoverage`/CatalogTier（L1）、`AccessStrategy`/`PipelineGrade`/`EdgeProvenance`（L3）、内部 **`AnswerQuality`（L4）**。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/AnswerQuality/status 展示的 PR，都必须明确列出并验证受影响路径。不得再引入第二个名为 `IndexMode` 的类型。
 
-**产品路径（查询时）：** 对外只验证 **Index（预物化 → FullCache）** 与 **Focus（意图局部加强）**。按需 structural/dataflow ensure 属于 Focus materialize（内部机制），测试可调用 ensure API，但不得把 “Lazy 产品线” 写成与 Focus 并列的第三入口。
+**产品路径（查询时）：** 对外只验证 **Index（预物化 → FullCache）** 与 **Focus（意图局部加强）**。按需 structural/dataflow ensure 属于 **Focus materialize**（内部机制；类型名可含 `Lazy*`），测试可调用 ensure API，但不得把 “Lazy 产品线” 写成与 Focus 并列的第三入口。
 
 最低路径矩阵：
 
 | 等级/路径 | 必须验证的入口 | 必须验证的结果 |
 |-----------|----------------|----------------|
-| Manifest | `atlas index --analysis manifest`、shared `run_index_pipeline(Manifest)`、必要时 `atlas sync --analysis manifest` | 只写 manifest 事实；不会误报 structural/dataflow；用户可见 precision/status 正确 |
-| ResolutionSymbols | dependency/lazy resolution 触发路径 | 只写 resolution symbols/imports/scopes；不会破坏已有 manifest/structural 层；stale hash 行为正确 |
-| Structural | `atlas index` 默认路径、shared filesync pipeline、`atlas sync` 默认路径、`LazyStructuralService` | symbols/scopes/references/callsites 写入；resolution/graph build 正确；manifest -> structural 升级正确 |
-| LazyDataflow（L2 处方；Focus materialize 内部） | high-level `Engine::trace_variable`、`FocusMaterialize`/`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；budget/pending 内部状态能稳定映射为 public retry/gaps；与 Focus 控制面共用同一 materialize 配置 |
-| Full | `atlas index --analysis full`、shared pipeline Full、`atlas sync --analysis full` | structural + dataflow + CFG + summaries 全链路持久化；file/unit extraction_state 和 capability mask 不欠报、不误报 |
-| Raw analysis consumers | `RawTraceEngine`、analysis crate direct tests | 明确说明它们是否负责触发 lazy；若不触发，测试必须先准备所需 DB facts |
+| Manifest | `atlas index --analysis manifest`、shared `run_index_pipeline(Manifest)`、必要时 `atlas sync --analysis manifest` | 只写 manifest 事实；不会误报 structural/dataflow；用户可见 status/catalog 正确 |
+| ResolutionSymbols | dependency / Focus dependency 物化路径 | 只写 resolution symbols/imports/scopes；不会破坏已有 manifest/structural 层；stale hash 行为正确 |
+| Structural | `atlas index` 默认路径、shared filesync pipeline、`atlas sync`、`FocusMaterialize`/`LazyStructuralService` | symbols/scopes/references/callsites 写入；resolution/graph 正确；manifest → structural 升级正确 |
+| LazyDataflow（L2；Focus materialize 内部） | `Engine::trace_variable`、`FocusMaterialize`/`LazyDataflowService::ensure_*`、full-index unit cache hit | unit dataflow/CFG 写入或复用；callsite/data-node joins；budget/pending → public retry/gaps；**与 Focus 控制面同一 materialize 配置** |
+| Full | `atlas index --analysis full`、shared pipeline Full、`atlas sync --analysis full` | structural + dataflow + CFG + summaries 全链路；extraction_state / FactCoverage 不欠报、不误报 |
+| Raw analysis consumers | `RawTraceEngine`、analysis crate direct tests | 明确是否触发 materialize；若不触发须先准备 DB facts |
+| N5 邻域对拍 | 见 §2.6.2 | Focus complete 文件/unit 切片 ≈ Index 同范围 |
 
 测试要求：
 - 同一修复如果影响 shared pipeline 和 CLI 自有 pipeline，必须覆盖两者。
 - 同一修复如果影响 file-level state 和 unit-level state，必须覆盖两者。
-- 同一修复如果影响 lazy 和 non-lazy，必须至少有一个 lazy 回归测试和一个 full/structural 回归测试。
-- capability/status/precision 的测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
+- 同一修复如果影响 Focus materialize ensure 与 Index 预物化，必须至少各有一条回归（禁止只测 helper）。
+- capability/status 测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 
 强制回归场景：
@@ -41,9 +42,11 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - `run_index_pipeline(Full)`、`atlas index --analysis full`、`atlas sync --analysis full` 必须分别断言 summary tables 已构建，并且 `summaries` capability 只在 summary build 成功后出现。
 - 每种语言的 Manifest 测试必须断言只产生顶层符号。不得仅测试 query parse 成功；fixture 必须包含函数/方法内部局部定义以证明不会过度索引。
 - `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
-- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 lazy dataflow 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
-- MCP `branch_diff` / `lifecycle` 必须覆盖 lazy CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失。
+- unit 写库 FK：`filter_data_nodes` — 无效 `binding_id` 必须 **SET NULL 保留节点**；无效 `function_id` 才丢弃（`db::fk_guards` 单测）。
+- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 materialize 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
+- MCP `branch_diff` / `lifecycle` 必须覆盖按需 CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失。
 - CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
+- MCP 单栈：`ActiveProject` / Engine / FocusRuntime / AnalysisRuntime `same_stack_as`（或等价指针相等）有回归。
 
 ## 2. 测试分层
 

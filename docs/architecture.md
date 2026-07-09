@@ -425,21 +425,34 @@ Source files
   → CLI / MCP / Search / Context / Analysis / Trace
 ```
 
-### 7.1 Focus 按需 dataflow 物化（内部机制，非产品线）
+### 7.1 Focus materialize（内部按需物化，非产品线）
 
-在 **Focus** 查询时路径（及高层 `Engine::trace_*` 薄封装）中，analysis 按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性按需提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。L2 处方 `ExtractionMode::LazyDataflow` 表示增量按需抽取——这是 **抽取机制名**，不是 AccessStrategy。
+在 **Focus** 查询时路径（及高层 `Engine::trace_*` 薄封装）中，analysis **按需** 加载 dataflow facts（而非全量预加载），通过机制类型 `LazyWindow` 控制分析范围。结构性按需提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。
+
+**栈与构造（硬约束）**
+
+- 唯一配置入口：`FocusMaterialize::open(store, project_root)`（structural + dataflow + 标准 structural rebuilder 一次焊死）。
+- `FocusRuntime` / MCP `ActiveProject` / `Engine::from_materialize` / `AnalysisRuntime::from_materialize` 必须 **Clone 共享同一 Arc 栈**（`same_stack_as`）。
+- `LazyDataflowService::with_structural_rebuilder` 仅跨 crate 工厂（`#[doc(hidden)]`）；禁止旁路标准 rebuilder。
+- `Engine::from_store` 会 **新开** materialize 栈，仅适合 CLI/TUI 独占进程边界；MCP 热路径禁止用它并立第二套。
+
+**写库语义**
+
+- L2 处方 `ExtractionMode::LazyDataflow` = 增量 unit dataflow/CFG（机制名，不是 AccessStrategy）。
+- unit 写路径 `replace_dataflow_for_unit`：无效 `function_id` 丢弃行；无效 `data_node.binding_id` **SET NULL 保留节点**（Focus 重抽 bindings 的 ScopeId 可能与 structural 库不一致，不得静默抽干 unit facts）。
+- structural 与 Index 共用 `apply_post_extract_hooks`（Linux export/initcall 等）。
 
 等级路径约束（与 §1.1 对齐）：
 - L2 `ExtractionMode`：`Manifest` / `ResolutionSymbols` / `Structural` / `LazyDataflow` / `Full` — 抽取处方。
 - L0 `CapabilityLevel`（`DataflowLocal` / `DataflowInterproc` 等）+ `FeatureMatrix` — 语言理论能力；**不是**库状态。
-- L1 `FactCoverage`— 已物化证据 bits。
-- L4 `AnswerQuality`（AnswerQuality）— Focus 内部结果质量，不进 MCP 公共响应。
+- L1 `FactCoverage` — 已物化证据 bits。
+- L4 `AnswerQuality` — Focus 内部结果质量，不进 MCP 公共响应。
 - L3 `AccessStrategy` — FullCache vs Focus 读路径；与 L2 `ExtractionMode::Full` 不同。
 - 以上各层含义不同，**禁止混用**；禁止再引入第二个名为 `IndexMode` 的类型。
-- 入口矩阵：`atlas index` / `filesync::IndexPipeline` / `atlas sync`（**Index**）；`FocusRuntime` + Focus materialize（**Focus**）；`Engine::trace_*`（物化薄调用）；raw `analysis::TraceEngine`（只读已有 facts）。修改等级行为时必须列出受影响入口。
+- 入口矩阵：`atlas index` / `filesync::IndexPipeline` / `atlas sync`（**Index**）；`FocusRuntime` + Focus materialize（**Focus**）；`Engine::trace_*`（物化薄调用）；raw `analysis::TraceEngine`（只读已有 facts）。
 - 高层 `Engine::trace_variable` 经 Focus materialize 触发按需 dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。
-- `ExtractionMode::Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 CatalogTier 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
-- Focus 按需路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。同一 project 上 structural+dataflow 物化必须由 **单一 Focus materialize 配置**（含 self-heal rebuilder）构造，禁止 MCP 旁路未配置的第二套 dataflow 服务。
+- `ExtractionMode::Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 CatalogTier 上都表现为完整分析。
+- Focus 按需路径必须复用或严格对齐 structural facts（callsite、symbol、scope、content_hash、capability mask）；**闭包内 complete 文件/unit 的事实切片应 ≈ Index 同文件/同 unit**（验收见 `docs/testing.md` §2.6.2 N5）。
 
 分析等级的长期语义如下，所有入口必须与此表保持一致：
 
@@ -689,11 +702,11 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 **P0: Scope Index** — 允许 `--include`/`--scope`/`--exclude` 限制索引范围，降低大型项目 index 时间和 DB 体积。
 
-**P1: Manifest Extraction** — `ExtractionMode::Manifest`：仅提取顶层符号，为 lazy structural 提供候选源。通过 `symbols.layer` 字段区分。
+**P1: Manifest Extraction** — `ExtractionMode::Manifest`：仅提取顶层符号，为 Focus materialize / candidate 发现提供候选源。通过 `symbols.layer` 字段区分。
 
-**P2: Lazy Structural** — 查询时按需触发完整 structural extraction。`LazyStructuralService` + `CandidateProvider` + `StructuralLoader`。
+**P2: Focus structural materialize** — 查询时按需完整 structural extraction。机制类型 `LazyStructuralService` + `CandidateProvider` + `StructuralLoader`，挂在 `FocusMaterialize` 下（不是第三条产品路径）。
 
-**Lazy UX** — `FactCoverage`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
+**Focus UX / 可观测** — `FactCoverage`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
 
 #### 10.1.7 Lazy 状态与任务边界
 
@@ -814,29 +827,28 @@ else:
 #### 10.1.11 Focus 与内部 materialize；对照 Index
 
 **对外只呈现 Focus（查询时）与 Index（预物化）两种路径叙事。**  
-按需写库（历史上称 lazy structural / lazy dataflow）是 **Focus 解决方案下的 materialize 实现**，不是并列产品。
+按需写库（机制类型仍可叫 `Lazy*`）是 **Focus 方案下的 materialize 实现**，不是并列产品。
 
 | | Index | Focus |
 |--|-------|-------|
 | 角色 | 简单、通用预物化 | 复杂、意图驱动的局部加强 |
-| 入口 | `atlas index` / IndexPipeline / sync | MCP `FocusRuntime` + materialize |
+| 入口 | `atlas index` / IndexPipeline / sync | MCP `FocusRuntime` + `FocusMaterialize` |
 | 查询策略 | `AccessStrategy::FullCache`（finalize + 富 catalog） | `AccessStrategy::Focus` |
 | 体验目标 | 全仓/scope 缓存可读 | **闭包内**事实与查询可用性 ≈ Index 在该邻域的结果 |
-| 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract 语义；单一 materialize 配置 |
+| 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；**单一** materialize 配置；N5 邻域切片对拍 |
 
 控制 vs 物化（均属 Focus 方案）：
 
 - **控制面** `FocusRuntime`：决定构建哪些 facts、顺序、closure 可见性、analysis/retry/gaps。MCP handler 只生成 `QueryIntent`。
-- **Materialize**（`FocusMaterialize` / structural+dataflow ensure）：按需构建 facts、budget、job 去重、self-heal rebuilder。**唯一合法构造入口**是 `FocusMaterialize::open`（dataflow 构造强制要求 structural rebuilder）。`FocusRuntime` 在构造时必须注入 materialize，prepare **不会**静默再 `open` 第二套。禁止 MCP 旁路未配置的 dataflow 服务；禁止仅为 materialize 在热路径 `Engine::from_store`。
-- L2 `ExtractionMode`、`extraction_state`、`extraction_jobs` 保留为机制/DB 边界（可继续出现 Lazy* 机制名）。
+- **Materialize** `FocusMaterialize`：structural + dataflow ensure、budget、job 去重、self-heal rebuilder。**唯一合法构造** `FocusMaterialize::open`。`FocusRuntime` 构造时必填 materialize；prepare **不会**静默再 `open`。禁止 MCP 旁路未配置 dataflow；禁止热路径 `Engine::from_store` 并立第二栈。
+- L2 `ExtractionMode`、`extraction_state`、`extraction_jobs` 为机制/DB 边界（可保留 Lazy* 机制名）。
+- MCP `AnalysisRuntime` 是共享 materialize 上的 **薄 ensure 门**（`dataflow()` / `ensure_dataflow_*`），不是第二套配置。
 
 长期边界：
 
-- `FocusRuntime` 是 MCP 查询时唯一控制入口。不得直接组合 ad-hoc structural/dataflow 服务绕过 Focus materialize 配置。
-- 函数内语义工具使用 `SemanticFunction` intent：只保证目标函数所在文件的
-  structural/dataflow/CFG facts，不排入 call/type graph expansion。`lifecycle` 和
-  `branch_diff` 的精度来自函数内事实，而不是扩大文件闭包。
-- 旧 `LazyOrchestrator` / `LazyCoordinator` 控制面已删除。查询调度统一由 `FocusRuntime` / `ClosureEngine` / `BootstrapManager` 承担。
+- `FocusRuntime` 是 MCP 查询时唯一控制入口。不得 ad-hoc 拼 structural/dataflow 服务绕过 Focus materialize。
+- 函数内语义工具使用 `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排入 call/type expansion。
+- 旧 `LazyOrchestrator` / `LazyCoordinator` / `init_focus` 已删除。
 - Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
   overlay；只有 full-index/shared pipeline 可以更新全局
   `references.resolved_*` 和 repo-wide `symbol_edges`。

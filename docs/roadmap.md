@@ -103,27 +103,28 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 12 capability-enabled languages; ArkTS and PHP remain unsupported. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
 
-### 2.2 Lazy Index (three phases) ✅
+### 2.2 Index scope/manifest + Focus materialize (three phases) ✅
 
 - **P0: Scope Index** — `--include`/`--scope`/`--exclude` range-limited indexing.
 - **P1: Manifest Extraction** — `ExtractionMode::Manifest` for lightweight top-level symbol extraction.
-- **P2: Lazy Structural** — on-demand structural extraction via `LazyStructuralService`.
+- **P2: Focus structural materialize** — on-demand structural via `LazyStructuralService` under `FocusMaterialize` (mechanism name `Lazy*`, product path Focus).
 
 ### 2.3 Workspace/crate split ✅
 
-Project split into `atlas-engine` facade, engine internal crates, `atlas-mcp`, and `atlas-cli`.
+Project split into `atlas-engine` facade, engine internal crates (`focus_materialize` package for on-demand dataflow), `atlas-mcp`, and `atlas-cli`.
 
 ### 2.4 Performance optimizations ✅
 
 P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local parsers, batch DB writes, GlobalSymbolIndex, Rayon parallel edges, on-demand dataflow/CFG, language-capability-driven skip.
 
-### 2.5 Lazy UX and query recovery ✅
+### 2.5 Focus UX and query recovery ✅
 
 - `FactCoverage` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
-- Lazy MCP responses expose one shared public view: `analysis`, structured `gaps`, `query_id`, and resumable refinement state.
+- MCP responses expose one shared public view: `analysis`, structured `gaps`, `query_id`, and resumable refinement state.
 - MCP query snapshots support `resume_query(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
-- Investigation state tracks the active MCP-session focus and desired capabilities for focused lazy refinement.
-- `tasks` exposes query-related lazy/background job state.
+- Investigation state tracks the active MCP-session focus and desired capabilities for focused refinement.
+- `tasks` exposes query-related background job state.
+- **N5** neighborhood parity e2e (Focus complete file/unit slices ≈ Index) lands in `focus_materialize_e2e` (§2.6.2 testing.md).
 
 ### 2.6 Field lifecycle, branch diff, and semantic impact ✅
 
@@ -340,10 +341,11 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 ### 9.4 不变边界
 
 `LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、`extraction_state` 和
-`extraction_jobs` 保留为事实构建、缓存、freshness、in-flight dedup 边界。Focus 只替换
-查询时的调度和决策层，不重写 extraction 管线。
+`extraction_jobs` 保留为**机制层**事实构建、缓存、freshness、in-flight dedup 边界。
+产品层只讲 Index / Focus；Focus 只替换查询时调度与决策，不重写 extraction 管线。
+构造层只经 `FocusMaterialize::open`（见 architecture §2.1.1 / §7.1 / §10.1.11）。
 
-详见 [`architecture.md` §10.1.10-10.1.11](./architecture.md) 中的 Focus-Lazy 架构约束。
+详见 [`architecture.md` §10.1.10–10.1.11](./architecture.md)。
 
 ## 10. 代码质量与技术债务清理
 

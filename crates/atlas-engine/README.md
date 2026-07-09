@@ -12,7 +12,7 @@ Public facade crate for Atlas. Re-exports all core types and provides the high-l
 | `extraction` | `ExtractionMode`, `LanguageFrontend`, `ParseWorkerPool`, `create_frontend` |
 | `resolution` | `ReferenceResolver`, `PathAliasResolver`, `PATH_ALIAS_CONFIG_FILES` |
 | `graph` | `GraphEngine`, `GraphBuilder`, `GraphSnapshot`, `TraversalConfig` |
-| `lazy` | `LazyDataflowService` (on-demand dataflow loading) |
+| `focus` materialize | `FocusMaterialize`, `LazyDataflowService`, `LazyStructuralService` (Focus-internal ensure stack; not a product path) |
 | `analysis::trace` | `TraceEngine` (as `RawTraceEngine`), `TraceQueryResponse` |
 | `search` | `SearchEngine` |
 | `context` | `ContextBuilder` |
@@ -21,6 +21,8 @@ Public facade crate for Atlas. Re-exports all core types and provides the high-l
 
 ## Engine struct
 
-The high-level `Engine` owns the user-facing trace path and triggers lazy dataflow before delegating to raw analysis consumers. Raw `analysis::TraceEngine` only reads facts already present in the store. CLI and MCP should use facade/services and shared filesync/focus orchestration rather than rebuilding extraction, resolution, graph, or trace pipelines in entry-point code.
+The high-level `Engine` owns the user-facing trace path and triggers **Focus materialize** (on-demand dataflow) before delegating to raw analysis consumers. Prefer `Engine::from_materialize` when sharing one stack with FocusRuntime/MCP; `from_store` opens a new stack (CLI/TUI process boundary).
 
-For detailed architecture, see [`../../docs/architecture.md`](../../docs/architecture.md).
+Raw `analysis::TraceEngine` only reads facts already present in the store. CLI and MCP should use facade/services and shared filesync/Focus orchestration rather than rebuilding extraction, resolution, graph, or trace pipelines in entry-point code.
+
+For detailed architecture, see [`../../docs/architecture.md`](../../docs/architecture.md) §2.1.1 / §7.1 / §10.1.11.
