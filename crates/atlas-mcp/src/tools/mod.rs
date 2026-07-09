@@ -120,6 +120,8 @@ pub(crate) mod search;
 pub(crate) mod status;
 pub(crate) mod symbol_selector;
 pub(crate) mod tool_contract;
+#[cfg(test)]
+mod handler_purity;
 pub(crate) mod trace;
 pub(crate) mod usages;
 

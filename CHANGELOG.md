@@ -31,6 +31,8 @@ All notable changes to Atlas will be documented in this file.
   `direction=both`/`depth` or callgraph path.
 - Cross-function trace docs: Focus uses Phase 2 runtime BFS as primary path.
 - Workspace `[workspace.package]` version/edition unified to 1.5.2.
+- DEBT-8 foundation: drop dead `AnalysisNeeds::Cfg`/`CfgAndDataflow`; add
+  `handler_purity` allowlist ratchet + full V1 `contract_for` coverage tests.
 - Docs: architecture/testing/roadmap/requirements state current rules only;
   change history lives in this file.
 

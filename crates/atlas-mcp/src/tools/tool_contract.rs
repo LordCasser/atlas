@@ -62,17 +62,14 @@ pub enum QueryNeeds {
 }
 
 /// What CFG/dataflow preparations an analysis tool needs.
+///
+/// Only variants used by live tools. Dead "Cfg-only" / "CfgAndDataflow" stages
+/// were removed (no tools gated that way; DEBT-8 contract fingerprint).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalysisNeeds {
-    /// Control flow graph nodes and edges only.
-    #[allow(dead_code)]
-    Cfg,
-    /// CFG + dataflow nodes and edges.
-    #[allow(dead_code)]
-    CfgAndDataflow,
-    /// CFG + dataflow + composed effects.
+    /// CFG + dataflow + composed effects (`branch_diff`).
     CfgDataflowEffects,
-    /// CFG + dataflow + domain rules for ownership classification.
+    /// CFG + dataflow + domain rules for ownership (`lifecycle`).
     CfgDataflowDomainRules,
 }
 
@@ -330,5 +327,114 @@ mod tests {
         assert!(!is_mutation(&json!({"action": "list"})));
         assert!(!is_mutation(&json!({"action": "learn"})));
         assert!(!is_mutation(&json!({})));
+    }
+
+    /// Every live tool name maps to a non-default contract path used by dispatch.
+    #[test]
+    fn contract_covers_all_v1_tool_names() {
+        let tools: &[(&str, Value, ToolContract)] = &[
+            (
+                "project",
+                json!({"action": "open", "project_path": "/tmp"}),
+                ToolContract::ProjectLifecycle,
+            ),
+            (
+                "project",
+                json!({"action": "status"}),
+                ToolContract::StatusRead,
+            ),
+            (
+                "calls",
+                json!({"symbol": "f"}),
+                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+            ),
+            (
+                "explore",
+                json!({"symbol": "f"}),
+                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+            ),
+            (
+                "path",
+                json!({"from": "a", "to": "b"}),
+                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+            ),
+            (
+                "impact",
+                json!({"symbol": "f"}),
+                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+            ),
+            (
+                "symbol",
+                json!({"symbol": "f", "view": "context"}),
+                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+            ),
+            (
+                "symbol",
+                json!({"symbol": "f"}),
+                ToolContract::StoreFactQuery(QueryNeeds::Manifest),
+            ),
+            (
+                "search",
+                json!({"query": "x"}),
+                ToolContract::StoreFactQuery(QueryNeeds::Manifest),
+            ),
+            (
+                "file_dependencies",
+                json!({"file_path": "a.rs"}),
+                ToolContract::StoreFactQuery(QueryNeeds::Structural),
+            ),
+            (
+                "trace",
+                json!({"kind": "point", "file_path": "a.rs", "line": 1, "column": 1}),
+                ToolContract::TraceQuery(QueryNeeds::Full),
+            ),
+            (
+                "branch_diff",
+                json!({"symbol": "f"}),
+                ToolContract::SemanticAnalysis(AnalysisNeeds::CfgDataflowEffects),
+            ),
+            (
+                "lifecycle",
+                json!({"symbol": "f", "field": "p"}),
+                ToolContract::SemanticAnalysis(AnalysisNeeds::CfgDataflowDomainRules),
+            ),
+            (
+                "fp_dispatches",
+                json!({"action": "list"}),
+                ToolContract::OverlayRead,
+            ),
+            (
+                "domain_rules",
+                json!({"action": "list"}),
+                ToolContract::OverlayRead,
+            ),
+            ("tasks", json!({}), ToolContract::TaskControl),
+            (
+                "resume_query",
+                json!({"query_id": "q"}),
+                ToolContract::TaskControl,
+            ),
+        ];
+        for (name, args, expected) in tools {
+            assert_eq!(
+                contract_for(name, args),
+                *expected,
+                "contract_for({name})"
+            );
+        }
+    }
+
+    /// AnalysisNeeds has only live variants (no dead Cfg / CfgAndDataflow).
+    #[test]
+    fn analysis_needs_only_live_variants() {
+        // Exhaustive match — compile fails if a variant is re-added without updating.
+        for needs in [
+            AnalysisNeeds::CfgDataflowEffects,
+            AnalysisNeeds::CfgDataflowDomainRules,
+        ] {
+            match needs {
+                AnalysisNeeds::CfgDataflowEffects | AnalysisNeeds::CfgDataflowDomainRules => {}
+            }
+        }
     }
 }

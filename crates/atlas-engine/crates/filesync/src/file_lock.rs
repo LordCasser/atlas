@@ -172,4 +172,34 @@ mod tests {
         FileLock::reject_if_held_by_other(store.as_ref())
             .expect("same-process lock holder is not 'other'");
     }
+
+    #[test]
+    fn reject_if_held_by_foreign_live_pid() {
+        // Simulate another process holding the lock with a high PID that is
+        // very unlikely to be alive on this machine; if the platform reports
+        // it alive, skip (flaky environments).
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let foreign_pid: i64 = 2_147_000_000;
+        store
+            .set_metadata(
+                "exclusive_lock_pid",
+                &format!("{foreign_pid}:0"),
+            )
+            .unwrap();
+        match store.exclusive_lock_held_by_other().unwrap() {
+            Some(pid) => {
+                assert_eq!(pid as i64, foreign_pid);
+                let err = FileLock::reject_if_held_by_other(&store).expect_err("must reject");
+                assert_eq!(err.code, "cli_index_lock_held");
+                assert!(!err.reason.is_empty());
+                assert!(!err.suggested_action.is_empty());
+                assert!(err.to_string().contains("cli_index_lock_held"));
+            }
+            None => {
+                // Kernel reports that PID as not alive — lock treated as stale.
+                FileLock::reject_if_held_by_other(&store).expect("stale lock not held");
+            }
+        }
+    }
 }

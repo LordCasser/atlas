@@ -79,21 +79,21 @@
 //! - **Background tasks** (graph rebuild, focus scheduler) use `std::thread::spawn`
 //!   with cloned `Arc<Store>` — they never access ToolRouter directly.
 //!
-//! # Anti-Patterns
+//! # Anti-Patterns (enforced by `handler_purity` tests — DEBT-8 ratchet)
 //!
-//! When adding new tools or modifying handlers, **avoid**:
+//! Handlers produce contract data; orchestration belongs to `call_tool` /
+//! `dispatch_*` + runtime modules. When adding tools or editing handlers, **avoid**:
 //!
-//! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()` instead.
-//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` or `query_runtime.detect_access_strategy()` instead.
-//! - **Direct `materialize.dataflow().ensure_for_function()` from handlers** — use
-//!   `analysis_runtime.ensure_dataflow_for_function()` instead (same stack, single door).
-//! - **Direct `store.upsert_fp_annotation()`** — use `overlay_runtime.upsert_fp_annotation()` to bump generation.
-//! - **Direct `store.upsert_domain_rule()`** — use `overlay_runtime.upsert_domain_rule()` to bump generation.
-//! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()` (detects mode).
-//! - **Direct `store.resolve_file_path()`** — use `store_query_runtime.resolve_file_path()` instead.
-//! - **Adding fields to ToolRouter** — add to the appropriate runtime module instead.
+//! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()`.
+//! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` / `detect_access_strategy()`.
+//! - **Direct `materialize.dataflow().ensure_*`** — use `analysis_runtime.ensure_dataflow_*`.
+//! - **Direct `FieldLifecycleEngine::` / `BranchDiffEngine::`** — go through analysis dispatch.
+//! - **Direct `store.upsert_fp_annotation()` / `upsert_domain_rule()`** — use `overlay_runtime`.
+//! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()`.
+//! - **Direct `store` path resolve** — use `store_query_runtime.resolve_file_path()`.
+//! - **Adding fields to ToolRouter** — add to the appropriate runtime module.
 //!
-//! These patterns ensure all future changes respect the v6.0 boundary model.
+//! Migration: shrink `handler_purity::ALLOWLIST` as tools move fully onto dispatch.
 
 pub(crate) mod analysis_runtime;
 pub(crate) mod cache_state;
