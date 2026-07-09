@@ -201,18 +201,19 @@ impl LazyDataflowService {
             window.quality = Some(precision);
         }
 
-        // Compute capability mask from ensure result.
-        // If any dataflow was produced (built or cached), set the base
-        // dataflow-implying bits.
-        //
-        // CFG is included when at least one unit produced CFG data —
-        // the loader tracks this per-unit via the language capability
-        // profile and per-function CFG node counts.
+        // Window-level summary mask (not per-unit truth). Base dataflow bits
+        // if any unit was built/cached; CFG when any unit produced CFG.
+        // CALL_EDGES is OR of per-unit gates (structural freshness + callsites).
         if result.units_built > 0 || result.units_cached > 0 {
-            let mut mask_bits = FactCoverage::MANIFEST
-                | FactCoverage::STRUCTURAL
-                | FactCoverage::CALL_EDGES
-                | FactCoverage::DATAFLOW;
+            let mut mask_bits =
+                FactCoverage::MANIFEST | FactCoverage::STRUCTURAL | FactCoverage::DATAFLOW;
+            if window
+                .units
+                .iter()
+                .any(|u| loader::unit_has_call_edges(&self.store, u))
+            {
+                mask_bits |= FactCoverage::CALL_EDGES;
+            }
             if result.has_cfg {
                 mask_bits |= FactCoverage::CFG;
             }

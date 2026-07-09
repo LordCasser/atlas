@@ -20,8 +20,71 @@ use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
 use types::structs::FactCoverage;
 
-use crate::constants::{LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL};
+use crate::constants::{
+    LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL,
+};
 use crate::planner::estimate_unit_cost;
+
+/// Structural layer name used in `extraction_state` for file-level rows.
+const LAYER_STRUCTURAL: &str = "structural";
+
+/// Whether the unit's dataflow capability mask should include `CALL_EDGES`.
+///
+/// Gated like CFG: requires **fresh structural facts** for the file (complete
+/// structural or file-level dataflow layer matching `files.content_hash`) **and**
+/// at least one structural callsite for the unit. Does not write to the store.
+pub(crate) fn unit_has_call_edges(store: &Store, unit: &AnalysisUnit) -> bool {
+    if !structural_facts_fresh(store, &unit.file_id) {
+        return false;
+    }
+    unit_has_structural_callsites(store, unit)
+}
+
+/// True when file-level structural (or dataflow-implying) extraction_state is
+/// complete and content_hash still matches the file row.
+fn structural_facts_fresh(store: &Store, file_id: &FileId) -> bool {
+    let Ok(Some(file)) = store.get_file(file_id) else {
+        return false;
+    };
+    for layer in [LAYER_STRUCTURAL, LAYER_DATAFLOW] {
+        if let Ok(Some((status, hash))) = store.get_file_extraction_state(file_id, layer) {
+            if status == STATUS_COMPLETE && hash == file.content_hash {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when the unit has at least one structural callsite (caller matches unit
+/// function, or any callsite in-file for top-level units).
+fn unit_has_structural_callsites(store: &Store, unit: &AnalysisUnit) -> bool {
+    let Ok(callsites) = store.find_callsites_by_file(&unit.file_id) else {
+        return false;
+    };
+    match unit.symbol_id {
+        Some(sid) => callsites.iter().any(|cs| cs.caller == sid),
+        None => !callsites.is_empty(),
+    }
+}
+
+/// Base unit dataflow mask bits (always on successful ensure) plus optional
+/// CALL_EDGES / CFG, sharing one gate policy for main write and prebuilt paths.
+fn unit_dataflow_capability_mask(
+    store: &Store,
+    unit: &AnalysisUnit,
+    cfg_supported: bool,
+    has_cfg_nodes: bool,
+) -> FactCoverage {
+    let mut bits = FactCoverage::MANIFEST | FactCoverage::STRUCTURAL | FactCoverage::DATAFLOW;
+    if unit_has_call_edges(store, unit) {
+        bits |= FactCoverage::CALL_EDGES;
+    }
+    if cfg_supported && has_cfg_nodes {
+        bits |= FactCoverage::CFG;
+    }
+    FactCoverage::from_bits(bits)
+}
 
 /// Data produced by a single lazy dataflow build.
 struct DataflowPayload {
@@ -242,19 +305,14 @@ impl LazyDataflowLoader {
                         STATUS_COMPLETE
                     };
 
-                    // Build capability mask: base bits are always present.
-                    // DATAFLOW: set unconditionally (extraction completed — empty
-                    //   result for an empty function is a success).
-                    // CFG: only set if the language supports it AND actual CFG
-                    //   nodes were produced for this unit.
-                    let mut mask_bits = FactCoverage::MANIFEST
-                        | FactCoverage::STRUCTURAL
-                        | FactCoverage::CALL_EDGES
-                        | FactCoverage::DATAFLOW;
-                    if cfg_supported && !unit_payload.cfg_nodes.is_empty() {
-                        mask_bits |= FactCoverage::CFG;
+                    // Capability mask: MANIFEST|STRUCTURAL|DATAFLOW base;
+                    // CALL_EDGES / CFG gated (existence + structural freshness).
+                    let has_cfg = cfg_supported && !unit_payload.cfg_nodes.is_empty();
+                    if has_cfg {
                         result.has_cfg = true;
                     }
+                    let capability_mask =
+                        unit_dataflow_capability_mask(store, unit, cfg_supported, has_cfg);
 
                     store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                         file_id: unit.file_id,
@@ -265,7 +323,7 @@ impl LazyDataflowLoader {
                         node_count: Some(unit_payload.data_nodes.len() as i64),
                         edge_count: Some(unit_payload.dataflow_edges.len() as i64),
                         budget_exceeded: payload.budget_exceeded,
-                        capability_mask: FactCoverage::from_bits(mask_bits),
+                        capability_mask,
                         built_at: String::new(),
                     })?;
                     Ok(())
@@ -317,16 +375,9 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             let current_hash = file.content_hash;
             let file_lang = file.language;
 
-            // CFG capability is gated by the language profile.
-            // DATAFLOW is always set: pre-existing data nodes confirm a prior
-            // successful extraction.
+            // Same mask policy as the ensure write path (single helper).
             let profile = LanguageCapabilityProfile::for_language(file_lang);
             let cfg_supported = profile.features.cfg.is_supported();
-
-            let mut mask_bits = FactCoverage::MANIFEST
-                | FactCoverage::STRUCTURAL
-                | FactCoverage::CALL_EDGES
-                | FactCoverage::DATAFLOW;
             let unit_has_cfg = cfg_supported
                 && unit
                     .symbol_id
@@ -338,9 +389,8 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                             .unwrap_or(false)
                     })
                     .unwrap_or(false);
-            if unit_has_cfg {
-                mask_bits |= FactCoverage::CFG;
-            }
+            let capability_mask =
+                unit_dataflow_capability_mask(store, unit, cfg_supported, unit_has_cfg);
 
             store.upsert_unit_extraction_state(&UnitExtractionStateRecord {
                 file_id: unit.file_id,
@@ -351,7 +401,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 node_count: Some(prebuilt as i64),
                 edge_count: None,
                 budget_exceeded: false,
-                capability_mask: FactCoverage::from_bits(mask_bits),
+                capability_mask,
                 built_at: String::new(),
             })?;
             let mut payload = DataflowPayload::empty();
@@ -542,6 +592,7 @@ fn get_cached_frontend(lang: Language) -> Option<&'static LanguageFrontend> {
 mod tests {
     use super::*;
     use types::enums::Language;
+    use types::ids::SymbolId;
 
     // ------------------------------------------------------------------
     // Frontend cache regression tests — ensure newly added languages
@@ -611,20 +662,6 @@ mod tests {
         }
     }
 
-    // Helper that mirrors the mask computation in LazyDataflowLoader::ensure
-    // (lines 206–212).  Extracted here to make the regression test self-
-    // checking without requiring a full DB + extraction pipeline.
-    fn compute_unit_mask(cfg_supported: bool, has_cfg_nodes: bool) -> FactCoverage {
-        let mut bits = FactCoverage::MANIFEST
-            | FactCoverage::STRUCTURAL
-            | FactCoverage::CALL_EDGES
-            | FactCoverage::DATAFLOW;
-        if cfg_supported && has_cfg_nodes {
-            bits |= FactCoverage::CFG;
-        }
-        FactCoverage::from_bits(bits)
-    }
-
     // ------------------------------------------------------------------
     // Profile-level checks — CFG support per language
     // ------------------------------------------------------------------
@@ -654,68 +691,238 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Mask-computation logic — regression for the lazy CFG bit fix
+    // CALL_EDGES / CFG mask gates (store-backed, no full extraction)
     // ------------------------------------------------------------------
 
+    fn test_store() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        store
+    }
+
+    fn seed_file(store: &Store, path: &str, hash: &str) -> (FileId, SymbolId) {
+        use types::enums::{Language, ParseStatus, SymbolKind};
+        use types::structs::{FileInfo, SymbolDef, TextRange};
+        let file_id = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.to_string(),
+                language: Language::TypeScript,
+                content_hash: hash.to_string(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let sym_id = SymbolId::generate(&file_id, "typescript", "fn", "function", None);
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 10,
+        };
+        store
+            .insert_symbols(&[SymbolDef {
+                id: sym_id,
+                kind: SymbolKind::Function,
+                name: "fn".into(),
+                qualified_name: "fn".into(),
+                symbol_path: vec!["fn".into()],
+                file_id,
+                language: Language::TypeScript,
+                range,
+                name_range: range,
+                signature: None,
+                visibility: None,
+                exported: true,
+                static_: false,
+                async_: false,
+                container: None,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+                layer: "structural".into(),
+            }])
+            .unwrap();
+        (file_id, sym_id)
+    }
+
+    fn unit_for(file_id: FileId, sym_id: SymbolId) -> AnalysisUnit {
+        use types::structs::TextRange;
+        AnalysisUnit::from_function(
+            file_id,
+            sym_id,
+            TextRange {
+                start_byte: 0,
+                end_byte: 10,
+                start_line: 0,
+                start_column: 0,
+                end_line: 0,
+                end_column: 10,
+            },
+        )
+    }
+
     #[test]
-    fn mask_no_cfg_when_language_unsupported() {
-        // Even with CFG nodes present, the CFG bit must NOT be set when the
-        // language does not support CFG (the pre-fix behaviour was to
-        // unconditionally set it).
-        let mask = compute_unit_mask(
-            /* cfg_supported */ false, /* has_cfg_nodes */ true,
-        );
+    fn call_edges_zero_without_callsites() {
+        let store = test_store();
+        let (fid, sid) = seed_file(&store, "a.ts", "hash1");
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                LAYER_STRUCTURAL,
+                "hash1",
+                STATUS_COMPLETE,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL),
+            )
+            .unwrap();
+        let unit = unit_for(fid, sid);
         assert!(
-            !mask.has(FactCoverage::CFG),
-            "CFG bit must NOT be set for CFG-unsupported languages"
+            !unit_has_call_edges(&store, &unit),
+            "zero callsites => CALL_EDGES off"
         );
+        let mask = unit_dataflow_capability_mask(&store, &unit, false, false);
+        assert!(!mask.has(FactCoverage::CALL_EDGES));
+        assert!(mask.has(FactCoverage::DATAFLOW));
+        assert!(mask.has(FactCoverage::MANIFEST));
+        assert!(mask.has(FactCoverage::STRUCTURAL));
+    }
+
+    #[test]
+    fn call_edges_set_with_fresh_structural_and_callsite() {
+        use types::ids::CallsiteId;
+        use types::structs::{Callsite, TextRange};
+        let store = test_store();
+        let (fid, sid) = seed_file(&store, "b.ts", "hash1");
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                LAYER_STRUCTURAL,
+                "hash1",
+                STATUS_COMPLETE,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL | FactCoverage::CALL_EDGES),
+            )
+            .unwrap();
+        let range = TextRange {
+            start_byte: 1,
+            end_byte: 5,
+            start_line: 0,
+            start_column: 1,
+            end_line: 0,
+            end_column: 5,
+        };
+        let ref_id = types::ids::ReferenceId::generate(
+            &fid,
+            Some(&sid),
+            range.start_byte,
+            range.end_byte,
+            "call",
+            types::enums::ReferenceKind::Call,
+        );
+        store
+            .insert_callsites(&[Callsite {
+                id: CallsiteId::generate(&ref_id, Some(&sid), range.start_byte),
+                reference_id: Some(ref_id),
+                caller: sid,
+                receiver: None,
+                args: vec![],
+                range,
+                callee_range: None,
+            }])
+            .unwrap();
+        let unit = unit_for(fid, sid);
+        assert!(unit_has_call_edges(&store, &unit));
+        let mask = unit_dataflow_capability_mask(&store, &unit, true, true);
+        assert!(mask.has(FactCoverage::CALL_EDGES));
+        assert!(mask.has(FactCoverage::CFG));
+    }
+
+    #[test]
+    fn call_edges_off_when_structural_hash_stale() {
+        use types::ids::CallsiteId;
+        use types::structs::{Callsite, TextRange};
+        let store = test_store();
+        let (fid, sid) = seed_file(&store, "c.ts", "hash_new");
+        // Structural state still on old hash → stale
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                LAYER_STRUCTURAL,
+                "hash_old",
+                STATUS_COMPLETE,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL | FactCoverage::CALL_EDGES),
+            )
+            .unwrap();
+        let range = TextRange {
+            start_byte: 1,
+            end_byte: 5,
+            start_line: 0,
+            start_column: 1,
+            end_line: 0,
+            end_column: 5,
+        };
+        let ref_id = types::ids::ReferenceId::generate(
+            &fid,
+            Some(&sid),
+            range.start_byte,
+            range.end_byte,
+            "call",
+            types::enums::ReferenceKind::Call,
+        );
+        store
+            .insert_callsites(&[Callsite {
+                id: CallsiteId::generate(&ref_id, Some(&sid), range.start_byte),
+                reference_id: Some(ref_id),
+                caller: sid,
+                receiver: None,
+                args: vec![],
+                range,
+                callee_range: None,
+            }])
+            .unwrap();
+        let unit = unit_for(fid, sid);
         assert!(
-            mask.has(FactCoverage::DATAFLOW),
-            "DATAFLOW bit must still be set"
+            !unit_has_call_edges(&store, &unit),
+            "stale structural hash => CALL_EDGES off even with callsites"
         );
     }
 
     #[test]
-    fn mask_no_cfg_when_no_nodes_even_if_supported() {
-        // Even when the language supports CFG, the bit must NOT be set when
-        // the unit produced zero CFG nodes (e.g. an empty function body).
-        let mask = compute_unit_mask(
-            /* cfg_supported */ true, /* has_cfg_nodes */ false,
-        );
-        assert!(
-            !mask.has(FactCoverage::CFG),
-            "CFG bit must NOT be set when no CFG nodes were produced"
-        );
-        assert!(
-            mask.has(FactCoverage::DATAFLOW),
-            "DATAFLOW bit must still be set"
-        );
+    fn mask_no_cfg_when_language_unsupported() {
+        let store = test_store();
+        let (fid, sid) = seed_file(&store, "d.ts", "h");
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                LAYER_STRUCTURAL,
+                "h",
+                STATUS_COMPLETE,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL),
+            )
+            .unwrap();
+        let unit = unit_for(fid, sid);
+        let mask = unit_dataflow_capability_mask(&store, &unit, false, true);
+        assert!(!mask.has(FactCoverage::CFG));
+        assert!(mask.has(FactCoverage::DATAFLOW));
     }
 
     #[test]
     fn mask_sets_cfg_when_supported_and_nodes_present() {
-        // The normal happy path: CFG-supported language + actual CFG nodes.
-        let mask = compute_unit_mask(/* cfg_supported */ true, /* has_cfg_nodes */ true);
-        assert!(
-            mask.has(FactCoverage::CFG),
-            "CFG bit must be set when language supports CFG and nodes are present"
-        );
-        assert!(
-            mask.has(FactCoverage::DATAFLOW),
-            "DATAFLOW bit must also be set"
-        );
-    }
-
-    #[test]
-    fn mask_always_has_dataflow_manifest_structural_call_edges() {
-        // The base bits are unconditional — they represent capabilities that
-        // are always produced by a successful lazy dataflow build.
-        let mask = compute_unit_mask(
-            /* cfg_supported */ false, /* has_cfg_nodes */ false,
-        );
-        assert!(mask.has(FactCoverage::MANIFEST));
-        assert!(mask.has(FactCoverage::STRUCTURAL));
-        assert!(mask.has(FactCoverage::CALL_EDGES));
-        assert!(mask.has(FactCoverage::DATAFLOW));
+        let store = test_store();
+        let (fid, sid) = seed_file(&store, "e.ts", "h");
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                LAYER_STRUCTURAL,
+                "h",
+                STATUS_COMPLETE,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL),
+            )
+            .unwrap();
+        let unit = unit_for(fid, sid);
+        let mask = unit_dataflow_capability_mask(&store, &unit, true, true);
+        assert!(mask.has(FactCoverage::CFG));
+        assert!(!mask.has(FactCoverage::CALL_EDGES));
     }
 }

@@ -441,6 +441,11 @@ Source files
 
 - L2 处方 `ExtractionMode::LazyDataflow` = 增量 unit dataflow/CFG（机制名，不是 AccessStrategy）。
 - unit 写路径 `replace_dataflow_for_unit`：无效 `function_id` 丢弃行；无效 `data_node.binding_id` **SET NULL 保留节点**（Focus 重抽 bindings 的 ScopeId 可能与 structural 库不一致，不得静默抽干 unit facts）。
+- unit `capability_mask`（`FactCoverage`）是 truth source，禁止乐观 OR：
+  - 成功 ensure 的 base：`MANIFEST | STRUCTURAL | DATAFLOW`
+  - **`CALL_EDGES`**：仅当 **file-level structural（或 dataflow）层 complete 且 content_hash 与 `files` 一致**，且该 unit 有 structural callsite（caller=unit 函数）时置位（与 CFG 同构：存在性 + 新鲜度）
+  - **`CFG`**：语言支持且 unit 实际产出 CFG nodes
+  - 主路径与 prebuilt 缓存路径共用同一 helper（`unit_dataflow_capability_mask`）
 - structural 与 Index 共用 `apply_post_extract_hooks`（Linux export/initcall 等）。
 
 等级路径约束（与 §1.1 对齐）：
