@@ -35,7 +35,7 @@ mod tests {
         let window = FocusWindow::new(seed, Language::C);
 
         assert_eq!(window.strategies.len(), 1);
-        assert_eq!(window.max_iterations, 3);
+        assert_eq!(window.max_iterations, 0);
     }
 
     // ── End-to-End: Visibility + Edge Policy ───────────────────────────────

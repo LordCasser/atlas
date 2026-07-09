@@ -28,6 +28,9 @@ pub(crate) const STATUS_COMPLETE: &str = "complete";
 /// Status for a unit whose extraction exceeded budget (partial result).
 pub(crate) const STATUS_PARTIAL: &str = "partial";
 
-// Note: per-unit node/edge caps (LAZY_MAX_NODES_PER_UNIT, LAZY_MAX_EDGES_PER_UNIT)
-// are defined in extraction/src/mode.rs because extraction cannot depend on this
-// crate.  Keep the two versions in sync when adjusting.
+// ── Layering (do not merge casually) ──────────────────────────────────────
+// - FocusWindowBudget (atlas-engine focus/types): foreground 18s / bg 60s wall
+//   clocks for structural expansion loops.
+// - LAZY_DATAFLOW_BUDGET_MS (here): unit dataflow ensure wall clock (20s).
+// - LAZY_MAX_NODES/EDGES_PER_UNIT: extraction/src/mode.rs (extraction cannot
+//   depend on this crate). Adjust both docs when changing caps.

@@ -113,7 +113,9 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
             return Ok(bridge_edges);
         }
 
-        // ── Phase 2: fallback to existing runtime BFS logic ──
+        // ── Phase 2: runtime BFS join (Focus primary; Full when no summary) ──
+        // Focus never runs summary phase, so this path is the designed cross-
+        // function bridge for query-time materialize — not a legacy shim.
         let mut edges: Vec<TraceEdge> = Vec::new();
 
         match target_node.kind {

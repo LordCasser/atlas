@@ -12,7 +12,7 @@ fn test_default_window_budget() {
     assert_eq!(budget.max_files, 30);
     assert_eq!(budget.max_time_ms, 18_000);
     assert_eq!(budget.max_fanout_per_name, 20);
-    assert_eq!(budget.max_iterations, 3);
+    assert_eq!(budget.max_iterations, 0);
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn test_focus_window_defaults() {
     ));
     assert_eq!(window.budget.max_files, 30);
     assert_eq!(window.language, Language::TypeScript);
-    assert_eq!(window.max_iterations, 3);
+    assert_eq!(window.max_iterations, 0);
 }
 
 #[test]

@@ -6,8 +6,7 @@
 //!   (production API exposed via CLI and MCP)
 //! - `summary` — query-time FunctionSummary builder for intraprocedural
 //!   reachability (parameter → return / call-arg / field)
-//! - `cross_function` — inter-procedural bridging via persisted summaries
-//!   (CrossFunctionBridge) with runtime fallback
+//! - `cross_function` — Phase 1 summary bridge; Focus uses Phase 2 runtime BFS
 
 pub mod alias_table;
 pub mod branch_diff;

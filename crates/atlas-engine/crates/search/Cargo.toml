@@ -1,7 +1,7 @@
 [package]
 name = "search"
-version = "1.5.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Atlas fuzzy search engine — query parsing, substring/fuzzy matching, scoring"
 license = "MIT"
 

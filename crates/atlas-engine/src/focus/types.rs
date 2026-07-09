@@ -96,18 +96,22 @@ pub struct WindowBudget {
 }
 
 impl Default for WindowBudget {
+    /// Foreground-oriented defaults. `max_iterations` is **0**: prepare always
+    /// overwrites via `iterations_for(intent, false)` which is 0 (seed-only
+    /// foreground). Do not treat this as a free multi-round budget.
     fn default() -> Self {
         WindowBudget {
             max_files: 30,
             max_time_ms: 18_000,
             max_fanout_per_name: 20,
-            max_iterations: 3,
+            max_iterations: 0,
         }
     }
 }
 
 impl WindowBudget {
-    /// Budget suitable for background speculative work.
+    /// Background speculative work. `max_iterations` is a floor; prepare sets
+    /// the real value via `iterations_for(intent, true)` (typically 1–5).
     pub fn background() -> Self {
         WindowBudget {
             max_files: 100,
@@ -134,6 +138,8 @@ pub struct FocusWindow {
 }
 
 impl FocusWindow {
+    /// Ad-hoc window; `max_iterations` matches foreground default (0).
+    /// `FocusRuntime::prepare` always overwrites via `iterations_for`.
     pub fn new(seed: FocusSeed, language: Language) -> Self {
         FocusWindow {
             seed,
@@ -141,7 +147,7 @@ impl FocusWindow {
             include_roots: Vec::new(),
             budget: WindowBudget::default(),
             language,
-            max_iterations: 3,
+            max_iterations: 0,
         }
     }
 }

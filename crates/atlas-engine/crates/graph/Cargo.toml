@@ -1,7 +1,7 @@
 [package]
 name = "graph"
-version = "1.5.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Atlas knowledge graph engine — BFS/DFS traversal, callers/callees, impact analysis"
 license = "MIT"
 

@@ -514,15 +514,13 @@ impl ClosureEngine {
         direction: Direction,
         depth: u32,
     ) -> Result<(Vec<FileId>, Vec<SymbolId>)> {
-        // Only single-level expansion is supported; multi-hop is handled by
-        // the fixed-point loop (each iteration re-queries with newly extracted
-        // symbols).
+        // Per-iteration call expansion is always depth-1; multi-hop is the
+        // fixed-point loop (window.max_iterations / iterations_for).
         if depth != 1 {
-            tracing::warn!(
-                "Non-default depth requested: {}, focus analysis only supports depth=1",
-                depth
+            anyhow::bail!(
+                "expand_callgraph only supports depth=1 (got {depth}); multi-hop is \
+                 fixed-point iteration, not CallGraph.depth"
             );
-            return Ok((Vec::new(), Vec::new()));
         }
 
         let mut result: HashSet<FileId> = HashSet::new();

@@ -1593,7 +1593,7 @@ fn test_callgraph_depth_control() {
         );
     }
 
-    // depth=2: beyond single-hop — returns empty, helper file NOT added
+    // depth=2 on CallGraph strategy: hard error (multi-hop is fixed-point, not depth)
     {
         let engine = test_engine(store);
         let window = FocusWindow {
@@ -1610,18 +1610,15 @@ fn test_callgraph_depth_control() {
             language: Language::C,
             max_iterations: 3,
         };
-        let closure = engine
+        let err = engine
             .build_closure(&window, "test-cg-depth-2")
-            .expect("depth=2 build should succeed");
+            .expect_err("CallGraph depth!=1 must hard-error");
+        let msg = format!("{err:#}");
         assert!(
-            !closure.files.contains(&helper_id),
-            "depth=2 must NOT add callee file (beyond single-hop budget)"
+            msg.contains("depth=1") || msg.contains("only supports depth"),
+            "error should mention depth constraint, got: {msg}"
         );
-        assert_eq!(
-            closure.files.len(),
-            1,
-            "depth=2 closure must contain only the seed file"
-        );
+        let _ = helper_id; // still used by depth=1 case above
     }
 }
 

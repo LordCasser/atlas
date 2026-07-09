@@ -1,7 +1,7 @@
 [package]
 name = "resolution"
-version = "1.5.1"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Atlas reference resolution — import resolver, name matching, path aliases, builtins"
 license = "MIT"
 

@@ -493,17 +493,25 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 Schema V2 包含持久化摘要层：
 
 ```
-dataflow_edges    = intra-procedural, fine-grained, direct edges (不变)
-function_summary  = intra-procedural, transitive-closure, per-function (持久化摘要层新增)
-trace             = inter-procedural, by composing summaries along call graph
+dataflow_edges    = intra-procedural, fine-grained, direct edges
+function_summary  = intra-procedural, transitive-closure, per-function
+trace             = inter-procedural, by composing summaries and/or runtime bridges
 ```
 
-- `SummaryBuilder` 从 dataflow_edges BFS 计算函数摘要。
-- `SummaryStore` 持久化 4 张摘要表，支持全量构建（`build_all`）和增量构建（`build_for_function`）。
-- `CrossFunctionBridge` 替代了旧的 runtime `SummaryEdgeProvider`，实现 ArgToParam 和 ReturnToCall 桥接。
-- 旧 DB 无摘要表时不做 runtime BFS fallback；要求按当前 schema 重新建库
-  或重索引。
-- 增量失效：sync 时删除受影响函数的摘要行并重建。
+- `SummaryBuilder` 从 dataflow_edges BFS 计算函数摘要（**Full** 管线 / summary phase）。
+- 摘要表支持全量与按函数增量构建；sync 时失效受影响行并重建。
+- `trace_variable` 等能力门控 **local dataflow**（非 summaries）。跨函数边由 `SummaryEdgeProvider` 提供：
+  1. **Phase 1 — `CrossFunctionBridge`**：有摘要时 O(1) 查表（ArgToParam / ReturnToCall）。
+  2. **Phase 2 — runtime BFS join**：无摘要时的路径。
+
+**模式语义（强制）**
+
+| 模式 | 是否有 summary phase | 跨函数主路径 |
+|------|----------------------|--------------|
+| **Full Index** | 有（成功 summary build 后 `SUMMARIES` bit） | Phase 1；无摘要表时不应依赖 Phase 2 冒充 full 能力——要求重建/重索引 |
+| **Focus** | **无**（Focus 不跑全仓 summary） | **Phase 2 runtime BFS 是设计主路径**，不是“兼容兜底” |
+
+禁止把 Phase 2 从 Focus 路径删除：会打断 Focus 下跨函数 trace。
 
 ## 8. Resolution 与 Graph 约束
 

@@ -2,22 +2,26 @@
 //!
 //! ## Role
 //!
-//! `CrossFunctionBridge` replaces the runtime BFS logic in `SummaryEdgeProvider`
-//! with O(1) query-based lookups against the persisted summary tables
-//! (Schema v2). The caller (`SummaryEdgeProvider`) handles missing summary data
-//! for unindexed functions.
+//! `CrossFunctionBridge` is **Phase 1**: O(1) lookups against persisted summary
+//! tables (Full index after summary build). When it returns empty, callers use
+//! **Phase 2** runtime BFS in `SummaryEdgeProvider`.
+//!
+//! | Mode | Phase 1 summaries | Phase 2 runtime BFS |
+//! |------|-------------------|---------------------|
+//! | Full Index | Primary when present | Only if summary missing (prefer rebuild) |
+//! | Focus | Usually absent (no summary phase) | **Primary** path for cross-function |
 //!
 //! ## Bridge types
 //!
 //! | Method | Trigger | Lookup | Virtual edge |
 //! |--------|---------|--------|--------------|
-//! | `incoming_for_param` | Slicer hits a Parameter node in a callee | Look up callers via callsite, query `summary_call_arg_sources` for the matching arg | `ArgToParam` (caller arg → callee param) |
-//! | `incoming_for_call_result` | Slicer hits a CallReturn/Expr with callsite_id | Query `summary_return_sources` for the callee | `ReturnToCall` (callee return source → call result) |
+//! | `incoming_for_param` | Slicer hits a Parameter in a callee | call-arg sources via summary | `ArgToParam` |
+//! | `incoming_for_call_result` | CallReturn/Expr with callsite | return sources via summary | `ReturnToCall` |
 //!
 //! ## Confidence model
 //!
-//! - Direct caller + summary bridge: `row.confidence × 0.92` (strong signal)
-//! - Runtime fallback (no summary): `SummaryEdgeProvider` default 0.67 (backward compat)
+//! - Summary bridge: `row.confidence × 0.92`
+//! - Runtime BFS (Phase 2): default 0.67
 
 use db::TraceStore;
 use types::enums::{DataFlowKind, DataNodeKind};
@@ -25,11 +29,10 @@ use types::ids::{CallsiteId, DataNodeId, SymbolId};
 
 use crate::trace::virtual_edges::TraceEdge;
 
-/// Bridges inter-procedural dataflow using persisted summaries.
+/// Phase 1: inter-procedural edges from persisted summaries.
 ///
-/// Returns empty when summary data is absent.  The caller
-/// (`SummaryEdgeProvider`) handles runtime fallback via its
-/// existing BFS logic when the function has not been summarized.
+/// Empty when no summary rows exist. Callers then use Phase 2 runtime BFS
+/// (`SummaryEdgeProvider`) — required for Focus, where summaries are not built.
 pub struct CrossFunctionBridge;
 
 impl CrossFunctionBridge {
@@ -39,8 +42,7 @@ impl CrossFunctionBridge {
     /// `summary_call_arg_sources` (via [`TraceStore::query_call_arg_sources`])
     /// to find the call-argument's upstream sources.
     ///
-    /// Returns empty when no summary data is available; the caller
-    /// (`SummaryEdgeProvider`) falls back to runtime BFS in that case.
+    /// Empty when no summary data; `SummaryEdgeProvider` continues with Phase 2.
     pub fn incoming_for_param(
         param_id: &DataNodeId,
         store: &dyn TraceStore,
