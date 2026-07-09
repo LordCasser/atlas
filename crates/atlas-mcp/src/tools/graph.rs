@@ -350,6 +350,7 @@ impl ToolRouter {
             "kind": sym.kind.as_str(),
             "file": project.store_query_runtime.resolve_file_path(&sym.file_id),
             "line": sym.range.start_line.saturating_add(1),
+            "signature": sym.signature,
         }))
     }
 
@@ -585,7 +586,15 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, mut root_warnings) = self.include_roots_from_args(args);
+        // callers/callees are fixed 1-hop; multi-hop is callgraph / direction=both+depth.
+        if args.get("depth").is_some() {
+            root_warnings.push(
+                "depth is not honored for calls(direction=incoming); \
+                 use direction=both with depth, or the callgraph tool, for multi-hop"
+                    .into(),
+            );
+        }
 
         let resolution = match self.resolve_graph_symbol_with_focus_retry(
             &input,
@@ -714,7 +723,14 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
-        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, mut root_warnings) = self.include_roots_from_args(args);
+        if args.get("depth").is_some() {
+            root_warnings.push(
+                "depth is not honored for calls(direction=outgoing); \
+                 use direction=both with depth, or the callgraph tool, for multi-hop"
+                    .into(),
+            );
+        }
 
         let resolution = match self.resolve_graph_symbol_with_focus_retry(
             &input,

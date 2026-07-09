@@ -1125,12 +1125,20 @@ pub(crate) fn node_json(
     edge_kind: Option<&str>,
 ) -> Value {
     let n = snap.node(ix);
+    // signature from store by symbol_id (not GraphSnapshot NodeSummary — keeps graph lean).
+    let signature = store_query
+        .store
+        .find_symbol_by_id(&n.symbol_id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.signature);
     let mut obj = json!({
         "name": n.name,
         "qualified_name": n.qualified_name,
         "kind": n.kind.as_str(),
         "file": store_query.resolve_file_path(&n.file_id),
         "line": n.start_line,
+        "signature": signature,
     });
     if let Some(ek) = edge_kind {
         obj["edge"] = json!(ek);
@@ -1289,7 +1297,7 @@ fn make_graph_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "calls".into(),
-            description: "Query the call graph around a symbol. direction='incoming' lists callers, 'outgoing' lists callees, 'both' returns bidirectional. depth>1 enables multi-hop traversal (replaces old callgraph). Use the edge_kinds parameter to query non-call edges for neighbor queries (default: [\"calls\",\"instantiates\",\"implements\"]; use [\"*\"] for all edge kinds).".into(),
+            description: "Query the call graph around a symbol. direction='incoming' (callers) and 'outgoing' (callees) are fixed 1-hop and include signature when available; depth is ignored (warning). direction='both' enables multi-hop via depth (default 1, max 5). edge_kinds defaults to [\"calls\",\"instantiates\",\"implements\"]; use [\"*\"] for all kinds.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
@@ -1297,9 +1305,9 @@ fn make_graph_tools() -> Vec<Tool> {
                     "direction": {
                         "type": "string",
                         "enum": ["incoming", "outgoing", "both"],
-                        "description": "Edge direction: 'incoming' for callers, 'outgoing' for callees, 'both' for bidirectional (default 'both')."
+                        "description": "Edge direction: 'incoming' for callers (1-hop), 'outgoing' for callees (1-hop), 'both' for multi-hop when depth>1 (default 'both')."
                     },
-                    "depth": { "type": "integer", "description": "Traversal depth (default 1, max 5). depth>1 enables multi-hop call-graph traversal." },
+                    "depth": { "type": "integer", "description": "Only for direction=both: traversal depth (default 1, max 5). Ignored for incoming/outgoing (1-hop only)." },
                     "limit": { "type": "integer", "description": "Max nodes returned (default depends on mode)." },
                     "edge_kinds": {
                         "type": "array",
