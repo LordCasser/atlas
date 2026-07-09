@@ -660,6 +660,9 @@ impl LazyStructuralService {
         token: Option<&dyn CancelCheck>,
         build_global_graph: bool,
     ) -> Result<EnsureStructuralResult> {
+        // Cross-process: reject if CLI holds exclusive FileLock (no wait).
+        filesync::FileLock::reject_if_held_by_other(self.store.as_ref())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let start = std::time::Instant::now();
         let mut result = EnsureStructuralResult {
             files_built: 0,

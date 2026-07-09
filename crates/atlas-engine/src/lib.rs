@@ -63,7 +63,7 @@ pub use extraction::{
 
 /// Sync layer: core indexing pipeline and progress protocol.
 pub use filesync::{
-    ChangedFiles, FileLock, IndexPipeline, IndexPipelineOptions, NoopSink, PhaseName,
+    ChangedFiles, FileLock, IndexLockHeld, IndexPipeline, IndexPipelineOptions, NoopSink, PhaseName,
     ProgressEvent, ProgressSink, SyncEngine,
 };
 

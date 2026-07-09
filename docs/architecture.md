@@ -841,7 +841,8 @@ else:
 | 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；单一 materialize 配置；邻域 facts 切片可对拍 |
 
 - **控制面** `FocusRuntime`：构建范围、顺序、closure 可见性、analysis/retry/gaps。Handler 只产 `QueryIntent`。
-- **Materialize** `FocusMaterialize`：ensure、budget、job 去重、rebuilder。唯一构造 `open`；`FocusRuntime` 构造必填 materialize；prepare 不静默再 `open`。MCP 禁止旁路未配置 dataflow；禁止热路径 `from_store` 并立第二栈。
+- **Materialize** `FocusMaterialize`：ensure、budget、job 去重、rebuilder。唯一构造 `open`；`FocusRuntime` 构造必填 materialize；prepare 不静默再 `open`。MCP 禁止旁路未配置 dataflow；禁止热路径 `Engine::from_store` 并立 materialize 第二栈。
+- **跨进程写互斥**：CLI `atlas index`/`sync` 持 `FileLock`（`exclusive_lock_pid`）。Focus structural/dataflow **写前** `FileLock::reject_if_held_by_other`：若其他 live PID 持锁则 **立即 reject**（无 wait/queue），诊断码 `cli_index_lock_held` + suggested_action。
 - `AnalysisRuntime`：共享 materialize 上的薄 ensure 门，不是第二配置。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。
 - `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。

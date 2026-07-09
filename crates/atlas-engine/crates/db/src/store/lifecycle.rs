@@ -287,6 +287,44 @@ impl Store {
         Ok(())
     }
 
+    /// Returns `Some(pid)` if another **live** process holds the exclusive lock.
+    ///
+    /// Lightweight read (no lock acquisition). Used by Focus/MCP write paths to
+    /// **reject** concurrent CLI index rather than wait.
+    pub fn exclusive_lock_held_by_other(&self) -> anyhow::Result<Option<u32>> {
+        let conn = self.lock_read();
+        let pid = std::process::id();
+        let existing: Option<(i64, i64)> = match conn.query_row(
+            "SELECT value FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+            [],
+            |row| {
+                let v: String = row.get(0)?;
+                let parts: Vec<&str> = v.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    Ok(Some((
+                        parts[0].parse().unwrap_or(0),
+                        parts[1].parse().unwrap_or(0),
+                    )))
+                } else {
+                    Ok(None)
+                }
+            },
+        ) {
+            Ok(existing) => existing,
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                tracing::warn!(?e, "Failed to query exclusive lock PID (read)");
+                None
+            }
+        };
+        if let Some((existing_pid, _ts)) = existing {
+            if existing_pid != pid as i64 && is_process_alive(existing_pid) {
+                return Ok(Some(existing_pid as u32));
+            }
+        }
+        Ok(None)
+    }
+
     /// Release the exclusive write lock.
     ///
     /// Only releases if the current PID matches the lock holder.
