@@ -1,6 +1,6 @@
 # Atlas 测试规范
 
-本文定义不同阶段的测试深度、准入门槛和禁止事项。目标是让测试能真实约束架构演进，而不是只证明某个局部 helper 可以工作。
+本文定义**当前**测试深度、准入门槛与强制回归。只写现行规则与覆盖矩阵；版本变更见 [`CHANGELOG.md`](../CHANGELOG.md)。
 
 ## 1. 总体原则
 
@@ -46,7 +46,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 materialize 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
 - MCP `branch_diff` / `lifecycle` 必须覆盖按需 CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失。
 - CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
-- MCP 单栈：`ActiveProject` / Engine / FocusRuntime / AnalysisRuntime `same_stack_as`（或等价指针相等）有回归。
+- MCP 单栈：`ActiveProject` / Engine / FocusRuntime / AnalysisRuntime `same_stack_as`（或等价指针相等）。
 
 ## 2. 测试分层
 
@@ -267,53 +267,33 @@ cargo test -p atlas-cli --test lazy_index_e2e post_extract
 
 清理类 PR 不能只证明“代码少了”，必须证明行为和架构边界没有漂移。
 
-最低要求：
-- 删除代码前必须确认零生产调用点、零测试支撑用途，或明确替代路径；测试 helper 不得按死代码处理。
-- 抽取 helper 或 builder 时，必须至少覆盖一个最简单调用点和一个有分支/merge 的调用点，防止共享抽象只适用于 happy path。
-- MCP lazy response 迁移必须断言已删除的 `precision`、`hint`、`work`、`lazy_diagnostics` 和 `analysis_contract` 不会重新出现，并覆盖 `analysis.retry_after_ms`、结构化 `gaps`、`query_id`、`tasks(query_id)` 和 `resume_query` snapshot 语义。
-- stable facade API 重构必须有编译级兼容验证。若旧 API 接受闭包、函数指针或常见 wrapper，新 trait/API 必须保留等价调用方式，或在文档中声明 breaking change。
-- 每个清理批次至少运行 `cargo fmt --check`、`cargo check` 和受影响 crate 的测试；如果全量 `cargo test` 存在已知失败，PR/review 必须列出具体失败测试、原因和是否与本次变更相关。
+- 删除代码前确认零生产调用点、零测试支撑用途，或明确替代路径；测试 helper 不得按死代码处理。
+- 抽取 helper/builder 时至少覆盖一个简单调用点和一个有分支的调用点。
+- MCP 公共响应必须保持现行契约：`analysis`（含可空 `retry_after_ms`）、结构化 `gaps`、`query_id`；不得重新引入非公共字段进 JSON（见 architecture MCP 信封）。
+- facade API 变更须有编译/测试验证，或在 CHANGELOG 标明 breaking。
+- 至少：`cargo fmt --check`、`cargo check`、受影响 crate 测试；全量失败须在 review 中列明。
 
-## 3. 阶段测试要求
+## 3. 现行能力测试要求
 
-### P0-P4（已完成）
+### 语言与 dataflow
 
-语义绑定、产品化索引、Resolver/GraphBuilder 分离、Binding/DataFlow 基础、CFG 基础的测试要求已完成验收。
+全部默认语言须有 symbols/references/imports/calls golden 与 dataflow edge/path smoke（能力声明以 `FeatureMatrix` 为准）。
 
-### P5：变量来源追踪与调用路径查询 ✅
+### Facade 与入口
 
-全部 14 种 DataflowInterproc 语言已覆盖 symbols/references/imports/calls golden fixture 和 dataflow edge/path smoke 测试。
+- CLI/MCP 只调用 engine/API，不复制 resolver/graph/analysis 管线。
+- engine / CLI / MCP 各有独立单元或集成/E2E；workspace feature 组合可编译。
 
-### `atlas-engine` facade 稳定阶段
+### Focus 公共 analysis 视图
 
-最低要求：
-- `atlas-engine` facade public API 的行为保持一致。
-- CLI/MCP 只调用 engine/API，不复制 resolver、graph、analysis 算法。
+- 触发 Focus materialize 的 MCP 工具经统一 `analysis` 暴露 scope、basis、summary 与可选 `retry_after_ms`。
+- 终态缺口为公开 `{scope, reason, detail}`，不序列化内部枚举。
+- `resume_query` / `tasks(query_id)` / Investigation 有对应回归。
 
-完成标准：
-- engine crate 有独立单元和集成测试。
-- CLI crate 有命令级 smoke/E2E 测试。
-- MCP crate 有 tool schema、routing、bounded output 测试。
-- 原有 default、mcp 组合测试继续通过。
+### Domain Rules / Lifecycle
 
-### Lazy UX / Public Analysis View ✅
-
-要求：
-- 触发 lazy extraction 的 MCP 工具必须通过统一 `analysis` 视图暴露 scope、basis、summary 和仅在可继续提升时存在的 `retry_after_ms`。
-- 终态缺口必须映射为公开 `{scope, reason, detail}`，不得直接序列化内部枚举。
-- `resume_query(query_id)` 必须覆盖：query snapshot 存储、TTL 内恢复、未知/过期 query_id 错误、恢复后返回完整结果。
-- `tasks(query_id)` 必须覆盖按查询过滤和 pending/complete/failed 状态展示。
-- Investigation state 必须测试 symbol、position、field focus 对 related files/symbols 和 desired capabilities 的更新。
-
-### Domain Rules / Lifecycle ✅
-
-要求：
-- `domain_rules` schema 测试必须覆盖新增列：`language`、`pattern_kind`、`meta`、`meta_version`、`status`、`updated_at`。
-- `GenericRuleEngine` 测试必须证明 disabled/candidate/rejected/deprecated 规则不参与匹配。
-- 每个 language registry 必须测试 unknown `rule_kind` 和不允许的 `pattern_kind` 会被拒绝。
-- C/C++ `CppOwnershipRules` 必须测试 user/builtin/learned 规则解释、free/alloc/owned_pattern/cleanup 匹配和旧别名兼容。
-- `FieldLifecycleEngine` 和 `BranchDiffEngine` 必须使用 CFG/dataflow facts 作为输入；不得用手写最终 verdict 宣称端到端能力。
-- lifecycle proof 必须覆盖 rule-backed 和 incomplete 两类结果。
+- `domain_rules` schema 与 registry 校验；disabled/candidate 等不参与匹配。
+- C/C++ ownership 与 lifecycle/branch_diff 以 CFG/dataflow facts 为输入，不得手写最终 verdict 冒充 e2e。
 
 ## 4. Feature 测试矩阵
 

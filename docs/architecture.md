@@ -1,8 +1,9 @@
 # Atlas 架构文档
 
-本文是 Atlas 的**单一权威架构文档**，合并了架构约束、当前实现状态、已落地的设计决策（Lazy Index、Lazy UX、DataflowInterproc 摘要层、Domain Rules 通用化）。本文对代码实现有约束力；当代码与本文冲突时，以本文为准并同步修正代码。
+本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
+版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前实现基线：Atlas `1.5.2`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。本文描述当前主干，不保留旧 schema 或旧 MCP 表面的兼容说明。版本号以 workspace manifests 为准，schema 版本以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` 和 `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前基线：Atlas `1.5.2`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -11,7 +12,7 @@
 3. SQLite 是持久化源（`.atlas/atlas.db`）；内存图只作为查询加速和分析工作集。
 4. MCP 是一等入口；CLI、MCP、context 输出都必须可限制大小。
 5. 所有启发式语义结果必须可解释，不能把低置信度结果伪装成精确结果。
-6. 分析等级相关改动必须验证完整入口矩阵：CLI 自有管线、shared filesync pipeline、sync、lazy structural、lazy dataflow、高层 Engine 和 raw analysis consumer。任何模式或 capability/status/precision 变化都不能只验证单一路径。
+6. 分析等级相关改动必须验证完整入口矩阵：CLI / shared filesync / sync（Index）、Focus materialize ensure、高层 Engine、raw analysis consumer。任何模式或 capability/status 变化都不能只验证单一路径。
 7. **终态必然可达**：每次工具调用必须收敛到终态；不存在永久 `building` / `wait` 状态。MCP 响应的 `analysis.retry_after_ms` 必须最终变为 null。
 8. **信号最小**：响应中每个字段，Agent 必须有明确的 consume 路径；非 trace 公共信封不暴露 `partial_result`、`background_refinement`、`analysis.state` 等伪信号。冻结的 trace 内层契约继续保留自己的 `partial_result`。
 9. **内部状态不透出**：引擎层专有概念（`AnswerQuality`、closure ID、调度器优先级）不进入 MCP 公共响应。
@@ -84,21 +85,21 @@ crates/
 | **Index** | **简单、通用**的预物化：scope/全仓按 `ExtractionMode` 写入 SQLite 并 finalize | `filesync::IndexPipeline` / `atlas index`；**不**依赖 Focus 控制面 |
 | **Focus** | **查询时唯一复杂路径**：意图驱动热点与闭包，**局部优先**物化，使闭包内体验≈该邻域已被 Index | `FocusRuntime` + 内部 materialize；MCP open-first 默认 |
 
-**AccessStrategy（L3）：** `FullCache`（Index 已 finalize 且 catalog 够富）| `Focus`（否则查询时局部加强）。  
-**禁止**把 “Lazy” 当作第三条产品路径或 AccessStrategy。按需写库（structural/dataflow ensure、`ExtractionMode::LazyDataflow`、`extraction_jobs`）是 **Focus 方案内部的 materialize 机制**，也可被高层 `Engine::trace_*` 薄调用，但对外叙事仍是 Focus / Index。
+**AccessStrategy（L3）：** `FullCache`（Index 已 finalize 且 catalog 够富）| `Focus`（否则查询时局部加强）。
 
-**机制类型 vs 产品路径（命名保留策略）**
+**产品路径 vs 机制类型**
 
-| 名称 | 层 | 实际含义 | 是否改名 |
-|------|----|----------|----------|
-| `Focus` / `Index` | 产品 | 查询时局部加强 / 简单预物化 | 产品词，保持 |
-| `FocusMaterialize` | Focus 内部栈 | 单配置 structural+dataflow ensure + rebuilder | 保持 |
-| `LazyDataflowService` / `LazyStructuralService` | 机制实现 | CS lazy：需要时再 ensure 写库 | **保持**（机制义准确；不是 AccessStrategy） |
-| `LazyWindow` / `LazyBudget` | 机制 IR | 按需窗口与可取消预算 | **保持** |
-| `ExtractionMode::LazyDataflow` | L2 抽取处方 | 增量 unit dataflow/CFG | **保持**（L2 token，非读路径） |
-| 包 `focus_materialize` | 包边界 | 原 `lazy` 包；归属 Focus | 已改（产品归属） |
+| 名称 | 层 | 含义 |
+|------|----|------|
+| `Index` / `Focus` | 产品 | 预物化 / 查询时局部加强 |
+| `FocusMaterialize` | Focus 内部栈 | 单配置 structural + dataflow ensure + rebuilder |
+| `LazyDataflowService` / `LazyStructuralService` | 机制 | 按需 ensure 写库（CS lazy；**不是** AccessStrategy） |
+| `LazyWindow` / `LazyBudget` | 机制 IR | 按需窗口与预算 |
+| `ExtractionMode::LazyDataflow` | L2 处方 | 增量 unit dataflow/CFG |
+| 包 `focus_materialize` | 包 | Focus 内部 on-demand dataflow |
 
-构造约定：生产路径只经 `FocusMaterialize::open`；`LazyDataflowService::with_structural_rebuilder` 为跨 crate 工厂（`#[doc(hidden)]`），禁止旁路标准 rebuilder。MCP 多 runtime 必须 `Engine::from_materialize` / `AnalysisRuntime::from_materialize` 共享同一栈。
+**禁止**把 “Lazy” 当作第三条产品路径。  
+构造：生产路径只经 `FocusMaterialize::open`；`with_structural_rebuilder` 为 `#[doc(hidden)]` 工厂。MCP 多 runtime 必须 `Engine::from_materialize` / `AnalysisRuntime::from_materialize` 共享同一栈。
 
 ### 2.2 依赖方向（严格无环）
 
@@ -667,7 +668,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 - `CoverageTier`：`RepoComplete`、`ClosureComplete`、`Boundary`、`Partial`、`Manifest`。
 - `SemanticConfidence`：`Low`、`Medium`、`High`、`Certain`。
 
-`AnswerQuality` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。不得重新引入已删除的 `PrecisionTier` 公共字段或旧枚举适配层。读路径控制面使用 `AccessStrategy`（FullCache|Focus），不得再使用 focus 侧旧名 `IndexMode`。
+`AnswerQuality` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。读路径控制面使用 `AccessStrategy`（`FullCache` | `Focus`）。
 
 #### 10.1.4 In-flight 一致性
 
@@ -693,43 +694,32 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
   在目标文件仍冷时允许使用 bounded reference
   candidate discovery 找到潜在 caller 文件，再以真实抽取和 scoped resolution 验证；
   candidate 命中本身不是 graph edge。
-- Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall）在
-  `extract_file_with_mode` 成功返回前经共享 `apply_post_extract_hooks` 增强，
-  不改动 tree-sitter 槽位管线。Index（`IndexPipeline`）与 lazy structural 共用同一 hook，
-  禁止在 lazy 路径再挂第二份 LinuxAugment 调用。
+- Linux 增强：C 的 syscall 宏、EXPORT_SYMBOL、initcall 等在 `extract_file_with_mode`
+  成功返回前经共享 `apply_post_extract_hooks` 增强；Index 与 Focus structural ensure 共用同一 hook。
 
-#### 10.1.6 已实现的基础阶段
+#### 10.1.6 Index 与 Focus materialize 能力边界
 
-**P0: Scope Index** — 允许 `--include`/`--scope`/`--exclude` 限制索引范围，降低大型项目 index 时间和 DB 体积。
+- **Index scope**：`--include` / `--scope` / `--exclude` 限制预物化范围。
+- **Manifest**：`ExtractionMode::Manifest` 仅顶层符号；供 candidate / Focus 冷启动。
+- **Focus structural materialize**：`LazyStructuralService` + `CandidateProvider`，归属 `FocusMaterialize`。
+- **Focus dataflow materialize**：`LazyDataflowService` + `LazyWindow` / budget，归属 `FocusMaterialize`。
+- **可观测**：`FactCoverage`、`QuerySnapshot` / `resume_query`、`tasks`、session `Investigation`；MCP 公共面见 `analysis` / `gaps` / `query_id`。
 
-**P1: Manifest Extraction** — `ExtractionMode::Manifest`：仅提取顶层符号，为 Focus materialize / candidate 发现提供候选源。通过 `symbols.layer` 字段区分。
+#### 10.1.7 extraction 状态与任务
 
-**P2: Focus structural materialize** — 查询时按需完整 structural extraction。机制类型 `LazyStructuralService` + `CandidateProvider` + `StructuralLoader`，挂在 `FocusMaterialize` 下（不是第三条产品路径）。
+文件级 / unit 级状态与进行中任务由 `extraction_state` / `extraction_jobs` 表达：
 
-**Focus UX / 可观测** — `FactCoverage`、`AnalysisContract`、`QuerySnapshot`、`resume_query`、`tasks` 和 session-scoped `Investigation` 已接入 MCP 查询路径。
+- **完成状态**：文件级 `unit_id IS NULL` 且 hash 匹配 `files.content_hash`；unit dataflow cache 用 `unit_id IS NOT NULL`。
+- **进行中**：on-demand structural/dataflow 必须 claim job；已有 active job 返回 pending id。dataflow 用 unit-scoped job key。
+- **MCP 可观测**：`status` 由 fresh layer 推导 catalog tier；Agent 只读 public `analysis`，不读 raw job 字段。
+- **Search**：先 store-backed 查询，再对候选定向 structural ensure；大 scope 不同步全量 structural。
 
-#### 10.1.7 Lazy 状态与任务边界
+#### 10.1.8 可中断提取
 
-文件级状态、单元级 dataflow 状态和进行中任务已经统一为
-`extraction_state` / `extraction_jobs` 两个表：
-
-- **完成状态**：文件级状态以 `extraction_state.unit_id IS NULL` 为准，必须与 `files.content_hash` 匹配；单元级 dataflow cache 以 `extraction_state.unit_id IS NOT NULL` 为准。
-- **进行中状态**：on-demand structural 和 dataflow 构建必须 claim extraction job；已有 active job 时返回 pending job id，不重复构建。dataflow 使用 unit-scoped job key，避免同一函数/顶层单元被前台 trace 和后台 prewarm 重复构建。`resolution_symbols` 只服务 closure 内依赖符号物化，当前不作为独立可等待 job 暴露。
-- **MCP 可观测性**：`status` 只根据 fresh layer 分布推导 `manifest`、`partial_structural`、`structural`、`structural+lazy`、`full`，不能把 manifest-only 误报为 structural。Agent 判断是否可用、是否等待、是否重试只能读取 public `analysis` 字段，不能读取 raw extraction job 或 pending/partial 旧字段。
-- **Search 执行模型**：MCP search 先做 store-backed manifest 查询，再对候选文件做定向 lazy structural；只有候选为空且 scope 很小时才同步解析整个 scope。大 scope 不做同步全量 structural，避免把一次搜索变成隐式全项目索引。
-
-#### 10.1.8 CancellationToken 可中断提取
-
-Lazy extraction 的 budget 约束已从"循环守卫"升级为"可中断提取"：
-
-- **`CancelCheck` trait**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`。不需要取消能力的调用显式传 `&()`，因为 unit type 实现 no-op `CancelCheck`。
-- **`extract_file_with_mode`**（`extraction/extract.rs`）：唯一 extraction 入口，调用者必须显式传入 `ExtractionMode` 和 `CancelCheck`；在以下检查点插入 token 检查（CP1-CP4）：
-  - CP1: `tl_parse()` 之前 — 进入时预算已耗尽则跳过 parse
-  - CP2: 符号查询之后
-  - CP3: 引用查询之后
-  - CP4: 导入/作用域查询之后
-- **`collect_captures`**（`extraction/query_helpers.rs`）：流式捕获循环中每 ~100 次迭代检查取消；取消返回 typed failure，不返回截断后的 partial captures
-- **取消分类**：抽取入口和 query capture loop 在取消时返回 `ExtractionFailureKind::Cancelled`，worker 记录为 `FailureCategory::Cancelled`。取消不得通过字符串匹配推断，也不得把已截断的 partial captures 写成成功 facts。
+- **`CancelCheck`**（`extraction/cancel.rs`）：`fn is_cancelled(&self) -> bool`；无取消需求传 `&()`。
+- **`extract_file_with_mode`**：唯一 extraction 入口；须显式 `ExtractionMode` + `CancelCheck`；检查点 CP1–CP4（parse 前、符号后、引用后、导入/作用域后）。
+- **`collect_captures`**：约每 100 次迭代检查取消；取消返回 typed failure，不写截断 partial 为成功。
+- **取消分类**：`ExtractionFailureKind::Cancelled` / `FailureCategory::Cancelled`；禁止字符串匹配推断取消。
 - **`ReindexOutcome`**（`lazy_structural.rs`）：`Built` / `Cancelled` 枚举，在 DB 写入前（CP5）和 extraction 调用前（CP6）检查。`Cancelled` 设置 `budget_exceeded=true` 但不计入 `files_built`
 - **`LazyBudget`** 实现 `CancelCheck`（`is_cancelled = cancelled || time_exceeded`）。`can_continue()` 超时时自动调用 `cancel()`
 
@@ -821,51 +811,34 @@ else:
 **约束**：
 
 - 引擎层概念（`AnswerQuality`、`AccessStrategy` 原始枚举、closure ID、调度器优先级）不进入 MCP 公共响应。
-- 非 trace 工具的 `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代；trace 内层 frozen contract 仍保留自己的 `partial_result`。
-- `background_refinement` 字段已淘汰，不进入 MCP 公共响应。
+- 非 trace 工具的公共信封用 `retry_after_ms` + `gaps` 表达进行中/缺口；trace 内层 frozen contract 可含自有 `partial_result`。
+- 不暴露 `background_refinement` 公共字段。
 
-#### 10.1.11 Focus 与内部 materialize；对照 Index
+#### 10.1.11 Focus 与 materialize；对照 Index
 
-**对外只呈现 Focus（查询时）与 Index（预物化）两种路径叙事。**  
-按需写库（机制类型仍可叫 `Lazy*`）是 **Focus 方案下的 materialize 实现**，不是并列产品。
+**对外叙事只有 Index（预物化）与 Focus（查询时）。**  
+按需写库是 Focus 的 materialize 实现；机制类型可名 `Lazy*`，不是并列产品。
 
 | | Index | Focus |
 |--|-------|-------|
-| 角色 | 简单、通用预物化 | 复杂、意图驱动的局部加强 |
+| 角色 | 简单、通用预物化 | 意图驱动的局部加强 |
 | 入口 | `atlas index` / IndexPipeline / sync | MCP `FocusRuntime` + `FocusMaterialize` |
-| 查询策略 | `AccessStrategy::FullCache`（finalize + 富 catalog） | `AccessStrategy::Focus` |
-| 体验目标 | 全仓/scope 缓存可读 | **闭包内**事实与查询可用性 ≈ Index 在该邻域的结果 |
-| 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；**单一** materialize 配置；N5 邻域切片对拍 |
+| 读策略 | `AccessStrategy::FullCache` | `AccessStrategy::Focus` |
+| 体验目标 | 全仓/scope 缓存可读 | 闭包内可用性 ≈ Index 同邻域 |
+| 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；单一 materialize 配置；邻域 facts 切片可对拍 |
 
-控制 vs 物化（均属 Focus 方案）：
-
-- **控制面** `FocusRuntime`：决定构建哪些 facts、顺序、closure 可见性、analysis/retry/gaps。MCP handler 只生成 `QueryIntent`。
-- **Materialize** `FocusMaterialize`：structural + dataflow ensure、budget、job 去重、self-heal rebuilder。**唯一合法构造** `FocusMaterialize::open`。`FocusRuntime` 构造时必填 materialize；prepare **不会**静默再 `open`。禁止 MCP 旁路未配置 dataflow；禁止热路径 `Engine::from_store` 并立第二栈。
-- L2 `ExtractionMode`、`extraction_state`、`extraction_jobs` 为机制/DB 边界（可保留 Lazy* 机制名）。
-- MCP `AnalysisRuntime` 是共享 materialize 上的 **薄 ensure 门**（`dataflow()` / `ensure_dataflow_*`），不是第二套配置。
-
-长期边界：
-
-- `FocusRuntime` 是 MCP 查询时唯一控制入口。不得 ad-hoc 拼 structural/dataflow 服务绕过 Focus materialize。
-- 函数内语义工具使用 `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排入 call/type expansion。
-- 旧 `LazyOrchestrator` / `LazyCoordinator` / `init_focus` 已删除。
-- Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
-  overlay；只有 full-index/shared pipeline 可以更新全局
-  `references.resolved_*` 和 repo-wide `symbol_edges`。
-- `Precision { coverage, confidence }` 是引擎内部状态，用于推导 coverage_counts
-  和终态判定；不进入 public MCP contract。
-- Closure expansion 保留策略顺序并去重；C/C++ 等需要 import/include 可见性的查询先扩依赖，再扩 call graph。计划超过文件预算时按剩余容量截断并返回 `budget_exhausted` gap，不得整批拒绝而退化为 seed-only 结果。
-- 每次查询只排入 `FocusResult.pending_closure_ids` 中可追踪的 background/region-extension closure。前台已构建文件不得再逐文件排入隐藏 Recent prewarm；否则 `tasks(query_id)` 会先报告完成，而数据库仍在执行 N+1 closure fan-out。
-- `closure_coverage`、`reference_resolutions` 和 `symbol_edge_candidates` 是 graph materialization 的临时 closure facts，不是永久历史日志。新 MCP session 激活项目时整表清理上一 session 的 control-plane facts；同一 session 每次成功物化后只保留最近 16 个 committed closure。已物化的 canonical graph edge、源码事实和 MCP query snapshot 不依赖这些旧行。
-- 已有持久化 file inventory 或源码事实时，MCP bootstrap 只标记基础层 ready，不启动全项目后台扫描。Closure resolver 的本地 fallback 使用 `symbols.name` 索引，不构建 project-wide `GlobalSymbolIndex`；import scope、测试路径分类和 proximity root 必须按源文件计算一次，不得在每个 reference 上重复查询。
-  `PrecisionTier` 不进入 public MCP contract；当前内部统一使用 `AnswerQuality`。
-- `JobTracker`（`crates/atlas-engine/src/focus/job_tracker.rs`）是 Focus Runtime 的
-  完成追踪实体，记录每个 closure 的成功/失败终态、耗时和实际 materialized files。
-  失败与成功都必须退出 pending；失败原因映射为终态 `background_refinement_failed`
-  gap，不能以永久 running 隐藏。`FocusRuntime` 持有
-  `Arc<JobTracker>` 并在 `prepare()` 中通过 `FocusResult.job_tracker` 传递给 MCP 层。
-  MCP `apply_focus_result_to_lr()` 通过 `FocusResult` 的 closure pending 与 raw
-  extraction pending 共同判定 retry/终态。
+- **控制面** `FocusRuntime`：构建范围、顺序、closure 可见性、analysis/retry/gaps。Handler 只产 `QueryIntent`。
+- **Materialize** `FocusMaterialize`：ensure、budget、job 去重、rebuilder。唯一构造 `open`；`FocusRuntime` 构造必填 materialize；prepare 不静默再 `open`。MCP 禁止旁路未配置 dataflow；禁止热路径 `from_store` 并立第二栈。
+- `AnalysisRuntime`：共享 materialize 上的薄 ensure 门，不是第二配置。
+- `FocusRuntime` 是 MCP 查询时唯一控制入口。
+- `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。
+- Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 full-index / shared pipeline 更新。
+- 内部质量用 `AnswerQuality`；不进 public MCP contract。
+- Closure expansion：策略顺序去重；import/include 可见性查询先依赖后 call graph；超预算按容量截断并 `budget_exhausted` gap，不得整批拒绝成 seed-only。
+- 仅 `FocusResult.pending_closure_ids` 中可追踪的后台 closure 可排入；前台已建文件不得再隐藏 Recent prewarm。
+- `closure_coverage` / `reference_resolutions` / `symbol_edge_candidates` 为临时 control-plane facts；新 session 清表；同 session 成功物化后只保留最近 16 个 committed closure。
+- 已有 inventory 或源码事实时 bootstrap 只标 ready，不全仓后台扫；resolver fallback 用 `symbols.name`，不建 project-wide `GlobalSymbolIndex`。
+- `JobTracker` 记录 closure 终态与耗时；失败必退出 pending 并映射 `background_refinement_failed` gap。经 `FocusResult.job_tracker` 交给 MCP 判 retry/终态。
 - `EnsureStructuralResult` 只把实际 built/cached 文件计入 closure。抽取失败记录
   `extraction_failed` gap；取消或预算截断记录 budget gap；`AlreadyBuilding`
   记录为 retryable pending extraction job，并通过 `analysis.retry_after_ms`

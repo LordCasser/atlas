@@ -1,6 +1,7 @@
 # Atlas Roadmap
 
-This roadmap tracks **current and future work only**.
+Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
+Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## 1. Current release focus: Atlas 1.5.x
 
@@ -103,28 +104,26 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 12 capability-enabled languages; ArkTS and PHP remain unsupported. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
 
-### 2.2 Index scope/manifest + Focus materialize (three phases) ✅
+### 2.2 Index scope / manifest + Focus materialize
 
-- **P0: Scope Index** — `--include`/`--scope`/`--exclude` range-limited indexing.
-- **P1: Manifest Extraction** — `ExtractionMode::Manifest` for lightweight top-level symbol extraction.
-- **P2: Focus structural materialize** — on-demand structural via `LazyStructuralService` under `FocusMaterialize` (mechanism name `Lazy*`, product path Focus).
+- **Scope Index** — `--include` / `--scope` / `--exclude`.
+- **Manifest** — `ExtractionMode::Manifest` top-level symbols.
+- **Focus materialize** — on-demand structural/dataflow under `FocusMaterialize`（机制类型可名 `Lazy*`；产品路径 Focus）。
 
-### 2.3 Workspace/crate split ✅
+### 2.3 Workspace
 
-Project split into `atlas-engine` facade, engine internal crates (`focus_materialize` package for on-demand dataflow), `atlas-mcp`, and `atlas-cli`.
+`atlas-engine` facade + internal crates（含 `focus_materialize`）、`atlas-mcp`、`atlas-cli`。
 
-### 2.4 Performance optimizations ✅
+### 2.4 Performance baseline features
 
-P0-P7 optimizations completed: PhaseTimings, hash-based dirty-set, thread-local parsers, batch DB writes, GlobalSymbolIndex, Rayon parallel edges, on-demand dataflow/CFG, language-capability-driven skip.
+PhaseTimings、hash dirty-set、thread-local parsers、batch DB writes、GlobalSymbolIndex、Rayon edges、on-demand dataflow/CFG、capability-driven skip。
 
-### 2.5 Focus UX and query recovery ✅
+### 2.5 Focus 可观测与恢复
 
-- `FactCoverage` centralizes extraction-layer capability state (`manifest`, `structural`, `call_edges`, `cfg`, `dataflow`, `summaries`) in `extraction_state`.
-- MCP responses expose one shared public view: `analysis`, structured `gaps`, `query_id`, and resumable refinement state.
-- MCP query snapshots support `resume_query(query_id)` for in-session recovery; snapshots are intentionally in-memory with a short TTL.
-- Investigation state tracks the active MCP-session focus and desired capabilities for focused refinement.
-- `tasks` exposes query-related background job state.
-- **N5** neighborhood parity e2e (Focus complete file/unit slices ≈ Index) lands in `focus_materialize_e2e` (§2.6.2 testing.md).
+- `FactCoverage` 在 `extraction_state`；MCP 公共面：`analysis` / `gaps` / `query_id`。
+- `resume_query(query_id)`（session 内存 snapshot，短 TTL）。
+- `Investigation`、`tasks`。
+- 邻域 facts 对拍：`docs/testing.md` §2.6.2。
 
 ### 2.6 Field lifecycle, branch diff, and semantic impact ✅
 
@@ -327,7 +326,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 | Phase 3 | ClosureEngine | 策略驱动的有限不动点闭包扩展（ImportNeighborhood/CallGraph/TypeGraph），含预算控制 |
 | Phase 4 | ScopedResolver + FocusGraphBuilder | 闭包作用域引用解析和 scoped graph overlay |
 | Phase 5 | MCP Response Envelope 统一 | `analysis`/`coverage_counts`/`gaps`/`query_id` 统一 public view，删除 `precision`/`work` 等伪信号 |
-| Phase 6 | 旧控制平面清理 | `LazyOrchestrator`/`LazyCoordinator` 已从模块系统移除，MCP 不再使用 `ensure_structural_*` |
+| Phase 6 | 控制平面 | MCP 经 `FocusRuntime` + `FocusMaterialize`；无独立 lazy 控制面 |
 | Phase 7 | 冷启动闭包正确性 | 精确 symbol frontier、dependency resolution-only、深度驱动 fixed point、后台 materialization refresh、成功/失败终态、完整 C/C++ type ranges 和旧 type-range cache 自愈 |
 
 ### 9.3 剩余工作
@@ -340,24 +339,20 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 ### 9.4 不变边界
 
-`LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、`extraction_state` 和
-`extraction_jobs` 保留为**机制层**事实构建、缓存、freshness、in-flight dedup 边界。
-产品层只讲 Index / Focus；Focus 只替换查询时调度与决策，不重写 extraction 管线。
-构造层只经 `FocusMaterialize::open`（见 architecture §2.1.1 / §7.1 / §10.1.11）。
-
-详见 [`architecture.md` §10.1.10–10.1.11](./architecture.md)。
+机制层：`LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、`extraction_state`、`extraction_jobs`。  
+产品层：Index / Focus。构造：`FocusMaterialize::open`。  
+详见 [`architecture.md`](./architecture.md) §2.1.1 / §7.1 / §10.1.11。
 
 ## 10. 代码质量与技术债务清理
 
-### 10.1 Capability Profile 数据声明化
+### 10.1 Capability Profile 数据声明
 
-✅ 全部 14 种语言的 `LanguageCapabilityProfile` 现已统一通过 `ProfileSpec` + `build_profile()` 数据声明模式构造。此前各语言以 ~60-70 行 struct literal 硬编码，约 80% 字段为重复样板。
+全部默认语言的 `LanguageCapabilityProfile` 经 `ProfileSpec` + `build_profile()` 声明构造。  
+身份与一致性由 `test_<lang>_profile_identity` 及四项全局 profile 测试约束。
 
-- 剩余 12 种语言（TypeScript、JavaScript、Java、C、C++、C#、PHP、Ruby、Rust、Kotlin、Cangjie、ArkTS）已在 Go/Python 原型之后完成迁移。
-- 每个迁移均以 per-language identity test（`test_<lang>_profile_identity`）验证产出 `LanguageCapabilityProfile` 与迁移前逐字段完全一致；四项一致性测试（`test_all_profiles_are_valid`、`test_all_profiles_have_feature_matrix`、`test_cfg_feature_matrix_consistent_with_supported_features`、`test_cfg_known_limitation`）保持通过。
-- 特殊情形保留：C 的 `include_resolution`+`function_pointer_tracking` 及 call_graph 0.65；C++ 的 `include_resolution`；ArkTS/PHP 的 `cfg` 为 Unsupported；Cangjie 由 `fm.supported_feature_names()` 派生改写为显式列表（13 项全支持、unsupported 为空）；C#/Ruby 的 CFG limitation 文本含 "body traversal"+"implemented"。现有三个 `FeatureOverride` 变体（`Confidence`/`WithLimitations`/`Unsupported`）足以表达全部覆盖，未新增变体。
+特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65；C++ `include_resolution`；ArkTS/PHP `cfg` Unsupported；Cangjie 全支持集；`FeatureOverride` 变体 `Confidence` | `WithLimitations` | `Unsupported`。
 
-**Note — `atlas status` 的语言列表语义（避免误判为 Cangjie 缺陷）**：`atlas status`（及 MCP `status`）按设计只列出**项目中实际存在源文件**的语言（遍历 `files_by_language`，见 `status.rs`）；`atlas doctor` 才用 `all_compiled()` 列出所有编译语言。因此若某项目无 `.cj` 文件，`status` 不显示 Cangjie 属正常语义，而非注册/profile 缺陷——`all_compiled()` 已含 Cangjie（`#[cfg(feature="cangjie")]`，默认启用），`atlas doctor` 正确显示 `cangjie dataflow_interproc 65%`。
+**`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
 
 ### 10.2 FeatureMatrix 镜像方法合并
 

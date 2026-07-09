@@ -13,15 +13,9 @@ configured dataflow service only via `FocusMaterialize::open`.
   runs `ExtractionMode::LazyDataflow`, writes results to `db`
 - **`constants`**: hardcoded budget caps (never exposed to MCP/CLI)
 
-## Mechanism type names
+## Names and construction
 
-`LazyDataflowService` / `LazyWindow` remain as **mechanism** type names (L2
-extraction / window IR). They are not an AccessStrategy or parallel product line.
-
-## Construction
-
-- Production: only via `atlas_engine::FocusMaterialize::open`.
-- Factory: `LazyDataflowService::with_structural_rebuilder` is `#[doc(hidden)]`
-  and always requires a rebuilder.
-- Unit write FK: invalid `data_node.binding_id` is cleared (SET NULL), not dropped
-  with the whole node — see `db::fk_guards::filter_data_nodes`.
+- Mechanism types: `LazyDataflowService`, `LazyWindow` (not AccessStrategy / product path).
+- Production entry: `atlas_engine::FocusMaterialize::open`.
+- Cross-crate factory: `with_structural_rebuilder` (`#[doc(hidden)]`, rebuilder required).
+- Unit write: invalid `data_node.binding_id` → SET NULL; invalid `function_id` → drop row.

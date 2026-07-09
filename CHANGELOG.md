@@ -6,6 +6,24 @@ All notable changes to Atlas will be documented in this file.
 
 ## Unreleased
 
+### Focus materialize (query-time stack)
+
+- Product paths remain **Index** (pre-materialize) and **Focus** (query-time).
+  On-demand structural/dataflow is Focus-internal materialize, not a third
+  product line; package `focus_materialize` (mechanism types still `Lazy*`).
+- Single stack: `FocusMaterialize::open` wires structural + dataflow +
+  structural rebuilder; `FocusRuntime` / MCP `ActiveProject` / `Engine` /
+  `AnalysisRuntime` share one Arc stack (`from_materialize` / `same_stack_as`).
+- Removed obsolete MCP `init_focus` no-op; no silent second materialize on prepare.
+- Unit dataflow write: invalid `data_node.binding_id` is cleared (SET NULL) so
+  Focus ensure no longer drops most unit facts vs Index full (FK guard).
+- N5 e2e: neighborhood structural/dataflow slices and `FocusRuntime::prepare`
+  parity vs Index (`focus_materialize_e2e`, `docs/testing.md` §2.6.2).
+- Shared `apply_post_extract_hooks` for Index and Focus structural (Linux export
+  / initcall, etc.).
+- Docs: architecture/testing/roadmap/requirements state current rules only;
+  change history lives in this file.
+
 ### Release hardening
 
 - `atlas doctor` now reports Atlas version, Schema V2 state, canonical index
