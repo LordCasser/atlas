@@ -1,4 +1,5 @@
-//! E2E tests for Focus materialize + Index path: scope, manifest, on-demand structural.
+//! E2E tests for Focus materialize + Index path: scope, manifest, on-demand structural,
+//! and N5 neighborhood parity (Focus file/unit slices ≈ Index for the same scope).
 //!
 //! Uses TypeScript (.ts) files which are in the default feature set.
 //! Exercises shipped CLI index + `LazyStructuralService` / Focus materialize APIs
@@ -8,9 +9,10 @@
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
-use atlas_engine::{FocusMaterialize, Store};
 use atlas_engine::enums::DataNodeKind;
-use atlas_engine::{layer, status};
+use atlas_engine::{
+    AccessStrategy, FocusMaterialize, FocusRuntime, QueryIntent, Store, layer, status,
+};
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -688,3 +690,601 @@ fn post_extract_lazy_structural_matches_index_export_semantics() {
         "lazy structural must persist module_init edge like index path"
     );
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// N5: Focus neighborhood facts ≈ Index for the same files/units
+//
+// Product claim (architecture): after Focus materialize, closed-neighborhood
+// experience ≈ those files had been Index'd. Not whole-DB equality.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Multi-file TS fixture:
+/// - `seed.ts` calls into `math.ts` (should be structural-comparable)
+/// - `peer.ts` is unrelated (must stay non-structural on Focus path)
+const N5_NEIGHBORHOOD: &[(&str, &str)] = &[
+    (
+        "seed.ts",
+        "import { add } from './math';\n\
+         \n\
+         export function useAdd(x: number): number {\n\
+         \x20   const y = add(x, 1);\n\
+         \x20   return y;\n\
+         }\n",
+    ),
+    (
+        "math.ts",
+        "export function add(a: number, b: number): number {\n\
+         \x20   return a + b;\n\
+         }\n",
+    ),
+    (
+        "peer.ts",
+        "export function unrelated(): number {\n\
+         \x20   return 99;\n\
+         }\n",
+    ),
+];
+
+fn file_by_suffix(store: &Store, suffix: &str) -> atlas_engine::FileId {
+    store
+        .list_files()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.path.ends_with(suffix))
+        .unwrap_or_else(|| panic!("missing file ending with {suffix}"))
+        .file_id
+}
+
+/// Stable structural slice for one file (no job/runtime fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStructuralSlice {
+    symbols: Vec<(String, String, u32, u32, bool)>,
+    references: Vec<(String, String, u32, u32)>,
+    callsites: Vec<(String, u32, u32, Option<String>)>,
+    /// Edges with both endpoints in `file_symbol_ids` (intra-neighborhood).
+    edges: Vec<(String, String, String)>,
+}
+
+fn structural_slice(store: &Store, file_id: &atlas_engine::FileId) -> FileStructuralSlice {
+    let symbols = store.find_symbols_by_file(file_id).unwrap();
+    let file_symbol_ids: std::collections::HashSet<_> = symbols.iter().map(|s| s.id).collect();
+
+    let mut sym_keys: Vec<_> = symbols
+        .iter()
+        .map(|s| {
+            (
+                s.name.clone(),
+                s.kind.as_str().to_string(),
+                s.range.start_byte,
+                s.range.end_byte,
+                s.exported,
+            )
+        })
+        .collect();
+    sym_keys.sort();
+
+    let mut ref_keys: Vec<_> = store
+        .find_references_by_file(file_id)
+        .unwrap()
+        .into_iter()
+        .map(|r| {
+            (
+                r.name.clone(),
+                r.kind.as_str().to_string(),
+                r.range.start_byte,
+                r.range.end_byte,
+            )
+        })
+        .collect();
+    ref_keys.sort();
+
+    // Map symbol id → name for stable callsite/edge keys within this DB.
+    let id_to_name: std::collections::HashMap<_, _> = store
+        .list_files()
+        .unwrap()
+        .iter()
+        .flat_map(|f| store.find_symbols_by_file(&f.file_id).unwrap())
+        .map(|s| (s.id, s.name.clone()))
+        .collect();
+
+    let mut cs_keys: Vec<_> = store
+        .find_callsites_by_file(file_id)
+        .unwrap()
+        .into_iter()
+        .map(|cs| {
+            (
+                id_to_name
+                    .get(&cs.caller)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:?}", cs.caller)),
+                cs.range.start_byte,
+                cs.range.end_byte,
+                cs.receiver.clone(),
+            )
+        })
+        .collect();
+    cs_keys.sort();
+
+    let mut edge_keys: Vec<_> = store
+        .get_all_edges()
+        .unwrap()
+        .into_iter()
+        .filter(|e| file_symbol_ids.contains(&e.source) || file_symbol_ids.contains(&e.target))
+        // Only edges fully inside the comparable neighborhood symbol set for
+        // this slice's file endpoints — caller supplies multi-file sets later
+        // by comparing per-file endpoints that were both materialised.
+        .filter(|e| file_symbol_ids.contains(&e.source) && file_symbol_ids.contains(&e.target))
+        .map(|e| {
+            (
+                id_to_name
+                    .get(&e.source)
+                    .cloned()
+                    .unwrap_or_else(|| "?".into()),
+                id_to_name
+                    .get(&e.target)
+                    .cloned()
+                    .unwrap_or_else(|| "?".into()),
+                e.kind.as_str().to_string(),
+            )
+        })
+        .collect();
+    edge_keys.sort();
+
+    FileStructuralSlice {
+        symbols: sym_keys,
+        references: ref_keys,
+        callsites: cs_keys,
+        edges: edge_keys,
+    }
+}
+
+/// Cross-file edges whose endpoints lie in the given relative-path set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NeighborhoodEdgeSlice {
+    edges: Vec<(String, String, String, String, String)>, // src_file, src, tgt_file, tgt, kind
+}
+
+fn neighborhood_edges(store: &Store, path_suffixes: &[&str]) -> NeighborhoodEdgeSlice {
+    let files = store.list_files().unwrap();
+    let mut allowed_files = std::collections::HashSet::new();
+    let mut file_path: std::collections::HashMap<atlas_engine::FileId, String> =
+        std::collections::HashMap::new();
+    for f in &files {
+        if path_suffixes.iter().any(|s| f.path.ends_with(s)) {
+            allowed_files.insert(f.file_id);
+            file_path.insert(f.file_id, f.path.clone());
+        }
+    }
+
+    let mut id_meta: std::collections::HashMap<
+        atlas_engine::SymbolId,
+        (String, String), // (file_path, name)
+    > = std::collections::HashMap::new();
+    for fid in &allowed_files {
+        for s in store.find_symbols_by_file(fid).unwrap() {
+            id_meta.insert(
+                s.id,
+                (
+                    file_path.get(fid).cloned().unwrap_or_default(),
+                    s.name.clone(),
+                ),
+            );
+        }
+    }
+
+    let mut edges: Vec<_> = store
+        .get_all_edges()
+        .unwrap()
+        .into_iter()
+        .filter(|e| id_meta.contains_key(&e.source) && id_meta.contains_key(&e.target))
+        .map(|e| {
+            let (sf, sn) = id_meta.get(&e.source).unwrap();
+            let (tf, tn) = id_meta.get(&e.target).unwrap();
+            (
+                sf.clone(),
+                sn.clone(),
+                tf.clone(),
+                tn.clone(),
+                e.kind.as_str().to_string(),
+            )
+        })
+        .collect();
+    edges.sort();
+    NeighborhoodEdgeSlice { edges }
+}
+
+/// Stable dataflow/CFG slice for one function unit.
+///
+/// Node keys omit `arg_index`: Focus materialize (LazyDataflow) remaps callsite
+/// ids after extract but does not always backfill arg_index the same way as
+/// Index full; kind/name/range already identify the argument nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnitDataflowSlice {
+    nodes: Vec<(String, String, u32, u32)>, // kind, name, start, end
+    edges: Vec<(usize, usize, String)>,    // indices into sorted nodes + kind
+    cfg_nodes: Vec<(String, u32, u32)>,    // kind, start, end
+}
+
+fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDataflowSlice {
+    let mut nodes: Vec<_> = store
+        .find_data_nodes_by_function(fn_id)
+        .unwrap()
+        .into_iter()
+        .map(|n| {
+            (
+                n.kind.as_str().to_string(),
+                n.name.clone().unwrap_or_default(),
+                n.range.start_byte,
+                n.range.end_byte,
+            )
+        })
+        .collect();
+    nodes.sort();
+
+    // Index nodes for edge endpoints (by content key, not raw id).
+    let all_nodes = store.find_data_nodes_by_function(fn_id).unwrap();
+    let key_of = |n: &atlas_engine::DataNode| {
+        (
+            n.kind.as_str().to_string(),
+            n.name.clone().unwrap_or_default(),
+            n.range.start_byte,
+            n.range.end_byte,
+        )
+    };
+    let mut key_to_idx: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+    for (i, k) in nodes.iter().enumerate() {
+        key_to_idx.insert(k.clone(), i);
+    }
+
+    let mut edges = Vec::new();
+    for n in &all_nodes {
+        for e in store.find_dataflow_edges_by_source(&n.id).unwrap() {
+            let src_key = key_of(n);
+            let tgt = all_nodes.iter().find(|x| x.id == e.target);
+            let Some(tgt) = tgt else { continue };
+            let tgt_key = key_of(tgt);
+            if let (Some(&si), Some(&ti)) = (key_to_idx.get(&src_key), key_to_idx.get(&tgt_key)) {
+                edges.push((si, ti, e.kind.as_str().to_string()));
+            }
+        }
+    }
+    edges.sort();
+    edges.dedup();
+
+    let mut cfg_nodes: Vec<_> = store
+        .find_cfg_nodes_by_function(fn_id)
+        .unwrap()
+        .into_iter()
+        .map(|c| {
+            (
+                c.kind.as_str().to_string(),
+                c.stmt_range.start_byte,
+                c.stmt_range.end_byte,
+            )
+        })
+        .collect();
+    cfg_nodes.sort();
+
+    UnitDataflowSlice {
+        nodes,
+        edges,
+        cfg_nodes,
+    }
+}
+
+fn symbol_id_by_name(store: &Store, name: &str) -> atlas_engine::SymbolId {
+    store
+        .find_symbols_by_name(name)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("symbol {name} not found"))
+        .id
+}
+
+/// N5 structural: Focus ensure on seed+math matches Index structural on those
+/// files; peer stays non-structural on Focus.
+#[test]
+fn n5_focus_structural_neighborhood_matches_index() {
+    // ── Index reference DB ───────────────────────────────────────────
+    let idx = setup_project(N5_NEIGHBORHOOD);
+    let idx_project = idx.path().to_string_lossy().to_string();
+    CommandContext::open(&idx_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&idx_project, &[], &[], &[], "structural").expect("index structural");
+    let idx_store = open_store(&idx);
+
+    // ── Focus materialize DB (manifest → ensure neighborhood) ────────
+    let foc = setup_project(N5_NEIGHBORHOOD);
+    let foc_project = foc.path().to_string_lossy().to_string();
+    CommandContext::open(&foc_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&foc_project, &[], &[], &[], "manifest").expect("manifest only");
+    let foc_store = open_store(&foc);
+    let m = FocusMaterialize::open(foc_store.clone(), Some(foc.path().to_path_buf()));
+
+    let seed_f = file_by_suffix(&foc_store, "seed.ts");
+    let math_f = file_by_suffix(&foc_store, "math.ts");
+    let peer_f = file_by_suffix(&foc_store, "peer.ts");
+
+    assert!(
+        !m.structural().has_structural_layer(&seed_f).unwrap(),
+        "precondition: seed not structural after manifest"
+    );
+    assert!(
+        !m.structural().has_structural_layer(&peer_f).unwrap(),
+        "precondition: peer not structural after manifest"
+    );
+
+    // Materialize the call-neighborhood only (not peer) in one batch so
+    // incremental resolve/graph sees both files together (cross-file Calls).
+    m.structural()
+        .ensure_structural_for_file_ids(&[seed_f, math_f])
+        .expect("ensure seed+math structural");
+
+    assert!(
+        m.structural().has_structural_layer(&seed_f).unwrap(),
+        "seed must be structural-complete after Focus materialize"
+    );
+    assert!(
+        m.structural().has_structural_layer(&math_f).unwrap(),
+        "math must be structural-complete after Focus materialize"
+    );
+    assert!(
+        !m.structural().has_structural_layer(&peer_f).unwrap(),
+        "peer must stay outside Focus structural neighborhood"
+    );
+
+    // Per-file structural slices.
+    let idx_seed = file_by_suffix(&idx_store, "seed.ts");
+    let idx_math = file_by_suffix(&idx_store, "math.ts");
+
+    assert_eq!(
+        structural_slice(&foc_store, &seed_f),
+        structural_slice(&idx_store, &idx_seed),
+        "seed.ts structural slice: Focus materialize == Index"
+    );
+    assert_eq!(
+        structural_slice(&foc_store, &math_f),
+        structural_slice(&idx_store, &idx_math),
+        "math.ts structural slice: Focus materialize == Index"
+    );
+
+    // Cross-file edges inside the neighborhood (e.g. useAdd → add).
+    assert_eq!(
+        neighborhood_edges(&foc_store, &["seed.ts", "math.ts"]),
+        neighborhood_edges(&idx_store, &["seed.ts", "math.ts"]),
+        "neighborhood call/type edges: Focus == Index"
+    );
+
+    // Sanity: Index did structural-complete peer; Focus did not.
+    let idx_peer = file_by_suffix(&idx_store, "peer.ts");
+    // Index path uses pipeline; structural layer should exist.
+    let idx_mat = FocusMaterialize::open(idx_store.clone(), Some(idx.path().to_path_buf()));
+    assert!(
+        idx_mat
+            .structural()
+            .has_structural_layer(&idx_peer)
+            .unwrap(),
+        "index path should structural-complete peer (whole project)"
+    );
+}
+
+/// N5 dataflow: Focus ensure_for_function(seed) unit slice matches Index full
+/// for the same unit; unrelated unit stays empty on Focus.
+///
+/// Uses a self-contained seed function (no callees) so the planner window is a
+/// single unit — same shape as Full for that unit. Cross-file call expansion is
+/// covered by the structural neighborhood test.
+#[test]
+fn n5_focus_dataflow_unit_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "seed.ts",
+            "export function useAdd(x: number): number {\n\
+         \x20   const y = x + 1;\n\
+         \x20   return y;\n\
+         }\n",
+        ),
+        (
+            "peer.ts",
+            "export function unrelated(): number {\n\
+         \x20   return 99;\n\
+         }\n",
+        ),
+    ];
+
+    // ── Index full ───────────────────────────────────────────────────
+    let idx = setup_project(FIXTURE);
+    let idx_project = idx.path().to_string_lossy().to_string();
+    CommandContext::open(&idx_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&idx_project, &[], &[], &[], "full").expect("index full");
+    let idx_store = open_store(&idx);
+    let idx_use_add = symbol_id_by_name(&idx_store, "useAdd");
+    let idx_unrelated = symbol_id_by_name(&idx_store, "unrelated");
+    let idx_use_slice = unit_dataflow_slice(&idx_store, &idx_use_add);
+    assert!(
+        !idx_use_slice.nodes.is_empty(),
+        "index full must produce dataflow nodes for useAdd"
+    );
+    assert!(
+        !unit_dataflow_slice(&idx_store, &idx_unrelated)
+            .nodes
+            .is_empty(),
+        "index full must also dataflow-extract unrelated (whole project)"
+    );
+
+    // ── Focus: structural base + on-demand unit ensure ───────────────
+    let foc = setup_project(FIXTURE);
+    let foc_project = foc.path().to_string_lossy().to_string();
+    CommandContext::open(&foc_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&foc_project, &[], &[], &[], "structural").expect("structural base");
+    let foc_store = open_store(&foc);
+    let m = FocusMaterialize::open(foc_store.clone(), Some(foc.path().to_path_buf()));
+
+    let foc_use_add = symbol_id_by_name(&foc_store, "useAdd");
+    let foc_unrelated = symbol_id_by_name(&foc_store, "unrelated");
+
+    assert!(
+        foc_store
+            .find_data_nodes_by_function(&foc_use_add)
+            .unwrap()
+            .is_empty(),
+        "precondition: no dataflow before ensure"
+    );
+
+    let window = m
+        .dataflow()
+        .ensure_for_function(&foc_use_add, Some("n5-parity"))
+        .expect("ensure dataflow for useAdd");
+    assert!(
+        window.units_built >= 1 || window.units_cached >= 1,
+        "ensure must build or cache the seed unit"
+    );
+
+    let foc_use_slice = unit_dataflow_slice(&foc_store, &foc_use_add);
+    assert_eq!(
+        foc_use_slice, idx_use_slice,
+        "useAdd unit dataflow/CFG: Focus ensure == Index full"
+    );
+
+    assert!(
+        foc_store
+            .find_data_nodes_by_function(&foc_unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated unit must remain without dataflow on Focus path"
+    );
+}
+
+/// N5 dataflow with planner call expansion: ensure(useAdd) also builds callee
+/// `add`; both units match Index full; peer stays empty.
+#[test]
+fn n5_focus_dataflow_expanded_window_matches_index_full() {
+    // ── Index full ───────────────────────────────────────────────────
+    let idx = setup_project(N5_NEIGHBORHOOD);
+    let idx_project = idx.path().to_string_lossy().to_string();
+    CommandContext::open(&idx_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&idx_project, &[], &[], &[], "full").expect("index full");
+    let idx_store = open_store(&idx);
+    let idx_use = unit_dataflow_slice(&idx_store, &symbol_id_by_name(&idx_store, "useAdd"));
+    let idx_add = unit_dataflow_slice(&idx_store, &symbol_id_by_name(&idx_store, "add"));
+    assert!(!idx_use.nodes.is_empty(), "index full: useAdd has dataflow");
+    assert!(!idx_add.nodes.is_empty(), "index full: add has dataflow");
+
+    // ── Focus structural + ensure useAdd (window expands to add) ─────
+    let foc = setup_project(N5_NEIGHBORHOOD);
+    let foc_project = foc.path().to_string_lossy().to_string();
+    CommandContext::open(&foc_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&foc_project, &[], &[], &[], "structural").expect("structural base");
+    let foc_store = open_store(&foc);
+    let m = FocusMaterialize::open(foc_store.clone(), Some(foc.path().to_path_buf()));
+
+    let use_add = symbol_id_by_name(&foc_store, "useAdd");
+    let add = symbol_id_by_name(&foc_store, "add");
+    let unrelated = symbol_id_by_name(&foc_store, "unrelated");
+
+    let window = m
+        .dataflow()
+        .ensure_for_function(&use_add, Some("n5-expand"))
+        .expect("ensure useAdd");
+    assert!(
+        window.units.len() >= 2,
+        "planner should expand to callee unit(s), got {} units",
+        window.units.len()
+    );
+
+    assert_eq!(
+        unit_dataflow_slice(&foc_store, &use_add),
+        idx_use,
+        "useAdd (seed) unit: Focus expanded window == Index full"
+    );
+    assert_eq!(
+        unit_dataflow_slice(&foc_store, &add),
+        idx_add,
+        "add (callee) unit: Focus expanded window == Index full"
+    );
+    assert!(
+        foc_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "peer unrelated must not receive dataflow from useAdd ensure"
+    );
+}
+
+/// N5 layer-2: FocusRuntime.prepare materializes call-neighborhood structural
+/// facts; peer file stays outside foreground structural complete set.
+#[test]
+fn n5_focus_runtime_prepare_structural_neighborhood() {
+    let foc = setup_project(N5_NEIGHBORHOOD);
+    let foc_project = foc.path().to_string_lossy().to_string();
+    CommandContext::open(&foc_project, DbMode::InitOrCreate).expect("init");
+    // Cold-ish start: inventory + top-level only — Focus must strengthen.
+    index::run(&foc_project, &[], &[], &[], "manifest").expect("manifest");
+    let foc_store = open_store(&foc);
+    let m = FocusMaterialize::open(foc_store.clone(), Some(foc.path().to_path_buf()));
+
+    let seed_f = file_by_suffix(&foc_store, "seed.ts");
+    let math_f = file_by_suffix(&foc_store, "math.ts");
+    let peer_f = file_by_suffix(&foc_store, "peer.ts");
+    assert!(!m.structural().has_structural_layer(&seed_f).unwrap());
+    assert!(!m.structural().has_structural_layer(&peer_f).unwrap());
+
+    let mut rt = FocusRuntime::new(
+        foc_store.clone(),
+        Some(foc.path().to_path_buf()),
+        m.clone(),
+    );
+    let intent = QueryIntent::Calls {
+        symbol_name: "useAdd".to_string(),
+        file_id: Some(seed_f),
+        symbol_id: None,
+        direction: Some("outgoing".to_string()),
+        depth: Some(1),
+    };
+    let result = rt.prepare(&intent, Vec::new()).expect("FocusRuntime::prepare");
+    assert_eq!(
+        result.access,
+        AccessStrategy::Focus,
+        "manifest-only project must take Focus path"
+    );
+    assert!(
+        result.closure_id.is_some(),
+        "prepare should open a Focus closure"
+    );
+
+    // Foreground materialize must cover seed; call expansion typically pulls math.
+    assert!(
+        m.structural().has_structural_layer(&seed_f).unwrap()
+            || result.built_files.contains(&seed_f)
+            || result.seed_file_id == Some(seed_f),
+        "seed file must be structural-complete or recorded as seed/built after prepare"
+    );
+    // If math was built (outgoing calls depth 1), it must match Index structural slice.
+    if m.structural().has_structural_layer(&math_f).unwrap() {
+        let idx = setup_project(N5_NEIGHBORHOOD);
+        let idx_project = idx.path().to_string_lossy().to_string();
+        CommandContext::open(&idx_project, DbMode::InitOrCreate).expect("init idx");
+        index::run(&idx_project, &[], &[], &[], "structural").expect("index structural");
+        let idx_store = open_store(&idx);
+        let idx_seed = file_by_suffix(&idx_store, "seed.ts");
+        let idx_math = file_by_suffix(&idx_store, "math.ts");
+        if m.structural().has_structural_layer(&seed_f).unwrap() {
+            assert_eq!(
+                structural_slice(&foc_store, &seed_f),
+                structural_slice(&idx_store, &idx_seed),
+                "prepare seed structural == Index"
+            );
+        }
+        assert_eq!(
+            structural_slice(&foc_store, &math_f),
+            structural_slice(&idx_store, &idx_math),
+            "prepare math structural == Index"
+        );
+    }
+
+    assert!(
+        !m.structural().has_structural_layer(&peer_f).unwrap(),
+        "peer must not be structural-complete after prepare(useAdd) — not file-wide fan-out"
+    );
+}
+

@@ -152,6 +152,31 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
   field 与 local resource。Linux fixture 至少验证 `kzalloc_obj`/`kfree` 分类和一个真实 TUI
   流程（例如 `vga_arb_open::priv`），不能用手工填充最终 transition 代替。
 
+### 2.6.2 N5：Focus 邻域 facts ≈ Index 同文件/同 unit
+
+产品主张「闭包内体验 ≈ 该邻域已被 Index」必须有切片对拍，不是全库 bitwise 相等。
+
+强制回归（`crates/atlas-cli/tests/focus_materialize_e2e.rs`）：
+
+- **Structural neighborhood**（`n5_focus_structural_neighborhood_matches_index`）  
+  - 多文件 TS fixture：`seed` 调用 `math`，`peer` 无关。  
+  - Index：`--analysis structural`。  
+  - Focus：manifest → `FocusMaterialize` **batch** ensure `seed`+`math`（同一 resolve/graph 批次）。  
+  - 断言：seed/math 的 file structural 切片（symbols/refs/callsites/intra edges）与 Index 相等；邻域跨文件边相等；peer **无** structural complete。
+- **Dataflow unit**（`n5_focus_dataflow_unit_matches_index_full`）  
+  - 自包含 seed 函数（无 callee）+ peer。  
+  - Index：`--analysis full`。  
+  - Focus：structural 底库 → `ensure_for_function(seed)`。  
+  - 断言：seed unit dataflow/CFG 切片 == Index full 同 unit；peer 无 dataflow。
+- **Dataflow expanded window**（`n5_focus_dataflow_expanded_window_matches_index_full`）  
+  - seed 调用 math；ensure(seed) 展开 callee unit。  
+  - 断言：seed 与 callee 两 unit 切片均 == Index full；peer 无 dataflow。
+- **FocusRuntime prepare**（`n5_focus_runtime_prepare_structural_neighborhood`）  
+  - manifest → `FocusRuntime::prepare(Calls useAdd)`。  
+  - 断言：Focus 路径；seed（及若物化的 math）structural 切片可与 Index 对拍；peer 不 structural-complete。
+
+切片键不得包含 job id、wall-clock 或仅运行时字段。禁止只比全库 `symbol_count`。
+
 ### 2.7 端到端测试
 
 适用范围：当前阶段声明已经可用的产品能力。

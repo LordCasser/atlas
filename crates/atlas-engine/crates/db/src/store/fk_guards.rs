@@ -167,17 +167,26 @@ pub(crate) fn filter_data_nodes(
     valid_function_ids: &HashSet<SymbolId>,
     valid_binding_ids: &HashSet<BindingId>,
 ) -> Vec<DataNode> {
+    // Drop only on invalid function_id. For binding_id, clear the FK instead of
+    // dropping the node — schema is ON DELETE SET NULL, and Focus materialize
+    // re-extracts bindings with fresh ScopeIds that may not match structural
+    // scopes already in the DB. Silent node drops made LazyDataflow unit facts
+    // far thinner than Index full for the same function (N5).
     nodes
         .iter()
         .filter(|n| {
             n.function_id
                 .is_none_or(|fid| valid_function_ids.contains(&fid))
-                && n.binding_id
-                    .map(|bid| valid_binding_ids.contains(&bid))
-                    .unwrap_or(true)
-            // binding_id FK is ON DELETE SET NULL
         })
-        .cloned()
+        .map(|n| {
+            let mut n = n.clone();
+            if let Some(bid) = n.binding_id {
+                if !valid_binding_ids.contains(&bid) {
+                    n.binding_id = None;
+                }
+            }
+            n
+        })
         .collect()
 }
 
