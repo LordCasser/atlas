@@ -841,10 +841,11 @@ else:
 | 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；单一 materialize 配置；邻域 facts 切片可对拍 |
 
 - **控制面** `FocusRuntime`：构建范围、顺序、closure 可见性、analysis/retry/gaps。Handler 只产 `QueryIntent`。
-- **MCP orchestration**：`contract_for` + `dispatch_*` 为路由入口；handler 纯度由 `handler_purity` 测试 ratchet（禁止新增直连 service；allowlist 只缩不涨；残量条目必须仍有真实命中）。
+- **MCP orchestration**：`contract_for(name, args)` 决定 `ToolContract`；`call_tool` 按 contract 走 `dispatch_*` 再进 handler。**Analysis 工具**（`lifecycle` / `branch_diff`）的编排所有权在 `AnalysisRuntime`（见下），不是 handler 内联 service。
+- **Handler 纯度（DEBT-8，已落地 analysis 路径）**：`handler_purity` 源码扫描双层守卫——(1) 禁止 engine 直点名（`FieldLifecycleEngine::` / `BranchDiffEngine::` 等）；(2) 禁止 analysis tool handler 内 orchestration 模式（`find_cfg_*` / `find_data_nodes_*` / `compose_effects(` / `CfgGraph::build` / `CppOwnershipRules::load_for` 等）。allowlist **只缩不涨**；残量条目必须仍有真实 FORBIDDEN 命中。当前残量：`mod.rs`（god-router prepare/lock）、`annotations.rs`（测试 seed）、`active_project.rs`（open 工厂一次 `FocusMaterialize::open`）。`graph.rs` impact-semantic 已走 runtime composition helpers；CFG 多节点加载与 domain-rules 列表仍为过渡态。
 - **Materialize** `FocusMaterialize`：ensure、budget、job 去重、rebuilder。唯一构造 `open`；`FocusRuntime` 构造必填 materialize；prepare 不静默再 `open`。MCP 禁止旁路未配置 dataflow；禁止热路径 `Engine::from_store` 并立 materialize 第二栈。
 - **跨进程写互斥**：CLI `atlas index`/`sync` 持 `FileLock`（`exclusive_lock_pid`）。Focus structural/dataflow **写前** 走 `Store::reject_if_exclusive_lock_held_by_other`（filesync 与 dataflow loader 共用诊断源）：若其他 live PID 持锁则 **立即 reject**（无 wait/queue），诊断码 `cli_index_lock_held` + suggested_action。
-- `AnalysisRuntime`：共享 materialize 上的 ensure **与** analysis 编排（能力门控、dataflow I/O、effect composition、lifecycle/branch_diff 引擎调用）。`lifecycle`/`branch_diff` handler 只做 arg 解析 + envelope 渲染。不是第二 materialize 配置。god-router（`mod.rs` 内 focus prepare/lock）仍在 purity allowlist 过渡态。
+- **`AnalysisRuntime`（真 dispatcher，非改名 facade）**：共享 materialize 上的 ensure **与** 全链路 analysis 编排——能力门控（lifecycle 仅 C/C++）、dataflow ensure/I/O、`compose_effects`、ownership rules 加载、`FieldLifecycleEngine` / `BranchDiffEngine` 调用。公开入口：`run_lifecycle` / `run_branch_diff`（及 impact 用的 `semantic_composition_for_function` 等 helper）。`lifecycle`/`branch_diff` handler 只做 arg 解析、符号解析、focus prepare、envelope 渲染。不是第二 materialize 配置。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。
 - `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。
 - Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 full-index / shared pipeline 更新。
@@ -1222,6 +1223,11 @@ branch_diff    lifecycle
 `EffectComposer`，并把组合结果附着到内存中的 CFG 副本。这样 structural/CFG 缓存保持
 语言事实层，ownership/domain rules 的变化可以立即影响分析而无需重建索引。
 
+**MCP 入口**：工具侧经 `AnalysisRuntime::run_lifecycle` / `run_branch_diff`（或 impact 的
+`semantic_composition_for_function` + `analyze_*` helper）完成 ensure → compose → engine；
+analysis crate 内的 `FieldLifecycleEngine` / `BranchDiffEngine` 仍是引擎实现，但 MCP handler
+不得直调。
+
 **branch_diff_semantic**：基于 `EffectComposition` 比较分支路径的语义效应差异，输出结构化 `BranchDiffIssue`（含 asymmetry kind、confidence、evidence）。MCP `branch_diff` tool 默认使用 semantic 路径（`semantic=true`）。
 
 **lifecycle**：`transfer_state` 读取查询时组合的 `semantic_effects`（多效应按序处理），
@@ -1229,7 +1235,8 @@ legacy 路径已移除。跟踪目标既可以是 canonical field path，也可�
 local 必须精确匹配，field 使用 canonical field matching。`FieldTransition` 按效应记录，
 DoubleFree/UseAfterFree 检测基于每次状态转换。C/C++ 默认资源语义包括 libc alloc/free，
 以及 Linux 常见的 `kmalloc`/`kzalloc`/`kcalloc`/`kvcalloc`/`vmalloc` 与
-`kfree`/`kvfree`/`vfree`。
+`kfree`/`kvfree`/`vfree`。能力门控：MCP lifecycle 仅接受 C/C++ 符号（非 C/C++ →
+`unsupported_language` gap，非 error 终态）。
 
 #### 12.3.2 多语言支持
 

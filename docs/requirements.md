@@ -268,6 +268,13 @@ MCP 入口必须先 `project(action="open")` 同步激活项目；open 不做全
 - `lifecycle` 必须在查询时从目标函数 CFG + dataflow 组合 semantic effects；不能因持久化
   `cfg_nodes.semantic_effects` 为空而返回零迁移。C/C++ local resource 和 field path 均是合法
   跟踪目标，默认 ownership matcher 必须覆盖项目已声明支持的内核 alloc/free 惯用法。
+- `lifecycle` / `branch_diff` 的 MCP 实现必须经 `AnalysisRuntime` 编排（能力门控、CFG/dataflow
+  ensure 与 I/O、effect composition、引擎调用）；handler 不得直调 analysis engine 或在
+  handler 内完成上述编排。非 C/C++ 的 `lifecycle` 以 `unsupported_language` gap 终态说明边界。
+- `calls(direction=incoming|outgoing)` 固定 1-hop；`depth` 存在时必须给出未采纳警告；多跳走
+  `direction=both` 或 callgraph。节点 `signature` 来自 store，不污染 graph NodeSummary。
+- Focus 写库与 CLI 全量索引互斥：其他 live 进程持 `FileLock` 时 Focus/MCP 写路径立即 reject
+  （`cli_index_lock_held`），不得 wait/queue。
 
 Focus closure 必须满足以下正确性约束：
 

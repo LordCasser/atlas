@@ -343,6 +343,21 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 产品层：Index / Focus。构造：`FocusMaterialize::open`。  
 详见 [`architecture.md`](./architecture.md) §2.1.1 / §7.1 / §10.1.11。
 
+### 9.5 MCP DEBT-8 analysis dispatcher ✅（analysis 路径实质达成）
+
+**已完成（当前事实）：**
+- `AnalysisRuntime` 为 `lifecycle` / `branch_diff` 真 dispatcher（能力门控、dataflow I/O、compose、engine）。
+- `handler_purity` 双层守卫：engine 名 + orchestration 模式；allowlist 残量 3 且必须有真实命中。
+- 回归网：calls 1-hop/signature/depth 警告；Focus Phase2 `ArgToParam` 无 summary；N5 + `focus_equivalence_vs_full_index`；FileLock 共享 reject。
+- 死 `AnalysisNeeds` 变体已删；`contract_for` V1 路由全覆盖。
+
+**同 ratchet 后续（非回归，不影响当前正确性）：**
+- god-router（`tools/mod.rs` focus prepare/lock）迁出 allowlist。
+- `graph.rs` impact-semantic 完全 dispatcher 化（CFG 多节点加载 / domain-rules 列表）。
+- annotations 测试 seed 改走 overlay_runtime（去掉测试侧 `store.upsert_fp_annotation`）。
+
+强制测试矩阵见 [`testing.md`](./testing.md) §2.11。
+
 ## 10. 代码质量与技术债务清理
 
 ### 10.1 Capability Profile 数据声明

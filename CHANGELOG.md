@@ -37,12 +37,14 @@ All notable changes to Atlas will be documented in this file.
   `lifecycle` / `branch_diff` / impact-semantic (capability gate, dataflow I/O,
   effect composition, engine call). Handlers parse args + render envelopes only.
   Purity allowlist shrinks to 3 (`mod.rs`, `annotations.rs`, `active_project.rs`);
-  unused allowlist entries and handler-side orchestration patterns fail the ratchet.
+  unused allowlist entries fail; dual ratchet (engine-name + orchestration
+  patterns including `find_cfg_*` / compose / rules load).
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam
   without summary (Task 6).
-- Docs: architecture/testing/roadmap/requirements state current rules only;
+- Docs: architecture/testing/roadmap/requirements record DEBT-8 current facts
+  (dispatcher ownership, purity dual guard, residual allowlist, §2.11 test matrix);
   change history lives in this file.
 
 ### Release hardening

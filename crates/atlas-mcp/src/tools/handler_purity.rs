@@ -192,6 +192,8 @@ fn handler_purity_analysis_handlers_have_no_engine_hits() {
 #[test]
 fn handler_purity_analysis_tools_no_orchestration_in_handlers() {
     const ORCH: &[&str] = &[
+        "find_cfg_nodes_by_function",
+        "find_cfg_edges_by_function",
         "find_data_nodes_by_function",
         "find_dataflow_edges_by_sources",
         "compose_effects(",
