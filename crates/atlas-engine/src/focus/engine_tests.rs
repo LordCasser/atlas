@@ -14,13 +14,23 @@ use types::ids::FileId;
 use types::structs::{FactCoverage, FileInfo};
 use types::{layer, status};
 
-use crate::LazyDataflowService;
-use crate::lazy_structural::{CandidateProvider, LazyStructuralService};
+use crate::{FocusMaterialize, LazyDataflowService};
+use crate::focus::materialize::{CandidateProvider, LazyStructuralService};
 
 use super::engine::ClosureEngine;
 use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
 
 // ── Test helpers ────────────────────────────────────────────────────────────
+
+fn test_closure_engine(store: Arc<Store>) -> ClosureEngine {
+    let m = FocusMaterialize::open(store.clone(), None);
+    ClosureEngine::new(store, m, None)
+}
+
+fn test_closure_engine_with_root(store: Arc<Store>, project_root: Option<std::path::PathBuf>) -> ClosureEngine {
+    let m = FocusMaterialize::open(store.clone(), project_root.clone());
+    ClosureEngine::new(store, m, project_root)
+}
 
 /// Create an in-memory Store with schema initialized.
 fn test_store() -> Arc<Store> {
@@ -31,16 +41,12 @@ fn test_store() -> Arc<Store> {
 
 /// Create a ClosureEngine from an in-memory store with no project root.
 fn test_engine(store: Arc<Store>) -> ClosureEngine {
-    let lazy_structural = LazyStructuralService::new(store.clone(), None);
-    let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-    ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
+    test_closure_engine(store)
 }
 
 fn test_engine_with_root(store: Arc<Store>, root: &std::path::Path) -> ClosureEngine {
     let project_root = Some(root.to_path_buf());
-    let lazy_structural = LazyStructuralService::new(store.clone(), project_root.clone());
-    let lazy_dataflow = LazyDataflowService::new(store.clone(), project_root.clone());
-    ClosureEngine::new(store, lazy_structural, lazy_dataflow, project_root)
+    test_closure_engine_with_root(store, project_root)
 }
 
 /// Insert a file and mark its structural layer as complete.
@@ -270,11 +276,12 @@ fn test_locate_seed_symbol() {
         }),
     );
 
-    let df_store = store.clone();
     let engine = ClosureEngine::new(
-        store,
-        lazy_structural,
-        LazyDataflowService::new(df_store, None),
+        store.clone(),
+        crate::focus::materialize::from_parts_for_test(
+            lazy_structural,
+            crate::focus::materialize::dataflow_for_test(store, None),
+        ),
         None,
     );
 
@@ -586,7 +593,7 @@ fn test_cold_seed_respects_exhausted_window_budget() {
     );
     assert!(
         !engine
-            .lazy_structural
+            .materialize.structural()
             .has_structural_layer(&seed_id)
             .unwrap(),
         "cancelled cold seed extraction must not write a structural layer"
@@ -652,7 +659,7 @@ fn test_cold_seed_already_building_is_pending_not_budget_gap() {
     );
     assert!(
         !engine
-            .lazy_structural
+            .materialize.structural()
             .has_structural_layer(&seed_id)
             .unwrap(),
         "non-owner must not write structural facts"
@@ -725,11 +732,12 @@ fn test_build_closure_records_gap_on_missing_file() {
         None,
         Box::new(MockCandidateProvider { candidates: vec![] }),
     );
-    let df_store = store.clone();
     let engine = ClosureEngine::new(
-        store,
-        lazy_structural,
-        LazyDataflowService::new(df_store, None),
+        store.clone(),
+        crate::focus::materialize::from_parts_for_test(
+            lazy_structural,
+            crate::focus::materialize::dataflow_for_test(store, None),
+        ),
         None,
     );
 
@@ -1817,8 +1825,14 @@ fn cold_incoming_callgraph_materializes_reference_candidates() {
     };
     let lazy_structural =
         LazyStructuralService::with_provider(store.clone(), None, Box::new(provider));
-    let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-    let engine = ClosureEngine::new(store.clone(), lazy_structural, lazy_dataflow, None);
+    let engine = ClosureEngine::new(
+        store.clone(),
+        crate::focus::materialize::from_parts_for_test(
+            lazy_structural,
+            crate::focus::materialize::dataflow_for_test(store.clone(), None),
+        ),
+        None,
+    );
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
             name: "target".into(),
@@ -2502,8 +2516,10 @@ fn test_scoped_resolution_empty_closure_no_crash() {
     );
     let engine = ClosureEngine::new(
         store.clone(),
-        lazy_structural,
-        LazyDataflowService::new(store.clone(), None),
+        crate::focus::materialize::from_parts_for_test(
+            lazy_structural,
+            crate::focus::materialize::dataflow_for_test(store.clone(), None),
+        ),
         None,
     );
 

@@ -18,6 +18,7 @@ use crate::focus::bootstrap::BootstrapManager;
 use crate::focus::query::QueryIntent;
 use crate::focus::runtime::{FocusRuntime, AccessStrategy};
 use crate::focus::scheduler::FocusPriority;
+use crate::FocusMaterialize;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,16 @@ fn test_store() -> Arc<Store> {
     let store = Store::open_in_memory().unwrap();
     store.init_schema().unwrap();
     Arc::new(store)
+}
+
+fn test_runtime(store: Arc<Store>) -> FocusRuntime {
+    let m = FocusMaterialize::open(store.clone(), None);
+    FocusRuntime::new(store, None, m)
+}
+
+fn test_runtime_with_root(store: Arc<Store>, root: Option<std::path::PathBuf>) -> FocusRuntime {
+    let m = FocusMaterialize::open(store.clone(), root.clone());
+    FocusRuntime::new(store, root, m)
 }
 
 fn persistent_test_store() -> (Arc<Store>, TempDir) {
@@ -99,7 +110,7 @@ fn insert_symbol(
 /// building can use cached results) but need `detect_access_strategy()` to return
 /// `AccessStrategy::Focus` for exercising the Focus code path.
 fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
     rt.detect_access_strategy_override = Some(AccessStrategy::Focus);
     rt
 }
@@ -117,7 +128,7 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
     store
         .set_metadata("resolution_config_hash", "abc123")
         .unwrap();
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert_eq!(
         rt.detect_access_strategy(),
         AccessStrategy::Focus,
@@ -128,7 +139,7 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
 #[test]
 fn test_detect_focus_when_no_metadata() {
     let store = test_store();
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert_eq!(rt.detect_access_strategy(), AccessStrategy::Focus);
 }
 
@@ -140,7 +151,7 @@ fn test_detect_full_index_with_finalized_structural_extraction() {
     let store = test_store();
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert_eq!(
         rt.detect_access_strategy(),
         AccessStrategy::FullCache,
@@ -155,7 +166,7 @@ fn test_detect_focus_with_unfinalized_structural_extraction() {
     // project-wide full coverage.
     let store = test_store();
     insert_file_structural_complete(&store, "src/main.c");
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert_eq!(
         rt.detect_access_strategy(),
         AccessStrategy::Focus,
@@ -180,7 +191,7 @@ fn test_detect_focus_with_only_manifest_extraction() {
             FactCoverage::default(),
         )
         .unwrap();
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert_eq!(
         rt.detect_access_strategy(),
         AccessStrategy::Focus,
@@ -203,7 +214,7 @@ fn test_detect_access_strategy_respects_stale_metadata() {
         .unwrap();
     // No extraction state rows — simulates a DB where the index was
     // downgraded or files were changed, making old metadata irrelevant.
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     let mode = rt.detect_access_strategy();
     assert_eq!(
         mode,
@@ -217,7 +228,7 @@ fn test_detect_access_strategy_respects_stale_metadata() {
 #[test]
 fn test_ensure_started_idempotent() {
     let store = test_store();
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
     // First call sets started flag and starts bootstrap
     rt.ensure_started();
     assert!(
@@ -236,7 +247,7 @@ fn test_ensure_started_idempotent() {
 #[test]
 fn test_is_ready_false_before_bootstrap() {
     let store = test_store();
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
     assert!(
         !rt.is_ready(),
         "should not be ready before bootstrap is started"
@@ -246,7 +257,7 @@ fn test_is_ready_false_before_bootstrap() {
 #[test]
 fn test_is_ready_true_after_bootstrap() {
     let store = test_store();
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
     rt.ensure_started();
     assert!(rt.is_ready(), "should be ready after bootstrap is started");
 }
@@ -261,7 +272,7 @@ fn test_prepare_full_index_returns_immediately() {
     // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: None,
@@ -685,7 +696,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
     // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
         file_id: None,
@@ -783,7 +794,7 @@ fn test_prepare_does_not_enqueue_redundant_recent_closures() {
 fn test_on_file_read_queues_recent_job() {
     let store = test_store();
     let file_id = FileId::generate("src/read_file.rs");
-    let rt = FocusRuntime::new(store, None);
+    let rt = test_runtime(store);
 
     rt.on_file_read(file_id);
 
@@ -899,7 +910,7 @@ fn test_prepare_full_index_all_intents() {
     // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     store.set_metadata("last_index_time", "1").unwrap();
-    let mut rt = FocusRuntime::new(store, None);
+    let mut rt = test_runtime(store);
 
     // Test all 8 variants return FullIndex when structural extraction exists
     let intents: Vec<QueryIntent> = vec![
@@ -994,17 +1005,30 @@ fn test_locate_seed_explore_vs_calls_same_behavior() {
 // ── Tests: shared lazy dataflow ──────────────────────────────────────────
 
 #[test]
-fn test_shared_lazy_dataflow_passed_to_closure_engine() {
+fn test_shared_materialize_passed_to_closure_engine() {
     let store = test_store();
+    let materialize = FocusMaterialize::open(store.clone(), None);
+    let store_ptr = std::sync::Arc::as_ptr(materialize.structural().store());
+    let runtime = FocusRuntime::new(store, None, materialize);
+    assert!(runtime.materialize().has_structural_rebuilder());
+    assert!(std::ptr::eq(
+        std::sync::Arc::as_ptr(runtime.materialize().structural().store()),
+        store_ptr,
+    ));
+}
 
-    // Create a shared LazyDataflowService with a specific store
-    let shared = crate::LazyDataflowService::new(store.clone(), None);
-
-    let mut runtime = test_runtime_focus_mode(store);
-    runtime.with_lazy_dataflow(shared);
-
-    // Verify the shared service was stored
-    assert!(runtime.shared_lazy_dataflow.is_some());
+#[test]
+fn construction_requires_materialize_no_silent_second_stack() {
+    // Compile-time: FocusRuntime::new requires FocusMaterialize.
+    // Runtime: prepare path uses the same materialize identity provided at construction.
+    let store = test_store();
+    let m = FocusMaterialize::open(store.clone(), None);
+    let ptr = std::sync::Arc::as_ptr(m.dataflow().store());
+    let rt = FocusRuntime::new(store, None, m);
+    assert!(std::ptr::eq(
+        std::sync::Arc::as_ptr(rt.materialize().dataflow().store()),
+        ptr,
+    ));
 }
 
 // ── Tests: Calls direction maps to CallGraph strategy ─────────────────────────

@@ -370,7 +370,7 @@ fn execute_job(
             cancel,
         ),
         TuiJob::LazyStructural { search_term, .. } => {
-            run_lazy_structural(&search_term, store, project_root, cancel)
+            run_focus_structural(&search_term, store, project_root, cancel)
         }
         TuiJob::TraceCallers {
             symbol_id, depth, ..
@@ -459,7 +459,7 @@ fn run_search(
 
 // ── Lazy structural worker ───────────────────────────────────────────────────
 
-fn run_lazy_structural(
+fn run_focus_structural(
     search_term: &str,
     store: &Arc<Store>,
     project_root: &std::path::Path,
@@ -482,7 +482,7 @@ fn run_lazy_structural(
     }
 
     match engine
-        .lazy_structural()
+        .focus_structural()
         .ensure_structural_for_symbol(search_term)
     {
         Ok(ensured) => JobResult::LazyComplete {
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_structural_does_not_require_graph() {
+    fn focus_structural_does_not_require_graph() {
         let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
         store.init_schema().expect("init schema");
         let jm = JobManager::new(store, PathBuf::from("."));

@@ -11,7 +11,8 @@ Loaded on demand from [SKILL.md](../SKILL.md).
 
 **Agents must not run `atlas index` (any analysis mode) or whole-tree `atlas sync`.**
 On large trees that blocks the session. Focus MCP already builds **local**
-structural + **lazy dataflow** for the investigation neighborhood.
+structural + on-demand dataflow (Focus materialize, not a separate product) for
+the investigation neighborhood.
 
 ## Installation (host setup)
 
@@ -63,7 +64,7 @@ project(action="open", project_path=...)
 Open creates/opens `project/.atlas/atlas.db`. Subsequent scoped tools fill facts.
 **No pre-index required.**
 
-## Focus + local dataflow (why agents skip index)
+## Focus + local dataflow (why agents skip full Index)
 
 Without a finalized full CLI cache:
 
@@ -71,7 +72,7 @@ Without a finalized full CLI cache:
 |-------|----------------|
 | Structural (seed/closure) | On-demand Focus extract + scoped resolve/edges |
 | Import neighbors | Often `resolution_symbols` only until needed |
-| Dataflow / CFG | Lazy unit extract on `trace(variable)`, lifecycle, branch_diff, etc. |
+| Dataflow / CFG | Focus on-demand unit extract on `trace(variable)`, lifecycle, branch_diff, etc. |
 | Refinement | `analysis.retry_after_ms` → `resume_query` / `tasks` |
 
 Use **resume**, not full index, when the first answer is thin.

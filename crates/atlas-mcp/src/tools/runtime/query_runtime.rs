@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use atlas_engine::IncludeRoot;
 use atlas_engine::Store;
+use atlas_engine::FocusMaterialize;
 use atlas_engine::focus::query::QueryIntent;
 use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, AccessStrategy};
 
@@ -34,8 +35,7 @@ use crate::tools::lazy_refresh::LazyRefreshQueue;
 /// orchestrates bootstrap, seed location, closure building, and
 /// background expansion through the underlying FocusRuntime.
 pub struct QueryRuntime {
-    /// Focus runtime, always present. Created during construction and
-    /// configured with `init_focus()` to share the lazy dataflow service.
+    /// Focus runtime with required Focus materialize (construction-time inject).
     pub focus_runtime: Mutex<FocusRuntime>,
     pub cache: CacheState,
     pub lazy_refresh_queue: Arc<LazyRefreshQueue>,
@@ -46,6 +46,7 @@ impl QueryRuntime {
     pub fn new(
         store: Arc<Store>,
         project_root: Option<PathBuf>,
+        materialize: FocusMaterialize,
         lazy_refresh_queue: Arc<LazyRefreshQueue>,
     ) -> Self {
         let signature = store.index_signature().unwrap_or_default();
@@ -54,7 +55,11 @@ impl QueryRuntime {
             last_signature_check: Mutex::new(std::time::Instant::now()),
             cached_manual_full_index: RwLock::new(None),
         };
-        let focus_runtime = Mutex::new(FocusRuntime::new(store.clone(), project_root));
+        let focus_runtime = Mutex::new(FocusRuntime::new(
+            store.clone(),
+            project_root,
+            materialize,
+        ));
         Self {
             focus_runtime,
             cache,
@@ -157,8 +162,9 @@ mod tests {
     fn create_test_query_runtime() -> QueryRuntime {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
+        let materialize = atlas_engine::FocusMaterialize::open(store.clone(), None);
         let lazy_refresh_queue = LazyRefreshQueue::new();
-        QueryRuntime::new(store, None, lazy_refresh_queue)
+        QueryRuntime::new(store, None, materialize, lazy_refresh_queue)
     }
 
     #[test]

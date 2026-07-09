@@ -16,12 +16,15 @@
 //! - [`scheduler`] — priority-queue scheduling for background focus jobs
 //! - [`writer_coordinator`] — serialized DB write access
 //! - [`work_registry`] — work item tracking: `WorkRegistry`, `WorkItem`, `WorkSource`
+//! - [`materialize`] — Focus-owned on-demand structural/dataflow ensure stack
 
 pub mod bootstrap;
 pub mod edge_policy;
 pub mod engine;
 pub mod focus_graph_builder;
 pub mod job_tracker;
+/// On-demand structural + dataflow materialize (internal Focus mechanism).
+pub mod materialize;
 pub mod query;
 pub mod runtime;
 pub mod scheduler;
@@ -31,6 +34,10 @@ pub mod work_registry;
 pub mod writer_coordinator;
 
 pub use job_tracker::JobTracker;
+pub use materialize::{
+    CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult, FocusMaterialize,
+    LazyDataflowService, LazyStructuralService, rebuild_structural_for_file,
+};
 pub use work_registry::{WorkItem, WorkRegistry, WorkSource, WorkStatus, WorkView};
 
 #[cfg(test)]

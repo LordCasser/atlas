@@ -52,7 +52,7 @@ use search::scoring::{ScoreWeights, language_preference_bonus};
 use types::structs::AnswerQuality;
 use types::{FactCoverage, Language, SymbolDef, SymbolKind};
 
-use crate::Engine;
+use crate::LazyStructuralService;
 
 // ── Public request / response types ─────────────────────────────────────────
 
@@ -139,21 +139,19 @@ pub struct ScopedSearchResponse {
 
 /// Shared search orchestration.
 ///
-/// Owns a reference to the database store, the high-level [`Engine`] (for lazy
-/// structural access), and the project root (for on-disk source resolution
-/// during lazy extraction).
+/// Uses Focus materialize structural ensure (not a private Engine stack).
 pub struct ScopedSearchService {
     store: Arc<Store>,
-    engine: Arc<Engine>,
+    structural: LazyStructuralService,
     project_root: Option<PathBuf>,
 }
 
 impl ScopedSearchService {
-    /// Create a new service.
-    pub fn new(store: Arc<Store>, engine: Arc<Engine>) -> Self {
+    /// Create a new service with Focus structural materialize.
+    pub fn new(store: Arc<Store>, structural: LazyStructuralService) -> Self {
         Self {
             store,
-            engine,
+            structural,
             project_root: None,
         }
     }
@@ -161,12 +159,12 @@ impl ScopedSearchService {
     /// Create a new service with a project root for cold-scope inventory seeding.
     pub fn new_with_project_root(
         store: Arc<Store>,
-        engine: Arc<Engine>,
+        structural: LazyStructuralService,
         project_root: Option<PathBuf>,
     ) -> Self {
         Self {
             store,
-            engine,
+            structural,
             project_root,
         }
     }
@@ -329,8 +327,7 @@ impl ScopedSearchService {
         if symbols.is_empty() && !term.is_empty() && (should_trigger_lazy || inventory_backed) {
             if inventory_backed && !should_trigger_lazy {
                 let ensured = self
-                    .engine
-                    .lazy_structural()
+                    .structural
                     .ensure_structural_for_symbol_in_scope_limited(
                         &term,
                         Some(&normalized_scope),
@@ -391,8 +388,7 @@ impl ScopedSearchService {
                     }
                     let requested_files = file_ids.len();
                     let ensured = self
-                        .engine
-                        .lazy_structural()
+                        .structural
                         .ensure_structural_for_file_ids(&file_ids)?;
                     triggered_lazy = true;
                     lazy_covered_scope = requested_files >= scope_file_count
@@ -728,7 +724,7 @@ fn seed_inventory_from_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Engine;
+    use crate::FocusMaterialize;
     use db::Store;
     use types::{FileInfo, Language, ParseStatus};
 
@@ -821,8 +817,8 @@ mod tests {
     fn test_service() -> ScopedSearchService {
         let store = Arc::new(Store::open_in_memory().expect("open in-memory store"));
         store.init_schema().expect("init schema");
-        let engine = Arc::new(Engine::from_store(Arc::clone(&store), None));
-        ScopedSearchService::new(store, engine)
+        let m = FocusMaterialize::open(Arc::clone(&store), None);
+        ScopedSearchService::new(store, m.structural().clone())
     }
 
     // ── execute_manifest_returns_results ───────────────────────────────

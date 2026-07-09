@@ -7,6 +7,7 @@ use db::Store;
 use types::ids::FileId;
 use types::structs::FactCoverage;
 
+use crate::FocusMaterialize;
 use crate::investigation::{Investigation, InvestigationFocus};
 
 use super::JobTracker;
@@ -65,9 +66,8 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
 }
 
 fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
-    let lazy_structural = crate::lazy_structural::LazyStructuralService::new(store.clone(), None);
-    let lazy_dataflow = crate::LazyDataflowService::new(store.clone(), None);
-    super::engine::ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
+    let m = crate::FocusMaterialize::open(store.clone(), None);
+    super::engine::ClosureEngine::new(store, m, None)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

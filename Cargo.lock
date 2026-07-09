@@ -162,9 +162,9 @@ dependencies = [
  "dossier",
  "extraction",
  "filesync",
+ "focus_materialize",
  "graph",
  "hex",
- "lazy",
  "regex",
  "resolution",
  "search",
@@ -734,6 +734,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
+name = "focus_materialize"
+version = "1.5.1"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "db",
+ "extraction",
+ "tracing",
+ "types",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1118,18 +1130,6 @@ checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
 dependencies = [
  "bitflags 2.11.1",
  "libc",
-]
-
-[[package]]
-name = "lazy"
-version = "1.5.1"
-dependencies = [
- "anyhow",
- "blake3",
- "db",
- "extraction",
- "tracing",
- "types",
 ]
 
 [[package]]

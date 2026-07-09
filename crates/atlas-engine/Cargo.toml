@@ -20,7 +20,7 @@ domain-rules = { path = "crates/domain_rules" }
 search = { path = "crates/search" }
 context = { path = "crates/context" }
 filesync = { path = "crates/filesync" }
-lazy = { path = "crates/lazy" }
+focus_materialize = { path = "crates/focus_materialize" }
 dossier = { path = "crates/dossier" }
 anyhow = "1"
 blake3 = "1"
@@ -38,14 +38,14 @@ tempfile = "3"
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 
 # ── Language features (aggregated from sub-crates) ──
-typescript = ["types/typescript", "extraction/typescript", "analysis/typescript", "lazy/typescript"]
+typescript = ["types/typescript", "extraction/typescript", "analysis/typescript", "focus_materialize/typescript"]
 javascript = ["types/javascript", "extraction/javascript"]
 python = ["types/python", "extraction/python", "analysis/python"]
 java = ["types/java", "extraction/java", "analysis/java"]
 c = ["types/c", "extraction/c"]
 cpp = ["types/cpp", "extraction/cpp"]
-arkts = ["typescript", "types/arkts", "extraction/arkts", "lazy/arkts"]
-cangjie = ["types/cangjie", "extraction/cangjie", "lazy/cangjie", "search/cangjie"]
+arkts = ["typescript", "types/arkts", "extraction/arkts", "focus_materialize/arkts"]
+cangjie = ["types/cangjie", "extraction/cangjie", "focus_materialize/cangjie", "search/cangjie"]
 go = ["types/go", "extraction/go"]
 csharp = ["types/csharp", "extraction/csharp", "analysis/csharp"]
 rust = ["types/rust", "extraction/rust"]

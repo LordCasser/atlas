@@ -32,25 +32,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
-// lazy crate (aliased to avoid name conflict with types::lazy module)
-use ::lazy as lazy_crate;
-
-/// Lazy dataflow service: planner + loader for on-demand dataflow.
-pub use lazy_crate::LazyDataflowService;
-
 // ── Internal modules ──────────────────────────────────────────────────────
 
 mod closure_planner;
-/// Focus-driven incremental analysis types: FocusSeed, FocusWindow, FocusClosure.
+/// Focus-driven incremental analysis (control plane + materialize).
 pub mod focus;
 mod index_precision;
-/// Investigation context: MCP-session-scoped analysis focus for lazy job prioritization.
+/// Investigation context: MCP-session-scoped analysis focus for Focus job prioritization.
 pub mod investigation;
 /// Unified job context: shared cancellation and progress for long-running operations.
 pub mod job_context;
 mod lazy_budget;
-mod lazy_structural;
-/// AnswerQuality tier computation for lazy extraction transparency.
+/// AnswerQuality tier computation for Focus materialize transparency.
 pub mod precision;
 /// Scoped search service: shared search orchestration with lazy structural fallback.
 pub mod scoped_search;
@@ -106,8 +99,15 @@ pub use scoped_search::{
     ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis, SearchCoverage,
 };
 
-/// Lazy structural service: on-demand full structural extraction.
-pub use lazy_structural::LazyStructuralService;
+/// Focus materialize: on-demand structural + dataflow under the Focus solution.
+///
+/// Construct via [`FocusMaterialize::open`] only. Mechanism service types
+/// (`LazyDataflowService`, `LazyStructuralService`) are ensure APIs, not a
+/// separate product door — do not treat “lazy” as an AccessStrategy.
+pub use focus::{
+    CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult, FocusMaterialize,
+    LazyDataflowService, LazyStructuralService, rebuild_structural_for_file,
+};
 
 /// Source extraction: AST-based symbol source retrieval.
 pub use source_extractor::SourceExtractor;
@@ -155,8 +155,7 @@ pub use index_precision::{
     extraction_mode_name, recommended_extract_recipe_for, would_downgrade_index_precision,
 };
 
-/// Lazy structural internals: candidate providers and ensure-structural result.
-pub use lazy_structural::{CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult};
+
 
 /// Analysis: lifecycle and branch diff engines (full crate re-export).
 pub use analysis;
@@ -237,80 +236,50 @@ pub use workspace::{ProjectRoot, SourcePath};
 /// ```
 pub struct Engine {
     store: Arc<Store>,
-    lazy_service: lazy_crate::LazyDataflowService,
-    lazy_structural: LazyStructuralService,
+    /// Focus-owned on-demand structural + dataflow materialize stack.
+    materialize: FocusMaterialize,
     trace: analysis::trace::TraceEngine,
 }
 
 impl Engine {
     // ── Constructors ───────────────────────────────────────────────────
 
+    fn from_parts(
+        store: Arc<Store>,
+        materialize: FocusMaterialize,
+        trace: analysis::trace::TraceEngine,
+    ) -> Self {
+        Self {
+            store,
+            materialize,
+            trace,
+        }
+    }
+
     /// Open an existing database file.
     ///
     /// The database must have been created by `atlas init` or a prior run.
     /// The schema is NOT initialized here — that is the CLI's responsibility.
     ///
-    /// **Limitation**: Opens without a project root.  Lazy dataflow/CFG
-    /// extraction that reads source files from disk requires the DB to be
-    /// opened from the project root directory (sources are stored as relative
-    /// paths).  Use [`Engine::open_with_root`] when the caller is not running
-    /// from the project root or when sources are stored as absolute paths.
+    /// **Limitation**: Opens without a project root.  Focus materialize that
+    /// reads source files from disk requires the DB to be opened from the
+    /// project root directory (sources are stored as relative paths).  Use
+    /// [`Engine::open_with_root`] when needed.
     pub fn open(db_path: &Path) -> anyhow::Result<Self> {
-        let store = Store::open_db(db_path)?;
-        let store = Arc::new(store);
-        let mut lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
-        // Wire up self-heal callback
-        {
-            let store_for_rebuild = store.clone();
-            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
-                crate::lazy_structural::rebuild_structural_for_file(
-                    &store_for_rebuild,
-                    None,
-                    &file_id,
-                )
-            }));
-        }
-        let lazy_structural = LazyStructuralService::new(store.clone(), None);
+        let store = Arc::new(Store::open_db(db_path)?);
+        let materialize = FocusMaterialize::open(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self {
-            store,
-            lazy_service,
-            lazy_structural,
-            trace,
-        })
+        Ok(Self::from_parts(store, materialize, trace))
     }
 
     /// Open a database file with a project root for snippet extraction.
-    ///
-    /// When a project root is provided, trace results can include source
-    /// code snippets from the file system.
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
-        let store = Store::open_db(db_path)?;
-        let store = Arc::new(store);
-        let mut lazy_service =
-            lazy_crate::LazyDataflowService::new(store.clone(), Some(project_root.to_path_buf()));
-        // Wire up self-heal callback
-        {
-            let store_for_rebuild = store.clone();
-            let root_for_rebuild = project_root.to_path_buf();
-            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
-                crate::lazy_structural::rebuild_structural_for_file(
-                    &store_for_rebuild,
-                    Some(&root_for_rebuild),
-                    &file_id,
-                )
-            }));
-        }
-        let lazy_structural =
-            LazyStructuralService::new(store.clone(), Some(project_root.to_path_buf()));
+        let store = Arc::new(Store::open_db(db_path)?);
+        let materialize =
+            FocusMaterialize::open(store.clone(), Some(project_root.to_path_buf()));
         let trace =
             analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
-        Ok(Self {
-            store,
-            lazy_service,
-            lazy_structural,
-            trace,
-        })
+        Ok(Self::from_parts(store, materialize, trace))
     }
 
     /// Open an in-memory database (for testing).
@@ -318,64 +287,34 @@ impl Engine {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let store = Arc::new(store);
-        let mut lazy_service = lazy_crate::LazyDataflowService::new(store.clone(), None);
-        // Wire up self-heal callback
-        {
-            let store_for_rebuild = store.clone();
-            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
-                crate::lazy_structural::rebuild_structural_for_file(
-                    &store_for_rebuild,
-                    None,
-                    &file_id,
-                )
-            }));
-        }
-        let lazy_structural = LazyStructuralService::new(store.clone(), None);
+        let materialize = FocusMaterialize::open(store.clone(), None);
         let trace = analysis::trace::TraceEngine::new(store.clone());
-        Ok(Self {
-            store,
-            lazy_service,
-            lazy_structural,
-            trace,
-        })
+        Ok(Self::from_parts(store, materialize, trace))
     }
 
     /// Construct an Engine from an existing [`Arc<Store>`].
     ///
-    /// Useful when the caller already holds an `Arc<Store>` (e.g., MCP server
-    /// creates its own store) and wants a high-level Engine wrapped around it.
-    /// When `project_root` is provided, trace results can include source code
-    /// snippets from the file system.
+    /// Uses a fresh [`FocusMaterialize::open`] for this store. Prefer
+    /// [`Engine::from_materialize`] when sharing one materialize stack with
+    /// FocusRuntime / MCP.
     pub fn from_store(store: Arc<Store>, project_root: Option<&std::path::Path>) -> Self {
-        let mut lazy_service = lazy_crate::LazyDataflowService::new(
-            store.clone(),
-            project_root.map(|p| p.to_path_buf()),
-        );
-        // Wire up self-heal callback
-        {
-            let store_for_rebuild = store.clone();
-            let root_for_rebuild = project_root.map(|p| p.to_path_buf());
-            lazy_service.set_structural_rebuilder(Arc::new(move |file_id| {
-                crate::lazy_structural::rebuild_structural_for_file(
-                    &store_for_rebuild,
-                    root_for_rebuild.as_deref(),
-                    &file_id,
-                )
-            }));
-        }
-        let lazy_structural =
-            LazyStructuralService::new(store.clone(), project_root.map(|p| p.to_path_buf()));
+        let materialize =
+            FocusMaterialize::open(store.clone(), project_root.map(|p| p.to_path_buf()));
+        Self::from_materialize(store, materialize, project_root)
+    }
+
+    /// Construct an Engine that shares an existing [`FocusMaterialize`] stack.
+    pub fn from_materialize(
+        store: Arc<Store>,
+        materialize: FocusMaterialize,
+        project_root: Option<&std::path::Path>,
+    ) -> Self {
         let trace = if let Some(root) = project_root {
             analysis::trace::TraceEngine::new_with_root(store.clone(), root.to_path_buf())
         } else {
             analysis::trace::TraceEngine::new(store.clone())
         };
-        Self {
-            store,
-            lazy_service,
-            lazy_structural,
-            trace,
-        }
+        Self::from_parts(store, materialize, trace)
     }
 
     /// Access the underlying database store.
@@ -388,9 +327,14 @@ impl Engine {
         &self.trace
     }
 
-    /// Access the lazy structural service for on-demand extraction.
-    pub fn lazy_structural(&self) -> &LazyStructuralService {
-        &self.lazy_structural
+    /// Focus materialize stack (structural + dataflow ensure).
+    pub fn materialize(&self) -> &FocusMaterialize {
+        &self.materialize
+    }
+
+    /// Structural ensure service (Focus materialize).
+    pub fn focus_structural(&self) -> &LazyStructuralService {
+        self.materialize.structural()
     }
 
     // ── Extraction ─────────────────────────────────────────────────────
@@ -504,7 +448,8 @@ impl Engine {
         let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
         let lazy_summary: Option<LazySummary>;
         match self
-            .lazy_service
+            .materialize
+            .dataflow()
             .ensure_for_position(file_id, line, column, None)
         {
             Ok(window) => {

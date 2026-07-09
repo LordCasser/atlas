@@ -16,6 +16,8 @@
 
 Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、`CapabilityLevel`/`FeatureMatrix`（L0）、`FactCoverage`/CatalogTier（L1）、`AccessStrategy`/`PipelineGrade`/`EdgeProvenance`（L3）、内部 `Precision`/AnswerQuality（L4）。任何改变 `Manifest`、`ResolutionSymbols`、`Structural`、`LazyDataflow`、`Full`，或改变 capability/mask/AnswerQuality/status 展示的 PR，都必须明确列出并验证受影响路径。不得再引入第二个名为 `IndexMode` 的类型。
 
+**产品路径（查询时）：** 对外只验证 **Index（预物化 → FullCache）** 与 **Focus（意图局部加强）**。按需 structural/dataflow ensure 属于 Focus materialize（内部机制），测试可调用 ensure API，但不得把 “Lazy 产品线” 写成与 Focus 并列的第三入口。
+
 最低路径矩阵：
 
 | 等级/路径 | 必须验证的入口 | 必须验证的结果 |
@@ -23,7 +25,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 | Manifest | `atlas index --analysis manifest`、shared `run_index_pipeline(Manifest)`、必要时 `atlas sync --analysis manifest` | 只写 manifest 事实；不会误报 structural/dataflow；用户可见 precision/status 正确 |
 | ResolutionSymbols | dependency/lazy resolution 触发路径 | 只写 resolution symbols/imports/scopes；不会破坏已有 manifest/structural 层；stale hash 行为正确 |
 | Structural | `atlas index` 默认路径、shared filesync pipeline、`atlas sync` 默认路径、`LazyStructuralService` | symbols/scopes/references/callsites 写入；resolution/graph build 正确；manifest -> structural 升级正确 |
-| LazyDataflow | high-level `Engine::trace_variable`、`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；budget/pending 内部状态能稳定映射为 public retry/gaps |
+| LazyDataflow（L2 处方；Focus materialize 内部） | high-level `Engine::trace_variable`、`FocusMaterialize`/`LazyDataflowService::ensure_for_position`、`ensure_for_function`、prebuilt full-index cache hit | unit dataflow/CFG 写入或复用正确；callsite/data-node joins 正确；budget/pending 内部状态能稳定映射为 public retry/gaps；与 Focus 控制面共用同一 materialize 配置 |
 | Full | `atlas index --analysis full`、shared pipeline Full、`atlas sync --analysis full` | structural + dataflow + CFG + summaries 全链路持久化；file/unit extraction_state 和 capability mask 不欠报、不误报 |
 | Raw analysis consumers | `RawTraceEngine`、analysis crate direct tests | 明确说明它们是否负责触发 lazy；若不触发，测试必须先准备所需 DB facts |
 

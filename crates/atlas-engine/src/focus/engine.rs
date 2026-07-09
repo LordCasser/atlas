@@ -38,12 +38,11 @@ use types::enums::{Language, ReferenceKind, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::{KnownGap, SymbolDef};
 
-use crate::LazyDataflowService;
 use crate::closure_planner::ClosurePlanner;
 use crate::focus::focus_graph_builder::FocusGraphBuilder;
+use crate::focus::materialize::{EnsureStructuralResult, FocusMaterialize};
 use crate::focus::visibility_filter::{VisibilityContext, VisibilityFilterRegistry};
 use crate::lazy_budget::LazyBudget;
-use crate::lazy_structural::{EnsureStructuralResult, LazyStructuralService};
 
 use super::types::{ClosureStrategy, Direction, FocusClosure, FocusSeed, FocusWindow};
 
@@ -76,8 +75,8 @@ fn required_resolution_kinds(strategies: &[ClosureStrategy]) -> HashSet<Referenc
 /// until no additions, budget exhausted, or max_iterations reached.
 pub struct ClosureEngine {
     pub(crate) store: Arc<Store>,
-    pub(crate) lazy_structural: LazyStructuralService,
-    pub(crate) dataflow: LazyDataflowService,
+    /// Shared Focus materialize stack (structural + dataflow).
+    pub(crate) materialize: FocusMaterialize,
     pub(crate) resolver: RefCell<ReferenceResolver>,
     pub(crate) graph_builder: FocusGraphBuilder,
     pub(crate) project_root: Option<std::path::PathBuf>,
@@ -86,16 +85,14 @@ pub struct ClosureEngine {
 impl ClosureEngine {
     pub fn new(
         store: Arc<Store>,
-        lazy_structural: LazyStructuralService,
-        lazy_dataflow: LazyDataflowService,
+        materialize: FocusMaterialize,
         project_root: Option<std::path::PathBuf>,
     ) -> Self {
         let resolver = RefCell::new(ReferenceResolver::new(store.clone()));
         let graph_builder = FocusGraphBuilder::new(store.clone());
         ClosureEngine {
             store,
-            lazy_structural,
-            dataflow: lazy_dataflow,
+            materialize,
             resolver,
             graph_builder,
             project_root,
@@ -106,7 +103,7 @@ impl ClosureEngine {
     ///
     /// 1. Initialize closure from seed
     /// 2. Plan additions via strategies
-    /// 3. Extract new files using LazyStructuralService
+    /// 3. Extract new files using Focus structural materialize
     /// 4. Resolve references scoped to closure (writes to reference_resolutions)
     /// 5. Repeat until termination
     /// 6. Commit visibility atomically (coverage + resolutions)
@@ -411,7 +408,7 @@ impl ClosureEngine {
             let symbols = self.store.find_symbols_by_file(file_id)?;
             for sym in &symbols {
                 if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method) {
-                    match self.dataflow.ensure_for_function(&sym.id, Some(closure_id)) {
+                    match self.materialize.dataflow().ensure_for_function(&sym.id, Some(closure_id)) {
                         Ok(_) => built += 1,
                         Err(e) => tracing::debug!(%e, symbol=%sym.name, "dataflow build failed"),
                     }
@@ -477,7 +474,8 @@ impl ClosureEngine {
             FocusSeed::Symbol { name, file_id, .. } => match file_id {
                 Some(file_id) => Ok(vec![*file_id]),
                 None => self
-                    .lazy_structural
+                    .materialize
+                    .structural()
                     .candidate_files_for_symbol(name)
                     .map(|ids| ids.into_iter().take(5).collect())
                     .context("Failed to locate seed symbol"),
@@ -558,7 +556,7 @@ impl ClosureEngine {
 
         if do_incoming {
             if let FocusSeed::Symbol { name, .. } = &closure.seed {
-                for file_id in self.lazy_structural.candidate_files_referencing(name)? {
+                for file_id in self.materialize.structural().candidate_files_referencing(name)? {
                     if !closure.visited.contains(&file_id) {
                         result.insert(file_id);
                     }
@@ -648,14 +646,15 @@ impl ClosureEngine {
         Ok((additions, relevant_symbols.into_iter().collect()))
     }
 
-    /// Extract a single file using LazyStructuralService.
+    /// Extract a single file using Focus structural materialize.
     fn extract_file_for_closure(
         &self,
         file_id: &FileId,
         budget: &LazyBudget,
     ) -> Result<EnsureStructuralResult> {
         let result = self
-            .lazy_structural
+            .materialize
+            .structural()
             .ensure_structural_for_file_in_closure(file_id, Some(budget))?;
         Ok(result)
     }
@@ -697,7 +696,8 @@ impl ClosureEngine {
         let truncated = dependencies.len().saturating_sub(max_files);
         dependencies.truncate(max_files);
         let result = self
-            .lazy_structural
+            .materialize
+            .structural()
             .ensure_resolution_symbols_for_file_ids_in_closure(&dependencies)?;
         for file_id in result
             .built_file_ids

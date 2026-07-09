@@ -1,12 +1,14 @@
-//! E2E tests for lazy index features: scope + manifest + lazy structural.
+//! E2E tests for Focus materialize + Index path: scope, manifest, on-demand structural.
 //!
 //! Uses TypeScript (.ts) files which are in the default feature set.
+//! Exercises shipped CLI index + `LazyStructuralService` / Focus materialize APIs
+//! (not a separate “lazy product” line).
 //!
-//! Run: `cargo test --test lazy_index_e2e`
+//! Run: `cargo test -p atlas-cli --test focus_materialize_e2e`
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
-use atlas_engine::Store;
+use atlas_engine::{FocusMaterialize, Store};
 use atlas_engine::enums::DataNodeKind;
 use atlas_engine::{layer, status};
 use std::sync::Arc;
@@ -338,7 +340,6 @@ fn p2_lazy_ensure_for_symbol_by_name() {
 #[cfg(all(feature = "typescript", feature = "php"))]
 fn p3_capability_mask_cfg_gated_by_language() {
     use atlas_engine::FactCoverage;
-    use atlas_engine::LazyDataflowService;
 
     // TypeScript function with if/else — should produce CFG nodes.
     // PHP function — cfg is FeatureSupport::unsupported in the profile.
@@ -377,7 +378,7 @@ fn p3_capability_mask_cfg_gated_by_language() {
         .find(|f| f.path.ends_with(".php"))
         .expect("PHP file");
 
-    let svc = LazyDataflowService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc = { let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf())); m.dataflow().clone() };
 
     // ── TypeScript: trigger lazy dataflow ─────────────────────────────
     let ts_symbols = store.find_symbols_by_file(&ts_file.file_id).unwrap();
@@ -542,7 +543,7 @@ fn p2_lazy_dataflow_callsite_id_remap() {
     );
     let caller_sym_id = symbols[0].id;
 
-    let svc = atlas_engine::LazyDataflowService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let svc = { let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf())); m.dataflow().clone() };
     let _window = svc
         .ensure_for_function(&caller_sym_id, None)
         .expect("lazy dataflow ensure_for_function");

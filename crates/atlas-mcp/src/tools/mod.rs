@@ -391,16 +391,13 @@ impl ToolRouter {
         Ok(())
     }
 
-    /// Configure the focus runtime to share the AnalysisRuntime's LazyDataflowService.
-    ///
-    /// FocusRuntime is created inside QueryRuntime::new(). This method configures
-    /// it with a shared lazy dataflow service to eliminate double control plane
-    /// (Finding #6). The main closure engine reuses this instance; the background
-    /// scheduler still creates its own for thread safety.
+    /// Historical no-op: materialize is required at `ActiveProject` / FocusRuntime
+    /// construction. Kept so older tests can call it without re-wiring stacks.
     pub fn init_focus(&self) {
-        let project = self.project();
-        let mut fr = project.query_runtime.focus_runtime.lock().unwrap();
-        fr.with_lazy_dataflow(project.analysis_runtime.lazy_service.clone());
+        debug_assert!(
+            self.project().materialize.has_structural_rebuilder(),
+            "ActiveProject must own a configured FocusMaterialize"
+        );
     }
 
     /// Unified focus query preparation for focus-driven lazy analysis.
@@ -4598,26 +4595,35 @@ mod tests {
     }
 
     #[test]
-    fn init_focus_shares_lazy_dataflow_service() {
+    fn active_project_shares_focus_materialize_stack() {
         let store = test_store();
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // FocusRuntime is always present (no Option wrapper).
-        // The shared_lazy_dataflow field is not publicly accessible,
-        // but we can verify that prepare_focus_query works correctly.
-        let intent = Some(atlas_engine::QueryIntent::Calls {
-            symbol_name: "test".into(),
-            file_id: None,
-            symbol_id: None,
-            direction: None,
-            depth: None,
-        });
-        let (_result, warnings) = router.prepare_focus_query(intent);
-        // Should not crash; shared dataflow service is used internally
+        let project = router.project();
         assert!(
-            warnings
-                .iter()
-                .all(|w| !w.contains("panic") && !w.contains("unwrap")),
-            "warnings should not contain panics: {warnings:?}"
+            project.materialize.has_structural_rebuilder(),
+            "ActiveProject materialize must wire structural rebuilder"
+        );
+        assert!(
+            project
+                .analysis_runtime
+                .lazy_service()
+                .has_structural_rebuilder(),
+            "AnalysisRuntime must share configured Focus materialize dataflow"
+        );
+        let fr = project.query_runtime.focus_runtime.lock().unwrap();
+        assert!(
+            fr.materialize().has_structural_rebuilder(),
+            "FocusRuntime must use rebuilder-configured materialize at construction"
+        );
+        assert!(
+            project
+                .materialize
+                .same_stack_as(project.engine.lock().unwrap().materialize()),
+            "Engine must share the same FocusMaterialize Arc stack"
+        );
+        assert!(
+            project.materialize.same_stack_as(fr.materialize()),
+            "FocusRuntime must share the same FocusMaterialize Arc stack"
         );
     }
 

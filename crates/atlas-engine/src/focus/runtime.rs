@@ -29,9 +29,10 @@ use types::enums::Language;
 use types::ids::{FileId, SymbolId};
 use types::structs::{CoverageTier, KnownGap, AnswerQuality, SemanticConfidence, SymbolTier};
 
-use crate::LazyDataflowService;
 use crate::closure_planner::IncludeRoot;
-use crate::lazy_structural::{CandidateProvider, DefaultCandidateProvider, LazyStructuralService};
+use crate::focus::materialize::{
+    CandidateProvider, DefaultCandidateProvider, FocusMaterialize,
+};
 
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
@@ -211,10 +212,11 @@ impl FocusResult {
 
 // ── FocusRuntime ────────────────────────────────────────────────────────────
 
-/// Single control-plane entry point for MCP focus/lazy queries.
+/// Single control-plane entry point for MCP Focus queries.
 ///
-/// Detects index mode, orchestrates bootstrap, seed location, closure building,
-/// and background expansion for focus-driven incremental analysis.
+/// Detects access strategy, orchestrates bootstrap, seed location, closure
+/// building, and background expansion. Materialize is Focus-owned
+/// ([`FocusMaterialize`]).
 pub struct FocusRuntime {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
@@ -227,11 +229,9 @@ pub struct FocusRuntime {
     /// Index mode override for testing. When `Some`, `detect_access_strategy()`
     /// returns this value instead of calling `Store::read_catalog_tier()`.
     detect_access_strategy_override: Option<AccessStrategy>,
-    /// Optional shared dataflow service from the MCP analysis runtime.
-    /// When set, ensure_closure_engine() uses this instead of creating
-    /// a duplicate instance.  The scheduler background engine still
-    /// creates its own instance (independent thread safety boundary).
-    shared_lazy_dataflow: Option<LazyDataflowService>,
+    /// Focus materialize stack (structural + dataflow with rebuilder).
+    /// Required at construction — no silent second stack.
+    materialize: FocusMaterialize,
     /// Runtime-owned hot region state. The scheduler executes jobs; this
     /// tracker decides whether a new query is extending an existing closure.
     hot_regions: HotRegionTracker,
@@ -401,14 +401,22 @@ impl HotRegionTracker {
 impl FocusRuntime {
     // ── Construction ─────────────────────────────────────────────────────
 
-    /// Create a new FocusRuntime. Does NOT start bootstrap.
+    /// Create a new FocusRuntime with a required materialize stack.
+    ///
+    /// Does NOT start bootstrap. Callers (MCP `ActiveProject`, tests) must
+    /// supply the same [`FocusMaterialize`] used by Engine / analysis ensure —
+    /// there is no silent `FocusMaterialize::open` fallback on prepare.
     ///
     /// Detects whether the backing store is persistent (on-disk atlas.db)
     /// or in-memory, and configures the hot region tracker accordingly:
     /// persistent stores keep all hot regions indefinitely, while
     /// in-memory stores evict the shallowest/LRU region beyond
     /// [`MAX_MEMORY_HOT_REGIONS`].
-    pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
+    pub fn new(
+        store: Arc<Store>,
+        project_root: Option<PathBuf>,
+        materialize: FocusMaterialize,
+    ) -> Self {
         let is_persistent = store.db_path().to_string_lossy() != ":memory:";
         let job_tracker = Arc::new(JobTracker::new());
         Self {
@@ -422,7 +430,7 @@ impl FocusRuntime {
             started: AtomicBool::new(false),
             bg_handle: None,
             detect_access_strategy_override: None,
-            shared_lazy_dataflow: None,
+            materialize,
             hot_regions: HotRegionTracker {
                 is_persistent,
                 ..HotRegionTracker::default()
@@ -431,14 +439,9 @@ impl FocusRuntime {
         }
     }
 
-    /// Share an external [`LazyDataflowService`] with the focus runtime.
-    ///
-    /// When set, `ensure_closure_engine()` uses this instance for the main
-    /// closure engine instead of creating a duplicate.  The scheduler's
-    /// background engine still gets its own copy for thread safety.
-    pub fn with_lazy_dataflow(&mut self, svc: LazyDataflowService) -> &mut Self {
-        self.shared_lazy_dataflow = Some(svc);
-        self
+    /// Focus materialize stack (always present after construction).
+    pub fn materialize(&self) -> &FocusMaterialize {
+        &self.materialize
     }
 
     // ── Index mode detection ─────────────────────────────────────────────
@@ -939,51 +942,15 @@ impl FocusRuntime {
         if self.closure_engine.is_some() {
             return Ok(());
         }
-        let lazy_structural =
-            LazyStructuralService::new(self.store.clone(), self.project_root.clone());
-        let lazy_dataflow = self.shared_lazy_dataflow.clone().unwrap_or_else(|| {
-            let mut svc = LazyDataflowService::new(self.store.clone(), self.project_root.clone());
-            // Wire up self-heal callback
-            {
-                let store_for_rebuild = self.store.clone();
-                let root_for_rebuild = self.project_root.clone();
-                svc.set_structural_rebuilder(std::sync::Arc::new(move |file_id| {
-                    crate::lazy_structural::rebuild_structural_for_file(
-                        &store_for_rebuild,
-                        root_for_rebuild.as_deref(),
-                        &file_id,
-                    )
-                }));
-            }
-            svc
-        });
+        // Share Arc materialize with foreground + scheduler ClosureEngines.
         let engine = ClosureEngine::new(
             self.store.clone(),
-            lazy_structural,
-            lazy_dataflow,
+            self.materialize.clone(),
             self.project_root.clone(),
         );
-
-        // Create a second engine instance for the scheduler's background worker.
-        let sched_lazy = LazyStructuralService::new(self.store.clone(), self.project_root.clone());
-        let mut sched_dataflow =
-            LazyDataflowService::new(self.store.clone(), self.project_root.clone());
-        // Wire up self-heal callback
-        {
-            let store_for_rebuild = self.store.clone();
-            let root_for_rebuild = self.project_root.clone();
-            sched_dataflow.set_structural_rebuilder(std::sync::Arc::new(move |file_id| {
-                crate::lazy_structural::rebuild_structural_for_file(
-                    &store_for_rebuild,
-                    root_for_rebuild.as_deref(),
-                    &file_id,
-                )
-            }));
-        }
         let sched_engine = ClosureEngine::new(
             self.store.clone(),
-            sched_lazy,
-            sched_dataflow,
+            self.materialize.clone(),
             self.project_root.clone(),
         );
 
@@ -1130,7 +1097,8 @@ mod include_roots_integration {
     }
 
     fn test_runtime_focus_mode(store: Arc<Store>) -> FocusRuntime {
-        let mut rt = FocusRuntime::new(store, None);
+        let m = crate::FocusMaterialize::open(store.clone(), None);
+        let mut rt = FocusRuntime::new(store, None, m);
         rt.detect_access_strategy_override = Some(AccessStrategy::Focus);
         rt
     }

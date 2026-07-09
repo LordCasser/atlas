@@ -2,13 +2,12 @@
 //! explore, and impact analysis.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use atlas_engine::analysis;
 use atlas_engine::dossier::SourceRepository;
 use atlas_engine::symbol_selector::{MatchInfo, MatchMode};
 use atlas_engine::{
-    EdgeKind, Engine, InvestigationFocus, ScopedSearchRequest, ScopedSearchService, SearchAnalysis,
+    EdgeKind, InvestigationFocus, ScopedSearchRequest, ScopedSearchService, SearchAnalysis,
     Store, SymbolDef, SymbolId, SymbolKind, TraversalDirection,
 };
 
@@ -486,13 +485,10 @@ impl ToolRouter {
         scope: &str,
         include_roots: Vec<String>,
     ) -> Result<Option<SymbolResolution>, String> {
-        let engine: Arc<Engine> = Arc::new(Engine::from_store(
-            self.project().store.clone(),
-            Some(&self.project().root),
-        ));
+        let structural = self.project().materialize.structural().clone();
         let svc = ScopedSearchService::new_with_project_root(
             self.project().store.clone(),
-            engine,
+            structural,
             Some(self.project().root.clone()),
         );
         let resp = svc

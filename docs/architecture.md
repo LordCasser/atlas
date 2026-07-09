@@ -70,20 +70,31 @@ crates/
     crates/domain_rules/ 语言无关 domain rule store/match/learning 核心
     crates/search/     FTS5、LIKE/fuzzy、query parser、scoring
     crates/context/    Agent context builder (Markdown)
-    crates/filesync/   file discovery、change detection、file lock、watcher
-    crates/lazy/       Lazy dataflow engine — on-demand analysis with budget caps
+    crates/filesync/   file discovery、change detection、file lock、watcher（**Index 路径**）
+    crates/focus_materialize/  Focus **内部** on-demand dataflow materialize（包名与 Focus 叙事对齐）
     crates/dossier/    Symbol Dossier builder
-  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、15 open-first focus tools
-  atlas-cli/           CLI binary + commands + integration tests
+  atlas-mcp/           MCP server (rmcp stdio JSON-RPC)、15 open-first **Focus** tools
+  atlas-cli/           CLI binary + commands + integration tests（含 `atlas index`）
 ```
+
+### 2.1.1 Index 与 Focus（对外只两种查询时策略叙事）
+
+| 路径 | 产品语义 | 实现要点 |
+|------|----------|----------|
+| **Index** | **简单、通用**的预物化：scope/全仓按 `ExtractionMode` 写入 SQLite 并 finalize | `filesync::IndexPipeline` / `atlas index`；**不**依赖 Focus 控制面 |
+| **Focus** | **查询时唯一复杂路径**：意图驱动热点与闭包，**局部优先**物化，使闭包内体验≈该邻域已被 Index | `FocusRuntime` + 内部 materialize；MCP open-first 默认 |
+
+**AccessStrategy（L3）：** `FullCache`（Index 已 finalize 且 catalog 够富）| `Focus`（否则查询时局部加强）。  
+**禁止**把 “Lazy” 当作第三条产品路径或 AccessStrategy。按需写库（structural/dataflow ensure、`ExtractionMode::LazyDataflow`、`extraction_jobs`）是 **Focus 方案内部的 materialize 机制**，也可被高层 `Engine::trace_*` 薄调用，但对外叙事仍是 Focus / Index。
 
 ### 2.2 依赖方向（严格无环）
 
 ```text
 atlas-cli → atlas-engine, atlas-mcp
 atlas-mcp → atlas-engine
-atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, lazy, dossier, domain-rules
+atlas-engine → types, workspace, db, extraction, resolution, graph, analysis, search, context, filesync, focus_materialize, dossier, domain-rules
 filesync → graph, resolution, extraction, analysis, db, types, workspace
+  （filesync 不得依赖 focus 控制面 / FocusRuntime / scheduler）
 search / context → graph, db, types
 analysis → db, types, workspace, domain-rules
 domain-rules → db
@@ -107,9 +118,10 @@ types → (anyhow, blake3, hex, rusqlite, serde)
 | `graph` | 从 resolved facts 构建 symbol graph | 不混入 dataflow/CFG |
 | `analysis` | 消费 dataflow、CFG 和 call graph；trace/slicing | 不破坏底层 facts |
 | `domain_rules` | 语言无关 rule 存储、匹配、学习候选、registry 校验 | 不解释 C/C++ ownership、Rust safety 等语言语义 |
-| `lazy` | 按需 dataflow 加载，budget-capped | 不改变 extraction 语义 |
+| Focus materialize（`focus_materialize` crate + `focus/materialize`） | Focus 方案内按需 structural/dataflow 物化、budget | **不是**对外产品；不改变 extraction 语义 |
+| Focus 控制面 | `FocusRuntime`、闭包、热点、调度、bootstrap | 不实现 tree-sitter；不替代 IndexPipeline |
 | `dossier` | 聚合符号源码、调用证据、关系与文件上下文 | 不触发项目级索引策略 |
-| `filesync` | discovery、dirty detection、共享索引/增量管线、清理与锁 | 不承载 CLI/MCP 展示逻辑 |
+| `filesync` | discovery、dirty detection、共享索引/增量管线、清理与锁 | 不承载 Focus 控制面或 CLI/MCP 展示逻辑 |
 | `cli` / `mcp` | 只编排能力 | 不内嵌解析、resolution 或分析算法 |
 
 ## 3. ID 约束
@@ -400,9 +412,9 @@ Source files
   → CLI / MCP / Search / Context / Analysis / Trace
 ```
 
-### 7.1 Lazy Dataflow
+### 7.1 Focus 按需 dataflow 物化（内部机制，非产品线）
 
-analysis 层按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性 lazy 提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。`ExtractionMode::LazyDataflow` 支持增量按需抽取。
+在 **Focus** 查询时路径（及高层 `Engine::trace_*` 薄封装）中，analysis 按需加载 dataflow facts（而非全量预加载），通过 `LazyWindow` 控制分析范围。结构性按需提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。L2 处方 `ExtractionMode::LazyDataflow` 表示增量按需抽取——这是 **抽取机制名**，不是 AccessStrategy。
 
 等级路径约束（与 §1.1 对齐）：
 - L2 `ExtractionMode`：`Manifest` / `ResolutionSymbols` / `Structural` / `LazyDataflow` / `Full` — 抽取处方。
@@ -411,10 +423,10 @@ analysis 层按需加载 dataflow facts（而非全量预加载），通过 `Laz
 - L4 `AnswerQuality`（AnswerQuality）— Focus 内部结果质量，不进 MCP 公共响应。
 - L3 `AccessStrategy` — FullCache vs Focus 读路径；与 L2 `ExtractionMode::Full` 不同。
 - 以上各层含义不同，**禁止混用**；禁止再引入第二个名为 `IndexMode` 的类型。
-- `atlas index` CLI、`filesync::run_index_pipeline`、`atlas sync`、`LazyStructuralService`、`LazyDataflowService` 和 `analysis::TraceEngine` 是不同入口。修改任一等级行为时，必须确认这些入口是否受影响。
-- 高层 `Engine::trace_variable` 负责触发 lazy dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。用户入口应优先走高层 Engine，除非明确只需要底层已持久化数据。
+- 入口矩阵：`atlas index` / `filesync::IndexPipeline` / `atlas sync`（**Index**）；`FocusRuntime` + Focus materialize（**Focus**）；`Engine::trace_*`（物化薄调用）；raw `analysis::TraceEngine`（只读已有 facts）。修改等级行为时必须列出受影响入口。
+- 高层 `Engine::trace_variable` 经 Focus materialize 触发按需 dataflow；raw `analysis::TraceEngine` 只消费已存在 facts。
 - `ExtractionMode::Full` 必须在 facts、summary、extraction_state、capability mask 和用户可见 CatalogTier 上都表现为完整分析；不能只在 facts 表中写入 dataflow/CFG。
-- lazy 路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。
+- Focus 按需路径必须复用或严格对齐 structural facts，尤其是 callsite、symbol、scope、content_hash 和 capability mask；不得重建一套会与 structural DB 状态漂移的事实解释。同一 project 上 structural+dataflow 物化必须由 **单一 Focus materialize 配置**（含 self-heal rebuilder）构造，禁止 MCP 旁路未配置的第二套 dataflow 服务。
 
 分析等级的长期语义如下，所有入口必须与此表保持一致：
 
@@ -580,9 +592,11 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 - 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
   `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 
-### 10.1 查询时 lazy index 架构
+### 10.1 查询时 Focus 架构（按需物化为内部机制）
 
-当前系统实现了 manifest、resolution_symbols、structural、dataflow 多层 lazy index 结构，并通过 extraction state、job tracking、analysis contract、query resume 和 investigation state 提供可观测的查询时渐进分析体验。
+查询时路径的**产品语义是 Focus**：在 Index/FullCache 不可用时，围绕用户意图建立热点与闭包，有选择地物化局部 facts，使闭包内分析体验接近「该邻域已被全仓索引」。manifest / resolution_symbols / structural / dataflow 多层与 extraction state、job tracking、query resume、investigation 支撑可观测的渐进分析。
+
+**Index** 仍是简单预物化路径；二者共享事实底座与抽取语义，差异在**何时、对多大范围**支付物化成本。
 
 #### 10.1.1 Layer 层次结构
 
@@ -592,14 +606,14 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 |-------|------|
 | `manifest` | 仅顶层符号（type/function/class 声明），无引用、无 scope。通过 `--analysis manifest` 产生。 |
 | `resolution_symbols` | 最小符号层，仅供跨文件引用解析使用。包含 symbols、imports、scopes，不包含 references、callsites、dataflow、raw_edges。 |
-| `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 lazy structural 产生。 |
-| `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 lazy dataflow 产生。 |
+| `structural` | 完整符号、引用、scope、边。通过 `--analysis structural` 或 Focus 按需 structural 物化产生。 |
+| `dataflow` | 所有 structural 事实 + per-function dataflow/CFG。通过 `--analysis full` 或 Focus 按需 dataflow 物化产生。 |
 
 Layer 通过 `SymbolDef.layer` 和 `extraction_state.layer` 字段标识。
 
 #### 10.1.2 Extraction job 活跃边界
 
-Lazy extraction 的 in-flight 工作通过 `extraction_jobs` 表追踪，确保可观测性和并发去重：
+按需 extraction（Focus materialize）的 in-flight 工作通过 `extraction_jobs` 表追踪，确保可观测性和并发去重：
 
 ```
 queued → building → complete
@@ -784,25 +798,32 @@ else:
 - 非 trace 工具的 `partial_result` 字段已删除，被 `retry_after_ms` + `gaps` 组合替代；trace 内层 frozen contract 仍保留自己的 `partial_result`。
 - `background_refinement` 字段已淘汰，不进入 MCP 公共响应。
 
-#### 10.1.11 Focus Runtime 与 Lazy 的关系
+#### 10.1.11 Focus 与内部 materialize；对照 Index
 
-Focus 是查询时 lazy 机制的下一代控制平面，不是新的 extraction
-pipeline。Lazy 负责按需构建 facts；Focus 负责围绕用户意图决定构建哪些
-facts、按什么顺序构建、在哪个 closure scope 中可见，以及如何声明
-analysis/retry_after_ms/gaps。
+**对外只呈现 Focus（查询时）与 Index（预物化）两种路径叙事。**  
+按需写库（历史上称 lazy structural / lazy dataflow）是 **Focus 解决方案下的 materialize 实现**，不是并列产品。
+
+| | Index | Focus |
+|--|-------|-------|
+| 角色 | 简单、通用预物化 | 复杂、意图驱动的局部加强 |
+| 入口 | `atlas index` / IndexPipeline / sync | MCP `FocusRuntime` + materialize |
+| 查询策略 | `AccessStrategy::FullCache`（finalize + 富 catalog） | `AccessStrategy::Focus` |
+| 体验目标 | 全仓/scope 缓存可读 | **闭包内**事实与查询可用性 ≈ Index 在该邻域的结果 |
+| 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract 语义；单一 materialize 配置 |
+
+控制 vs 物化（均属 Focus 方案）：
+
+- **控制面** `FocusRuntime`：决定构建哪些 facts、顺序、closure 可见性、analysis/retry/gaps。MCP handler 只生成 `QueryIntent`。
+- **Materialize**（`FocusMaterialize` / structural+dataflow ensure）：按需构建 facts、budget、job 去重、self-heal rebuilder。**唯一合法构造入口**是 `FocusMaterialize::open`（dataflow 构造强制要求 structural rebuilder）。`FocusRuntime` 在构造时必须注入 materialize，prepare **不会**静默再 `open` 第二套。禁止 MCP 旁路未配置的 dataflow 服务；禁止仅为 materialize 在热路径 `Engine::from_store`。
+- L2 `ExtractionMode`、`extraction_state`、`extraction_jobs` 保留为机制/DB 边界（可继续出现 Lazy* 机制名）。
 
 长期边界：
 
-- `LazyStructuralService`、`LazyDataflowService`、`ExtractionMode`、
-  `extraction_state` 和 `extraction_jobs` 保留为事实构建、缓存、freshness、
-  in-flight dedup 和可观测性边界。
-- `FocusRuntime` 是 MCP 查询时唯一控制入口。MCP handler 只生成
-  `QueryIntent`，不得直接组合 lazy structural/dataflow、resolver 或 graph
-  builder。
+- `FocusRuntime` 是 MCP 查询时唯一控制入口。不得直接组合 ad-hoc structural/dataflow 服务绕过 Focus materialize 配置。
 - 函数内语义工具使用 `SemanticFunction` intent：只保证目标函数所在文件的
   structural/dataflow/CFG facts，不排入 call/type graph expansion。`lifecycle` 和
   `branch_diff` 的精度来自函数内事实，而不是扩大文件闭包。
-- `LazyOrchestrator`、`LazyCoordinator` 和 MCP `ensure_structural_for_*` 旧控制平面已删除。查询调度统一由 `FocusRuntime` / `ClosureEngine` / `BootstrapManager` 承担；事实构建仍复用 lazy services。
+- 旧 `LazyOrchestrator` / `LazyCoordinator` 控制面已删除。查询调度统一由 `FocusRuntime` / `ClosureEngine` / `BootstrapManager` 承担。
 - Focus resolution 写 closure-scoped `reference_resolutions` 和 scoped graph
   overlay；只有 full-index/shared pipeline 可以更新全局
   `references.resolved_*` 和 repo-wide `symbol_edges`。

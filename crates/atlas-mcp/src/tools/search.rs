@@ -5,7 +5,7 @@
 //! only translates JSON args into a [`ScopedSearchRequest`] and converts the
 //! engine response back to the MCP JSON format.
 
-use atlas_engine::Engine;
+
 use atlas_engine::FileId;
 use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
@@ -22,7 +22,7 @@ use crate::tools::symbol_selector::{
 };
 
 use serde_json::json;
-use std::sync::Arc;
+
 
 // ── MCP response helpers ────────────────────────────────────────────────────
 
@@ -141,17 +141,11 @@ impl ToolRouter {
             ..Default::default()
         };
 
-        // Construct a fresh Engine from the shared Store.  ScopedSearchService
-        // needs an Arc<Engine> but the router holds a Mutex<Engine>.
-        // Engine::from_store is a lightweight constructor — all inner services
-        // share the same Arc<Store>.
-        let engine: Arc<Engine> = Arc::new(Engine::from_store(
-            self.project().store.clone(),
-            Some(&self.project().root),
-        ));
+        // Reuse project Focus materialize structural stack (no throwaway Engine).
+        let structural = self.project().materialize.structural().clone();
         let svc = ScopedSearchService::new_with_project_root(
             self.project().store.clone(),
-            engine,
+            structural,
             Some(self.project().root.clone()),
         );
 

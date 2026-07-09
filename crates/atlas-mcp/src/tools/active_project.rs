@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use atlas_engine::Engine;
-use atlas_engine::Store;
+use atlas_engine::{Engine, FocusMaterialize, Store};
 
 use crate::tools::lazy_refresh::LazyRefreshQueue;
 
@@ -15,15 +14,15 @@ use super::runtime::{
 
 /// The active project aggregate.
 ///
-/// Replaces the v5.0 ToolRouter God-object. Each runtime owns a
-/// clearly scoped responsibility. Constructed once during
-/// `open_project` activation.
+/// Owns a single [`FocusMaterialize`] stack shared by FocusRuntime, Engine,
+/// and AnalysisRuntime (query-time Focus path only).
 pub struct ActiveProject {
     pub root: PathBuf,
     pub store: Arc<Store>,
-    /// High-level Engine wrapping the full extraction → trace pipeline.
-    /// Wrapped in Mutex because Engine contains RefCell (Send but not Sync).
+    /// High-level Engine wrapping extraction → trace (shares Focus materialize).
     pub engine: Mutex<Engine>,
+    /// Project-wide Focus materialize (structural + dataflow + rebuilder).
+    pub materialize: FocusMaterialize,
 
     pub query_runtime: QueryRuntime,
     pub graph_runtime: GraphRuntime,
@@ -35,15 +34,19 @@ pub struct ActiveProject {
 
 impl ActiveProject {
     /// Create a new ActiveProject from a store and project root.
-    /// This is the single construction point — replaces ToolRouter::new()
-    /// and ToolRouter::new_empty().
+    ///
+    /// Single construction point for Focus materialize configuration.
     pub fn new(store: Arc<Store>, root: PathBuf) -> Result<Arc<Self>> {
         let lazy_refresh_queue = LazyRefreshQueue::new();
         let invalidation = Arc::new(RuntimeInvalidation::new());
 
+        // One Focus materialize stack for the project (required at FocusRuntime construction).
+        let materialize = FocusMaterialize::open(store.clone(), Some(root.clone()));
+
         let query_runtime = QueryRuntime::new(
             store.clone(),
             Some(root.clone()),
+            materialize.clone(),
             lazy_refresh_queue.clone(),
         );
 
@@ -58,16 +61,23 @@ impl ActiveProject {
 
         let store_query_runtime = StoreQueryRuntime::new(store.clone(), root.clone());
 
-        let engine = Engine::from_store(store.clone(), Some(root.as_ref()));
+        let engine = Engine::from_materialize(
+            store.clone(),
+            materialize.clone(),
+            Some(root.as_ref()),
+        );
+
+        let analysis_runtime = AnalysisRuntime::from_materialize(materialize.clone());
 
         Ok(Arc::new(Self {
             query_runtime,
             graph_runtime,
-            analysis_runtime: AnalysisRuntime::new(store.clone(), Some(root.clone())),
+            analysis_runtime,
             overlay_runtime: OverlayRuntime::new(store.clone(), invalidation),
             store_query_runtime,
             job_runtime: JobRuntime::new(),
             engine: Mutex::new(engine),
+            materialize,
             store,
             root,
         }))

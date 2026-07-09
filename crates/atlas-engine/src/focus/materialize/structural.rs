@@ -1,29 +1,20 @@
-//! Lazy Structural Service — on-demand structural extraction.
+//! Focus structural materialize — on-demand structural extraction.
 //!
-//! When a query requests a symbol that only exists at the manifest layer
-//! (top-level symbols from `atlas index --analysis manifest`), this service
-//! automatically triggers a full structural extraction for the owning file,
-//! followed by incremental reference resolution and graph building.
+//! Part of the **Focus** query-time solution (not a separate product). When a
+//! query needs symbols beyond the manifest layer, this service triggers full
+//! structural extraction for candidate files, then incremental resolution and
+//! graph edges — same `ExtractionMode::Structural` pipeline as Index.
 //!
 //! # Components
 //!
 //! ```text
-//! Query (search/context/trace)
+//! FocusRuntime / Engine (Focus materialize)
 //!     │
 //!     v
-//! LazyStructuralService
+//! LazyStructuralService  (implementation type name; Focus-owned)
 //!     ├─ CandidateProvider  (pluggable: FTS5 + ripgrep by default)
 //!     └─ StructuralLoader   (re-extract + re-resolve + rebuild edges)
 //! ```
-//!
-//! # Design constraints
-//!
-//! - Does NOT run project-wide resolution or global graph rebuilds — uses
-//!   incremental `resolve_for_files` / `build_for_files` instead.
-//! - Leverages file-level extraction state for cache decisions.
-//! - Respects the same `ExtractionMode::Structural` pipeline as `atlas index`.
-//! - [`CandidateProvider`] is a trait — swap implementations for different
-//!   discovery strategies (e.g. compile_commands.json, ctags, custom heuristics).
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -218,7 +209,7 @@ pub struct EnsureStructuralResult {
     pub failed_files: Vec<(FileId, String)>,
 }
 
-/// Entry point for query-driven lazy structural extraction.
+/// Focus-owned on-demand structural materialization.
 ///
 /// Holds a [`CandidateProvider`] for file discovery and a [`Store`] for
 /// cache checks and re-extraction.  By default uses [`DefaultCandidateProvider`].
@@ -226,6 +217,14 @@ pub struct LazyStructuralService {
     store: Arc<Store>,
     project_root: Option<PathBuf>,
     pub(crate) candidate_provider: Box<dyn CandidateProvider>,
+}
+
+impl Clone for LazyStructuralService {
+    /// Clone shares store/root; rebuilds the default candidate provider.
+    /// Custom test providers are not preserved (scheduler/thread clones use defaults).
+    fn clone(&self) -> Self {
+        Self::new(self.store.clone(), self.project_root.clone())
+    }
 }
 
 impl LazyStructuralService {
@@ -237,6 +236,16 @@ impl LazyStructuralService {
             project_root,
             candidate_provider: Box::new(provider),
         }
+    }
+
+    /// Underlying store (tests / wiring audits).
+    pub fn store(&self) -> &Arc<Store> {
+        &self.store
+    }
+
+    /// Project root for path resolution (tests / diagnostics).
+    pub fn project_root(&self) -> Option<&Path> {
+        self.project_root.as_deref()
     }
 
     pub(crate) fn candidate_files_for_symbol(&self, name: &str) -> Result<Vec<FileId>> {
@@ -1173,7 +1182,7 @@ fn drain_rg_candidate_lines(
 /// This is a free function (not a method) so it can be injected as a callback
 /// into `LazyDataflowService` for transparent self-healing without creating
 /// a circular dependency between the `lazy` and `atlas-engine` crates.
-pub(crate) fn rebuild_structural_for_file(
+pub fn rebuild_structural_for_file(
     store: &Store,
     project_root: Option<&std::path::Path>,
     file_id: &FileId,

@@ -23,9 +23,10 @@ Prefer Atlas facts over guessing from filenames or text search.
 
 **This skill is for the MCP tool surface.** On large codebases, full-repo
 `atlas index` can take a long time and starve the session. **Agents must not
-start a full CLI index.** Focus already materializes **local structural +
-dataflow** for the query neighborhood (seed closure + lazy unit dataflow). Stay
-inside MCP: open → narrow tools → `resume_query` when asked.
+start a full CLI index.** **Focus** (sole query-time product path) already
+materializes **local structural + dataflow** for the query neighborhood (seed
+closure + on-demand unit dataflow under Focus materialize). Stay inside MCP:
+open → narrow tools → `resume_query` when asked.
 
 ## When to use
 
@@ -58,7 +59,7 @@ Full-repo CLI indexing is an **optional human/operator** action (see
 - Atlas MCP available (`atlas mcp` or host-configured server)
 - Local project checkout
 - Open creates/opens `project/.atlas/atlas.db`; **scoped MCP queries populate facts**
-  (structural Focus + lazy dataflow). No pre-built full index required.
+  (Focus structural + on-demand dataflow). No pre-built full index required.
 
 ## Language support (summary)
 
@@ -81,11 +82,13 @@ Missing DB is created on open. Do **not** “fix empty status” by launching in
 
 ### 2. Cold / Focus protocol (default on large projects)
 
-Without a pre-existing full CLI cache, tools use **Focus**:
+Without a pre-existing full CLI cache, tools use **Focus** only (not a separate
+“lazy product”):
 
 - Foreground builds a **bounded seed closure** (not the whole repo).
 - Import/include peers may stay at lightweight `resolution_symbols` until needed.
-- Lazy **dataflow/CFG** is built for the units involved in trace/lifecycle-style work.
+- **Dataflow/CFG** is built on demand for units in trace/lifecycle-style work
+  (Focus internal materialize).
 - Background refinement may continue after the first response.
 
 **Every query:**
@@ -110,7 +113,7 @@ Without a pre-existing full CLI cache, tools use **Focus**:
 | Multi-hop | `calls` with higher `depth` only after depth 1 + resume if needed |
 | File imports | `file_dependencies` |
 | Position context | `trace(kind="point")` |
-| **Local value origin (dataflow)** | `trace(kind="variable")` — triggers lazy DF for that region |
+| **Local value origin (dataflow)** | `trace(kind="variable")` — Focus materialize DF for that region |
 | Caller / forward chains | `trace(kind="callers"\|"forward")` |
 | Path / impact | `path`, `impact` (local/closure-quality unless full cache exists) |
 | Dossier / usages | `explore`; `symbol(view="context"\|"usages")` |
@@ -124,7 +127,7 @@ optional `retry_after_ms`), optional terminal `gaps`, `warnings` / `note`.
 Outer `partial_result` is not the primary non-trace signal.
 
 **Trace tools:** inner `ok`, `kind`, `capability`, **`partial_result`**, `diagnostics`,
-optional `lazy_summary`, `result` — plus outer `query_id` / `analysis` when Focus ran.
+optional `lazy_summary` (mechanism field name), `result` — plus outer `query_id` / `analysis` when Focus ran.
 
 ### 5. After code edits (still MCP-first)
 
@@ -147,7 +150,7 @@ Native short names (hosts may prefix `atlas_`). Install/config:
 | `path` | `from`, `to` | Both ends must resolve in available facts |
 | `impact` | `symbol` | optional `semantic` (C/C++) |
 | `file_dependencies` | `file_path` | `analysis`: manifest (default) / structural |
-| `trace` | per `kind` | Local DF via lazy load for `variable` |
+| `trace` | per `kind` | Local DF via Focus materialize for `variable` |
 | `lifecycle` | `symbol`, `field` | C/C++; function-local |
 | `branch_diff` | `symbol` | C/C++ |
 | `domain_rules` | — | rule store |

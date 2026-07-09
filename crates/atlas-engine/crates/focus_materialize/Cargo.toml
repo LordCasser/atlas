@@ -1,8 +1,8 @@
 [package]
-name = "lazy"
+name = "focus_materialize"
 version = "1.5.1"
 edition = "2024"
-description = "Atlas lazy dataflow engine — planner, loader, and hardcoded budgets"
+description = "Focus materialize: on-demand dataflow (internal) — planner, loader, and hardcoded budgets"
 license = "MIT"
 
 [dependencies]

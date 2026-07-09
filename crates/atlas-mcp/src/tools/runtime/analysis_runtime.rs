@@ -1,54 +1,53 @@
-//! Analysis runtime — on-demand CFG/dataflow extraction.
+//! Analysis runtime — Focus materialize for CFG/dataflow ensure.
 //!
 //! # Responsibilities
-//! - Single entry point (`ensure_dataflow_for_function`) for lazy CFG extraction
-//! - Wraps LazyDataflowService — no other module calls it directly
-//!
-//! # Usage pattern
-//! ```ignore
-//! let window = self.active.analysis_runtime.ensure_dataflow_for_function(&symbol_id, Some(&query_id))?;
-//! ```
+//! - Single entry point (`ensure_dataflow_for_function`) for on-demand CFG/dataflow
+//! - Shares the project [`FocusMaterialize`] stack (never constructs a second DF service)
 //!
 //! # Dependencies
-//! - `atlas_engine::LazyDataflowService`
+//! - `atlas_engine::FocusMaterialize`
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use atlas_engine::{CfgEdge, CfgNode, LazyDataflowService, LazyWindow, Store, SymbolId};
+use atlas_engine::{
+    CfgEdge, CfgNode, FocusMaterialize, LazyDataflowService, LazyWindow, Store, SymbolId,
+};
 
 /// Provides CFG and dataflow facts for branch_diff and lifecycle analysis.
 ///
-/// In Phase 3, this will become the single entry point for triggering
-/// lazy dataflow extraction, replacing the current ad-hoc pattern where
-/// handlers call `lazy_service.ensure_for_function()` directly.
+/// Holds the same [`FocusMaterialize`] as FocusRuntime / Engine for this project.
 pub struct AnalysisRuntime {
-    pub lazy_service: LazyDataflowService,
+    materialize: FocusMaterialize,
 }
 
 impl AnalysisRuntime {
-    pub fn new(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
-        let lazy_service = LazyDataflowService::new(store, project_root);
-        Self { lazy_service }
+    /// Build from the project-wide Focus materialize stack.
+    pub fn from_materialize(materialize: FocusMaterialize) -> Self {
+        Self { materialize }
     }
 
-    /// Trigger lazy dataflow extraction for a function symbol.
-    ///
-    /// Triggers on-demand CFG + dataflow build and returns the lazy window
-    /// that describes the local analysis boundary.
+    /// Dataflow ensure service (configured rebuilder from FocusMaterialize).
+    #[allow(dead_code)] // used by shared-stack wiring tests and future handlers
+    pub fn lazy_service(&self) -> &LazyDataflowService {
+        self.materialize.dataflow()
+    }
+
+    /// Shared Focus materialize stack.
+    #[allow(dead_code)]
+    pub fn materialize(&self) -> &FocusMaterialize {
+        &self.materialize
+    }
+
+    /// Trigger on-demand dataflow extraction for a function symbol.
     pub fn ensure_dataflow_for_function(
         &self,
         symbol_id: &SymbolId,
         query_id: Option<&str>,
     ) -> anyhow::Result<LazyWindow> {
-        self.lazy_service.ensure_for_function(symbol_id, query_id)
+        self.materialize
+            .dataflow()
+            .ensure_for_function(symbol_id, query_id)
     }
 
-    /// Ensure CFG nodes and edges are available for a function, with lazy fallback.
-    ///
-    /// Queries the store for CFG nodes. If none exist, triggers lazy CFG extraction
-    /// via [`ensure_dataflow_for_function`] and re-queries. Returns `Err(String)` with
-    /// a human-readable message when the CFG still cannot be loaded.
+    /// Ensure CFG nodes and edges are available for a function, with Focus materialize fallback.
     pub fn ensure_cfg_for_function(
         &self,
         store: &Store,
@@ -61,13 +60,11 @@ impl AnalysisRuntime {
             .map_err(|e| format!("Failed to load CFG nodes: {e}"))?;
 
         if cfg_nodes.is_empty() {
-            // Trigger lazy CFG extraction
             self.ensure_dataflow_for_function(sid, Some(query_id))
                 .map_err(|e| format!("CFG not available for analysis of '{fn_name}': {e:#}"))?;
-            // Re-query after lazy extraction
             cfg_nodes = store
                 .find_cfg_nodes_by_function(sid)
-                .map_err(|e| format!("Failed to load CFG nodes after lazy extraction: {e}"))?;
+                .map_err(|e| format!("Failed to load CFG nodes after Focus materialize: {e}"))?;
         }
 
         if cfg_nodes.is_empty() {
@@ -77,7 +74,6 @@ impl AnalysisRuntime {
         }
 
         let cfg_edges = store.find_cfg_edges_by_function(sid).unwrap_or_default();
-
         Ok((cfg_nodes, cfg_edges))
     }
 }
@@ -88,21 +84,14 @@ mod tests {
     use atlas_engine::Store;
     use std::sync::Arc;
 
-    fn create_test_analysis_runtime() -> AnalysisRuntime {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store.init_schema().unwrap();
-        AnalysisRuntime::new(store, None)
-    }
-
     #[test]
-    fn ensure_dataflow_for_unknown_symbol_returns_error() {
-        let ar = create_test_analysis_runtime();
-        // SymbolId::default() is an all-zero ID that won't match any symbol.
-        let symbol_id = SymbolId::default();
-        let result = ar.ensure_dataflow_for_function(&symbol_id, None);
-        assert!(
-            result.is_err(),
-            "unknown SymbolId should return error, not Ok"
-        );
+    fn analysis_runtime_uses_materialize_with_rebuilder() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let store = Arc::new(store);
+        let m = FocusMaterialize::open(store, None);
+        assert!(m.has_structural_rebuilder());
+        let ar = AnalysisRuntime::from_materialize(m);
+        assert!(ar.lazy_service().has_structural_rebuilder());
     }
 }

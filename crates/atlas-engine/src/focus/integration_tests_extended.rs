@@ -16,12 +16,12 @@ mod tests {
     };
     use types::{ImportKind, Visibility, layer, status};
 
-    use crate::LazyDataflowService;
+    use crate::{FocusMaterialize, LazyDataflowService};
     use crate::focus::edge_policy::{EdgeConflictPolicy, EdgeResolution};
     use crate::focus::engine::ClosureEngine;
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use crate::focus::visibility_filter::{CVisibilityFilter, VisibilityContext, VisibilityFilter};
-    use crate::lazy_structural::LazyStructuralService;
+    use crate::focus::materialize::LazyStructuralService;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -54,9 +54,8 @@ mod tests {
     }
 
     fn test_engine(store: Arc<Store>) -> ClosureEngine {
-        let lazy_structural = LazyStructuralService::new(store.clone(), None);
-        let lazy_dataflow = LazyDataflowService::new(store.clone(), None);
-        ClosureEngine::new(store, lazy_structural, lazy_dataflow, None)
+        let m = FocusMaterialize::open(store.clone(), None);
+        ClosureEngine::new(store, m, None)
     }
 
     // ── Test: E2E Full Closure Build ────────────────────────────────────────
