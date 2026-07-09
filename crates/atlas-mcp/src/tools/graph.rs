@@ -586,10 +586,11 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
-        let (include_roots, mut root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, mut tool_warnings) = self.include_roots_from_args(args);
         // callers/callees are fixed 1-hop; multi-hop is callgraph / direction=both+depth.
+        // (tool_warnings: include_roots validation + call-depth policy; not roots-only.)
         if args.get("depth").is_some() {
-            root_warnings.push(
+            tool_warnings.push(
                 "depth is not honored for calls(direction=incoming); \
                  use direction=both with depth, or the callgraph tool, for multi-hop"
                     .into(),
@@ -628,14 +629,14 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(root_warnings);
+        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(tool_warnings);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
             file_id: self.resolve_selector_file_id(&input),
             symbol_id: Some(sid),
             direction: Some("incoming".to_string()),
-            depth: None,
+            depth: None, // fixed 1-hop regardless of client depth arg
         });
         let (focus_result, mut focus_warnings) =
             self.prepare_focus_query_with_roots(intent, include_roots);
@@ -723,9 +724,10 @@ impl ToolRouter {
             return (e, true);
         }
         let limit = get_u64(args, "limit").unwrap_or(20) as usize;
-        let (include_roots, mut root_warnings) = self.include_roots_from_args(args);
+        let (include_roots, mut tool_warnings) = self.include_roots_from_args(args);
+        // tool_warnings: include_roots validation + call-depth policy; not roots-only.
         if args.get("depth").is_some() {
-            root_warnings.push(
+            tool_warnings.push(
                 "depth is not honored for calls(direction=outgoing); \
                  use direction=both with depth, or the callgraph tool, for multi-hop"
                     .into(),
@@ -764,14 +766,14 @@ impl ToolRouter {
 
         let sid = symbol_ids[0];
         self.update_investigation(InvestigationFocus::Symbol(sid));
-        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(root_warnings);
+        let lr = AnalysisEnvelope::new("calls", args).with_root_warnings(tool_warnings);
 
         let intent = Some(atlas_engine::QueryIntent::Calls {
             symbol_name: qname.to_string(),
             file_id: self.resolve_selector_file_id(&input),
             symbol_id: Some(sid),
             direction: Some("outgoing".to_string()),
-            depth: None,
+            depth: None, // fixed 1-hop regardless of client depth arg
         });
         let (focus_result, mut focus_warnings) =
             self.prepare_focus_query_with_roots(intent, include_roots);
@@ -2178,7 +2180,7 @@ impl ToolRouter {
                     .store
                     .find_cfg_edges_by_function(&node.symbol_id)
                     .unwrap_or_default();
-                // ── Semantic branch diff with dataflow composition ──
+                // ── Semantic branch diff + lifecycle via analysis dispatcher ──
                 let lang = self
                     .project()
                     .store
@@ -2187,41 +2189,19 @@ impl ToolRouter {
                     .flatten()
                     .map(|s| s.language)
                     .unwrap_or(atlas_engine::Language::C);
-                let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
 
-                // Load DataFlow nodes and edges
-                let data_nodes = self
-                    .project()
-                    .store
-                    .find_data_nodes_by_function(&node.symbol_id)
-                    .unwrap_or_default();
-                let dataflow_edges = if data_nodes.is_empty() {
-                    vec![]
-                } else {
-                    let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                    self.project()
-                        .store
-                        .find_dataflow_edges_by_sources(&all_ids)
-                        .unwrap_or_default()
-                };
-
-                let composition = match atlas_engine::analysis::cfg_graph::CfgGraph::build(
-                    &cfg_nodes, &cfg_edges,
-                ) {
-                    Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
-                        &cfg_graph,
-                        &data_nodes,
-                        &dataflow_edges,
-                        &contract,
-                    ),
-                    Err(_) => atlas_engine::analysis::EffectComposition::default(),
-                };
-
-                let diffs = analysis::BranchDiffEngine::diff_branches_semantic(
+                let ar = &self.project().analysis_runtime;
+                let (composition, _window, _df_err) = ar.semantic_composition_for_function(
+                    &self.project().store,
+                    &node.symbol_id,
                     &cfg_nodes,
                     &cfg_edges,
-                    &composition,
+                    lang,
+                    None,
                 );
+
+                let diffs =
+                    ar.analyze_branch_diff_semantic(&cfg_nodes, &cfg_edges, &composition);
 
                 // Collect fields that have effect annotations (both legacy and semantic)
                 let mut fields: HashSet<String> = HashSet::new();
@@ -2250,18 +2230,16 @@ impl ToolRouter {
                     }
                 }
 
-                // For each field, run lifecycle analysis
+                // For each field, run lifecycle analysis via dispatcher
                 for field_path in &fields {
-                    let ownership_rules = analysis::OwnershipRules::default();
                     let cpp_rules = domain_rules
                         .as_ref()
                         .cloned()
                         .unwrap_or_else(analysis::CppOwnershipRules::default);
-                    let mut lifecycle = analysis::FieldLifecycleEngine::analyze_with_composition(
+                    let mut lifecycle = ar.analyze_lifecycle_with_composition(
                         &cfg_nodes,
                         &cfg_edges,
                         field_path,
-                        &ownership_rules,
                         &cpp_rules,
                         &composition,
                     );
@@ -2958,6 +2936,153 @@ mod tests {
             caller["file"].as_str().unwrap().contains("caller.ts"),
             "caller file should be caller.ts"
         );
+    }
+
+    /// Task 3: depth on fixed 1-hop callers emits a non-honored warning.
+    #[test]
+    fn callers_depth_param_emits_not_honored_warning() {
+        let store = test_store();
+        let _sid = insert_test_symbol(&store, "src/h.ts", "depth_target");
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp_str, is_error) = router.handle_callers(&json!({
+            "symbol": "depth_target",
+            "depth": 5
+        }));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let warnings = resp["warnings"]
+            .as_array()
+            .expect("warnings array required when depth is present");
+        assert!(
+            warnings.iter().any(|w| w
+                .as_str()
+                .is_some_and(|s| s.contains("depth is not honored")
+                    && s.contains("direction=incoming"))),
+            "expected depth-not-honored warning, got: {resp}"
+        );
+    }
+
+    /// Task 3: depth on callees still returns only direct neighbors (1-hop).
+    #[test]
+    fn callees_with_depth_gt_1_still_one_hop_only() {
+        let store = test_store();
+        // a → b → c (chain). callees(a) with depth=5 must only see b, not c.
+        let a = insert_test_symbol(&store, "src/a.ts", "chain_a");
+        let b = insert_test_symbol(&store, "src/b.ts", "chain_b");
+        let c = insert_test_symbol(&store, "src/c.ts", "chain_c");
+        insert_test_call_edge(&store, a, b);
+        insert_test_call_edge(&store, b, c);
+
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp_str, is_error) = router.handle_callees(&json!({
+            "symbol": "chain_a",
+            "depth": 5
+        }));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let callees = resp["callees"]
+            .as_array()
+            .expect("callees array");
+        assert_eq!(
+            callees.len(),
+            1,
+            "depth must not expand multi-hop; got: {callees:?}"
+        );
+        assert_eq!(callees[0]["qualified_name"], "chain_b");
+        assert!(
+            !callees
+                .iter()
+                .any(|n| n["qualified_name"] == "chain_c"),
+            "grand-callee must not appear under fixed 1-hop callees"
+        );
+        let warnings = resp["warnings"].as_array().expect("warnings");
+        assert!(
+            warnings.iter().any(|w| w
+                .as_str()
+                .is_some_and(|s| s.contains("depth is not honored")
+                    && s.contains("direction=outgoing"))),
+            "expected depth warning on callees, got: {resp}"
+        );
+    }
+
+    /// Task 3: caller/callee nodes include store signature when present.
+    #[test]
+    fn callers_include_signature_from_store() {
+        let store = test_store();
+        let target = insert_test_symbol_with_sig(
+            &store,
+            "src/tgt.ts",
+            "sig_target",
+            None,
+        );
+        let caller = insert_test_symbol_with_sig(
+            &store,
+            "src/caller.ts",
+            "sig_caller",
+            Some("fn sig_caller() -> i32"),
+        );
+        insert_test_call_edge(&store, caller, target);
+
+        let router = test_router(store);
+        router.ensure_graph_initialized().unwrap();
+
+        let (resp_str, is_error) = router.handle_callers(&json!({"symbol": "sig_target"}));
+        assert!(!is_error, "expected success, got: {resp_str}");
+        let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+        let callers = resp["callers"].as_array().expect("callers");
+        assert_eq!(callers.len(), 1);
+        assert_eq!(
+            callers[0]["signature"].as_str(),
+            Some("fn sig_caller() -> i32"),
+            "signature must come from store SymbolDef, not GraphSnapshot"
+        );
+    }
+
+    fn insert_test_symbol_with_sig(
+        store: &Store,
+        path: &str,
+        qname: &str,
+        signature: Option<&str>,
+    ) -> atlas_engine::SymbolId {
+        let fid = FileId::generate(path);
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id: fid,
+                path: path.into(),
+                language: atlas_engine::Language::TypeScript,
+                content_hash: "hash1".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sid = atlas_engine::SymbolId::generate(&fid, "typescript", qname, "function", None);
+        store
+            .insert_symbols(&[atlas_engine::SymbolDef {
+                id: sid,
+                kind: atlas_engine::SymbolKind::Function,
+                name: qname.rsplit('.').next().unwrap_or(qname).into(),
+                qualified_name: qname.into(),
+                symbol_path: qname.split('.').map(str::to_string).collect(),
+                file_id: fid,
+                language: atlas_engine::Language::TypeScript,
+                range: atlas_engine::TextRange::default(),
+                name_range: atlas_engine::TextRange::default(),
+                signature: signature.map(str::to_string),
+                visibility: None,
+                exported: false,
+                static_: false,
+                async_: false,
+                container: None,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+                layer: "structural".into(),
+            }])
+            .unwrap();
+        sid
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! |--------|---------|------|
 //! | `query_runtime` | Focus-driven lazy extraction | FocusRuntime, CacheState, LazyRefreshQueue |
 //! | `graph_runtime` | In-memory call-graph snapshot | GraphState, SearchEngine, ContextBuilder, GraphProvider |
-//! | `analysis_runtime` | On-demand CFG/dataflow extraction | LazyDataflowService |
+//! | `analysis_runtime` | CFG/dataflow ensure + analysis dispatch | LazyDataflowService, lifecycle/branch_diff orchestration |
 //! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), RuntimeInvalidation counters |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
 //! | `job_runtime` | Per-project investigation + query snapshots | InvestigationState, QuerySnapshot map |
@@ -87,7 +87,8 @@
 //! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()`.
 //! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` / `detect_access_strategy()`.
 //! - **Direct `materialize.dataflow().ensure_*`** — use `analysis_runtime.ensure_dataflow_*`.
-//! - **Direct `FieldLifecycleEngine::` / `BranchDiffEngine::`** — go through analysis dispatch.
+//! - **Direct `FieldLifecycleEngine::` / `BranchDiffEngine::`** — go through
+//!   `analysis_runtime.run_lifecycle` / `run_branch_diff` (or semantic helpers).
 //! - **Direct `store.upsert_fp_annotation()` / `upsert_domain_rule()`** — use `overlay_runtime`.
 //! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()`.
 //! - **Direct `store` path resolve** — use `store_query_runtime.resolve_file_path()`.

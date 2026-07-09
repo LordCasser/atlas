@@ -33,6 +33,14 @@ All notable changes to Atlas will be documented in this file.
 - Workspace `[workspace.package]` version/edition unified to 1.5.2.
 - DEBT-8 foundation: drop dead `AnalysisNeeds::Cfg`/`CfgAndDataflow`; add
   `handler_purity` allowlist ratchet + full V1 `contract_for` coverage tests.
+- DEBT-8 analysis migration: `AnalysisRuntime` is the real dispatcher for
+  `lifecycle` / `branch_diff` / impact-semantic (capability gate, dataflow I/O,
+  effect composition, engine call). Handlers parse args + render envelopes only.
+  Purity allowlist shrinks to 3 (`mod.rs`, `annotations.rs`, `active_project.rs`).
+- Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
+- Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
+- Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam
+  without summary (Task 6).
 - Docs: architecture/testing/roadmap/requirements state current rules only;
   change history lives in this file.
 

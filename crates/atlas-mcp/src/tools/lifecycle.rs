@@ -3,8 +3,12 @@
 //! Given a function symbol and a field path, walks the function's CFG nodes
 //! with effect annotations to produce a state-machine view of the field's
 //! lifecycle: allocation, use, escape, free, and suspicious patterns (use-after-free, double-free).
+//!
+//! DEBT-8: handler owns arg parse + envelope render; orchestration lives in
+//! [`super::runtime::analysis_runtime::AnalysisRuntime::run_lifecycle`].
 
 use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
+use super::runtime::analysis_runtime::LifecycleAnalysisErr;
 use super::{ToolRouter, get_str};
 use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
@@ -74,15 +78,16 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Load CFG nodes for this function, with lazy CFG fallback
-        let store = self.project().store.clone();
-        let (cfg_nodes, cfg_edges) = match self
-            .project()
-            .analysis_runtime
-            .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
-        {
-            Ok((nodes, edges)) => (nodes, edges),
-            Err(e) => {
+        // Dispatcher owns capability gate, store I/O, composition, engine call.
+        let analysis = match self.project().analysis_runtime.run_lifecycle(
+            &self.project().store,
+            &sid,
+            &field,
+            &query_id,
+            &symbol,
+        ) {
+            Ok(ok) => ok,
+            Err(LifecycleAnalysisErr::CfgUnavailable(e)) => {
                 let resp = json!({
                     "ok": false,
                     "function": symbol,
@@ -91,29 +96,7 @@ impl ToolRouter {
                 });
                 return lr.with_is_error(true).build(resp, self);
             }
-        };
-
-        // --- CFG is available — run lifecycle analysis ---
-
-        // Lifecycle analysis only supports C/C++ — gate on language
-        let sym_info = self
-            .project()
-            .store
-            .find_symbol_by_id(&sid)
-            .ok()
-            .flatten()
-            .and_then(|s| {
-                let lang = match s.language {
-                    atlas_engine::Language::C => Some("c"),
-                    atlas_engine::Language::Cpp => Some("cpp"),
-                    _ => None,
-                };
-                lang.map(|_| (s.qualified_name, s.language))
-            });
-
-        let (qname, language) = match sym_info {
-            Some((qname, lang)) => (qname, lang),
-            None => {
+            Err(LifecycleAnalysisErr::UnsupportedLanguage) => {
                 let resp = json!({
                     "ok": false,
                     "function": symbol,
@@ -138,70 +121,14 @@ impl ToolRouter {
             }
         };
 
-        let mut dataflow_error = None;
-        if let Err(error) = self
-            .project()
-            .analysis_runtime
-            .ensure_dataflow_for_function(&sid, Some(&query_id))
-        {
-            dataflow_error = Some(format!("{error:#}"));
-        }
-        let data_nodes = self
-            .project()
-            .store
-            .find_data_nodes_by_function(&sid)
-            .unwrap_or_default();
-        let dataflow_edges = if data_nodes.is_empty() {
-            Vec::new()
-        } else {
-            self.project()
-                .store
-                .find_dataflow_edges_by_sources(
-                    &data_nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-        };
-        let contract = atlas_engine::analysis::ResourceOpConfig::default_for(language);
-        let composition =
-            match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges) {
-                Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
-                    &cfg_graph,
-                    &data_nodes,
-                    &dataflow_edges,
-                    &contract,
-                ),
-                Err(_) => atlas_engine::analysis::EffectComposition::default(),
-            };
-
-        // Load domain rules from DB for this symbol's language
-        let cpp_rules = atlas_engine::analysis::CppOwnershipRules::load_for(
-            &self.project().store,
-            language.as_str(),
-        );
-        let has_any_rules = cpp_rules.has_any_rules();
-        let has_user_rules = cpp_rules.has_user_rules();
-        let ownership_rules = atlas_engine::analysis::OwnershipRules::default();
-
-        // Run rule-backed lifecycle analysis
-        let mut result = atlas_engine::analysis::FieldLifecycleEngine::analyze_with_composition(
-            &cfg_nodes,
-            &cfg_edges,
-            &field,
-            &ownership_rules,
-            &cpp_rules,
-            &composition,
-        );
-        result.function_qname = qname;
-
-        // Build proof from lifecycle result
+        let result = analysis.result;
         let proof = atlas_engine::analysis::evaluate_proof(
             &result.suspicious_points,
             result.final_state,
-            has_user_rules,
-            has_any_rules,
+            analysis.has_user_rules,
+            analysis.has_any_rules,
         );
 
-        // Build proof_paths from transitions
         let proof_path = atlas_engine::analysis::PathProof {
             conditions: Vec::new(),
             states: result
@@ -242,7 +169,7 @@ impl ToolRouter {
             })).collect::<Vec<_>>(),
         });
 
-        if let Some(error) = dataflow_error {
+        if let Some(error) = analysis.dataflow_error {
             lr = lr
                 .with_analysis_scope("local".into())
                 .with_analysis_basis(vec!["cfg".into(), "domain_rules".into()])

@@ -369,11 +369,14 @@ fn find_indirect_callers(
 mod tests {
     use super::*;
     use db::Store;
+    use types::enums::{
+        Confidence, DataNodeKind, Provenance, ReferenceKind, ResolutionStrategy, SymbolKind,
+    };
+    use types::ids::{CallsiteId, FileId, SymbolId};
+    use types::structs::{ArgumentFact, Callsite, ReferenceUse, ResolvedTarget, TextRange};
 
     #[test]
     fn provider_returns_empty_on_missing_data() -> anyhow::Result<()> {
-        use types::ids::FileId;
-
         let store = Store::open_in_memory()?;
         store.init_schema()?;
         let provider = SummaryEdgeProvider;
@@ -392,6 +395,182 @@ mod tests {
             "non-existent call return should yield no edges"
         );
 
+        Ok(())
+    }
+
+    fn insert_fn(store: &Store, file_id: FileId, name: &str) -> SymbolId {
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 50,
+            start_line: 1,
+            start_column: 1,
+            end_line: 5,
+            end_column: 1,
+        };
+        let sym = types::structs::SymbolDef {
+            id: SymbolId::generate(&file_id, "typescript", name, "function", None),
+            kind: SymbolKind::Function,
+            name: name.into(),
+            qualified_name: name.into(),
+            symbol_path: vec![name.into()],
+            file_id,
+            language: types::enums::Language::TypeScript,
+            range,
+            name_range: range,
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "structural".into(),
+        };
+        store.insert_symbols(&[sym.clone()]).unwrap();
+        sym.id
+    }
+
+    /// Focus mode (no FunctionSummary): Phase 2 runtime BFS must still emit
+    /// ArgToParam edges — locks Task 6 "do not delete Phase2" contract.
+    #[test]
+    fn focus_mode_phase2_arg_to_param_without_summary() -> anyhow::Result<()> {
+        let store = Store::open_in_memory()?;
+        store.init_schema()?;
+        let file_id = FileId::generate("focus_phase2.ts");
+        store.upsert_file(&types::structs::FileInfo {
+            file_id,
+            path: "focus_phase2.ts".into(),
+            language: types::enums::Language::TypeScript,
+            content_hash: "abc".into(),
+            status: types::enums::ParseStatus::Success,
+        })?;
+
+        let callee_id = insert_fn(&store, file_id, "callee_fp2");
+        let caller_id = insert_fn(&store, file_id, "caller_fp2");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
+
+        let arg_node_id = DataNodeId::generate(
+            &file_id,
+            Some(&caller_id),
+            "call_arg",
+            Some("arg0"),
+            None,
+            20,
+        );
+        let param_id =
+            DataNodeId::generate(&file_id, Some(&callee_id), "parameter", Some("y"), None, 10);
+
+        let callee_param = types::dataflow::DataNode::parameter(
+            param_id,
+            file_id,
+            Some(callee_id),
+            None,
+            "y",
+            range,
+        );
+        let caller_arg = types::dataflow::DataNode {
+            id: arg_node_id,
+            file_id,
+            function_id: Some(caller_id),
+            kind: DataNodeKind::CallArg,
+            binding_id: None,
+            callsite_id: None,
+            name: Some("arg0".into()),
+            access_path: None,
+            arg_index: Some(0),
+            range,
+        };
+        {
+            let unit_callee = types::lazy::AnalysisUnit::from_function(file_id, callee_id, range);
+            store.replace_dataflow_for_unit(
+                &unit_callee,
+                &[callee_param],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+            )?;
+            let unit_caller = types::lazy::AnalysisUnit::from_function(file_id, caller_id, range);
+            store.replace_dataflow_for_unit(
+                &unit_caller,
+                &[caller_arg],
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+            )?;
+        }
+
+        let ref_id = types::ids::ReferenceId::generate(
+            &file_id,
+            Some(&caller_id),
+            20,
+            25,
+            "callee_fp2",
+            ReferenceKind::Call,
+        );
+        let cs_id = CallsiteId::generate(&ref_id, Some(&caller_id), 20);
+        store.insert_callsites(&[Callsite {
+            id: cs_id,
+            reference_id: Some(ref_id),
+            caller: caller_id,
+            receiver: None,
+            args: vec![ArgumentFact {
+                index: 0,
+                name: None,
+                value: "x".into(),
+                range: None,
+                data_node_id: Some(arg_node_id),
+            }],
+            range,
+            callee_range: None,
+        }])?;
+        store.insert_references(&[ReferenceUse {
+            id: ref_id,
+            file_id,
+            source_symbol: Some(caller_id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "callee_fp2".into(),
+            name: "callee_fp2".into(),
+            receiver: None,
+            arity: Some(1),
+            range,
+            binding_id: None,
+            resolved: Some(ResolvedTarget {
+                symbol_id: callee_id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::ExactMatch,
+                provenance: Provenance::TreeSitter,
+            }),
+        }])?;
+
+        // No FunctionSummary inserted → Phase 1 empty; Phase 2 must still bridge.
+        let provider = SummaryEdgeProvider;
+        let edges = provider.virtual_incoming(&param_id, &store)?;
+        assert!(
+            !edges.is_empty(),
+            "Focus Phase 2 must produce ArgToParam without summary"
+        );
+        assert!(
+            edges.iter().any(|e| {
+                e.kind == DataFlowKind::ArgToParam
+                    && e.source_id == arg_node_id
+                    && e.target_id == param_id
+            }),
+            "expected ArgToParam from call arg → param, got: {edges:?}"
+        );
         Ok(())
     }
 }

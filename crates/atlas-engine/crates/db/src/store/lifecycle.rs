@@ -10,6 +10,31 @@ use std::sync::Mutex;
 
 use super::{Store, StoreReader};
 
+// ── Exclusive lock rejection (shared by filesync + focus_materialize) ───────
+
+/// Structured rejection when Focus/MCP must not write because CLI holds the lock.
+///
+/// Single source for diagnostic code + reason + suggested_action (Task 2 DRY).
+#[derive(Debug, Clone)]
+pub struct ExclusiveLockHeld {
+    pub holder_pid: u32,
+    pub code: &'static str,
+    pub reason: String,
+    pub suggested_action: String,
+}
+
+impl std::fmt::Display for ExclusiveLockHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] {} (holder_pid={}). {}",
+            self.code, self.reason, self.holder_pid, self.suggested_action
+        )
+    }
+}
+
+impl std::error::Error for ExclusiveLockHeld {}
+
 // ── Generation tracking ─────────────────────────────────────────────────────
 
 /// Analysis mode for generation tracking.
@@ -285,6 +310,33 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Reject Focus/MCP writes if another **live** process holds the exclusive lock.
+    ///
+    /// Single source for diagnostic code + reason + suggested_action (Task 2 DRY).
+    pub fn reject_if_exclusive_lock_held_by_other(&self) -> Result<(), ExclusiveLockHeld> {
+        match self.exclusive_lock_held_by_other() {
+            Ok(Some(pid)) => Err(ExclusiveLockHeld {
+                holder_pid: pid,
+                code: "cli_index_lock_held",
+                reason: format!(
+                    "atlas.db is exclusively locked by another process (PID {pid}), \
+                     typically `atlas index` or `atlas sync`"
+                ),
+                suggested_action: "Stop the concurrent CLI index/sync process, then retry the query"
+                    .into(),
+            }),
+            Ok(None) => Ok(()),
+            Err(e) => Err(ExclusiveLockHeld {
+                holder_pid: 0,
+                code: "cli_index_lock_check_failed",
+                reason: format!("could not read exclusive lock metadata: {e:#}"),
+                suggested_action:
+                    "Ensure the project database is readable and no index is running; then retry"
+                        .into(),
+            }),
+        }
     }
 
     /// Returns `Some(pid)` if another **live** process holds the exclusive lock.

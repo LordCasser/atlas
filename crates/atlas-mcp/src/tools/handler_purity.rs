@@ -1,10 +1,14 @@
-//! Handler purity ratchet (DEBT-8 foundation).
+//! Handler purity ratchet (DEBT-8).
 //!
 //! Scans handler source under `src/tools/` for direct service-construction /
 //! Anti-Pattern strings that should go through runtime modules / dispatcher.
 //!
 //! **Not perfect**: helpers can still hide direct calls. The allowlist only
-//! shrinks; new hits fail the test. Full migration is gradual (Task 10).
+//! shrinks; new hits fail the test.
+//!
+//! Analysis engines (`FieldLifecycleEngine` / `BranchDiffEngine`) are migrated
+//! to `runtime/analysis_runtime.rs` (Task 10). Residual allowlist is non-analysis
+//! only: god-router locks, annotation test seeds, project-open factory.
 
 #![cfg(test)]
 
@@ -31,18 +35,11 @@ const FORBIDDEN: &[&str] = &[
 /// Paths relative to `crates/atlas-mcp/src/tools/` that may still contain hits
 /// during migration. **Only shrink.** Empty = fully pure.
 const ALLOWLIST: &[&str] = &[
-    // Analysis tools still construct engines directly (dispatch_analysis target).
-    "lifecycle.rs",
-    "branch_diff.rs",
-    // Graph handlers embed analysis and ensure paths (dispatch_graph_query target).
-    "graph.rs",
     // God-router still owns prepare/refresh/orchestration until sub-dispatchers land.
     "mod.rs",
-    // Overlay handlers until OverlayMutation is fully dispatcher-owned.
-    "overlay.rs",
+    // annotations tests still seed via store.upsert_fp_annotation; production path
+    // already uses overlay_runtime.
     "annotations.rs",
-    // Resume still drives refresh/orchestration.
-    "resume.rs",
     // Project open must construct FocusMaterialize once (factory, not per-request).
     "active_project.rs",
 ];
@@ -144,9 +141,43 @@ fn handler_purity_no_new_direct_service_calls() {
 #[test]
 fn handler_purity_allowlist_only_shrinks_documented() {
     // Guard: allowlist must not grow without intentional edit of this test's
-    // constant. Count is the ratchet baseline for DEBT-8 migration.
+    // constant. Foundation baseline was 8; only shrink thereafter.
     assert!(
         ALLOWLIST.len() <= 8,
-        "ALLOWLIST grew beyond baseline (8); migration should only shrink it"
+        "ALLOWLIST grew beyond DEBT-8 foundation baseline (8); migration should only shrink it"
     );
+    // Analysis handlers must stay off the allowlist once migrated (Task 10).
+    for banned in ["lifecycle.rs", "branch_diff.rs", "graph.rs"] {
+        assert!(
+            !ALLOWLIST.contains(&banned),
+            "analysis handler {banned} must not be on purity allowlist after DEBT-8 migration"
+        );
+    }
+    // Current residual ceiling (non-analysis factory/test seeds + god-router).
+    assert!(
+        ALLOWLIST.len() <= 3,
+        "ALLOWLIST grew beyond residual baseline (3); only shrink"
+    );
+}
+
+#[test]
+fn handler_purity_analysis_handlers_have_no_engine_hits() {
+    let root = tools_src_dir();
+    for rel in ["lifecycle.rs", "branch_diff.rs", "graph.rs"] {
+        let path = root.join(rel);
+        let hits = scan_file(&path, rel);
+        let engine_hits: Vec<_> = hits
+            .into_iter()
+            .filter(|(_, _, pat)| {
+                pat == "FieldLifecycleEngine::"
+                    || pat == "BranchDiffEngine::"
+                    || pat == "BranchDiffSemantic::"
+            })
+            .collect();
+        assert!(
+            engine_hits.is_empty(),
+            "{rel} must not call lifecycle/branch-diff engines by name (route via AnalysisRuntime):\n{:?}",
+            engine_hits
+        );
+    }
 }

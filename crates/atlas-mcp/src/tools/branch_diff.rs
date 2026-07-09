@@ -3,6 +3,9 @@
 //! Compares the side effects of sibling branch paths (if/else, switch cases)
 //! within a function. Detects suspicious asymmetries like one branch freeing
 //! a field while the other does not.
+//!
+//! DEBT-8: handler owns arg parse + envelope render; orchestration lives in
+//! [`super::runtime::analysis_runtime::AnalysisRuntime::run_branch_diff`].
 
 use super::ToolRouter;
 use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
@@ -163,14 +166,21 @@ impl ToolRouter {
             Err(e) => return (e, true),
         };
 
-        // Load CFG nodes for this function, with lazy CFG fallback
-        let store = self.project().store.clone();
-        let (cfg_nodes, cfg_edges) = match self
-            .project()
-            .analysis_runtime
-            .ensure_cfg_for_function(&store, &sid, &query_id, &symbol)
-        {
-            Ok((nodes, edges)) => (nodes, edges),
+        // Check for semantic analysis mode (default: true)
+        let use_semantic = args
+            .get("semantic")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        // Dispatcher owns CFG ensure, store I/O, composition, engine call.
+        let analysis = match self.project().analysis_runtime.run_branch_diff(
+            &self.project().store,
+            &sid,
+            &query_id,
+            &symbol,
+            use_semantic,
+        ) {
+            Ok(ok) => ok,
             Err(e) => {
                 let resp = json!({
                     "ok": false,
@@ -181,94 +191,16 @@ impl ToolRouter {
             }
         };
 
-        // --- CFG is available — run branch diff analysis ---
+        if analysis.dataflow_refinement_failed {
+            lr = lr.with_root_warnings(vec![format!(
+                "Semantic dataflow refinement failed for '{symbol}'"
+            )]);
+        }
 
-        let qname = self
-            .project()
-            .store
-            .find_symbol_by_id(&sid)
-            .ok()
-            .flatten()
-            .map(|s| s.qualified_name)
-            .unwrap_or_else(|| symbol.to_string());
-
-        // Check for semantic analysis mode (default: true)
-        let use_semantic = args
-            .get("semantic")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-
-        let mut dataflow_refinement_failed = false;
-        let mut semantic_window = None;
-        let diffs = if use_semantic {
-            // ── SEMANTIC PATH: compose_effects + diff_branches_semantic ──
-            let lang = self
-                .project()
-                .store
-                .find_symbol_by_id(&sid)
-                .ok()
-                .flatten()
-                .map(|s| s.language)
-                .unwrap_or(atlas_engine::Language::C);
-            let contract = atlas_engine::analysis::ResourceOpConfig::default_for(lang);
-
-            match self
-                .project()
-                .analysis_runtime
-                .ensure_dataflow_for_function(&sid, Some(&query_id))
-            {
-                Ok(window) => semantic_window = Some(window),
-                Err(e) => {
-                    dataflow_refinement_failed = true;
-                    lr = lr.with_root_warnings(vec![format!(
-                        "Semantic dataflow refinement failed for '{symbol}': {e:#}"
-                    )]);
-                }
-            }
-
-            // Load DataFlow nodes and edges
-            let data_nodes = self
-                .project()
-                .store
-                .find_data_nodes_by_function(&sid)
-                .unwrap_or_default();
-            let dataflow_edges = if data_nodes.is_empty() {
-                vec![]
-            } else {
-                let all_ids: Vec<_> = data_nodes.iter().map(|n| n.id).collect();
-                self.project()
-                    .store
-                    .find_dataflow_edges_by_sources(&all_ids)
-                    .unwrap_or_default()
-            };
-
-            let composition =
-                match atlas_engine::analysis::cfg_graph::CfgGraph::build(&cfg_nodes, &cfg_edges) {
-                    Ok(cfg_graph) => atlas_engine::analysis::compose_effects(
-                        &cfg_graph,
-                        &data_nodes,
-                        &dataflow_edges,
-                        &contract,
-                    ),
-                    Err(_) => {
-                        // CFG build failed → fall back to minimal composition
-                        atlas_engine::analysis::EffectComposition::default()
-                    }
-                };
-
-            atlas_engine::analysis::BranchDiffEngine::diff_branches_semantic(
-                &cfg_nodes,
-                &cfg_edges,
-                &composition,
-            )
-        } else {
-            // ── BASIC PATH: CFG-only diff (effect_kind based) ──
-            atlas_engine::analysis::BranchDiffEngine::diff_branches(&cfg_nodes, &cfg_edges)
-        };
-
+        let diffs = &analysis.diffs;
         let mut resp = json!({
             "ok": true,
-            "function": qname,
+            "function": analysis.qname,
             "branch_count": diffs.len(),
             "branches": diffs.iter().map(|d| json!({
                 "line": d.branch_node_line.saturating_add(1),
@@ -299,8 +231,8 @@ impl ToolRouter {
 
         let analysis_mode = classify_branch_diff_analysis(
             use_semantic,
-            semantic_window.as_ref(),
-            dataflow_refinement_failed,
+            analysis.semantic_window.as_ref(),
+            analysis.dataflow_refinement_failed,
         );
         lr = apply_branch_diff_analysis(lr, analysis_mode);
         lr.with_is_error(false).build(resp, self)

@@ -16,7 +16,8 @@ pub use store::file_inventory::FileInventoryRow;
 pub use store::symbol_hints::SymbolHint;
 pub use store::{FullRebuildGuard, SqliteCacheStats, Store, StoreStats, WalCheckpointStats};
 pub use store::{
-    PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+    ExclusiveLockHeld, PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
+    KEY_RESOLUTION_GENERATION,
 };
 pub use store_writers::DbWriteTiming;
 

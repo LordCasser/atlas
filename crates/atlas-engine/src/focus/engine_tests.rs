@@ -1033,6 +1033,10 @@ fn test_build_closure_callgraph_stub() {
     let file_id = insert_file_structural_complete(&store, "main.c");
     let engine = test_engine(store);
 
+    // CallGraph.depth must be 1 (Task 7 hard error for multi-hop); multi-hop is
+    // fixed-point iteration via window.max_iterations, not CallGraph.depth.
+    // Budget/window iterations are explicit so this test does not depend on
+    // WindowBudget::default() honesty (Task 4: default max_iterations=0).
     let window = FocusWindow {
         seed: FocusSeed::File {
             file_id,
@@ -1040,17 +1044,20 @@ fn test_build_closure_callgraph_stub() {
         },
         strategies: vec![ClosureStrategy::CallGraph {
             direction: super::types::Direction::Outgoing,
-            depth: 2,
+            depth: 1,
         }],
         include_roots: Vec::new(),
-        budget: WindowBudget::default(),
+        budget: WindowBudget {
+            max_iterations: 3,
+            ..Default::default()
+        },
         language: Language::C,
         max_iterations: 3,
     };
 
     let closure = engine
         .build_closure(&window, "test-callgraph-stub")
-        .expect("build_closure with CallGraph stub should succeed");
+        .expect("build_closure with CallGraph depth=1 should succeed");
 
     assert!(
         closure.files.contains(&file_id),

@@ -64,25 +64,9 @@ impl Drop for FileLockGuard {
 pub struct FileLock;
 
 /// Structured rejection when Focus/MCP must not write because CLI holds the lock.
-#[derive(Debug, Clone)]
-pub struct IndexLockHeld {
-    pub holder_pid: u32,
-    pub code: &'static str,
-    pub reason: String,
-    pub suggested_action: String,
-}
-
-impl std::fmt::Display for IndexLockHeld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{}] {} (holder_pid={}). {}",
-            self.code, self.reason, self.holder_pid, self.suggested_action
-        )
-    }
-}
-
-impl std::error::Error for IndexLockHeld {}
+///
+/// Type alias for the shared `db::ExclusiveLockHeld` diagnostic (single source).
+pub type IndexLockHeld = db::ExclusiveLockHeld;
 
 impl FileLock {
     /// Acquire an exclusive lock. Fails immediately if another live process holds it.
@@ -96,31 +80,9 @@ impl FileLock {
     /// Reject Focus/MCP writes if CLI (or another process) holds the exclusive lock.
     ///
     /// No wait/queue/retry — agent must stop `atlas index`/`sync` then retry.
+    /// Delegates to [`Store::reject_if_exclusive_lock_held_by_other`] (shared diagnostics).
     pub fn reject_if_held_by_other(store: &Store) -> Result<(), IndexLockHeld> {
-        match store.exclusive_lock_held_by_other() {
-            Ok(Some(pid)) => Err(IndexLockHeld {
-                holder_pid: pid,
-                code: "cli_index_lock_held",
-                reason: format!(
-                    "atlas.db is exclusively locked by another process (PID {pid}), \
-                     typically `atlas index` or `atlas sync`"
-                ),
-                suggested_action: "Stop the concurrent CLI index/sync process, then retry the query"
-                    .into(),
-            }),
-            Ok(None) => Ok(()),
-            Err(e) => {
-                // Fail closed on lock read errors so Focus never races a half-read lock row.
-                Err(IndexLockHeld {
-                    holder_pid: 0,
-                    code: "cli_index_lock_check_failed",
-                    reason: format!("could not read exclusive lock metadata: {e:#}"),
-                    suggested_action:
-                        "Ensure the project database is readable and no index is running; then retry"
-                            .into(),
-                })
-            }
-        }
+        store.reject_if_exclusive_lock_held_by_other()
     }
 }
 

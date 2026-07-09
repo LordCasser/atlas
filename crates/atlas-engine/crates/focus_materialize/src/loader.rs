@@ -149,14 +149,8 @@ impl LazyDataflowLoader {
         trigger_query: Option<&str>,
     ) -> Result<EnsureResult> {
         // Cross-process: reject if CLI holds exclusive FileLock (no wait).
-        // (No filesync dep here — use Store API; error code matches FileLock::reject_if_held_by_other.)
-        if let Some(pid) = store.exclusive_lock_held_by_other()? {
-            anyhow::bail!(
-                "[cli_index_lock_held] atlas.db is exclusively locked by another process \
-                 (PID {pid}), typically `atlas index` or `atlas sync`. \
-                 Stop the concurrent CLI index/sync process, then retry the query"
-            );
-        }
+        // Shared diagnostic with filesync::FileLock via Store (Task 2 DRY).
+        store.reject_if_exclusive_lock_held_by_other()?;
         let start = Instant::now();
         let mut result = EnsureResult::default();
 
