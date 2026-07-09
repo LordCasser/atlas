@@ -81,7 +81,8 @@ impl FocusMaterialize {
         &self.inner.dataflow
     }
 
-    /// Whether dataflow has a structural rebuilder (always true after [`open`]).
+    /// Always `true` after [`open`]: rebuilder is wired at construction.
+    /// Audit probe only — see [`LazyDataflowService::has_structural_rebuilder`].
     pub fn has_structural_rebuilder(&self) -> bool {
         self.inner.dataflow.has_structural_rebuilder()
     }
@@ -129,15 +130,8 @@ mod tests {
     #[test]
     fn open_wires_rebuilder_and_clones_share_stack() {
         let (_store, m) = open_in_memory();
-        assert!(
-            m.has_structural_rebuilder(),
-            "FocusMaterialize::open must set structural rebuilder on dataflow"
-        );
         let cloned = m.clone();
-        assert!(
-            cloned.has_structural_rebuilder(),
-            "cloned FocusMaterialize must keep rebuilder"
-        );
+        // Real invariant: Clone shares one Arc stack (not a second materialize shell).
         assert!(
             m.same_stack_as(&cloned),
             "Clone must share Arc inner (same stack identity)"

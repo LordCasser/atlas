@@ -284,3 +284,123 @@ pub(crate) fn validate_dataflow_payload_db(
         cfg_edges: safe_cfg_edges,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::enums::DataNodeKind;
+    use types::ids::{DataNodeId, FileId, ScopeId};
+    use types::structs::TextRange;
+
+    fn range(start: u32, end: u32) -> TextRange {
+        TextRange {
+            start_byte: start,
+            end_byte: end,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 0,
+        }
+    }
+
+    fn node(
+        name: &str,
+        function_id: Option<SymbolId>,
+        binding_id: Option<BindingId>,
+        start: u32,
+    ) -> DataNode {
+        let file_id = FileId::generate("fk_guard_test.ts");
+        let id = DataNodeId::generate(
+            &file_id,
+            function_id.as_ref(),
+            "local",
+            Some(name),
+            None,
+            start,
+        );
+        DataNode {
+            id,
+            file_id,
+            function_id,
+            kind: DataNodeKind::Local,
+            binding_id,
+            callsite_id: None,
+            name: Some(name.to_string()),
+            access_path: Some(name.to_string()),
+            arg_index: None,
+            range: range(start, start + 1),
+        }
+    }
+
+    fn binding_id(tag: &str, start: u32) -> BindingId {
+        let file_id = FileId::generate("fk_guard_test.ts");
+        let scope = ScopeId::generate(&file_id, None, "function", start);
+        BindingId::generate(&file_id, &scope, "local", tag, start)
+    }
+
+    #[test]
+    fn filter_data_nodes_clears_invalid_binding_id_keeps_node() {
+        let fid = SymbolId::generate(
+            &FileId::generate("fk_guard_test.ts"),
+            "typescript",
+            "f",
+            "function",
+            None,
+        );
+        let good_binding = binding_id("good", 10);
+        let bad_binding = binding_id("bad", 99);
+
+        let mut valid_fns = HashSet::new();
+        valid_fns.insert(fid);
+        let mut valid_bindings = HashSet::new();
+        valid_bindings.insert(good_binding);
+
+        let nodes = vec![
+            node("with_good", Some(fid), Some(good_binding), 1),
+            node("with_bad", Some(fid), Some(bad_binding), 2),
+            node("no_binding", Some(fid), None, 3),
+        ];
+        let out = filter_data_nodes(&nodes, &valid_fns, &valid_bindings);
+        assert_eq!(out.len(), 3, "nodes must not be dropped for bad binding_id");
+        assert_eq!(out[0].binding_id, Some(good_binding));
+        assert_eq!(
+            out[1].binding_id, None,
+            "invalid binding_id must SET NULL, not drop row"
+        );
+        assert_eq!(out[2].binding_id, None);
+        assert_eq!(out[1].name.as_deref(), Some("with_bad"));
+    }
+
+    #[test]
+    fn filter_data_nodes_drops_invalid_function_id() {
+        let good_fn = SymbolId::generate(
+            &FileId::generate("fk_guard_test.ts"),
+            "typescript",
+            "good",
+            "function",
+            None,
+        );
+        let bad_fn = SymbolId::generate(
+            &FileId::generate("fk_guard_test.ts"),
+            "typescript",
+            "bad",
+            "function",
+            None,
+        );
+        let mut valid_fns = HashSet::new();
+        valid_fns.insert(good_fn);
+        let valid_bindings = HashSet::new();
+
+        let nodes = vec![
+            node("ok", Some(good_fn), None, 1),
+            node("orphan", Some(bad_fn), None, 2),
+            node("no_fn", None, None, 3),
+        ];
+        let out = filter_data_nodes(&nodes, &valid_fns, &valid_bindings);
+        assert_eq!(out.len(), 2);
+        let names: Vec<_> = out.iter().map(|n| n.name.as_deref()).collect();
+        assert!(names.contains(&Some("ok")));
+        assert!(names.contains(&Some("no_fn")));
+        assert!(!names.contains(&Some("orphan")));
+    }
+}

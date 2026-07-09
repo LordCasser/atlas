@@ -33,11 +33,6 @@ fn test_runtime(store: Arc<Store>) -> FocusRuntime {
     FocusRuntime::new(store, None, m)
 }
 
-fn test_runtime_with_root(store: Arc<Store>, root: Option<std::path::PathBuf>) -> FocusRuntime {
-    let m = FocusMaterialize::open(store.clone(), root.clone());
-    FocusRuntime::new(store, root, m)
-}
-
 fn persistent_test_store() -> (Arc<Store>, TempDir) {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("atlas.db");
@@ -1010,7 +1005,7 @@ fn test_shared_materialize_passed_to_closure_engine() {
     let materialize = FocusMaterialize::open(store.clone(), None);
     let store_ptr = std::sync::Arc::as_ptr(materialize.structural().store());
     let runtime = FocusRuntime::new(store, None, materialize);
-    assert!(runtime.materialize().has_structural_rebuilder());
+    // Shared stack identity (not has_structural_rebuilder — that is always true).
     assert!(std::ptr::eq(
         std::sync::Arc::as_ptr(runtime.materialize().structural().store()),
         store_ptr,

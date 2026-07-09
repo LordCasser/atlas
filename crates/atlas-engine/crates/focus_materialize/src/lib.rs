@@ -85,7 +85,11 @@ impl LazyDataflowService {
         )
     }
 
-    /// Whether a structural self-heal rebuilder is configured (always true for public construction).
+    /// Always `true` after public construction: the rebuilder is a required field.
+    ///
+    /// Kept as an explicit audit/wiring probe (MCP/tests assert configuration
+    /// identity). Prefer checking that ensure/self-heal paths run over treating
+    /// this as a runtime branch.
     pub fn has_structural_rebuilder(&self) -> bool {
         true
     }
@@ -224,7 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn with_structural_rebuilder_always_configured() {
+    fn with_structural_rebuilder_invokes_injected_callback() {
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = called.clone();
         let service = LazyDataflowService::with_structural_rebuilder(
@@ -235,16 +239,18 @@ mod tests {
                 Ok(())
             }),
         );
-        assert!(service.has_structural_rebuilder());
         (service.structural_rebuilder)(FileId::default()).unwrap();
-        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            called.load(std::sync::atomic::Ordering::SeqCst),
+            "injected structural rebuilder must run on invoke"
+        );
     }
 
     #[test]
-    fn for_test_uses_noop_rebuilder() {
+    fn for_test_rebuilder_is_callable_noop() {
         let service =
             LazyDataflowService::for_test(Arc::new(Store::open_in_memory().unwrap()), None);
-        assert!(service.has_structural_rebuilder());
+        // No-op rebuilder must not error (self-heal path stays usable in unit tests).
         (service.structural_rebuilder)(FileId::default()).unwrap();
     }
 }

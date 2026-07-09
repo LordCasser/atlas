@@ -14,7 +14,7 @@ use types::ids::FileId;
 use types::structs::{FactCoverage, FileInfo};
 use types::{layer, status};
 
-use crate::{FocusMaterialize, LazyDataflowService};
+use crate::FocusMaterialize;
 use crate::focus::materialize::{CandidateProvider, LazyStructuralService};
 
 use super::engine::ClosureEngine;

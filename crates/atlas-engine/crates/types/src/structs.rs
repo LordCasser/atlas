@@ -242,9 +242,9 @@ pub enum SemanticConfidence {
 
 /// Combined precision: coverage scope × semantic certainty.
 ///
-/// Architecture §1.1 L4 **AnswerQuality** — Focus-internal only; must not appear
-/// in MCP public JSON. Prefer the name `AnswerQuality` in new docs; `AnswerQuality`
-/// remains the type identifier to avoid a large rename wave.
+/// Architecture §1.1 **L4 AnswerQuality** — Focus/control-plane internal only.
+/// Must not appear in MCP public JSON (agents consume gaps / coverage_counts /
+/// retry instead).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerQuality {
     pub coverage: CoverageTier,
@@ -822,11 +822,10 @@ impl FileFacts {
 // ---------------------------------------------------------------------------
 
 /// Bitmask of extraction capabilities available for a file/unit.
-/// Only covers extraction-layer capabilities.
 ///
-/// Architecture §1.1 L1 **FactCoverage** — facts already materialized in the DB.
-/// Prefer the name FactCoverage in docs; `FactCoverage` remains the type
-/// identifier. See type alias [`FactCoverage`].
+/// Architecture §1.1 **L1 FactCoverage** — which facts are already materialized
+/// in the DB for a file/unit. Not language theoretical capability (L0
+/// `CapabilityLevel` / `FeatureMatrix`) and not a product AccessStrategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FactCoverage(u16);
 

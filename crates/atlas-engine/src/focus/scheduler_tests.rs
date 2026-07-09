@@ -7,7 +7,6 @@ use db::Store;
 use types::ids::FileId;
 use types::structs::FactCoverage;
 
-use crate::FocusMaterialize;
 use crate::investigation::{Investigation, InvestigationFocus};
 
 use super::JobTracker;

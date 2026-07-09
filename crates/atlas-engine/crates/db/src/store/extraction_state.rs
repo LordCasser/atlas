@@ -725,12 +725,14 @@ impl Store {
             }
 
             // ── FK-guarded validation ───────────────────────────────
-            // Before inserting, verify that every FK reference points to
-            // an entity that exists in the DB (symbols, scopes) or in the
-            // same batch (bindings, data_nodes, cfg_nodes).  Rows whose
-            // FK references cannot be satisfied are silently dropped.
-            // This mirrors the defensive FK guards in insert_file_facts_impl
-            // but queries against DB state instead of in-memory batches.
+            // Before inserting, verify FK references against DB state
+            // (symbols/scopes) and the same-batch allowlists (bindings,
+            // data_nodes, cfg_edges). Behavior differs by field:
+            // - invalid function_id / missing endpoint → row dropped
+            // - invalid data_node.binding_id → SET NULL (keep node; matches
+            //   schema ON DELETE SET NULL and Focus re-extract scope ids)
+            // Mirrors insert_file_facts_impl guards, but against DB rather
+            // than a pure in-memory batch.
             let validated = super::fk_guards::validate_dataflow_payload_db(
                 tx,
                 data_nodes,

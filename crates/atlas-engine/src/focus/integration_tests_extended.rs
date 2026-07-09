@@ -16,12 +16,11 @@ mod tests {
     };
     use types::{ImportKind, Visibility, layer, status};
 
-    use crate::{FocusMaterialize, LazyDataflowService};
+    use crate::FocusMaterialize;
     use crate::focus::edge_policy::{EdgeConflictPolicy, EdgeResolution};
     use crate::focus::engine::ClosureEngine;
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use crate::focus::visibility_filter::{CVisibilityFilter, VisibilityContext, VisibilityFilter};
-    use crate::focus::materialize::LazyStructuralService;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
