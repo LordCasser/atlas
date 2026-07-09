@@ -111,7 +111,6 @@ fn focus_context_triggers_lazy_extraction() {
 
     // 2. Initialize FocusRuntime so lazy structural extraction can run.
     // No MCP index call is allowed; the query must drive focus bootstrap.
-    router.init_focus();
 
     // 3. Trigger focus extraction via symbol context query
     let (ctx_resp, ctx_err) = call_tool(
@@ -215,7 +214,6 @@ fn focus_calls_query_intent_works() {
 
     // Initialize focus runtime. No MCP index call is allowed; the focus
     // query below must discover and prepare the relevant project slice.
-    router.init_focus();
 
     // Direct focus query for Calls intent
     let intent = atlas_engine::QueryIntent::Calls {

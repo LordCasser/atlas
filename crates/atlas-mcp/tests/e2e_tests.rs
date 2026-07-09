@@ -320,8 +320,6 @@ fn e2e_focus_runtime_python_example() {
         .ensure_graph_initialized()
         .expect("Failed to init graph");
 
-    // 1. init_focus on the router
-    router.init_focus();
 
     // 2. prepare_focus_query with Calls intent
     let intent = atlas_engine::QueryIntent::Calls {

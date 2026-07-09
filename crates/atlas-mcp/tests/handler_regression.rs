@@ -39,7 +39,6 @@ void foo(void) {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let router = ToolRouter::new_empty(store, temp_dir.to_path_buf());
-    router.init_focus();
     router
 }
 
@@ -312,7 +311,6 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     let (resp, err) = call_tool(
         &mut router,
@@ -348,7 +346,6 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     let (resp, err) = call_tool(
         &mut router,
@@ -414,7 +411,6 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
         let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
         store.init_schema().expect("init_schema");
         let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-        router.init_focus();
 
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
@@ -488,7 +484,6 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     for (tool, args) in [
         (
@@ -538,7 +533,6 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     for (tool, args) in [
         (
@@ -641,7 +635,6 @@ int top_function(void) {
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
 
-    router.init_focus();
 
     // ── Unscoped search must return an error ─────────────────────────
     let (resp, err) = call_tool(
@@ -804,7 +797,6 @@ fn handler_search_reports_terminal_gap_for_cold_scope() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     let (resp, err) = call_tool(
         &mut router,
@@ -844,7 +836,6 @@ fn handler_search_partial_hit_without_tracker_reports_terminal_gap() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     let (resp, err) = call_tool(
         &mut router,
@@ -884,7 +875,6 @@ fn handler_search_partial_no_hit_reports_terminal_gap() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
-    router.init_focus();
 
     let (resp, err) = call_tool(
         &mut router,
@@ -1206,7 +1196,6 @@ fn concurrent_tool_calls_do_not_deadlock() {
 
     let router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
 
-    router.init_focus();
 
     // Build the initial graph snapshot so graph-backed tools are live,
     // even if they later return scoped not-found responses.
@@ -1277,7 +1266,6 @@ fn all_registered_tools_accept_minimal_args() {
     let router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
-    router.init_focus();
     router.ensure_graph_initialized().unwrap();
 
     // Map each tool to its minimal valid arguments

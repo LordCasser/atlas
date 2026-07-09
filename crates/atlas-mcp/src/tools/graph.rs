@@ -3595,7 +3595,7 @@ mod tests {
     // ── Focus runtime wiring tests ────────────────────────────────────
 
     #[test]
-    fn init_focus_sets_focus_runtime() {
+    fn focus_runtime_wired_at_construction() {
         let store = test_store();
         let fid = FileId::generate("test.ts");
         store
@@ -3608,13 +3608,10 @@ mod tests {
             })
             .unwrap();
         let router = test_router(store);
-        // After construction, focus_runtime is always present (no Option wrapper).
+        // FocusRuntime + FocusMaterialize are injected by ActiveProject construction.
         let mode = router.project().query_runtime.detect_access_strategy();
         assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
-        // init_focus is idempotent.
-        router.init_focus();
-        let mode2 = router.project().query_runtime.detect_access_strategy();
-        assert_eq!(mode2, atlas_engine::focus::runtime::AccessStrategy::Focus);
+        assert!(router.project().materialize.has_structural_rebuilder());
     }
 
     #[test]

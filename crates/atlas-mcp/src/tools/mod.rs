@@ -282,13 +282,11 @@ impl ToolRouter {
             ActiveProject::new(store, project_root).expect("Failed to construct ActiveProject");
         // Initialize graph state with pre-built search and context engines.
         active.graph_runtime.state.init_with(search, context);
-        let router = Self {
+        Self {
             project: ProjectSlot::new(Some(active)), // already Arc<ActiveProject>
             tools: make_all_tools(),
             replay_focus_result: None,
-        };
-        router.init_focus();
-        router
+        }
     }
 
     /// Create a router without building the graph (fast startup).
@@ -296,13 +294,11 @@ impl ToolRouter {
     pub fn new_empty(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         let active =
             ActiveProject::new(store, project_root).expect("Failed to construct ActiveProject");
-        let router = Self {
+        Self {
             project: ProjectSlot::new(Some(active)), // already Arc<ActiveProject>
             tools: make_all_tools(),
             replay_focus_result: None,
-        };
-        router.init_focus();
-        router
+        }
     }
 
     /// Create a router with no active project.
@@ -389,15 +385,6 @@ impl ToolRouter {
     pub fn ensure_graph_initialized(&self) -> anyhow::Result<()> {
         self.project().graph_runtime.ensure_initialized()?;
         Ok(())
-    }
-
-    /// Historical no-op: materialize is required at `ActiveProject` / FocusRuntime
-    /// construction. Kept so older tests can call it without re-wiring stacks.
-    pub fn init_focus(&self) {
-        debug_assert!(
-            self.project().materialize.has_structural_rebuilder(),
-            "ActiveProject must own a configured FocusMaterialize"
-        );
     }
 
     /// Unified focus query preparation for focus-driven lazy analysis.
@@ -634,11 +621,11 @@ impl ToolRouter {
     /// After activation, the next graph-backed tool call will lazily rebuild the
     /// snapshot from the new store.
     pub(crate) fn activate_project(&self, project_root: std::path::PathBuf, store: Arc<Store>) {
+        // ActiveProject::new injects FocusMaterialize into FocusRuntime at construction.
         self.project.replace(
             ActiveProject::new(store, project_root)
                 .expect("Failed to construct ActiveProject during project activation"),
         );
-        self.init_focus();
     }
 
     /// Ensure the in-memory call-graph reflects any newly extracted structural data.
@@ -4564,19 +4551,19 @@ mod tests {
     // ── Focus runtime tests ───────────────────────────────────────────
 
     #[test]
-    fn init_focus_sets_up_runtime() {
+    fn active_project_construction_wires_focus_runtime() {
         let store = test_store();
         let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-        // After construction, focus_runtime is always present (no Option wrapper).
+        // FocusRuntime is present at construction with materialize already injected.
         let mode = router.project().query_runtime.detect_access_strategy();
-        // In an empty store, detect_access_strategy should return Focus.
         assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
-
-        // Calling init_focus again is idempotent — it just re-applies the
-        // lazy dataflow service configuration.
-        router.init_focus();
-        let mode2 = router.project().query_runtime.detect_access_strategy();
-        assert_eq!(mode2, atlas_engine::focus::runtime::AccessStrategy::Focus);
+        assert!(
+            router
+                .project()
+                .materialize
+                .has_structural_rebuilder(),
+            "ActiveProject construction must wire Focus materialize"
+        );
     }
 
     #[test]
@@ -4587,11 +4574,11 @@ mod tests {
         let mode_before = router.project().query_runtime.detect_access_strategy();
         assert_eq!(mode_before, atlas_engine::focus::runtime::AccessStrategy::Focus);
 
-        // Simulate project switch — activate_project creates a fresh ActiveProject
-        // and then calls init_focus(), so focus_runtime is re-initialized.
+        // Project switch rebuilds ActiveProject (and FocusRuntime) from construction.
         router.activate_project(PathBuf::from("/other"), store2);
         let mode_after = router.project().query_runtime.detect_access_strategy();
         assert_eq!(mode_after, atlas_engine::focus::runtime::AccessStrategy::Focus);
+        assert!(router.project().materialize.has_structural_rebuilder());
     }
 
     #[test]

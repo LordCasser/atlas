@@ -305,7 +305,6 @@ mod focus_tests {
     fn focus_router(project_root: &Path) -> ToolRouter {
         let store = fresh_focus_store();
         let router = ToolRouter::new_empty(store, project_root.to_path_buf());
-        router.init_focus();
         router
     }
 
@@ -354,7 +353,6 @@ mod focus_tests {
     #[test]
     fn focus_analysis_envelope_has_fields() {
         let router = python_example_router(); // has manifest-indexed symbols
-        router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Calls {
             symbol_name: "WikipediaSpider".into(),
@@ -392,7 +390,6 @@ mod focus_tests {
     #[test]
     fn focus_search_returns_results() {
         let router = python_example_router(); // has manifest-indexed symbols
-        router.init_focus();
 
         let intent = atlas_engine::QueryIntent::Search {
             query: "spider".into(),
@@ -583,7 +580,6 @@ mod focus_tests {
         focus_store.upsert_file(&file_info).expect("upsert_file");
 
         let focus_router = ToolRouter::new_empty(focus_store.clone(), root.clone());
-        focus_router.init_focus();
         focus_router
             .ensure_graph_initialized()
             .expect("initialize empty focus graph");
@@ -868,7 +864,6 @@ mod focus_tests {
     #[test]
     fn focus_multiple_queries_stable() {
         let router = python_example_router(); // has manifest-indexed symbols
-        router.init_focus();
 
         // Trigger focus bootstrap for one symbol (may be None if full index)
         let intent = atlas_engine::QueryIntent::Calls {
@@ -1043,7 +1038,6 @@ public class ElasticsearchException extends RuntimeException {
         // pre-inserted symbols referencing this file_id.  We therefore
         // insert our symbols AFTER focus preparation.
         let router = ToolRouter::new_empty(store.clone(), temp_dir);
-        router.init_focus();
 
         let primary_qname = "org.elasticsearch.ElasticsearchException";
         let primary_simple = "ElasticsearchException";
