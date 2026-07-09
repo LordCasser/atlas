@@ -50,7 +50,6 @@ pub mod investigation;
 pub mod job_context;
 mod lazy_budget;
 mod lazy_structural;
-mod linux_augment;
 /// AnswerQuality tier computation for lazy extraction transparency.
 pub mod precision;
 /// Scoped search service: shared search orchestration with lazy structural fallback.

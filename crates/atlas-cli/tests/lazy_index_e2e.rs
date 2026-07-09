@@ -586,3 +586,104 @@ fn p2_lazy_dataflow_callsite_id_remap() {
         );
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Post-extract hooks: index pipeline vs lazy structural (shared extract path)
+// ───────────────────────────────────────────────────────────────────────────
+
+const KERNEL_MODULE_SRC: &str = r#"
+#include <linux/module.h>
+#include <linux/init.h>
+
+static int __init demo_init(void) { return 0; }
+static void __exit demo_exit(void) {}
+
+module_init(demo_init);
+EXPORT_SYMBOL(demo_init);
+EXPORT_SYMBOL_GPL(demo_exit);
+"#;
+
+/// CLI index structural path must persist EXPORT_SYMBOL + module_init edges
+/// via the shared post-extract hook inside extract_file_with_mode.
+#[test]
+fn post_extract_index_structural_persists_export_and_initcall() {
+    let tmp = setup_project(&[("drivers/demo.c", KERNEL_MODULE_SRC)]);
+    let project = tmp.path().to_string_lossy().to_string();
+
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &[], "structural").expect("atlas index structural");
+
+    let store = open_store(&tmp);
+    let files = store.list_files().unwrap();
+    let file = files
+        .iter()
+        .find(|f| f.path.ends_with("demo.c"))
+        .expect("demo.c indexed");
+
+    let symbols = store.find_symbols_by_file(&file.file_id).unwrap();
+    let init = symbols
+        .iter()
+        .find(|s| s.name == "demo_init")
+        .expect("demo_init");
+    let exit = symbols
+        .iter()
+        .find(|s| s.name == "demo_exit")
+        .expect("demo_exit");
+    assert!(init.exported, "index path must persist EXPORT_SYMBOL");
+    assert!(exit.exported, "index path must persist EXPORT_SYMBOL_GPL");
+
+    let edges = store.get_all_edges().unwrap();
+    let initcall = edges
+        .iter()
+        .filter(|e| e.kind == atlas_engine::EdgeKind::RegistersCallback)
+        .count();
+    assert_eq!(
+        initcall, 1,
+        "index structural must persist module_init RegistersCallback edge"
+    );
+}
+
+/// Lazy structural path (after manifest-only index) must apply the same hook
+/// so EXPORT_SYMBOL / initcall do not diverge from full index.
+#[test]
+fn post_extract_lazy_structural_matches_index_export_semantics() {
+    let tmp = setup_project(&[("drivers/demo.c", KERNEL_MODULE_SRC)]);
+    let project = tmp.path().to_string_lossy().to_string();
+
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &[], "manifest").expect("atlas index manifest");
+
+    let store = open_store(&tmp);
+    let files = store.list_files().unwrap();
+    let fid = files
+        .iter()
+        .find(|f| f.path.ends_with("demo.c"))
+        .expect("demo.c")
+        .file_id;
+
+    // Manifest may already mark export if top-level; force structural via lazy.
+    let svc =
+        atlas_engine::LazyStructuralService::new(store.clone(), Some(tmp.path().to_path_buf()));
+    let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+    assert!(result.files_built >= 1 || result.files_cached >= 1);
+
+    let symbols = store.find_symbols_by_file(&fid).unwrap();
+    let init = symbols
+        .iter()
+        .find(|s| s.name == "demo_init")
+        .expect("demo_init after lazy structural");
+    assert!(
+        init.exported,
+        "lazy structural must run shared post-extract EXPORT_SYMBOL hook"
+    );
+
+    let edges = store.get_all_edges().unwrap();
+    let initcall = edges
+        .iter()
+        .filter(|e| e.kind == atlas_engine::EdgeKind::RegistersCallback)
+        .count();
+    assert_eq!(
+        initcall, 1,
+        "lazy structural must persist module_init edge like index path"
+    );
+}

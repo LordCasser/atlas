@@ -1,13 +1,13 @@
-//! Linux kernel semantic augmentation.
+//! Shared post-extraction hooks for all extraction entry paths.
 //!
-//! Post-extraction pipeline that detects kernel-specific macro patterns
-//! in C source text and enriches [`FileFacts`] with derived edges,
-//! export markers, and diagnostics.
+//! Index (`IndexPipeline`) and lazy structural both call
+//! [`extract_file_with_mode`], which always runs [`apply_post_extract_hooks`]
+//! on successful `FileFacts`. Language-specific enrichments (currently
+//! Linux kernel C macros) live here so they cannot drift between paths.
 //!
-//! Detection is regex-based (not tree-sitter) — it operates on raw
-//! source text and matches well-known kernel macro invocation patterns.
+//! # Linux kernel patterns
 //!
-//! # Detected Patterns
+//! Detection is regex-based (not tree-sitter) on raw source text.
 //!
 //! | Pattern | Action |
 //! |---------|--------|
@@ -25,14 +25,31 @@
 //!
 //! ResolutionSymbols writes only symbols/scopes/imports — no raw_edges
 //! or diagnostics table writes.  Initcall edges and syscall diagnostics
-//! are therefore only persisted when augment runs against the full
-//! `structural` layer.
+//! are therefore only persisted when the structural (or fuller) layer is written.
 
 use regex::Regex;
 
 use types::enums::{Confidence, EdgeKind, Provenance};
 use types::ids::EdgeId;
 use types::structs::{DiagnosticLevel, ExtractDiagnostic, FileFacts, RawEdge};
+
+/// Apply all post-extraction enrichments in place.
+///
+/// Called from [`crate::extract_file_with_mode`] on every successful path so
+/// index and lazy structural share identical semantics. Non-C files are
+/// no-ops (individual hooks may early-return).
+pub fn apply_post_extract_hooks(facts: &mut FileFacts, source: &str) {
+    let aug = LinuxAugmenter::augment(facts, source);
+    if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
+        tracing::info!(
+            path = %facts.file.path,
+            exports = aug.symbols_exported,
+            initcall_edges = aug.initcall_edges,
+            syscalls = aug.syscall_detected,
+            "post-extract: Linux kernel augment applied"
+        );
+    }
+}
 
 /// Post-extraction augmentation for Linux kernel C patterns.
 pub struct LinuxAugmenter;
@@ -368,5 +385,221 @@ EXPORT_SYMBOL(my_init);
         assert_eq!(result.initcall_edges, 1);
         // No syscall in this source
         assert_eq!(result.syscall_detected, 0);
+    }
+
+    // ── extract_file_with_mode integration (index + lazy share this path) ──
+
+    /// Kernel-style fixture used by path-level post-extract tests.
+    const KERNEL_EXPORT_FIXTURE: &str = r#"
+#include <linux/module.h>
+#include <linux/init.h>
+
+static int __init my_init(void) { return 0; }
+static void __exit my_exit(void) {}
+
+module_init(my_init);
+EXPORT_SYMBOL(my_init);
+EXPORT_SYMBOL_GPL(my_exit);
+"#;
+
+    #[cfg(feature = "c")]
+    fn extract_c(mode: crate::ExtractionMode, source: &str) -> FileFacts {
+        let frontend = crate::create_frontend(Language::C).expect("C frontend");
+        let path = std::path::Path::new("drivers/demo/foo.c");
+        let file_id = FileId::generate("drivers/demo/foo.c");
+        crate::extract_file_with_mode(&frontend, file_id, path, source, "hash", mode, &())
+            .expect("extract_file_with_mode")
+    }
+
+    /// Structural extraction (CLI index default / lazy structural) must mark
+    /// EXPORT_SYMBOL targets and emit initcall edges via the shared hook.
+    #[cfg(feature = "c")]
+    #[test]
+    fn extract_structural_applies_export_and_initcall_hooks() {
+        let facts = extract_c(crate::ExtractionMode::Structural, KERNEL_EXPORT_FIXTURE);
+
+        let init = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "my_init")
+            .expect("my_init symbol");
+        let exit = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "my_exit")
+            .expect("my_exit symbol");
+        assert!(init.exported, "EXPORT_SYMBOL must set exported on my_init");
+        assert!(exit.exported, "EXPORT_SYMBOL_GPL must set exported on my_exit");
+        assert!(
+            facts.exports.contains(&init.id) && facts.exports.contains(&exit.id),
+            "exports list must include EXPORT_SYMBOL targets"
+        );
+
+        let initcall_edges: Vec<_> = facts
+            .raw_edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::RegistersCallback)
+            .collect();
+        assert_eq!(
+            initcall_edges.len(),
+            1,
+            "module_init must produce one RegistersCallback edge"
+        );
+        assert_eq!(initcall_edges[0].provenance, Provenance::Heuristic);
+        assert_eq!(initcall_edges[0].target, init.id);
+    }
+
+    /// ResolutionSymbols path (lazy dependency bootstrap) must still mark
+    /// EXPORT_SYMBOL; initcall edges may be present in memory but are not
+    /// required for this layer's persistence contract.
+    #[cfg(feature = "c")]
+    #[test]
+    fn extract_resolution_symbols_marks_export_symbol() {
+        let facts = extract_c(
+            crate::ExtractionMode::ResolutionSymbols,
+            KERNEL_EXPORT_FIXTURE,
+        );
+
+        let init = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "my_init")
+            .expect("my_init symbol");
+        assert!(
+            init.exported,
+            "shared post-extract hook must run on ResolutionSymbols path"
+        );
+        assert!(facts.exports.contains(&init.id));
+    }
+
+    /// Manifest path must also run the shared hook for top-level exported funcs.
+    #[cfg(feature = "c")]
+    #[test]
+    fn extract_manifest_marks_export_symbol() {
+        let facts = extract_c(crate::ExtractionMode::Manifest, KERNEL_EXPORT_FIXTURE);
+        let init = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "my_init")
+            .expect("my_init in manifest");
+        assert!(
+            init.exported,
+            "shared post-extract hook must run on Manifest path"
+        );
+    }
+
+    /// Index and lazy both call extract_file_with_mode; same source + mode must
+    /// produce identical export/initcall outcomes (parity guard).
+    #[cfg(feature = "c")]
+    #[test]
+    fn extract_path_parity_export_symbol_is_deterministic() {
+        let a = extract_c(crate::ExtractionMode::Structural, KERNEL_EXPORT_FIXTURE);
+        let b = extract_c(crate::ExtractionMode::Structural, KERNEL_EXPORT_FIXTURE);
+
+        let export_names = |facts: &FileFacts| -> Vec<String> {
+            facts
+                .symbols
+                .iter()
+                .filter(|s| s.exported)
+                .map(|s| s.name.clone())
+                .collect()
+        };
+        assert_eq!(export_names(&a), export_names(&b));
+        assert_eq!(
+            a.raw_edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::RegistersCallback)
+                .count(),
+            b.raw_edges
+                .iter()
+                .filter(|e| e.kind == EdgeKind::RegistersCallback)
+                .count()
+        );
+    }
+
+    // ── DB persistence layering (index structural vs lazy resolution_symbols) ──
+
+    #[cfg(feature = "c")]
+    #[test]
+    fn structural_insert_persists_export_flag_and_initcall_edge() {
+        let store = db::Store::open_in_memory().expect("in-memory store");
+        store.init_schema().expect("schema");
+
+        let facts = extract_c(crate::ExtractionMode::Structural, KERNEL_EXPORT_FIXTURE);
+        store
+            .insert_file_facts(&facts)
+            .expect("insert structural facts");
+
+        let symbols = store
+            .find_symbols_by_file(&facts.file.file_id)
+            .expect("load symbols");
+        let init = symbols
+            .iter()
+            .find(|s| s.name == "my_init")
+            .expect("my_init in DB");
+        assert!(
+            init.exported,
+            "structural write must persist EXPORT_SYMBOL exported flag"
+        );
+
+        let edges = store.get_all_edges().expect("load edges");
+        let initcall = edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::RegistersCallback)
+            .count();
+        assert_eq!(
+            initcall, 1,
+            "structural write must persist module_init RegistersCallback edge"
+        );
+    }
+
+    #[cfg(feature = "c")]
+    #[test]
+    fn resolution_symbols_upsert_persists_export_not_initcall_edges() {
+        let store = db::Store::open_in_memory().expect("in-memory store");
+        store.init_schema().expect("schema");
+
+        let facts = extract_c(
+            crate::ExtractionMode::ResolutionSymbols,
+            KERNEL_EXPORT_FIXTURE,
+        );
+        // Memory facts may still carry initcall edges from the shared hook;
+        // the resolution_symbols write path must not persist them.
+        assert!(
+            facts
+                .raw_edges
+                .iter()
+                .any(|e| e.kind == EdgeKind::RegistersCallback),
+            "hook still produces initcall edges in memory on ResolutionSymbols"
+        );
+
+        store.upsert_file(&facts.file).expect("upsert file row");
+        store
+            .upsert_resolution_symbols(&facts.file.file_id, &facts)
+            .expect("upsert resolution_symbols");
+
+        let symbols = store
+            .find_symbols_by_file(&facts.file.file_id)
+            .expect("load symbols");
+        let init = symbols
+            .iter()
+            .find(|s| s.name == "my_init")
+            .expect("my_init in DB");
+        assert!(
+            init.exported,
+            "resolution_symbols write must persist EXPORT_SYMBOL exported flag"
+        );
+
+        let edges = store.get_all_edges().expect("load edges");
+        assert!(
+            edges
+                .iter()
+                .all(|e| e.kind != EdgeKind::RegistersCallback),
+            "resolution_symbols path must not persist initcall raw_edges; got {:?}",
+            edges
+                .iter()
+                .map(|e| e.kind.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 }

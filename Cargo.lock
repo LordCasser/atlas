@@ -660,6 +660,7 @@ dependencies = [
  "anyhow",
  "db",
  "rayon",
+ "regex",
  "tempfile",
  "tracing",
  "tree-sitter",

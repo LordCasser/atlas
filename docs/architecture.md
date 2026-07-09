@@ -653,7 +653,10 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
   在目标文件仍冷时允许使用 bounded reference
   candidate discovery 找到潜在 caller 文件，再以真实抽取和 scoped resolution 验证；
   candidate 命中本身不是 graph edge。
-- Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall、static inline）在提取后进行后处理增强，不改动通用提取管道。
+- Linux 增强边界: 对 C 语言的特定惯用法（syscall 宏、EXPORT_SYMBOL、initcall）在
+  `extract_file_with_mode` 成功返回前经共享 `apply_post_extract_hooks` 增强，
+  不改动 tree-sitter 槽位管线。Index（`IndexPipeline`）与 lazy structural 共用同一 hook，
+  禁止在 lazy 路径再挂第二份 LinuxAugment 调用。
 
 #### 10.1.6 已实现的基础阶段
 
@@ -1258,6 +1261,8 @@ DoubleFree/UseAfterFree 检测基于每次状态转换。C/C++ 默认资源语�
   rebuild.  `merge_delta_in_place` is an append-only helper
   used internally by `replace_files_in_place` for the merge step.
 
-### Linux 增强
+### Linux 增强（post-extract hook）
 
+- **挂载点**：`extraction::apply_post_extract_hooks`，由 `extract_file_with_mode` 在所有成功返回路径调用（Manifest / ResolutionSymbols / Structural / Full / LazyDataflow）。
 - **ResolutionSymbols 层**：仅 `EXPORT_SYMBOL` 标志被持久化。`initcall`/`module_init` 边和 `SYSCALL_DEFINE` diagnostics 仅持久化到完整的 `structural` 层（该层写入 `raw_edges`）。
+- **展示**：语言能力对用户只暴露 `CapabilityLevel` + `confidence_floor`；`FeatureMatrix` 细节用于内部门控，不在 doctor/status 默认输出中展开。

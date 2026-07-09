@@ -193,7 +193,47 @@ cargo test --workspace --all-features
 search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture smoke。
 所有 14 种语言已默认编译，必须全部纳入矩阵。
 
-### 2.10 清理与架构收敛 PR 门禁
+### 2.10 Post-extract hooks（index / lazy 共用）
+
+语言特化后处理（当前：Linux C 的 `EXPORT_SYMBOL` / `module_init` / `SYSCALL_DEFINE`）必须挂在
+`extraction::apply_post_extract_hooks`，并由 `extract_file_with_mode` 在所有成功返回路径调用。
+禁止在 `LazyStructuralService`、Focus bootstrap 或 CLI index 旁路再挂第二份 hook。
+
+最低测试要求（`extraction` crate，`feature = "c"`）：
+
+| 场景 | 入口 | 必须断言 |
+|------|------|----------|
+| Structural 全量增强 | `extract_file_with_mode(..., Structural)` | `EXPORT_SYMBOL`/`_GPL` → `sym.exported` + `facts.exports`；`module_init` → `RegistersCallback` + `Provenance::Heuristic` |
+| ResolutionSymbols | 同上，mode=`ResolutionSymbols` | `EXPORT_SYMBOL` 仍标记 exported（lazy 依赖 bootstrap 与 index 一致） |
+| Manifest | 同上，mode=`Manifest` | 顶层符号仍可被 hook 标记 exported |
+| 路径确定性 | 同一源码连抽两次 Structural | exported 集合与 initcall 边计数一致（index/lazy 共用路径的 parity 守卫） |
+| 单元正则 | `LinuxAugmenter` 直接测 | 无符号匹配、非 C 文件 no-op、syscall diagnostic 文案 |
+| Structural DB 持久化 | extract + `Store::insert_file_facts` | DB 中 `exported=true` 且存在 `RegistersCallback` edge |
+| ResolutionSymbols DB | extract + `upsert_resolution_symbols` | DB 中 `exported=true`；**无** initcall edge 行 |
+| Index e2e | `atlas index --analysis structural` + C fixture | CLI index 路径与 extract 语义一致 |
+| Lazy e2e | manifest index → `LazyStructuralService::ensure_structural_for_file` | lazy 路径同样持久化 export + initcall |
+
+持久化分层：
+- ResolutionSymbols 写路径只持久化 symbols/scopes/imports → **exported 标志**写入；initcall 边 / syscall diagnostics **不**进 DB。
+- Structural 写路径写入 raw_edges → initcall 边可持久化。
+
+改 hook 行为或移动挂载点时：必须更新本表，并跑：
+```bash
+cargo test -p extraction post_extract
+cargo test -p atlas-cli --test lazy_index_e2e post_extract
+```
+
+### 2.11 语言能力展示（A1）
+
+`atlas doctor` / `atlas status` / MCP `status` 对用户只反馈：
+- 语言名
+- `CapabilityLevel`（理论能力摘要）
+- `confidence_floor`（语言置信度下限）
+
+禁止在默认输出中展开完整 `FeatureMatrix` 或 “Unsupported Features” 明细列表。
+`FeatureMatrix` 仍用于内部门控与单元测试；能力差异的可观察摘要是 confidence，而不是 feature 枚举。
+
+### 2.12 清理与架构收敛 PR 门禁
 
 清理类 PR 不能只证明“代码少了”，必须证明行为和架构边界没有漂移。
 

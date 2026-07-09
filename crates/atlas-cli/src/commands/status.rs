@@ -2,7 +2,7 @@
 
 use crate::runtime::{CommandContext, DbMode};
 use anyhow::Context;
-use atlas_engine::{FeatureSupport, Language, LanguageCapabilityProfile};
+use atlas_engine::{Language, LanguageCapabilityProfile};
 
 pub fn run(project: &str) -> anyhow::Result<()> {
     let ctx = CommandContext::open(project, DbMode::ExistingReadOnly)?;
@@ -76,6 +76,9 @@ pub fn run(project: &str) -> anyhow::Result<()> {
 }
 
 /// Print per-language capability levels for languages that appear in the project.
+///
+/// Honest L0 summary only: level + confidence floor. Per-feature matrices are
+/// for internal gates, not status dump (see doctor for the same compact view).
 fn print_capability_summary(files_by_language: &[(String, i64)]) {
     let mut lang_names: Vec<&str> = files_by_language.iter().map(|(k, _)| k.as_str()).collect();
     lang_names.sort();
@@ -98,44 +101,8 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
                 profile.capability_level.as_str(),
                 profile.confidence_floor * 100.0
             );
-            let features = &profile.features;
-            println!("    Features:");
-            print_feature("symbols", &features.symbols);
-            print_feature("references", &features.references);
-            print_feature("imports", &features.imports);
-            print_feature("scopes", &features.scopes);
-            print_feature("call_graph", &features.call_graph);
-            print_feature("lexical_bindings", &features.lexical_bindings);
-            print_feature("local_dataflow", &features.local_dataflow);
-            print_feature("use_def", &features.use_def);
-            print_feature("field_access", &features.field_access);
-            print_feature("call_arguments", &features.call_arguments);
-            print_feature("returns_flow", &features.returns_flow);
-            print_feature("cfg", &features.cfg);
-            print_feature("interprocedural", &features.interprocedural_summaries);
         }
     }
-}
-
-fn print_feature(name: &str, fs: &FeatureSupport) {
-    let status = if fs.is_supported() {
-        "supported"
-    } else {
-        "unsupported"
-    };
-    let detail = match fs {
-        FeatureSupport::Supported { limitations, .. } => {
-            if limitations.is_empty() {
-                String::new()
-            } else {
-                format!(" (limitations: {})", limitations.join(", "))
-            }
-        }
-        FeatureSupport::Unsupported { reason } => {
-            format!(" ({reason})")
-        }
-    };
-    println!("      {name:<20} {status}{detail}");
 }
 
 /// Show the indexed scope when set in project metadata.

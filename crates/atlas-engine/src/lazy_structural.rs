@@ -608,7 +608,10 @@ impl LazyStructuralService {
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
         let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let mut facts = extract_file_with_mode(
+        // Post-extract hooks (EXPORT_SYMBOL etc.) run inside extract_file_with_mode.
+        // ResolutionSymbols persistence: exported flag on symbols is written;
+        // initcall edges / syscall diagnostics are not (no raw_edges write).
+        let facts = extract_file_with_mode(
             &frontend,
             *file_id,
             std::path::Path::new(&file_info.path),
@@ -617,22 +620,6 @@ impl LazyStructuralService {
             ExtractionMode::ResolutionSymbols,
             &(),
         )?;
-
-        // Post-extraction: enrich with kernel-specific semantics
-        // Linux augmentation for resolution_symbols:
-        // EXPORT_SYMBOL → sym.exported=true (persisted via write_symbols) ✅
-        // initcall edges, syscall diagnostics → silently dropped
-        //   (raw_edges table not written by upsert_resolution_symbols)
-        let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
-        if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
-            tracing::info!(
-                "Linux augment: {} exports, {} initcall edges, {} syscalls for {}",
-                aug.symbols_exported,
-                aug.initcall_edges,
-                aug.syscall_detected,
-                file_info.path,
-            );
-        }
 
         // Non-destructive upsert: writes symbols, scopes, and imports
         // without destroying existing structural data or invalidating
@@ -808,7 +795,8 @@ impl LazyStructuralService {
 
         // Extract BEFORE any destructive invalidation — if extraction fails,
         // no destructive operations have been performed.
-        let mut facts = if let Some(t) = token {
+        // Post-extract hooks run inside extract_file_with_mode (shared with index).
+        let facts = if let Some(t) = token {
             extract_file_with_mode(
                 &frontend,
                 *file_id,
@@ -829,18 +817,6 @@ impl LazyStructuralService {
                 &(),
             )?
         };
-
-        // Post-extraction: enrich with kernel-specific semantics
-        let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
-        if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
-            tracing::info!(
-                "Linux augment: {} exports, {} initcall edges, {} syscalls for {}",
-                aug.symbols_exported,
-                aug.initcall_edges,
-                aug.syscall_detected,
-                file_info.path,
-            );
-        }
 
         // CP6: check cancellation before DB write — most critical checkpoint;
         // prevents completed extraction from writing to DB when budget exhausted.
@@ -1265,8 +1241,8 @@ pub(crate) fn rebuild_structural_for_file(
     // 6. Compute hash
     let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-    // 7. Extract structural layer
-    let mut facts = extract_file_with_mode(
+    // 7. Extract structural layer (post-extract hooks run inside extract_file_with_mode)
+    let facts = extract_file_with_mode(
         &frontend,
         *file_id,
         std::path::Path::new(&file_info.path),
@@ -1275,18 +1251,6 @@ pub(crate) fn rebuild_structural_for_file(
         ExtractionMode::Structural,
         &(),
     )?;
-
-    // Post-extraction: enrich with kernel-specific semantics
-    let aug = crate::linux_augment::LinuxAugmenter::augment(&mut facts, &source);
-    if aug.symbols_exported > 0 || aug.initcall_edges > 0 || aug.syscall_detected > 0 {
-        tracing::info!(
-            "Linux augment (rebuild): {} exports, {} initcall edges, {} syscalls for {}",
-            aug.symbols_exported,
-            aug.initcall_edges,
-            aug.syscall_detected,
-            file_info.path,
-        );
-    }
 
     // 8. Write to store (atomic replacement)
     store.replace_file_facts_with_invalidation(file_id, &facts)?;

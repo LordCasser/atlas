@@ -9,6 +9,7 @@ license = "MIT"
 types = { path = "../types" }
 anyhow = "1"
 rayon = "1"
+regex = "1"
 # streaming-iterator removed: tree-sitter 0.25+ uses standard Iterator for QueryCursor
 tracing = "0.1"
 tree-sitter = "0.26"

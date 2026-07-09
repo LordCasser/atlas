@@ -166,7 +166,7 @@ pub fn extract_file_with_mode(
         retain_manifest_top_level_symbols(&mut symbols, root);
         set_symbol_layers(&mut symbols, "manifest");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
-        return Ok(FileFacts {
+        let mut facts = FileFacts {
             file: FileInfo {
                 file_id,
                 path: file_path_str,
@@ -197,7 +197,9 @@ pub fn extract_file_with_mode(
             dataflow_failed: false,
             cfg_failed: false,
             layer: "manifest".to_string(),
-        });
+        };
+        crate::post_extract::apply_post_extract_hooks(&mut facts, source);
+        return Ok(facts);
     }
 
     // 3. Extract and normalize references (skip in ResolutionSymbols mode)
@@ -307,7 +309,7 @@ pub fn extract_file_with_mode(
     if matches!(mode, ExtractionMode::ResolutionSymbols) {
         set_symbol_layers(&mut symbols, "resolution_symbols");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
-        return Ok(FileFacts {
+        let mut facts = FileFacts {
             file: FileInfo {
                 file_id,
                 path: file_path_str,
@@ -338,7 +340,9 @@ pub fn extract_file_with_mode(
             dataflow_failed: false,
             cfg_failed: false,
             layer: "resolution_symbols".to_string(),
-        });
+        };
+        crate::post_extract::apply_post_extract_hooks(&mut facts, source);
+        return Ok(facts);
     }
 
     // 7a. Extract lexical bindings (P7: skip if unsupported)
@@ -733,7 +737,7 @@ pub fn extract_file_with_mode(
         tracing::warn!(file = %file_path_str, "CFG extraction failed for this file");
     }
 
-    Ok(FileFacts {
+    let mut facts = FileFacts {
         file: FileInfo {
             file_id,
             path: file_path_str,
@@ -760,7 +764,10 @@ pub fn extract_file_with_mode(
         dataflow_failed,
         cfg_failed,
         layer: output_layer.to_string(),
-    })
+    };
+    // Shared index/lazy post-extract (EXPORT_SYMBOL, initcall, …).
+    crate::post_extract::apply_post_extract_hooks(&mut facts, source);
+    Ok(facts)
 }
 
 // ---------------------------------------------------------------------------

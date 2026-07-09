@@ -185,6 +185,10 @@ fn print_rebuild_hint(project: &str, db_path: &Path) {
 }
 
 /// Print per-language capability levels for all compiled-in languages.
+///
+/// Surfaces honest L0 theory capability (`CapabilityLevel` + `confidence_floor`)
+/// without dumping per-feature matrices. Feature-level detail stays in
+/// `FeatureMatrix` for gate checks; operators use confidence as the summary.
 fn print_capabilities() {
     let profiles = LanguageCapabilityProfile::all_compiled();
     if profiles.is_empty() {
@@ -194,74 +198,18 @@ fn print_capabilities() {
     println!();
     println!("  Capability Profile by Language:");
     println!(
-        "  {:<18} {:<20} {:<7} Key Limitations",
-        "Language", "Capability Level", "Conf"
+        "  {:<18} {:<20} Confidence Floor",
+        "Language", "Capability Level"
     );
-    println!("  {:-<18} {:-<20} {:-<7} {:-<48}", "", "", "", "");
+    println!("  {:-<18} {:-<20} {:-<16}", "", "", "");
 
     for p in &profiles {
-        let limiter = p
-            .limitations
-            .first()
-            .map(|s| truncate_str(s, 48))
-            .unwrap_or_default();
         println!(
-            "  {:<18} {:<20} {:<4.0}%  {}",
+            "  {:<18} {:<20} {:.0}%",
             p.language,
             p.capability_level.as_str(),
             p.confidence_floor * 100.0,
-            limiter,
         );
-    }
-
-    // Show unsupported features from the FeatureMatrix for each language
-    println!();
-    println!("  Unsupported Features:");
-    for p in &profiles {
-        let feats = &p.features;
-        let unsupported: Vec<&str> = [
-            ("symbols", &feats.symbols),
-            ("references", &feats.references),
-            ("imports", &feats.imports),
-            ("scopes", &feats.scopes),
-            ("call_graph", &feats.call_graph),
-            ("lexical_bindings", &feats.lexical_bindings),
-            ("local_dataflow", &feats.local_dataflow),
-            ("use_def", &feats.use_def),
-            ("field_access", &feats.field_access),
-            ("call_arguments", &feats.call_arguments),
-            ("returns_flow", &feats.returns_flow),
-            ("cfg", &feats.cfg),
-            ("interprocedural", &feats.interprocedural_summaries),
-        ]
-        .iter()
-        .filter_map(|(name, fs)| {
-            if !fs.is_supported() {
-                Some(*name)
-            } else {
-                None
-            }
-        })
-        .collect();
-        if !unsupported.is_empty() {
-            println!("    {:<16}  {}", p.language, unsupported.join(", "));
-        }
-    }
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let mut end = 0;
-        for (idx, ch) in s.char_indices() {
-            let char_end = idx + ch.len_utf8();
-            if char_end > max_len {
-                break;
-            }
-            end = char_end;
-        }
-        format!("{}…", &s[..end])
     }
 }
 
