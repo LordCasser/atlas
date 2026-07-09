@@ -114,9 +114,16 @@ fn prepare_project(args: &serde_json::Value) -> Result<PreparedProject, OpenProj
         ))
     })?);
 
-    store
-        .init_schema()
-        .map_err(|e| open_error(&format!("Schema init failed: {e:#}")))?;
+    store.init_schema().map_err(|e| {
+        let msg = format!("{e:#}");
+        if msg.contains("schema version is") && msg.contains("expected v") {
+            open_error(&format!(
+                "{msg}\n\nFor MCP: remove the project .atlas/atlas.db (or the whole .atlas/ directory), then re-call project(action=\"open\") — the MCP open will create a fresh database automatically. No CLI indexing is needed."
+            ))
+        } else {
+            open_error(&format!("Schema init failed: {msg}"))
+        }
+    })?;
 
     Ok(PreparedProject {
         project_root: canonical.clone(),

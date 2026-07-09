@@ -346,7 +346,7 @@ fn validate_schema_version_for_init(conn: &Connection) -> anyhow::Result<()> {
     }
 
     anyhow::bail!(
-        "Atlas database schema version is v{version}, expected v{CURRENT_SCHEMA_VERSION}. Remove the project .atlas/atlas.db or .atlas/ directory, then rerun atlas index to rebuild it."
+        "Atlas database schema version is v{version}, expected v{CURRENT_SCHEMA_VERSION}. Remove the project .atlas/atlas.db or .atlas/ directory and re-run atlas."
     );
 }
 
@@ -398,7 +398,7 @@ mod tests {
             "error should name the incompatible schema version: {err:#}"
         );
         assert!(
-            err.to_string().contains("rerun atlas index"),
+            err.to_string().contains("re-run atlas"),
             "error should point to rebuild instead of migration: {err:#}"
         );
     }
