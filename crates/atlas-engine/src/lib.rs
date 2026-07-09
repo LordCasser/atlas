@@ -79,11 +79,11 @@ pub use graph::{
 /// Resolution layer: reference resolver and path aliases.
 pub use resolution::{PathAliasConfig, ReferenceResolver, ResolutionStats};
 
-/// Analysis: trace engine (low-level, without lazy dataflow).
+/// Analysis: trace engine (low-level; does not trigger Focus materialize).
 ///
-/// [`RawTraceEngine`] does NOT automatically trigger lazy dataflow loading.
-/// Callers must run [`LazyDataflowService::ensure_for_position`] first, or
-/// use the high-level [`Engine::trace_variable`] which wraps both.
+/// [`RawTraceEngine`] only reads existing dataflow facts. Callers must ensure
+/// facts via [`FocusMaterialize`] / [`LazyDataflowService::ensure_for_position`],
+/// or use high-level [`Engine::trace_variable`] which wraps both.
 pub use analysis::trace::TraceEngine as RawTraceEngine;
 /// Analysis: trace query responses.
 pub use analysis::trace::TraceQueryResponse;
@@ -102,8 +102,8 @@ pub use scoped_search::{
 /// Focus materialize: on-demand structural + dataflow under the Focus solution.
 ///
 /// Construct via [`FocusMaterialize::open`] only. Mechanism service types
-/// (`LazyDataflowService`, `LazyStructuralService`) are ensure APIs, not a
-/// separate product door — do not treat “lazy” as an AccessStrategy.
+/// (`LazyDataflowService`, `LazyStructuralService`) are ensure APIs whose names
+/// mean CS deferred evaluation — not a separate product door or AccessStrategy.
 pub use focus::{
     CandidateProvider, DefaultCandidateProvider, EnsureStructuralResult, FocusMaterialize,
     LazyDataflowService, LazyStructuralService, rebuild_structural_for_file,
@@ -294,9 +294,13 @@ impl Engine {
 
     /// Construct an Engine from an existing [`Arc<Store>`].
     ///
-    /// Uses a fresh [`FocusMaterialize::open`] for this store. Prefer
-    /// [`Engine::from_materialize`] when sharing one materialize stack with
-    /// FocusRuntime / MCP.
+    /// Opens a **new** [`FocusMaterialize`] for this store (own Arc stack).
+    /// Correct for standalone CLI / TUI jobs that own the process boundary.
+    ///
+    /// **MCP / multi-runtime processes:** use [`Engine::from_materialize`] so
+    /// Engine, FocusRuntime, and AnalysisRuntime share one stack identity
+    /// (`FocusMaterialize::same_stack_as`). Calling `from_store` beside an
+    /// existing FocusRuntime creates a second materialize configuration.
     pub fn from_store(store: Arc<Store>, project_root: Option<&std::path::Path>) -> Self {
         let materialize =
             FocusMaterialize::open(store.clone(), project_root.map(|p| p.to_path_buf()));
@@ -304,6 +308,9 @@ impl Engine {
     }
 
     /// Construct an Engine that shares an existing [`FocusMaterialize`] stack.
+    ///
+    /// Preferred when the process already has one Focus materialize configuration
+    /// (e.g. MCP ActiveProject).
     pub fn from_materialize(
         store: Arc<Store>,
         materialize: FocusMaterialize,

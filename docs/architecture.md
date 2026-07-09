@@ -59,7 +59,7 @@
 
 ```text
 crates/
-  atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/lazy, dossier
+  atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/focus_materialize, dossier
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
     crates/db/         SQLite schema v2、Store API、readers、schema 初始化基础设施
@@ -86,6 +86,19 @@ crates/
 
 **AccessStrategy（L3）：** `FullCache`（Index 已 finalize 且 catalog 够富）| `Focus`（否则查询时局部加强）。  
 **禁止**把 “Lazy” 当作第三条产品路径或 AccessStrategy。按需写库（structural/dataflow ensure、`ExtractionMode::LazyDataflow`、`extraction_jobs`）是 **Focus 方案内部的 materialize 机制**，也可被高层 `Engine::trace_*` 薄调用，但对外叙事仍是 Focus / Index。
+
+**机制类型 vs 产品路径（命名保留策略）**
+
+| 名称 | 层 | 实际含义 | 是否改名 |
+|------|----|----------|----------|
+| `Focus` / `Index` | 产品 | 查询时局部加强 / 简单预物化 | 产品词，保持 |
+| `FocusMaterialize` | Focus 内部栈 | 单配置 structural+dataflow ensure + rebuilder | 保持 |
+| `LazyDataflowService` / `LazyStructuralService` | 机制实现 | CS lazy：需要时再 ensure 写库 | **保持**（机制义准确；不是 AccessStrategy） |
+| `LazyWindow` / `LazyBudget` | 机制 IR | 按需窗口与可取消预算 | **保持** |
+| `ExtractionMode::LazyDataflow` | L2 抽取处方 | 增量 unit dataflow/CFG | **保持**（L2 token，非读路径） |
+| 包 `focus_materialize` | 包边界 | 原 `lazy` 包；归属 Focus | 已改（产品归属） |
+
+构造约定：生产路径只经 `FocusMaterialize::open`；`LazyDataflowService::with_structural_rebuilder` 为跨 crate 工厂（`#[doc(hidden)]`），禁止旁路标准 rebuilder。MCP 多 runtime 必须 `Engine::from_materialize` / `AnalysisRuntime::from_materialize` 共享同一栈。
 
 ### 2.2 依赖方向（严格无环）
 

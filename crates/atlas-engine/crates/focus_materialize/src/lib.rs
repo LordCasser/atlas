@@ -4,6 +4,17 @@
 //! `atlas_engine::FocusMaterialize`. Consumers use [`LazyDataflowService`]
 //! only through the engine facade / Focus materialize stack.
 //!
+//! # Naming
+//! Types keep the `Lazy*` prefix as a **mechanism** name (CS deferred evaluation:
+//! build unit dataflow only when a query needs it). That is **not** an
+//! `AccessStrategy` or product path — product paths are Index / Focus only.
+//!
+//! # Construction contract
+//! Do **not** construct [`LazyDataflowService`] outside
+//! `atlas_engine::FocusMaterialize::open` (or test helpers). The public factory
+//! is `#[doc(hidden)]` so cross-crate wiring can inject the structural rebuilder;
+//! ad-hoc rebuilders are unsupported.
+//!
 //! # Crate boundaries
 //! - `planner`: reads structural index from `db`, produces [`LazyWindow`]
 //! - `loader`: reads/writes `db`, calls `extraction`, manages unit extraction state
@@ -45,10 +56,12 @@ pub struct LazyDataflowService {
 impl LazyDataflowService {
     /// Create a service with a required structural self-heal rebuilder.
     ///
-    /// **Not a product entry point.** Callers should use
-    /// `atlas_engine::FocusMaterialize::open`, which wires the standard rebuild
-    /// path. This constructor exists only so the Focus materialize factory can
-    /// build a fully configured service (rebuilder is mandatory).
+    /// **Factory API only (N1).** Cross-crate visibility is required so
+    /// `atlas_engine::FocusMaterialize::open` can inject the standard rebuild
+    /// path. Unconfigured services are unrepresentable; non-standard rebuilders
+    /// are unsupported outside that factory / unit tests.
+    ///
+    /// Prefer `FocusMaterialize::open` or [`Self::for_test`].
     #[doc(hidden)]
     pub fn with_structural_rebuilder(
         store: Arc<Store>,

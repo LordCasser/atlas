@@ -1,19 +1,23 @@
-//! Analysis runtime — Focus materialize for CFG/dataflow ensure.
+//! Analysis runtime — thin ensure facade over shared Focus materialize.
+//!
+//! # Role
+//! Semantic tools (branch_diff, lifecycle, …) need CFG/dataflow facts without
+//! running the full Focus control plane (`FocusRuntime::prepare`). This type is
+//! that **second door by brand only**: same [`FocusMaterialize`] stack as
+//! FocusRuntime / Engine, never a second configuration.
 //!
 //! # Responsibilities
-//! - Single entry point (`ensure_dataflow_for_function`) for on-demand CFG/dataflow
-//! - Shares the project [`FocusMaterialize`] stack (never constructs a second DF service)
-//!
-//! # Dependencies
-//! - `atlas_engine::FocusMaterialize`
+//! - `ensure_dataflow_for_function` / `ensure_cfg_for_function`
+//! - Shares project [`FocusMaterialize`] (construct only via `from_materialize`)
 
 use atlas_engine::{
     CfgEdge, CfgNode, FocusMaterialize, LazyDataflowService, LazyWindow, Store, SymbolId,
 };
 
-/// Provides CFG and dataflow facts for branch_diff and lifecycle analysis.
+/// Thin ensure facade for CFG/dataflow over the project Focus materialize stack.
 ///
-/// Holds the same [`FocusMaterialize`] as FocusRuntime / Engine for this project.
+/// Not a second materialize configuration. Prefer this over calling dataflow
+/// ensure APIs ad hoc from MCP handlers.
 pub struct AnalysisRuntime {
     materialize: FocusMaterialize,
 }
@@ -24,9 +28,11 @@ impl AnalysisRuntime {
         Self { materialize }
     }
 
-    /// Dataflow ensure service (configured rebuilder from FocusMaterialize).
-    #[allow(dead_code)] // used by shared-stack wiring tests and future handlers
-    pub fn lazy_service(&self) -> &LazyDataflowService {
+    /// On-demand dataflow ensure service (`LazyDataflowService` mechanism type).
+    ///
+    /// Name is `dataflow` (same as [`FocusMaterialize::dataflow`]), not a product path.
+    #[allow(dead_code)] // shared-stack wiring tests and diagnostics
+    pub fn dataflow(&self) -> &LazyDataflowService {
         self.materialize.dataflow()
     }
 
@@ -92,6 +98,6 @@ mod tests {
         let m = FocusMaterialize::open(store, None);
         assert!(m.has_structural_rebuilder());
         let ar = AnalysisRuntime::from_materialize(m);
-        assert!(ar.lazy_service().has_structural_rebuilder());
+        assert!(ar.dataflow().has_structural_rebuilder());
     }
 }

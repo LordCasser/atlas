@@ -4,6 +4,10 @@
 //! internal structural + dataflow ensure stack. Index remains the separate
 //! simple pre-materialization path.
 //!
+//! **Mechanism names:** `LazyDataflowService` / `LazyStructuralService` keep the
+//! CS meaning of deferred evaluation (ensure when queried). They are not a
+//! third product path; see `docs/architecture.md` §2.1.1 naming table.
+//!
 //! All production paths for a given project must use [`FocusMaterialize::open`]
 //! so structural self-heal rebuilder and services share one configuration.
 //! [`Clone`] is cheap and shares the same inner services via [`Arc`].

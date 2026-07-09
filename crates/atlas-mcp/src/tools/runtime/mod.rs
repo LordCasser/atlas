@@ -85,7 +85,8 @@
 //!
 //! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()` instead.
 //! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` or `query_runtime.detect_access_strategy()` instead.
-//! - **Direct `lazy_service.ensure_for_function()`** — use `analysis_runtime.ensure_dataflow_for_function()` instead.
+//! - **Direct `materialize.dataflow().ensure_for_function()` from handlers** — use
+//!   `analysis_runtime.ensure_dataflow_for_function()` instead (same stack, single door).
 //! - **Direct `store.upsert_fp_annotation()`** — use `overlay_runtime.upsert_fp_annotation()` to bump generation.
 //! - **Direct `store.upsert_domain_rule()`** — use `overlay_runtime.upsert_domain_rule()` to bump generation.
 //! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()` (detects mode).

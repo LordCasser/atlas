@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Window-level budget for cancellable lazy extraction.
+/// Window-level budget for cancellable on-demand (lazy) extraction.
 ///
-/// Tracks wall-clock time (ms since creation). Focus passes one instance
-/// through every structural extraction in a `FocusWindow`, so individual files
-/// cannot reset the enclosing query window.
+/// Mechanism type: CS “lazy” = work stops when the enclosing Focus window budget
+/// is exhausted. Tracks wall-clock time (ms since creation). Focus passes one
+/// instance through every structural extraction in a `FocusWindow`, so individual
+/// files cannot reset the enclosing query window.
 #[derive(Debug)]
 pub struct LazyBudget {
     budget_ms: u64,

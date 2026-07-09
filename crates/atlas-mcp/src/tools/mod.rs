@@ -4593,7 +4593,7 @@ mod tests {
         assert!(
             project
                 .analysis_runtime
-                .lazy_service()
+                .dataflow()
                 .has_structural_rebuilder(),
             "AnalysisRuntime must share configured Focus materialize dataflow"
         );

@@ -1,8 +1,11 @@
-//! Lazy dataflow types: AnalysisUnit, LazyWindow, VariableFocus.
+//! On-demand (lazy) dataflow types: AnalysisUnit, LazyWindow, VariableFocus.
 //!
-//! These types define the granularity and scope of on-demand dataflow loading.
-//! They are consumed by the `lazy` crate (Planner/Loader) and `extraction`
-//! crate (ExtractionMode::LazyDataflow), but NOT by `analysis` or `db`.
+//! **Mechanism types**, not a product path. “Lazy” means deferred evaluation:
+//! unit dataflow is planned/built only when a Focus query (or thin Engine
+//! wrapper) needs it. Product AccessStrategy remains FullCache | Focus only.
+//!
+//! Consumed by `focus_materialize` (planner/loader) and `extraction`
+//! (`ExtractionMode::LazyDataflow`); not by `analysis` or `db`.
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
 use crate::structs::FactCoverage;
@@ -72,8 +75,10 @@ impl AnalysisUnit {
 // LazyWindow
 // ---------------------------------------------------------------------------
 
-/// Planner output: the set of AnalysisUnits that should have dataflow built
-/// for a given query, ordered by proximity (depth 0 first).
+/// Planner output: AnalysisUnits that should have dataflow built for a query
+/// (ordered by proximity, depth 0 first).
+///
+/// Mechanism IR for Focus materialize — not an AccessStrategy or product mode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LazyWindow {
     /// The unit closest to the query origin.
