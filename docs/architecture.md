@@ -841,10 +841,10 @@ else:
 | 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；单一 materialize 配置；邻域 facts 切片可对拍 |
 
 - **控制面** `FocusRuntime`：构建范围、顺序、closure 可见性、analysis/retry/gaps。Handler 只产 `QueryIntent`。
-- **MCP orchestration**：`contract_for` + `dispatch_*` 为路由入口；handler 纯度由 `handler_purity` 测试 ratchet（禁止新增直连 service；allowlist 只缩不涨）。
+- **MCP orchestration**：`contract_for` + `dispatch_*` 为路由入口；handler 纯度由 `handler_purity` 测试 ratchet（禁止新增直连 service；allowlist 只缩不涨；残量条目必须仍有真实命中）。
 - **Materialize** `FocusMaterialize`：ensure、budget、job 去重、rebuilder。唯一构造 `open`；`FocusRuntime` 构造必填 materialize；prepare 不静默再 `open`。MCP 禁止旁路未配置 dataflow；禁止热路径 `Engine::from_store` 并立 materialize 第二栈。
-- **跨进程写互斥**：CLI `atlas index`/`sync` 持 `FileLock`（`exclusive_lock_pid`）。Focus structural/dataflow **写前** `FileLock::reject_if_held_by_other`：若其他 live PID 持锁则 **立即 reject**（无 wait/queue），诊断码 `cli_index_lock_held` + suggested_action。
-- `AnalysisRuntime`：共享 materialize 上的薄 ensure 门，不是第二配置。
+- **跨进程写互斥**：CLI `atlas index`/`sync` 持 `FileLock`（`exclusive_lock_pid`）。Focus structural/dataflow **写前** 走 `Store::reject_if_exclusive_lock_held_by_other`（filesync 与 dataflow loader 共用诊断源）：若其他 live PID 持锁则 **立即 reject**（无 wait/queue），诊断码 `cli_index_lock_held` + suggested_action。
+- `AnalysisRuntime`：共享 materialize 上的 ensure **与** analysis 编排（能力门控、dataflow I/O、effect composition、lifecycle/branch_diff 引擎调用）。`lifecycle`/`branch_diff` handler 只做 arg 解析 + envelope 渲染。不是第二 materialize 配置。god-router（`mod.rs` 内 focus prepare/lock）仍在 purity allowlist 过渡态。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。
 - `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。
 - Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 full-index / shared pipeline 更新。

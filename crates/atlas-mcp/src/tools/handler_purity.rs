@@ -133,9 +133,13 @@ fn handler_purity_no_new_direct_service_calls() {
         violations.join("\n")
     );
 
-    // Optional: warn via assert that allowlist entries still have hits?
-    // Keep allowlist entries that still need migration; empty unused is OK if file cleaned.
-    let _ = allowlist_unused;
+    // Residual allowlist must still have real hits — drop dead entries, don't leave
+    // vestigial paths that no longer violate (ratchet hygiene).
+    assert!(
+        allowlist_unused.is_empty(),
+        "ALLOWLIST entries with no forbidden hits (remove them):\n{}",
+        allowlist_unused.into_iter().collect::<Vec<_>>().join("\n")
+    );
 }
 
 #[test]
@@ -179,5 +183,57 @@ fn handler_purity_analysis_handlers_have_no_engine_hits() {
             "{rel} must not call lifecycle/branch-diff engines by name (route via AnalysisRuntime):\n{:?}",
             engine_hits
         );
+    }
+}
+
+/// DEBT-8 substance: analysis tool handlers must not own store/composition
+/// orchestration (that lives on AnalysisRuntime). Engine-name purity alone is
+/// insufficient — catch the old facade regression.
+#[test]
+fn handler_purity_analysis_tools_no_orchestration_in_handlers() {
+    const ORCH: &[&str] = &[
+        "find_data_nodes_by_function",
+        "find_dataflow_edges_by_sources",
+        "compose_effects(",
+        "CfgGraph::build",
+        "CppOwnershipRules::load_for",
+        "ResourceOpConfig::default_for",
+    ];
+    let root = tools_src_dir();
+    // lifecycle + branch_diff must be fully dispatcher-owned. graph impact may
+    // still load CFG from the store for multi-node explore; it must not rebuild
+    // composition itself (uses analysis_runtime.semantic_composition_for_function).
+    for rel in ["lifecycle.rs", "branch_diff.rs"] {
+        let path = root.join(rel);
+        let text = std::fs::read_to_string(&path).expect(rel);
+        for pat in ORCH {
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim();
+                if t.starts_with("//") || t.starts_with("//!") {
+                    continue;
+                }
+                assert!(
+                    !line.contains(pat),
+                    "{rel}:{}: analysis tool must not own `{pat}` (move to AnalysisRuntime):\n  {line}",
+                    i + 1
+                );
+            }
+        }
+    }
+    // graph: composition must go through runtime helpers, not compose_effects/CfgGraph.
+    let graph = std::fs::read_to_string(root.join("graph.rs")).expect("graph.rs");
+    for pat in ["compose_effects(", "CfgGraph::build", "FieldLifecycleEngine::", "BranchDiffEngine::"]
+    {
+        for (i, line) in graph.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("//") || t.starts_with("//!") {
+                continue;
+            }
+            assert!(
+                !line.contains(pat),
+                "graph.rs:{}: forbidden analysis orchestration `{pat}`:\n  {line}",
+                i + 1
+            );
+        }
     }
 }

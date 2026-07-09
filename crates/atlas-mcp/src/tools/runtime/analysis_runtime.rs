@@ -431,14 +431,81 @@ mod tests {
         assert!(matches!(err, LifecycleAnalysisErr::UnsupportedLanguage));
     }
 
+    fn insert_fn(store: &Store, lang: Language, name: &str) -> SymbolId {
+        let path = format!("{name}.{}", lang.as_str());
+        let file_id = atlas_engine::FileId::generate(&path);
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id,
+                path,
+                language: lang,
+                content_hash: "h".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+        let sid = SymbolId::generate(&file_id, lang.as_str(), name, "function", None);
+        store
+            .insert_symbols(&[atlas_engine::SymbolDef {
+                id: sid,
+                kind: atlas_engine::SymbolKind::Function,
+                name: name.into(),
+                qualified_name: name.into(),
+                symbol_path: vec![name.into()],
+                file_id,
+                language: lang,
+                range: TextRange::default(),
+                name_range: TextRange::default(),
+                signature: None,
+                visibility: None,
+                exported: false,
+                static_: false,
+                async_: false,
+                container: None,
+                scope_id: None,
+                package_name: None,
+                namespace_path: vec![],
+                layer: "structural".into(),
+            }])
+            .unwrap();
+        sid
+    }
+
+    /// Dispatcher owns C/C++ capability gate — TypeScript must fail even if
+    /// the symbol resolves (not only "missing symbol").
+    #[test]
+    fn capability_gate_rejects_non_cpp_language() {
+        let (ar, store) = runtime_with_store();
+        let sid = insert_fn(store.as_ref(), Language::TypeScript, "ts_fn");
+        let err = ar
+            .require_lifecycle_language(store.as_ref(), &sid)
+            .expect_err("TS is unsupported for lifecycle");
+        assert!(matches!(err, LifecycleAnalysisErr::UnsupportedLanguage));
+    }
+
+    #[test]
+    fn capability_gate_accepts_c_and_cpp() {
+        let (ar, store) = runtime_with_store();
+        for (lang, name) in [(Language::C, "c_fn"), (Language::Cpp, "cpp_fn")] {
+            let sid = insert_fn(store.as_ref(), lang, name);
+            let (qname, got) = ar
+                .require_lifecycle_language(store.as_ref(), &sid)
+                .expect("C/C++ must pass lifecycle gate");
+            assert_eq!(qname, name);
+            assert_eq!(got, lang);
+        }
+    }
+
     #[test]
     fn compose_effects_for_empty_facts_is_default_shaped() {
         let (ar, _) = runtime_with_store();
         let (nodes, edges) = branched_cfg();
         let composition =
             ar.compose_effects_for(&nodes, &edges, &[], &[], Language::C);
-        // Empty dataflow → empty node_effects map is valid composition.
-        assert!(composition.node_effects.is_empty() || !composition.node_effects.is_empty());
+        // No dataflow facts → composer yields empty node_effects.
+        assert!(
+            composition.node_effects.is_empty(),
+            "empty dataflow should not invent effects"
+        );
         let diffs = ar.analyze_branch_diff_semantic(&nodes, &edges, &composition);
         let via_engine = BranchDiffEngine::diff_branches_semantic(&nodes, &edges, &composition);
         assert_eq!(diffs.len(), via_engine.len());
