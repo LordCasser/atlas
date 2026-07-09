@@ -17,10 +17,20 @@ All notable changes to Atlas will be documented in this file.
 - Removed obsolete MCP `init_focus` no-op; no silent second materialize on prepare.
 - Unit dataflow write: invalid `data_node.binding_id` is cleared (SET NULL) so
   Focus ensure no longer drops most unit facts vs Index full (FK guard).
+- Unit `FactCoverage::CALL_EDGES` gated on fresh structural layer + real
+  callsites (same helper for ensure + prebuilt paths).
 - N5 e2e: neighborhood structural/dataflow slices and `FocusRuntime::prepare`
   parity vs Index (`focus_materialize_e2e`, `docs/testing.md` §2.6.2).
 - Shared `apply_post_extract_hooks` for Index and Focus structural (Linux export
   / initcall, etc.).
+- Focus writes **reject** when another process holds CLI `FileLock`
+  (`cli_index_lock_held`); no wait/queue.
+- WindowBudget foreground default `max_iterations=0` (prepare overrides via
+  `iterations_for`); CallGraph strategy `depth!=1` hard-errors.
+- MCP `calls` incoming/outgoing fixed 1-hop + `signature` field; multi-hop via
+  `direction=both`/`depth` or callgraph path.
+- Cross-function trace docs: Focus uses Phase 2 runtime BFS as primary path.
+- Workspace `[workspace.package]` version/edition unified to 1.5.2.
 - Docs: architecture/testing/roadmap/requirements state current rules only;
   change history lives in this file.
 
