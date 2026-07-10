@@ -72,7 +72,9 @@ All notable changes to Atlas will be documented in this file.
   `tools::tests` module from `atlas-mcp/src/tools/mod.rs` to `mod_tests.rs`.
   The module remains a direct child of `tools`, preserving private access and
   test names while reducing the production router file from 5,973 to 2,601
-  lines. Handler decomposition remains separate follow-up work.
+  lines. Likewise move the 1,544-line inline `tools::graph::tests` module to
+  `graph_tests.rs`, reducing production `graph.rs` from 3,747 to 2,203 lines.
+  Handler decomposition remains separate follow-up work.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam

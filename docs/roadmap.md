@@ -402,6 +402,10 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - ✅ `atlas-mcp/src/tools/mod.rs` 的 3,372 行内嵌 `tools::tests` 已机械迁移到
   `mod_tests.rs`；测试仍是 `tools` 的直接子模块，私有访问、测试名和行为不变。
   生产 router 文件由 5,973 行降到 2,601 行。
+- ✅ `atlas-mcp/src/tools/graph.rs` 的 1,544 行内嵌测试同样迁移到
+  `graph_tests.rs`；48 个 `tools::graph::tests` 的模块身份不变，生产文件由
+  3,747 行降到 2,203 行。
 - Remaining: `tools/mod.rs` 的 dispatch / shared helper 仍约 2.6k 行，
-  `tools/graph.rs` 仍约 3.7k 行；后续只按清晰职责边界逐步迁移 handler，
-  不在文件拆分阶段改逻辑或接口。
+  `tools/graph.rs` 的 calls/path/explore/impact 与共享 symbol-resolution helper
+  仍约 2.2k 行；后续只按清晰职责边界逐步迁移 handler，不在文件拆分阶段
+  改逻辑或接口。
