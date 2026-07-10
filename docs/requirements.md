@@ -33,9 +33,9 @@ Atlas 的核心用户是：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie 已实现 **DataflowFull** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。现为默认编译语言之一。
+Cangjie 已实现 **DataflowInterproc** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。现为默认编译语言之一。
 
-当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowFull** frontends。所有 14 种语言均为 DataflowFull 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
+当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowInterproc** frontends。所有 14 种语言均为 DataflowInterproc 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
 
 ## 3. 非目标
 
@@ -58,8 +58,8 @@ Atlas 不做：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie DataflowFull 抽取和调用图；CFG 暂未支持。
-- Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowFull 抽取和调用图；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
+- Cangjie DataflowInterproc 抽取和调用图；CFG 暂未支持。
+- Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowInterproc 抽取和调用图；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
 - 低置信度 name-based resolution。
 
 ## 4. 功能需求
@@ -209,24 +209,24 @@ Level 5: lightweight interprocedural summaries
 
 当前语言能力边界必须以用户可见方式呈现：
 
-所有 14 种语言均为 **DataflowFull** 级别。以下为各语言关键能力差异：
+所有 14 种语言均为 **DataflowInterproc** 级别。以下为各语言关键能力差异：
 
 | 语言 | 当前 trace 边界 | 用户交互展示要求 |
 |---|---|---|
-| TypeScript | DataflowFull: 变量来源、call args、field access、return、CFG、跨函数 ArgToParam+ReturnToCall | 展示完整证据链；跨函数结果标注 depth、summary/heuristic 和 confidence |
-| JavaScript | 与 TypeScript 共用 JS grammar 路径，DataflowFull | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
-| Python | DataflowFull: scope-chain-aware binding, CFG, ArgToParam+ReturnToCall，confidence 0.72 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
-| Java | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
-| C | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
-| C++ | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
-| ArkTS | DataflowFull via TS grammar，confidence 0.60；CFG 未实现 | 显示 `arkts via TypeScript grammar` provenance |
-| Go | DataflowFull: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
-| C# | DataflowFull: ArgToParam+ReturnToCall，CFG，confidence 0.72 | `using_statement` 和 branch/loop CFG；partial classes limitation |
-| Rust | DataflowFull: ArgToParam+ReturnToCall，CFG，confidence 0.70 | 宏与 borrow 语义不建模 |
-| PHP | DataflowFull: ArgToParam+ReturnToCall，confidence 0.62；CFG 未实现 | name-based binding 与动态调用 limitation |
-| Ruby | DataflowFull: ArgToParam+ReturnToCall，CFG，confidence 0.65 | block/yield 为 best-effort |
-| Kotlin | DataflowFull: ArgToParam+ReturnToCall，CFG，confidence 0.67 | extension receiver binding limitation |
-| Cangjie | DataflowFull: ArgToParam+ReturnToCall，CFG，confidence 0.65 | postfixExpression/callSuffix limitation |
+| TypeScript | DataflowInterproc: 变量来源、call args、field access、return、CFG、跨函数 ArgToParam+ReturnToCall | 展示完整证据链；跨函数结果标注 depth、summary/heuristic 和 confidence |
+| JavaScript | 与 TypeScript 共用 JS grammar 路径，DataflowInterproc | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
+| Python | DataflowInterproc: scope-chain-aware binding, CFG, ArgToParam+ReturnToCall，confidence 0.72 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
+| Java | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
+| C | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
+| C++ | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
+| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG 未实现 | 显示 `arkts via TypeScript grammar` provenance |
+| Go | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
+| C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.72 | `using_statement` 和 branch/loop CFG；partial classes limitation |
+| Rust | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.70 | 宏与 borrow 语义不建模 |
+| PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG 未实现 | name-based binding 与动态调用 limitation |
+| Ruby | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.65 | block/yield 为 best-effort |
+| Kotlin | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.67 | extension receiver binding limitation |
+| Cangjie | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.65 | postfixExpression/callSuffix limitation |
 
 承载语言能力的输出（`atlas doctor`、trace envelope、相关 MCP 分析响应）必须从 `LanguageCapabilityProfile` 读取事实，不得在展示层重建能力表。Trace 内层冻结契约包含：
 
@@ -330,7 +330,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 当前基线验收标准：
 
-1. 全部 14 种语言能进入解析路径，均达到 DataflowFull 级别；Cangjie 已提升至 DataflowFull。
+1. 全部 14 种语言能进入解析路径，均达到 DataflowInterproc 级别；Cangjie 已提升至 DataflowInterproc。
 2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V2）。
 3. TUI / MCP `search` 工具能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
@@ -353,9 +353,9 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 阶段完成条件：
 
-1. 所有 14 种 DataflowFull 语言维持 trace 所需 facts 与 ArgToParam/ReturnToCall fixture；CFG 以 capability profile 为准（当前仅 ArkTS、PHP 不支持）。
+1. 所有 14 种 DataflowInterproc 语言维持 trace 所需 facts 与 ArgToParam/ReturnToCall fixture；CFG 以 capability profile 为准（当前仅 ArkTS、PHP 不支持）。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖"指定位置 → 变量来源 → caller path"。
-3. 所有语言维持 DataflowFull 边界；具体 gap 通过 capability profile、golden fixture 和端到端断言文档化，不用 ignored/should-panic 测试伪装已支持能力。
+3. 所有语言维持 DataflowInterproc 边界；具体 gap 通过 capability profile、golden fixture 和端到端断言文档化，不用 ignored/should-panic 测试伪装已支持能力。
 4. MCP 或 high-level `Engine` 能按 file/line/column 查询 trace point / backward trace，并能按 symbol selector 查询 caller path；CLI 当前不提供 trace 子命令。
 5. 输出包含 path steps、源码 range、相关代码片段或 evidence、confidence/provenance、截断说明。
 6. 测试覆盖真实 extraction -> store -> resolution -> dataflow/call graph -> trace 查询链路，并对 `ArgToParam`、`ReturnToCall`、evidence、终态 retry/gaps 等具体语义做断言。

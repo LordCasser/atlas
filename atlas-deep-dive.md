@@ -245,7 +245,7 @@ Bit 4: dataflow      — 过程内数据流
 Bit 5: summaries     — 跨函数摘要
 ```
 
-Atlas 支持 14 种语言，都达到了 DataflowFull 级别，但每种语言的置信度不同（Go 0.78、Java 0.75、C 0.73、Python 0.72、TypeScript/JS 0.60 等）。
+Atlas 支持 14 种语言，都达到了 DataflowInterproc 级别，但每种语言的置信度不同（Go 0.78、Java 0.75、C 0.73、Python 0.72、TypeScript/JS 0.60 等）。
 
 ---
 

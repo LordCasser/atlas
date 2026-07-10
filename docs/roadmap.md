@@ -372,3 +372,17 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 ### 10.2 FeatureMatrix 镜像方法合并
 
 ✅ `FeatureMatrix` 现通过单一私有字段清单生成 supported/unsupported 名称并计算最低置信度，新增能力字段不再需要维护三套镜像列表。
+
+### 10.3 设计味复核结论（2026-07）
+
+对 `_investigation-atlas-full-pipeline-review.md` §6.3 设计味表的独立代码核验结论：
+
+| 设计味 | 判决 | 代码事实 |
+|--------|------|----------|
+| **精度三词爆炸**（Mode/Mask/Precision/Level/GraphMode/IndexMode） | ✅ **已治理** | `architecture.md §1.1`（L29-33）已有 L0-L4 分层命名表；L21+L357 显式禁止再引入第二个 `IndexMode` 类型；`testing.md` L17 已同步。政策+类型层已解决。 |
+| **DataflowFull 总档通胀**（14 语言全 DataflowFull，ArkTS/PHP 无 CFG） | ✅ **已修复** | `capability.rs` L228 枚举为 `CapabilityLevel::DataflowInterproc`——无 `DataflowFull` 存在；ArkTS（L991 `cfg=Unsupported`）和 PHP（L1381）均诚实标注。§2.1 已使用 `DataflowInterproc` 新名。 |
+| **LinuxAugment 双路径漂移**（index/lazy 路径分裂） | ✅ **已收敛** | `post_extract.rs` L1-6：Index 和 lazy structural 统一走 `extract_file_with_mode` -> `apply_post_extract_hooks`；3 个提取入口（extract.rs L201/L344/L769）共用。路径一致性已解决。 |
+| **Schema V2 无迁移** | **已接受策略** | 架构 §6.1 明确"不保留旧 schema 运行时补丁路径"；`doctor` 存在；坏库 reject+重建指引已有。产品策略，非遗留。 |
+| **Focus 塞 engine 源码树** | **真布局债（低优先级）** | `atlas-engine/src/focus/*` 仍在 engine 树内；`focus_materialize` 是唯一已 crate 化的 materialize 子 crate。布局随意但非正确性问题，长期可独立 crate。 |
+
+**结论**：前 3 项已治理/修复/收敛，不应再列为债；Schema V2 是已接受策略；仅 Focus 布局为真债（低优先级）。

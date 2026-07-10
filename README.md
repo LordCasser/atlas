@@ -354,20 +354,20 @@ All 14 languages are compiled by default:
 
 | Language | Extensions | Capability level |
 | --- | --- | --- |
-| TypeScript | `.ts`, `.tsx` | DataflowFull |
-| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowFull |
-| Python | `.py`, `.pyi`, `.pyx` | DataflowFull |
-| Java | `.java` | DataflowFull |
-| C | `.c`, `.h` | DataflowFull |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowFull |
-| ArkTS | `.ets`, `.sts` | DataflowFull via TypeScript grammar |
-| Go | `.go` | DataflowFull |
-| C# | `.cs` | DataflowFull |
-| Rust | `.rs` | DataflowFull |
-| PHP | `.php` | DataflowFull |
-| Ruby | `.rb` | DataflowFull |
-| Kotlin | `.kt`, `.kts` | DataflowFull |
-| Cangjie | `.cj`, `.cangjie` | DataflowFull |
+| TypeScript | `.ts`, `.tsx` | DataflowInterproc |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | DataflowInterproc |
+| Python | `.py`, `.pyi`, `.pyx` | DataflowInterproc |
+| Java | `.java` | DataflowInterproc |
+| C | `.c`, `.h` | DataflowInterproc |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | DataflowInterproc |
+| ArkTS | `.ets`, `.sts` | DataflowInterproc via TypeScript grammar |
+| Go | `.go` | DataflowInterproc |
+| C# | `.cs` | DataflowInterproc |
+| Rust | `.rs` | DataflowInterproc |
+| PHP | `.php` | DataflowInterproc |
+| Ruby | `.rb` | DataflowInterproc |
+| Kotlin | `.kt`, `.kts` | DataflowInterproc |
+| Cangjie | `.cj`, `.cangjie` | DataflowInterproc |
 
 Build variants:
 
