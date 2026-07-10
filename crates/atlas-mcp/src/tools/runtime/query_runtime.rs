@@ -21,11 +21,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use atlas_engine::FileId;
+use atlas_engine::FocusMaterialize;
 use atlas_engine::IncludeRoot;
 use atlas_engine::Store;
-use atlas_engine::FocusMaterialize;
 use atlas_engine::focus::query::QueryIntent;
-use atlas_engine::focus::runtime::{FocusResult, FocusRuntime, AccessStrategy};
+use atlas_engine::focus::runtime::{AccessStrategy, FocusResult, FocusRuntime};
 
 use super::cache_state::CacheState;
 use crate::tools::lazy_refresh::LazyRefreshQueue;
@@ -60,11 +60,7 @@ impl QueryRuntime {
             last_signature_check: Mutex::new(std::time::Instant::now()),
             cached_manual_full_index: RwLock::new(None),
         };
-        let focus_runtime = Mutex::new(FocusRuntime::new(
-            store.clone(),
-            project_root,
-            materialize,
-        ));
+        let focus_runtime = Mutex::new(FocusRuntime::new(store.clone(), project_root, materialize));
         Self {
             focus_runtime,
             cache,

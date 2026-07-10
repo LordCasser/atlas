@@ -18,8 +18,8 @@ use crate::closure_planner::IncludeRoot;
 
 use types::enums::{Language, SymbolKind};
 use types::ids::{FileId, SymbolId};
-use types::structs::KnownGap;
 use types::structs::AnswerQuality;
+use types::structs::KnownGap;
 
 // ---------------------------------------------------------------------------
 // Direction — expansion direction for graph-based strategies

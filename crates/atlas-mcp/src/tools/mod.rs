@@ -110,6 +110,8 @@ pub(crate) mod dependents;
 pub(crate) mod domain_rules;
 pub(crate) mod file_deps;
 pub(crate) mod graph;
+#[cfg(test)]
+mod handler_purity;
 pub(crate) mod lazy_refresh;
 pub(crate) mod lifecycle;
 pub(crate) mod open_project;
@@ -122,14 +124,12 @@ pub(crate) mod status;
 pub(crate) mod symbol_selector;
 pub(crate) mod tool_contract;
 pub(crate) mod tool_schemas;
-#[cfg(test)]
-mod handler_purity;
 pub(crate) mod trace;
 pub(crate) mod usages;
 
 // Re-exports to preserve access paths used by sibling modules and lib.rs.
-pub use tool_schemas::make_all_tools;
 pub(crate) use graph::{CallsDispatch, resolve_calls_dispatch};
+pub use tool_schemas::make_all_tools;
 // Test-only re-exports so mod_tests.rs can reach these via `use super::*;`.
 #[cfg(test)]
 pub(crate) use tool_schemas::{make_trace_tools, merge_edge_deps};

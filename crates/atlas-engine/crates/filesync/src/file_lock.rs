@@ -144,10 +144,7 @@ mod tests {
         store.init_schema().unwrap();
         let foreign_pid: i64 = 2_147_000_000;
         store
-            .set_metadata(
-                "exclusive_lock_pid",
-                &format!("{foreign_pid}:0"),
-            )
+            .set_metadata("exclusive_lock_pid", &format!("{foreign_pid}:0"))
             .unwrap();
         match store.exclusive_lock_held_by_other().unwrap() {
             Some(pid) => {

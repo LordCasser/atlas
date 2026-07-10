@@ -4,7 +4,7 @@
 //! may already exist from prior closures, full index, or other focus jobs.
 //! This module defines the conflict resolution policy.
 
-use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence};
+use types::structs::{AnswerQuality, CoverageTier, SemanticConfidence};
 
 /// Resolution for an edge conflict between existing and incoming.
 #[derive(Debug, Clone, PartialEq, Eq)]

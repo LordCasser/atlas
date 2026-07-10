@@ -20,9 +20,9 @@ use crate::tools::symbol_selector::{
 use serde_json::json;
 
 mod calls;
-mod path;
 mod explore;
 mod impact;
+mod path;
 
 // Re-export calls-dispatch items moved from mod.rs so they remain reachable
 // via `tools::CallsDispatch` / `tools::resolve_calls_dispatch` (used by resume.rs

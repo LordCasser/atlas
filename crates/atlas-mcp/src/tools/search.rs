@@ -5,7 +5,6 @@
 //! only translates JSON args into a [`ScopedSearchRequest`] and converts the
 //! engine response back to the MCP JSON format.
 
-
 use atlas_engine::FileId;
 use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
@@ -17,15 +16,14 @@ use atlas_engine::SymbolKind;
 
 use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
 use super::{
-    MAX_QUERY_LENGTH, ToolCallContext, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64,
-    is_definition_kind, normalize_project_relative_path,
+    MAX_QUERY_LENGTH, ToolCallContext, ToolRouter, add_json_warnings, get_str, get_str_opt,
+    get_u64, is_definition_kind, normalize_project_relative_path,
 };
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 
 use serde_json::{Value, json};
-
 
 // ── MCP response helpers ────────────────────────────────────────────────────
 

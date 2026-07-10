@@ -1,7 +1,7 @@
 //! Tests for edge conflict resolution policy.
 
 use super::edge_policy::*;
-use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence};
+use types::structs::{AnswerQuality, CoverageTier, SemanticConfidence};
 
 fn closure_precision(confidence: SemanticConfidence) -> AnswerQuality {
     AnswerQuality {

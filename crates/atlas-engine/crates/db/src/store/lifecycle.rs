@@ -324,8 +324,8 @@ impl Store {
                     "atlas.db is exclusively locked by another process (PID {pid}), \
                      typically `atlas index` or `atlas sync`"
                 ),
-                suggested_action: "Stop the concurrent CLI index/sync process, then retry the query"
-                    .into(),
+                suggested_action:
+                    "Stop the concurrent CLI index/sync process, then retry the query".into(),
             }),
             Ok(None) => Ok(()),
             Err(e) => Err(ExclusiveLockHeld {

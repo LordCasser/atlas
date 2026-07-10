@@ -387,9 +387,7 @@ impl ScopedSearchService {
                         lazy_truncated_for_latency = true;
                     }
                     let requested_files = file_ids.len();
-                    let ensured = self
-                        .structural
-                        .ensure_structural_for_file_ids(&file_ids)?;
+                    let ensured = self.structural.ensure_structural_for_file_ids(&file_ids)?;
                     triggered_lazy = true;
                     lazy_covered_scope = requested_files >= scope_file_count
                         && !ensured.budget_exceeded

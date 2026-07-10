@@ -20,7 +20,7 @@ use db::{CandidateEdge, ClosureResolution, Store};
 use graph::GraphBuilderStats;
 use types::enums::{EdgeKind, Provenance, ReferenceKind, ResolutionStrategy, SymbolKind};
 use types::ids::EdgeId;
-use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence, SymbolTier};
+use types::structs::{AnswerQuality, CoverageTier, SemanticConfidence, SymbolTier};
 use types::{Confidence, RawEdge, SymbolId};
 
 use super::edge_policy::{EdgeConflictPolicy, EdgeResolution};

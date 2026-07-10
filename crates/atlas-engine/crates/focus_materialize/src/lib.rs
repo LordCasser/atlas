@@ -78,11 +78,7 @@ impl LazyDataflowService {
     /// No-op rebuilder for unit tests that never hit stale-structural self-heal.
     #[cfg(test)]
     pub fn for_test(store: Arc<Store>, project_root: Option<PathBuf>) -> Self {
-        Self::with_structural_rebuilder(
-            store,
-            project_root,
-            Arc::new(|_file_id| Ok(())),
-        )
+        Self::with_structural_rebuilder(store, project_root, Arc::new(|_file_id| Ok(())))
     }
 
     /// Always `true` after public construction: the rebuilder is a required field.

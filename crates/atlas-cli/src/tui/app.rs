@@ -1047,7 +1047,9 @@ impl App {
 /// CLI, MCP, and TUI.  Previously the TUI maintained its own divergent
 /// detection logic; see issue 2.1 in the pre-release review.
 fn detect_catalog_tier(store: &Store) -> String {
-    store.read_catalog_tier().unwrap_or_else(|_| "unknown".into())
+    store
+        .read_catalog_tier()
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────

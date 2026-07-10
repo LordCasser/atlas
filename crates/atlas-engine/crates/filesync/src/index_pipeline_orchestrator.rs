@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use anyhow::Result;
 use db::{
-    FullRebuildGuard, PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
-    KEY_RESOLUTION_GENERATION, Store,
+    FullRebuildGuard, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+    PipelineGrade, Store,
 };
 use extraction::ExtractionMode;
 use resolution::PathAliasConfig;

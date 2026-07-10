@@ -27,13 +27,7 @@ pub struct DirtySet {
 /// `discovered` must contain project-relative paths. Paths that cannot be
 /// normalized as [`SourcePath`] are ignored, matching extraction behavior.
 pub fn build_dirty_set(store: &Store, discovered: &[PathBuf], root: &Path) -> Result<DirtySet> {
-    build_dirty_set_with_required_capability(
-        store,
-        discovered,
-        root,
-        FactCoverage::default(),
-        None,
-    )
+    build_dirty_set_with_required_capability(store, discovered, root, FactCoverage::default(), None)
 }
 
 /// Compute changed files for a target extraction mode.

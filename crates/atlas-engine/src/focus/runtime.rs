@@ -27,12 +27,10 @@ use anyhow::{Context, Result};
 use db::Store;
 use types::enums::Language;
 use types::ids::{FileId, SymbolId};
-use types::structs::{CoverageTier, KnownGap, AnswerQuality, SemanticConfidence, SymbolTier};
+use types::structs::{AnswerQuality, CoverageTier, KnownGap, SemanticConfidence, SymbolTier};
 
 use crate::closure_planner::IncludeRoot;
-use crate::focus::materialize::{
-    CandidateProvider, DefaultCandidateProvider, FocusMaterialize,
-};
+use crate::focus::materialize::{CandidateProvider, DefaultCandidateProvider, FocusMaterialize};
 
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
@@ -1033,7 +1031,7 @@ mod tests;
 ///    leak across queries on reused focus runtime state.
 #[cfg(test)]
 mod include_roots_integration {
-    use super::{BoundaryHit, FocusRuntime, AccessStrategy, hot_region_extension_window};
+    use super::{AccessStrategy, BoundaryHit, FocusRuntime, hot_region_extension_window};
     use crate::closure_planner::IncludeRoot;
     use crate::focus::query::QueryIntent;
     use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};

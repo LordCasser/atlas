@@ -13,7 +13,7 @@ use crate::tools::symbol_selector::{
     SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 use atlas_engine::LazyWindow;
-use atlas_engine::structs::{FactCoverage, CoverageTier};
+use atlas_engine::structs::{CoverageTier, FactCoverage};
 use serde_json::json;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2269,9 +2269,7 @@ namespace {
         );
         // Prefix may be "\Foo" or "Foo" depending on leading slash in source span.
         assert!(
-            call.receiver
-                .as_ref()
-                .is_some_and(|r| r.contains("Foo")),
+            call.receiver.as_ref().is_some_and(|r| r.contains("Foo")),
             "receiver should carry namespace prefix, got {:?}",
             call.receiver
         );

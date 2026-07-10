@@ -595,7 +595,8 @@ fn test_cold_seed_respects_exhausted_window_budget() {
     );
     assert!(
         !engine
-            .materialize.structural()
+            .materialize
+            .structural()
             .has_structural_layer(&seed_id)
             .unwrap(),
         "cancelled cold seed extraction must not write a structural layer"
@@ -661,7 +662,8 @@ fn test_cold_seed_already_building_is_pending_not_budget_gap() {
     );
     assert!(
         !engine
-            .materialize.structural()
+            .materialize
+            .structural()
             .has_structural_layer(&seed_id)
             .unwrap(),
         "non-owner must not write structural facts"

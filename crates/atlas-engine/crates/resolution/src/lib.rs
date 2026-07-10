@@ -2087,9 +2087,9 @@ int use_dev() {
         );
 
         // Call ref simple name + resolved target.
-        let call_resolved = resolved.iter().any(|(r, _)| {
-            r.kind == ReferenceKind::Call && r.name == "GetDev"
-        });
+        let call_resolved = resolved
+            .iter()
+            .any(|(r, _)| r.kind == ReferenceKind::Call && r.name == "GetDev");
         assert!(
             call_resolved,
             "expected resolved Call ref name=GetDev; resolved={:?}",

@@ -1440,7 +1440,10 @@ mod tests {
         match res {
             SymbolResolution::Ambiguous { candidates, .. } => {
                 assert_eq!(candidates.len(), 2);
-                let qnames: Vec<_> = candidates.iter().map(|c| c.qualified_name.as_str()).collect();
+                let qnames: Vec<_> = candidates
+                    .iter()
+                    .map(|c| c.qualified_name.as_str())
+                    .collect();
                 assert!(qnames.contains(&"CertUtils::GetDev"));
                 assert!(qnames.contains(&"OtherUtils::GetDev"));
                 for c in &candidates {

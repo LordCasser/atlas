@@ -4,7 +4,7 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
-## Unreleased
+## [1.5.3] - 2026-07-10
 
 ### Focus materialize (query-time stack)
 
@@ -31,7 +31,9 @@ All notable changes to Atlas will be documented in this file.
 - MCP `calls` incoming/outgoing fixed 1-hop + `signature` field; multi-hop via
   `direction=both`/`depth` or callgraph path.
 - Cross-function trace docs: Focus uses Phase 2 runtime BFS as primary path.
-- Workspace `[workspace.package]` version/edition unified to 1.5.2.
+- Workspace `[workspace.package]` version/edition unified to 1.5.3.
+- `cargo fmt --all` applied across the workspace (40 files reformatted, no
+  behavior change).
 - DEBT-8 foundation: drop dead `AnalysisNeeds::Cfg`/`CfgAndDataflow`; add
   `handler_purity` allowlist ratchet + full V1 `contract_for` coverage tests.
 - DEBT-8 analysis migration: `AnalysisRuntime` is the real dispatcher for

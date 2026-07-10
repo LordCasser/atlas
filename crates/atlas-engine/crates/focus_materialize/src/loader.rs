@@ -20,9 +20,7 @@ use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
 use types::lazy::{AnalysisUnit, LazyWindow};
 use types::structs::FactCoverage;
 
-use crate::constants::{
-    LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL,
-};
+use crate::constants::{LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL};
 use crate::planner::estimate_unit_cost;
 
 /// Structural layer name used in `extraction_state` for file-level rows.

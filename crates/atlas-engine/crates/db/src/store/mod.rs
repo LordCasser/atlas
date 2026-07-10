@@ -52,8 +52,8 @@ pub(crate) mod reference_resolutions;
 pub mod symbol_edge_candidates;
 #[allow(unused_imports)]
 pub use lifecycle::{
-    ExclusiveLockHeld, PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
-    KEY_RESOLUTION_GENERATION,
+    ExclusiveLockHeld, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+    PipelineGrade,
 };
 mod scopes;
 mod stats;

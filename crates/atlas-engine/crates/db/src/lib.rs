@@ -14,11 +14,11 @@ pub use store::domain_rules::DomainRuleRow;
 pub use store::extraction_jobs::{ClaimResult, ExtractionJob};
 pub use store::file_inventory::FileInventoryRow;
 pub use store::symbol_hints::SymbolHint;
-pub use store::{FullRebuildGuard, SqliteCacheStats, Store, StoreStats, WalCheckpointStats};
 pub use store::{
-    ExclusiveLockHeld, PipelineGrade, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH,
-    KEY_RESOLUTION_GENERATION,
+    ExclusiveLockHeld, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
+    PipelineGrade,
 };
+pub use store::{FullRebuildGuard, SqliteCacheStats, Store, StoreStats, WalCheckpointStats};
 pub use store_writers::DbWriteTiming;
 
 // Focus closure types

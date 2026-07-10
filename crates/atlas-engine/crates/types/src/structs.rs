@@ -251,7 +251,6 @@ pub struct AnswerQuality {
     pub confidence: SemanticConfidence,
 }
 
-
 impl AnswerQuality {
     /// Best possible state — full repo, all certain.
     pub fn best() -> Self {
@@ -299,7 +298,11 @@ impl AnswerQuality {
 }
 
 /// Compute precision for lazy dataflow extraction.
-pub fn dataflow_precision(available: usize, planned: usize, budget_exceeded: bool) -> AnswerQuality {
+pub fn dataflow_precision(
+    available: usize,
+    planned: usize,
+    budget_exceeded: bool,
+) -> AnswerQuality {
     if planned == 0 || available == 0 {
         AnswerQuality::worst()
     } else if budget_exceeded || available < planned {
@@ -829,7 +832,6 @@ impl FileFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FactCoverage(u16);
 
-
 impl FactCoverage {
     pub const MANIFEST: u16 = 1 << 0; // top-level symbols known
     pub const STRUCTURAL: u16 = 1 << 1; // full symbols, scopes, refs, callsites
@@ -1072,10 +1074,7 @@ mod tests {
     fn test_capability_mask_has_all_exact() {
         let mask = FactCoverage::new(FactCoverage::MANIFEST | FactCoverage::CFG);
         assert!(mask.has_all(FactCoverage::MANIFEST | FactCoverage::CFG));
-        assert!(
-            !mask
-                .has_all(FactCoverage::MANIFEST | FactCoverage::CFG | FactCoverage::DATAFLOW)
-        );
+        assert!(!mask.has_all(FactCoverage::MANIFEST | FactCoverage::CFG | FactCoverage::DATAFLOW));
     }
 
     #[test]

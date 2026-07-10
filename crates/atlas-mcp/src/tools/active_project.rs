@@ -61,11 +61,8 @@ impl ActiveProject {
 
         let store_query_runtime = StoreQueryRuntime::new(store.clone(), root.clone());
 
-        let engine = Engine::from_materialize(
-            store.clone(),
-            materialize.clone(),
-            Some(root.as_ref()),
-        );
+        let engine =
+            Engine::from_materialize(store.clone(), materialize.clone(), Some(root.as_ref()));
 
         let analysis_runtime = AnalysisRuntime::from_materialize(materialize.clone());
 

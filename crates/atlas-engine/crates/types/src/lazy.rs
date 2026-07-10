@@ -8,8 +8,8 @@
 //! (`ExtractionMode::LazyDataflow`); not by `analysis` or `db`.
 
 use crate::ids::{FileId, ReferenceId, SymbolId};
-use crate::structs::FactCoverage;
 use crate::structs::AnswerQuality;
+use crate::structs::FactCoverage;
 use crate::structs::TextRange;
 use serde::{Deserialize, Serialize};
 

@@ -215,8 +215,7 @@ impl Engine {
     /// Open a database file with a project root for snippet extraction.
     pub fn open_with_root(db_path: &Path, project_root: &Path) -> anyhow::Result<Self> {
         let store = Arc::new(Store::open_db(db_path)?);
-        let materialize =
-            FocusMaterialize::open(store.clone(), Some(project_root.to_path_buf()));
+        let materialize = FocusMaterialize::open(store.clone(), Some(project_root.to_path_buf()));
         let trace =
             analysis::trace::TraceEngine::new_with_root(store.clone(), project_root.to_path_buf());
         Ok(Self::from_parts(store, materialize, trace))

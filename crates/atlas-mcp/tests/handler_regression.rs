@@ -635,7 +635,6 @@ int top_function(void) {
     store.init_schema().expect("init_schema");
     let mut router = ToolRouter::new_empty(store, temp_dir.clone());
 
-
     // ── Unscoped search must return an error ─────────────────────────
     let (resp, err) = call_tool(
         &mut router,
@@ -1195,7 +1194,6 @@ fn concurrent_tool_calls_do_not_deadlock() {
     .expect("write main.c");
 
     let router = ToolRouter::new_empty(store.clone(), dir.path().to_path_buf());
-
 
     // Build the initial graph snapshot so graph-backed tools are live,
     // even if they later return scoped not-found responses.

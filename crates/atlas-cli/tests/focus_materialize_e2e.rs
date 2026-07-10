@@ -380,7 +380,10 @@ fn p3_capability_mask_cfg_gated_by_language() {
         .find(|f| f.path.ends_with(".php"))
         .expect("PHP file");
 
-    let svc = { let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf())); m.dataflow().clone() };
+    let svc = {
+        let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf()));
+        m.dataflow().clone()
+    };
 
     // ── TypeScript: trigger lazy dataflow ─────────────────────────────
     let ts_symbols = store.find_symbols_by_file(&ts_file.file_id).unwrap();
@@ -545,7 +548,10 @@ fn p2_lazy_dataflow_callsite_id_remap() {
     );
     let caller_sym_id = symbols[0].id;
 
-    let svc = { let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf())); m.dataflow().clone() };
+    let svc = {
+        let m = FocusMaterialize::open(store.clone(), Some(tmp.path().to_path_buf()));
+        m.dataflow().clone()
+    };
     let _window = svc
         .ensure_for_function(&caller_sym_id, None)
         .expect("lazy dataflow ensure_for_function");
@@ -901,8 +907,8 @@ fn neighborhood_edges(store: &Store, path_suffixes: &[&str]) -> NeighborhoodEdge
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnitDataflowSlice {
     nodes: Vec<(String, String, u32, u32)>, // kind, name, start, end
-    edges: Vec<(usize, usize, String)>,    // indices into sorted nodes + kind
-    cfg_nodes: Vec<(String, u32, u32)>,    // kind, start, end
+    edges: Vec<(usize, usize, String)>,     // indices into sorted nodes + kind
+    cfg_nodes: Vec<(String, u32, u32)>,     // kind, start, end
 }
 
 fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDataflowSlice {
@@ -1229,11 +1235,7 @@ fn n5_focus_runtime_prepare_structural_neighborhood() {
     assert!(!m.structural().has_structural_layer(&seed_f).unwrap());
     assert!(!m.structural().has_structural_layer(&peer_f).unwrap());
 
-    let mut rt = FocusRuntime::new(
-        foc_store.clone(),
-        Some(foc.path().to_path_buf()),
-        m.clone(),
-    );
+    let mut rt = FocusRuntime::new(foc_store.clone(), Some(foc.path().to_path_buf()), m.clone());
     let intent = QueryIntent::Calls {
         symbol_name: "useAdd".to_string(),
         file_id: Some(seed_f),
@@ -1241,7 +1243,9 @@ fn n5_focus_runtime_prepare_structural_neighborhood() {
         direction: Some("outgoing".to_string()),
         depth: Some(1),
     };
-    let result = rt.prepare(&intent, Vec::new()).expect("FocusRuntime::prepare");
+    let result = rt
+        .prepare(&intent, Vec::new())
+        .expect("FocusRuntime::prepare");
     assert_eq!(
         result.access,
         AccessStrategy::Focus,

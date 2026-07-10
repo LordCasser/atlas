@@ -11,8 +11,8 @@ mod tests {
     use types::enums::{Language, ParseStatus, SymbolKind};
     use types::ids::{FileId, ImportId, SymbolId};
     use types::structs::{
-        CoverageTier, FileInfo, ImportDef, AnswerQuality, SemanticConfidence, SymbolDef, SymbolTier,
-        TextRange,
+        AnswerQuality, CoverageTier, FileInfo, ImportDef, SemanticConfidence, SymbolDef,
+        SymbolTier, TextRange,
     };
     use types::{ImportKind, Visibility, layer, status};
 

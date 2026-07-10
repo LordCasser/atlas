@@ -3,8 +3,8 @@
 use super::types::*;
 use types::enums::{Language, SymbolKind};
 use types::ids::FileId;
-use types::structs::KnownGap;
 use types::structs::AnswerQuality;
+use types::structs::KnownGap;
 
 #[test]
 fn test_default_window_budget() {

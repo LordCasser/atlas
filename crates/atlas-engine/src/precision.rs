@@ -1,4 +1,4 @@
-use types::structs::{CoverageTier, AnswerQuality, SemanticConfidence, SymbolTier};
+use types::structs::{AnswerQuality, CoverageTier, SemanticConfidence, SymbolTier};
 
 /// Compute the precision for structural lazy extraction.
 pub fn structural_precision(built: usize, cached: usize, budget_exceeded: bool) -> AnswerQuality {
@@ -60,7 +60,9 @@ mod tests {
         // Worst (Manifest + Low) → Some action
         assert!(next_action_structural(&AnswerQuality::worst()).is_some());
         // Manifest + Medium → Some action
-        assert!(next_action_structural(&AnswerQuality::manifest(SemanticConfidence::Medium)).is_some());
+        assert!(
+            next_action_structural(&AnswerQuality::manifest(SemanticConfidence::Medium)).is_some()
+        );
         // Partial coverage → Some action
         let partial = AnswerQuality::partial(vec![], SemanticConfidence::Medium);
         assert!(next_action_structural(&partial).is_some());

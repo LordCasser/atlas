@@ -14,7 +14,7 @@ mod tests {
     use db::Store;
     use types::enums::{Language, SymbolKind};
     use types::ids::FileId;
-    use types::structs::{CoverageTier, KnownGap, AnswerQuality, SemanticConfidence, SymbolTier};
+    use types::structs::{AnswerQuality, CoverageTier, KnownGap, SemanticConfidence, SymbolTier};
 
     use super::super::edge_policy::{EdgeConflictPolicy, EdgeResolution};
     use super::super::scheduler::{FocusPriority, FocusScheduler};

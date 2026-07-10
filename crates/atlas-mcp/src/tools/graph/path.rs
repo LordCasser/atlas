@@ -248,7 +248,8 @@ impl ToolRouter {
             let mut hops: Vec<serde_json::Value> =
                 Vec::with_capacity(path.node_indices.len() + path.edges.len());
             for i in 0..path.node_indices.len() {
-                let mut node_json = crate::tools::node_json(store_query, snap, path.node_indices[i], None);
+                let mut node_json =
+                    crate::tools::node_json(store_query, snap, path.node_indices[i], None);
                 if include_code {
                     let node = snap.node(path.node_indices[i]);
                     if let Some(src) = store_query.read_symbol_source(&node.symbol_id) {

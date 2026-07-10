@@ -429,7 +429,10 @@ EXPORT_SYMBOL_GPL(my_exit);
             .find(|s| s.name == "my_exit")
             .expect("my_exit symbol");
         assert!(init.exported, "EXPORT_SYMBOL must set exported on my_init");
-        assert!(exit.exported, "EXPORT_SYMBOL_GPL must set exported on my_exit");
+        assert!(
+            exit.exported,
+            "EXPORT_SYMBOL_GPL must set exported on my_exit"
+        );
         assert!(
             facts.exports.contains(&init.id) && facts.exports.contains(&exit.id),
             "exports list must include EXPORT_SYMBOL targets"
@@ -592,14 +595,9 @@ EXPORT_SYMBOL_GPL(my_exit);
 
         let edges = store.get_all_edges().expect("load edges");
         assert!(
-            edges
-                .iter()
-                .all(|e| e.kind != EdgeKind::RegistersCallback),
+            edges.iter().all(|e| e.kind != EdgeKind::RegistersCallback),
             "resolution_symbols path must not persist initcall raw_edges; got {:?}",
-            edges
-                .iter()
-                .map(|e| e.kind.as_str())
-                .collect::<Vec<_>>()
+            edges.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>()
         );
     }
 }

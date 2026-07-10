@@ -416,11 +416,7 @@ mod tests {
             ),
         ];
         for (name, args, expected) in tools {
-            assert_eq!(
-                contract_for(name, args),
-                *expected,
-                "contract_for({name})"
-            );
+            assert_eq!(contract_for(name, args), *expected, "contract_for({name})");
         }
     }
 

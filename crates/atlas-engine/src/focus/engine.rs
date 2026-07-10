@@ -402,7 +402,11 @@ impl ClosureEngine {
             let symbols = self.store.find_symbols_by_file(file_id)?;
             for sym in &symbols {
                 if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method) {
-                    match self.materialize.dataflow().ensure_for_function(&sym.id, Some(closure_id)) {
+                    match self
+                        .materialize
+                        .dataflow()
+                        .ensure_for_function(&sym.id, Some(closure_id))
+                    {
                         Ok(_) => built += 1,
                         Err(e) => tracing::debug!(%e, symbol=%sym.name, "dataflow build failed"),
                     }
@@ -548,7 +552,11 @@ impl ClosureEngine {
 
         if do_incoming {
             if let FocusSeed::Symbol { name, .. } = &closure.seed {
-                for file_id in self.materialize.structural().candidate_files_referencing(name)? {
+                for file_id in self
+                    .materialize
+                    .structural()
+                    .candidate_files_referencing(name)?
+                {
                     if !closure.visited.contains(&file_id) {
                         result.insert(file_id);
                     }

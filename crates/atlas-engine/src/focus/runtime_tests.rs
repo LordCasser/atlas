@@ -14,11 +14,11 @@ use types::ids::{FileId, SymbolId};
 use types::structs::{FactCoverage, FileInfo, SymbolDef, TextRange};
 use types::{layer, status};
 
+use crate::FocusMaterialize;
 use crate::focus::bootstrap::BootstrapManager;
 use crate::focus::query::QueryIntent;
-use crate::focus::runtime::{FocusRuntime, AccessStrategy};
+use crate::focus::runtime::{AccessStrategy, FocusRuntime};
 use crate::focus::scheduler::FocusPriority;
-use crate::FocusMaterialize;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
