@@ -68,17 +68,21 @@ All notable changes to Atlas will be documented in this file.
   `JobContext` and the dead ClosurePlanner workset/sibling/regex-bootstrap
   branches that public reachability had hidden from dead-code analysis. A
   source ratchet prevents pipeline mechanisms from returning to the facade.
-- God-file reduction (structural only): move the 3,372-line inline
-  `tools::tests` module from `atlas-mcp/src/tools/mod.rs` to `mod_tests.rs`.
-  The module remains a direct child of `tools`, preserving private access and
-  test names while reducing the production router file from 5,973 to 2,601
-  lines. Likewise move the 1,544-line inline `tools::graph::tests` module to
-  `graph_tests.rs`, reducing production `graph.rs` from 3,747 to 2,203 lines.
-  The calls-specific candidate readers, fixed one-hop handlers, bounded BFS,
-  and edge-filter parser now live in `graph/calls.rs`; shared symbol resolution
-  remains in the parent for path/explore/impact. The parent is 1,582 lines and
-  the calls module is 639 lines. Remaining handler decomposition is separate
-  follow-up work.
+- God-file reduction (structural only): extract inline test modules and
+  isolate handlers by domain. `mod.rs` moves 3,372 lines of inline
+  `tools::tests` to `mod_tests.rs` and 1,544 lines of `graph::tests` to
+  `graph_tests.rs` (module identity preserved). `graph.rs` splits its four
+  handlers into `graph/calls.rs` (706), `graph/path.rs` (643),
+  `graph/explore.rs` (393), and `graph/impact.rs` (237). `mod.rs` further
+  extracts 418 lines of tool schemas to `tool_schemas.rs` and 7 entry
+  handlers to their domain modules (`handle_calls` -> `graph/calls.rs`,
+  `handle_project` -> `open_project.rs`, `handle_symbol` ->
+  `search.rs`, `handle_fp_dispatches` -> `annotations.rs`,
+  `handle_domain_rules` -> `domain_rules.rs`, `handle_tasks` ->
+  `atlas_jobs.rs`, `handle_file_dependencies` -> `file_deps.rs`). Final:
+  `mod.rs` 5,973 -> 1,322 (pure core orchestration), `graph.rs` 3,763 ->
+  330 (pure shared helpers). Dependency direction single (child -> parent,
+  no reverse). Handler decomposition complete.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam

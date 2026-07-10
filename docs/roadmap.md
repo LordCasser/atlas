@@ -397,18 +397,34 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 **结论**：前 3 项已治理/修复/收敛，不应再列为债；Schema V2 是已接受策略；仅 Focus 布局为真债（低优先级）。
 
-### 10.4 DEBT-3 god files 拆分
+### 10.4 DEBT-3 god files 拆分（✅ 完成）
 
-- ✅ `atlas-mcp/src/tools/mod.rs` 的 3,372 行内嵌 `tools::tests` 已机械迁移到
-  `mod_tests.rs`；测试仍是 `tools` 的直接子模块，私有访问、测试名和行为不变。
-  生产 router 文件由 5,973 行降到 2,601 行。
-- ✅ `atlas-mcp/src/tools/graph.rs` 的 1,544 行内嵌测试同样迁移到
-  `graph_tests.rs`；48 个 `tools::graph::tests` 的模块身份不变，生产文件由
-  3,747 行降到 2,203 行。
-- ✅ calls 域已按真实依赖边界迁入 `graph/calls.rs`：候选边读取、固定一跳
-  callers/callees、bounded callgraph BFS 和 call-edge 参数解析归该模块；
-  symbol resolution、unresolved-call hint 等跨 path/trace/explore 的 helper 留在父模块。
-  父 `graph.rs` 现 1,582 行，calls 模块 639 行。
-- Remaining: `tools/mod.rs` 的 dispatch / shared helper 仍约 2.6k 行，
-  `tools/graph.rs` 的 path/explore/impact 与共享 symbol-resolution helper 仍约
-  1.6k 行；后续只按清晰职责边界逐步迁移 handler，不在文件拆分阶段改逻辑或接口。
+两个最大 god file 均已降至可维护规模，handler 全部按域隔离。
+
+**`atlas-mcp/src/tools/mod.rs`：5,973 → 1,322 行**
+
+- ✅ 3,372 行内嵌 `tools::tests` 机械迁移到 `mod_tests.rs`（94 个测试，模块身份不变）。
+- ✅ 418 行 tool schema free fn 迁入 `tool_schemas.rs`（13 个 `make_*_tools` / `merge_edge_deps`）。
+- ✅ 7 个 entry handler 迁入所属域模块：
+  - `handle_calls` → `graph/calls.rs`（+ `CallsDispatch` / `resolve_calls_dispatch`）。
+  - `handle_project` → `open_project.rs`。
+  - `handle_symbol` + `handle_symbol_by_position` → `search.rs`。
+  - `handle_fp_dispatches` → `annotations.rs`。
+  - `handle_domain_rules` → `domain_rules.rs`。
+  - `handle_tasks` → `atlas_jobs.rs`。
+  - `handle_file_dependencies` 等 4 个 file-dep handler → `file_deps.rs`（376 行）。
+- 残量 1,322 行 = 纯核心编排：`ToolRouter` struct + 构造 + prepare/refresh/ensure + `call_tool` + `dispatch_*`（8 变体）+ 共享 free fn（`node_json` / `get_str` / `validate_symbol_name_length` 等）+ `apply_focus_result_to_lr` / `known_gap_record`。
+
+**`atlas-mcp/src/tools/graph.rs`：3,763 → 330 行**
+
+- ✅ 1,544 行内嵌测试迁移到 `graph_tests.rs`（48 个测试，模块身份不变）。
+- ✅ 4 个 handler 按依赖边界隔离到 `graph/` 子模块：
+  - `graph/calls.rs`（706 行）：`handle_callers` / `handle_callees` / `handle_callgraph` + `CallsDispatch` + `handle_calls`。
+  - `graph/path.rs`（643 行）：`handle_path` + path-only helpers。
+  - `graph/explore.rs`（393 行）：`handle_explore` + `scoped_explore_resolution` + `parse_source_mode`。
+  - `graph/impact.rs`（237 行）：`handle_impact` + `DEFAULT_IMPACT_EDGES`。
+- 残量 330 行 = 纯共享 helper：symbol resolution、`parse_edge_kind`、`candidate_json`、`resolve_graph_symbol_with_focus_retry`、unresolved-call hint 等 path/calls/explore/impact 共用基础设施。
+
+依赖方向单向（子模块 → 父共享 API，无反向依赖）。所有 `handler_purity` 测试持续绿色。
+
+**后续**：无剩余 handler 拆分任务。`mod.rs` 核心编排（dispatch / prepare / refresh）是 `ToolRouter` 的固有职责，不属 god-file 债。
