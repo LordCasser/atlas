@@ -88,7 +88,7 @@
 //! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` / `detect_access_strategy()`.
 //! - **Direct `materialize.dataflow().ensure_*`** — use `analysis_runtime.ensure_dataflow_*`.
 //! - **Direct `FieldLifecycleEngine::` / `BranchDiffEngine::`** — go through
-//!   `analysis_runtime.run_lifecycle` / `run_branch_diff` (or semantic helpers).
+//!   `analysis_runtime.run_lifecycle` / `run_branch_diff` / `run_semantic_impact`.
 //! - **Direct `store.upsert_fp_annotation()` / `upsert_domain_rule()`** — use `overlay_runtime`.
 //! - **Direct `graph_state.ensure_initialized()`** — use `graph_runtime.ensure_initialized()`.
 //! - **Direct `store` path resolve** — use `store_query_runtime.resolve_file_path()`.

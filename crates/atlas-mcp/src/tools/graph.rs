@@ -3,12 +3,11 @@
 
 use std::collections::HashSet;
 
-use atlas_engine::analysis;
 use atlas_engine::dossier::SourceRepository;
 use atlas_engine::symbol_selector::{MatchInfo, MatchMode};
 use atlas_engine::{
-    EdgeKind, InvestigationFocus, ScopedSearchRequest, ScopedSearchService, SearchAnalysis,
-    Store, SymbolDef, SymbolId, SymbolKind, TraversalDirection,
+    EdgeKind, InvestigationFocus, ScopedSearchRequest, ScopedSearchService, SearchAnalysis, Store,
+    SymbolDef, SymbolId, SymbolKind, TraversalDirection,
 };
 
 use super::analysis_envelope::AnalysisEnvelope;
@@ -2125,162 +2124,16 @@ impl ToolRouter {
             })
             .collect();
 
-        // ── Semantic impact analysis ────────────────────────────────────
-        let mut invariants: Vec<serde_json::Value> = Vec::new();
-        let mut lifecycle_paths: Vec<serde_json::Value> = Vec::new();
-        let domain_rules = if semantic {
-            match self.project().store.list_domain_rules(None, None) {
-                Ok(_rows) => {
-                    let lang_str = self
-                        .project()
-                        .store
-                        .find_symbol_by_id(&sid)
-                        .ok()
-                        .flatten()
-                        .map(|s| s.language.as_str())
-                        .unwrap_or("c");
-                    Some(analysis::CppOwnershipRules::load_for(
-                        &self.project().store,
-                        lang_str,
-                    ))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to load domain rules: {e}");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        if semantic {
-            for &ix in sub.node_indices.iter().take(20) {
-                let node = snap.node(ix);
-                // Only analyze callable symbols
-                if !is_callable_kind(node.kind) {
-                    continue;
-                }
-
-                // Load CFG for this function
-                let cfg_nodes = match self
-                    .project()
-                    .store
-                    .find_cfg_nodes_by_function(&node.symbol_id)
-                {
-                    Ok(nodes) => nodes,
-                    Err(_) => continue,
-                };
-                if cfg_nodes.is_empty() {
-                    continue;
-                }
-
-                // Run branch diff analysis
-                let cfg_edges = self
-                    .project()
-                    .store
-                    .find_cfg_edges_by_function(&node.symbol_id)
-                    .unwrap_or_default();
-                // ── Semantic branch diff + lifecycle via analysis dispatcher ──
-                let lang = self
-                    .project()
-                    .store
-                    .find_symbol_by_id(&node.symbol_id)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.language)
-                    .unwrap_or(atlas_engine::Language::C);
-
-                let ar = &self.project().analysis_runtime;
-                let (composition, _window, _df_err) = ar.semantic_composition_for_function(
-                    &self.project().store,
-                    &node.symbol_id,
-                    &cfg_nodes,
-                    &cfg_edges,
-                    lang,
-                    None,
-                );
-
-                let diffs =
-                    ar.analyze_branch_diff_semantic(&cfg_nodes, &cfg_edges, &composition);
-
-                // Collect fields that have effect annotations (both legacy and semantic)
-                let mut fields: HashSet<String> = HashSet::new();
-                for effects in composition.node_effects.values() {
-                    for eff in effects {
-                        use atlas_engine::effects::PlaceRef;
-                        match &eff.kind {
-                            atlas_engine::effects::SemanticEffectKind::Free {
-                                place: PlaceRef::Field { path },
-                                ..
-                            }
-                            | atlas_engine::effects::SemanticEffectKind::Alloc {
-                                target: PlaceRef::Field { path },
-                                ..
-                            }
-                            | atlas_engine::effects::SemanticEffectKind::Store {
-                                dst: PlaceRef::Field { path },
-                                ..
-                            } => {
-                                if !path.is_empty() {
-                                    fields.insert(path.clone());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // For each field, run lifecycle analysis via dispatcher
-                for field_path in &fields {
-                    let cpp_rules = domain_rules
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or_else(analysis::CppOwnershipRules::default);
-                    let mut lifecycle = ar.analyze_lifecycle_with_composition(
-                        &cfg_nodes,
-                        &cfg_edges,
-                        field_path,
-                        &cpp_rules,
-                        &composition,
-                    );
-                    lifecycle.function_qname = node.qualified_name.clone();
-
-                    if !lifecycle.suspicious_points.is_empty() {
-                        invariants.push(json!({
-                            "function": node.qualified_name,
-                            "field": field_path,
-                            "issue_count": lifecycle.suspicious_points.len(),
-                            "issues": lifecycle.suspicious_points.iter().map(|p| json!({
-                                "line": p.line,
-                                "kind": format!("{:?}", p.kind),
-                                "message": p.message,
-                            })).collect::<Vec<_>>(),
-                        }));
-                    }
-
-                    if lifecycle.transitions.len() >= 2 {
-                        lifecycle_paths.push(json!({
-                            "function": node.qualified_name,
-                            "field": field_path,
-                            "final_state": lifecycle.final_state.as_str(),
-                            "transition_count": lifecycle.transitions.len(),
-                        }));
-                    }
-                }
-
-                // Add branch diffs with asymmetry
-                for diff in &diffs {
-                    if let Some(ref asymmetry) = diff.suspicious_asymmetry {
-                        invariants.push(json!({
-                            "function": node.qualified_name,
-                            "field": diff.common_prefix,
-                            "issue_count": 1,
-                            "issues": [{"kind": "BranchAsymmetry", "message": asymmetry, "line": diff.branch_node_line}],
-                        }));
-                    }
-                }
-            }
-        }
+        let semantic_impact = semantic.then(|| {
+            let target_ids = sub
+                .node_indices
+                .iter()
+                .map(|&ix| snap.node(ix).symbol_id)
+                .collect::<Vec<_>>();
+            project
+                .analysis_runtime
+                .run_semantic_impact(&project.store, &target_ids)
+        });
 
         let total_reached = sub.node_indices.len();
         let truncated = total_reached > total_shown || total_reached >= 1000;
@@ -2299,12 +2152,8 @@ impl ToolRouter {
         if let Some(rm) = resolution_meta_opt {
             resp["resolution"] = rm;
         }
-        if semantic {
-            resp["semantic_impact"] = json!({
-                "invariants_affected": invariants,
-                "lifecycle_paths_affected": lifecycle_paths,
-                "domain_rules_applied": domain_rules.is_some(),
-            });
+        if let Some(semantic_impact) = semantic_impact {
+            resp["semantic_impact"] = json!(semantic_impact);
         }
         {
             let active = self.project();
@@ -2787,11 +2636,23 @@ mod tests {
 
         let router = test_router(store);
         router.ensure_graph_initialized().unwrap();
-        let (resp_str, is_error) =
-            router.handle_impact(&json!({"symbol": "f", "direction": "both"}));
+        let (resp_str, is_error) = router.handle_impact(&json!({
+            "symbol": "f",
+            "direction": "both",
+            "semantic": true
+        }));
         assert!(!is_error, "expected success, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(resp["direction"], "both");
+        assert_eq!(resp["semantic_impact"]["invariants_affected"], json!([]));
+        assert_eq!(
+            resp["semantic_impact"]["lifecycle_paths_affected"],
+            json!([])
+        );
+        assert_eq!(
+            resp["semantic_impact"]["domain_rules_applied"], false,
+            "no persisted C/C++ rule was in scope"
+        );
     }
 
     #[test]
@@ -2956,10 +2817,9 @@ mod tests {
             .as_array()
             .expect("warnings array required when depth is present");
         assert!(
-            warnings.iter().any(|w| w
-                .as_str()
-                .is_some_and(|s| s.contains("depth is not honored")
-                    && s.contains("direction=incoming"))),
+            warnings.iter().any(|w| w.as_str().is_some_and(
+                |s| s.contains("depth is not honored") && s.contains("direction=incoming")
+            )),
             "expected depth-not-honored warning, got: {resp}"
         );
     }
@@ -2984,9 +2844,7 @@ mod tests {
         }));
         assert!(!is_error, "expected success, got: {resp_str}");
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        let callees = resp["callees"]
-            .as_array()
-            .expect("callees array");
+        let callees = resp["callees"].as_array().expect("callees array");
         assert_eq!(
             callees.len(),
             1,
@@ -2994,17 +2852,14 @@ mod tests {
         );
         assert_eq!(callees[0]["qualified_name"], "chain_b");
         assert!(
-            !callees
-                .iter()
-                .any(|n| n["qualified_name"] == "chain_c"),
+            !callees.iter().any(|n| n["qualified_name"] == "chain_c"),
             "grand-callee must not appear under fixed 1-hop callees"
         );
         let warnings = resp["warnings"].as_array().expect("warnings");
         assert!(
-            warnings.iter().any(|w| w
-                .as_str()
-                .is_some_and(|s| s.contains("depth is not honored")
-                    && s.contains("direction=outgoing"))),
+            warnings.iter().any(|w| w.as_str().is_some_and(
+                |s| s.contains("depth is not honored") && s.contains("direction=outgoing")
+            )),
             "expected depth warning on callees, got: {resp}"
         );
     }
@@ -3013,12 +2868,7 @@ mod tests {
     #[test]
     fn callers_include_signature_from_store() {
         let store = test_store();
-        let target = insert_test_symbol_with_sig(
-            &store,
-            "src/tgt.ts",
-            "sig_target",
-            None,
-        );
+        let target = insert_test_symbol_with_sig(&store, "src/tgt.ts", "sig_target", None);
         let caller = insert_test_symbol_with_sig(
             &store,
             "src/caller.ts",
@@ -3833,7 +3683,7 @@ mod tests {
     #[test]
     fn apply_focus_to_lr_is_noop_with_no_focus_data() {
         use crate::tools::analysis_envelope::AnalysisEnvelope;
-        use atlas_engine::focus::runtime::{FocusResult, AccessStrategy};
+        use atlas_engine::focus::runtime::{AccessStrategy, FocusResult};
 
         let result = FocusResult {
             access: AccessStrategy::FullCache,

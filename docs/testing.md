@@ -43,6 +43,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 每种语言的 Manifest 测试必须断言只产生顶层符号。不得仅测试 query parse 成功；fixture 必须包含函数/方法内部局部定义以证明不会过度索引。
 - `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
 - unit 写库 FK：`filter_data_nodes` — 无效 `binding_id` 必须 **SET NULL 保留节点**；无效 `function_id` 才丢弃（`db::fk_guards` 单测）。
+- unit `CALL_EDGES` capability 只有在 structural fresh 且目标 unit 存在真实 callsite 时置位；无调用函数必须保持 unset。
 - MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 materialize 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
 - MCP `branch_diff` / `lifecycle` 必须覆盖按需 CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失；编排必须经 `AnalysisRuntime::run_*`（见 §2.11）。
 - CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
@@ -240,7 +241,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 
 ### 2.11 MCP DEBT-8：handler 纯度与 analysis dispatcher
 
-**目标**：`lifecycle` / `branch_diff` 的能力门控、store I/O、effect composition、引擎调用归
+**目标**：`lifecycle` / `branch_diff` / `impact(semantic=true)` 的能力门控、store I/O、effect composition、引擎调用归
 `AnalysisRuntime`；handler 只做 arg 解析 + 符号解析 + envelope 渲染。禁止「改名 facade」
 （engine 名字藏进 runtime，但 orchestration 仍在 handler）。
 
@@ -250,10 +251,11 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 |------|-------------|---------|
 | 路由 | `contract_for` + `e2e_semantic_analysis_routes_correctly` 等 | `lifecycle`/`branch_diff` → `ToolContract::SemanticAnalysis` → 非 Unknown tool |
 | Engine 名纯度 | `handler_purity_analysis_handlers_have_no_engine_hits` | `lifecycle`/`branch_diff`/`graph` 无 `FieldLifecycleEngine::` / `BranchDiffEngine::` |
-| Orchestration 模式 | `handler_purity_analysis_tools_no_orchestration_in_handlers` | analysis tool handler 无 `find_cfg_*` / `find_data_nodes_*` / `compose_effects(` / `CfgGraph::build` / `CppOwnershipRules::load_for` 等；graph 无 compose/engine 直调 |
+| Orchestration 模式 | `handler_purity_analysis_tools_no_orchestration_in_handlers` | analysis tool handler 无 `find_cfg_*` / `find_data_nodes_*` / `compose_effects(` / `CfgGraph::build` / `CppOwnershipRules::load_for` / runtime helper 拼装等；graph semantic impact 只调 `run_semantic_impact` |
 | Allowlist 卫生 | `handler_purity_no_new_direct_service_calls` + shrink 断言 | 新命中 fail；allowlist 只缩；**残量 entry 必须仍有真实 FORBIDDEN 命中** |
 | Dispatcher 能力门控 | `capability_gate_rejects_non_cpp_language` / `accepts_c_and_cpp` | TS → `UnsupportedLanguage`；C/C++ 通过 |
 | Dispatcher 执行 | `run_lifecycle` / `run_branch_diff` cfg-unavailable 等 | 无 CFG → 结构化错误；非仅路由 smoke |
+| Semantic impact dispatcher | `semantic_impact_*` + `test_handle_impact_response_has_direction` | branch asymmetry 在 runtime 汇总；字段顺序确定；持久化 C/C++ effect rule 与默认 config 合并进入 composer；公开 JSON 结构不漂移 |
 | Lifecycle 语言边界 | `lifecycle_unsupported_language_returns_terminal_gap` | 非 C/C++ → `unsupported_language` gap，非 panic |
 | calls 1-hop 契约 | `callers_depth_param_*` / `callees_with_depth_gt_1_*` / `callers_include_signature_*` | depth 警告；多跳 depth 仍 1-hop；signature 来自 store |
 | Focus⊆Index 邻域 | §2.6.2 N5 + `focus_equivalence_vs_full_index` | Focus 冷路径与 Full 基线多维可比 |

@@ -88,7 +88,9 @@ fn collect_rs_files(dir: &std::path::Path, prefix: &str, out: &mut Vec<(PathBuf,
                 format!("{prefix}/{name}")
             };
             // Skip purity test itself and pure runtime modules (they are the target).
-            if rel == "handler_purity.rs" || rel.starts_with("runtime/") || rel == "tool_contract.rs"
+            if rel == "handler_purity.rs"
+                || rel.starts_with("runtime/")
+                || rel == "tool_contract.rs"
             {
                 continue;
             }
@@ -200,11 +202,13 @@ fn handler_purity_analysis_tools_no_orchestration_in_handlers() {
         "CfgGraph::build",
         "CppOwnershipRules::load_for",
         "ResourceOpConfig::default_for",
+        "list_domain_rules(",
+        "semantic_composition_for_function(",
+        "analyze_lifecycle_with_composition(",
+        "analyze_branch_diff_semantic(",
     ];
     let root = tools_src_dir();
-    // lifecycle + branch_diff must be fully dispatcher-owned. graph impact may
-    // still load CFG from the store for multi-node explore; it must not rebuild
-    // composition itself (uses analysis_runtime.semantic_composition_for_function).
+    // lifecycle + branch_diff must be fully dispatcher-owned.
     for rel in ["lifecycle.rs", "branch_diff.rs"] {
         let path = root.join(rel);
         let text = std::fs::read_to_string(&path).expect(rel);
@@ -222,10 +226,10 @@ fn handler_purity_analysis_tools_no_orchestration_in_handlers() {
             }
         }
     }
-    // graph: composition must go through runtime helpers, not compose_effects/CfgGraph.
+    // graph: target selection stays graph-owned; all semantic analysis I/O and
+    // composition must cross the single run_semantic_impact dispatcher entry.
     let graph = std::fs::read_to_string(root.join("graph.rs")).expect("graph.rs");
-    for pat in ["compose_effects(", "CfgGraph::build", "FieldLifecycleEngine::", "BranchDiffEngine::"]
-    {
+    for pat in ORCH {
         for (i, line) in graph.lines().enumerate() {
             let t = line.trim();
             if t.starts_with("//") || t.starts_with("//!") {

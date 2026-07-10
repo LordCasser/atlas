@@ -417,8 +417,8 @@ fn p3_capability_mask_cfg_gated_by_language() {
         "TS must have STRUCTURAL bit"
     );
     assert!(
-        ts_mask.has(FactCoverage::CALL_EDGES),
-        "TS must have CALL_EDGES bit"
+        !ts_mask.has(FactCoverage::CALL_EDGES),
+        "TS function has no callsite, so CALL_EDGES must remain unset"
     );
     assert!(
         ts_mask.has(FactCoverage::CFG),
@@ -460,8 +460,8 @@ fn p3_capability_mask_cfg_gated_by_language() {
         "PHP must have STRUCTURAL bit"
     );
     assert!(
-        php_mask.has(FactCoverage::CALL_EDGES),
-        "PHP must have CALL_EDGES bit"
+        !php_mask.has(FactCoverage::CALL_EDGES),
+        "PHP function has no callsite, so CALL_EDGES must remain unset"
     );
     assert!(
         !php_mask.has(FactCoverage::CFG),
@@ -1287,4 +1287,3 @@ fn n5_focus_runtime_prepare_structural_neighborhood() {
         "peer must not be structural-complete after prepare(useAdd) — not file-wide fan-out"
     );
 }
-

@@ -18,7 +18,8 @@ All notable changes to Atlas will be documented in this file.
 - Unit dataflow write: invalid `data_node.binding_id` is cleared (SET NULL) so
   Focus ensure no longer drops most unit facts vs Index full (FK guard).
 - Unit `FactCoverage::CALL_EDGES` gated on fresh structural layer + real
-  callsites (same helper for ensure + prebuilt paths).
+  callsites (same helper for ensure + prebuilt paths); capability regression
+  fixtures now require callsite-free units to keep the bit unset.
 - N5 e2e: neighborhood structural/dataflow slices and `FocusRuntime::prepare`
   parity vs Index (`focus_materialize_e2e`, `docs/testing.md` §2.6.2).
 - Shared `apply_post_extract_hooks` for Index and Focus structural (Linux export
@@ -36,6 +37,10 @@ All notable changes to Atlas will be documented in this file.
 - DEBT-8 analysis migration: `AnalysisRuntime` is the real dispatcher for
   `lifecycle` / `branch_diff` / impact-semantic (capability gate, dataflow I/O,
   effect composition, engine call). Handlers parse args + render envelopes only.
+  Impact handlers now pass only graph-selected symbol IDs to
+  `run_semantic_impact`; persisted C/C++ alloc/free/cleanup rules are merged
+  into the language's default effect-composition contract, and semantic field
+  aggregation is deterministic.
   Purity allowlist shrinks to 3 (`mod.rs`, `annotations.rs`, `active_project.rs`);
   unused allowlist entries fail; dual ratchet (engine-name + orchestration
   patterns including `find_cfg_*` / compose / rules load).
