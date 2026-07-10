@@ -74,7 +74,11 @@ All notable changes to Atlas will be documented in this file.
   test names while reducing the production router file from 5,973 to 2,601
   lines. Likewise move the 1,544-line inline `tools::graph::tests` module to
   `graph_tests.rs`, reducing production `graph.rs` from 3,747 to 2,203 lines.
-  Handler decomposition remains separate follow-up work.
+  The calls-specific candidate readers, fixed one-hop handlers, bounded BFS,
+  and edge-filter parser now live in `graph/calls.rs`; shared symbol resolution
+  remains in the parent for path/explore/impact. The parent is 1,582 lines and
+  the calls module is 639 lines. Remaining handler decomposition is separate
+  follow-up work.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam
