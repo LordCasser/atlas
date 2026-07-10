@@ -5,7 +5,7 @@
 //! this module reports raw job rows and active pending counts, not durable
 //! query completion.
 
-use super::ToolRouter;
+use super::{ToolRouter, get_str_opt};
 use serde_json::{Value, json};
 
 impl ToolRouter {
@@ -77,6 +77,68 @@ impl ToolRouter {
         (
             serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string()),
             false,
+        )
+    }
+
+    /// Handle `tasks` tool - aggregate active jobs + atlas jobs.
+    pub(crate) fn handle_tasks(&self, args: &Value) -> (String, bool) {
+        let query_id = get_str_opt(args, "query_id");
+
+        let query = query_id.map(|qid| {
+            self.project().job_runtime.prune_expired_snapshots();
+            let snapshot = self
+                .project()
+                .job_runtime
+                .query_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(qid)
+                .cloned();
+            let Some(snapshot) = snapshot else {
+                return json!({
+                    "query_id": qid,
+                    "status": "not_found_or_expired",
+                    "pending_jobs": 0,
+                });
+            };
+
+            let (pending, retry_after_ms) = snapshot
+                .focus_result
+                .as_ref()
+                .map(|result| self.focus_pending_count_and_eta_ms(result))
+                .unwrap_or((0, 0));
+            let mut state = json!({
+                "query_id": qid,
+                "tool": snapshot.tool_name,
+                "status": if pending == 0 { "ready" } else { "refining" },
+                "pending_jobs": pending,
+            });
+            if pending > 0 {
+                state["retry_after_ms"] = json!(retry_after_ms);
+            }
+            state
+        });
+
+        let (jobs_str, jobs_err) = self.handle_jobs();
+        let atlas_args = if let Some(qid) = query_id {
+            let mut m = serde_json::Map::new();
+            m.insert("query_id".into(), Value::String(qid.to_string()));
+            Value::Object(m)
+        } else {
+            Value::Object(serde_json::Map::new())
+        };
+        let (atlas_str, atlas_err) = self.handle_atlas_jobs(&atlas_args);
+
+        let mut result = json!({
+            "active_extraction_jobs": serde_json::from_str::<Value>(&jobs_str).unwrap_or_default(),
+            "atlas_jobs": serde_json::from_str::<Value>(&atlas_str).unwrap_or_default(),
+        });
+        if let Some(query) = query {
+            result["query"] = query;
+        }
+        (
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+            jobs_err || atlas_err,
         )
     }
 }

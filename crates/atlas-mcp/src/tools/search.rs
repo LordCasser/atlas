@@ -16,12 +16,15 @@ use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
 
 use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
-use super::{MAX_QUERY_LENGTH, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64};
+use super::{
+    MAX_QUERY_LENGTH, ToolCallContext, ToolRouter, add_json_warnings, get_str, get_str_opt, get_u64,
+    is_definition_kind, normalize_project_relative_path,
+};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, parse_symbol_input,
 };
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 
 // ── MCP response helpers ────────────────────────────────────────────────────
@@ -513,5 +516,265 @@ impl ToolRouter {
             "error": hint,
             "candidates": candidates_json,
         })
+    }
+}
+
+impl ToolRouter {
+    /// Handle `symbol` tool - dispatch by `view` to sub-handlers.
+    /// Remaps `symbol` -> `qualified_name` (detail) or passes through as `symbol` (context/usages).
+    pub(crate) fn handle_symbol(&self, ctx: &ToolCallContext, args: &Value) -> (String, bool) {
+        // Position-based lookup: file_path + line as alternative to 'symbol'
+        let file_path = get_str(args, "file_path");
+        let line_opt = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+        if let Some(line) = line_opt.filter(|_| !file_path.is_empty()) {
+            return self.handle_symbol_by_position(ctx, file_path, line, args);
+        }
+
+        let view = get_str(args, "view");
+        // Parse symbol uniformly - handles string, object, and stringified-JSON
+        let input = match parse_symbol_input(args, "symbol") {
+            Ok(inp) => inp,
+            Err(e) => return (e, true),
+        };
+        let qname = match &input {
+            SymbolInput::Name(s) => s.clone(),
+            SymbolInput::Selector(sel) => sel.qualified_name.clone(),
+        };
+        if qname.is_empty() {
+            return ("Missing required 'symbol' parameter".to_string(), true);
+        }
+
+        match view {
+            "detail" | "" => {
+                // Pass original symbol value (string or structured selector) so
+                // handle_symbol_detail can apply file_path/kind/line filtering.
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+                self.handle_symbol_detail(&Value::Object(mapped))
+            }
+            "context" => {
+                // Pass original symbol value - sub-handler parses via parse_symbol_input
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("includeFilePeers") {
+                    mapped.insert("includeFilePeers".into(), v.clone());
+                }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+                self.handle_context(ctx, &Value::Object(mapped))
+            }
+            "usages" => {
+                // Pass original symbol value - sub-handler parses via parse_symbol_input
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    args.get("symbol")
+                        .cloned()
+                        .unwrap_or(Value::String(qname.clone())),
+                );
+                if let Some(v) = args.get("limit") {
+                    mapped.insert("limit".into(), v.clone());
+                }
+                self.handle_usages(&Value::Object(mapped))
+            }
+            other => (
+                format!("Unknown view: '{other}'. Must be one of: detail, context, usages"),
+                true,
+            ),
+        }
+    }
+
+    /// Handle symbol lookup by file position (`file_path` + `line` + optional `column`).
+    ///
+    /// Resolves the position to the nearest enclosing symbol definition, then
+    /// delegates to [`handle_symbol_detail`] with the found `qualified_name`.
+    fn handle_symbol_by_position(
+        &self,
+        ctx: &ToolCallContext,
+        file_path: &str,
+        line: u32,
+        args: &serde_json::Value,
+    ) -> (String, bool) {
+        let column = args
+            .get("column")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(1);
+
+        // Normalize and resolve file_path to FileId
+        let normalized = match normalize_project_relative_path(file_path) {
+            Some(p) => p,
+            None => {
+                return (
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "Invalid file path: '{}'. Path must be project-relative and must not escape the project root.",
+                            file_path
+                        ),
+                    }))
+                    .unwrap_or_default(),
+                    true,
+                );
+            }
+        };
+        let file_id = FileId::generate(&normalized);
+        if self
+            .project()
+            .store
+            .get_file(&file_id)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return (
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "ok": false,
+                    "error": format!(
+                        "File not found in project: '{}'. Use the 'files' action on the 'project' tool to list indexed files.",
+                        file_path
+                    ),
+                }))
+                .unwrap_or_default(),
+                true,
+            );
+        }
+
+        // Ensure structural layer is available for this file
+        let (include_roots, root_warnings) = self.include_roots_from_args(args);
+        let (_focus_result, focus_warnings) =
+            self.prepare_focus_query_with_roots(None, include_roots);
+        let mut warnings: Vec<String> = root_warnings;
+        warnings.extend(focus_warnings);
+
+        // Find all symbols in the file
+        let symbols = match self.project().store.find_symbols_by_file(&file_id) {
+            Ok(syms) => syms,
+            Err(e) => {
+                let mut err = serde_json::json!({
+                    "ok": false,
+                    "error": format!("Failed to read symbols for '{}': {}", file_path, e),
+                });
+                add_json_warnings(&mut err, warnings, vec![]);
+                return (serde_json::to_string_pretty(&err).unwrap_or_default(), true);
+            }
+        };
+
+        // Filter: symbol range must contain the position AND be a definition kind.
+        // TextRange uses 0-based lines/columns; user input is 1-based.
+        let target_line = line.saturating_sub(1);
+        let target_col = column;
+        let mut candidates: Vec<&atlas_engine::SymbolDef> = symbols
+            .iter()
+            .filter(|s| {
+                is_definition_kind(&s.kind)
+                    && s.range.start_line <= target_line
+                    && target_line <= s.range.end_line
+                    && s.range.start_column <= target_col
+                    && target_col <= s.range.end_column
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            let mut err = serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "No symbol definition found at {}:{} (column {})",
+                    file_path, line, column
+                ),
+            });
+            add_json_warnings(&mut err, warnings, vec![]);
+            return (serde_json::to_string_pretty(&err).unwrap_or_default(), true);
+        }
+
+        // Pick innermost (smallest range): sort by (line_span, column_span)
+        candidates.sort_by_key(|s| {
+            (s.range.end_line - s.range.start_line) * 1_000_000
+                + (s.range.end_column - s.range.start_column)
+        });
+        let symbol = candidates[0];
+
+        // Dispatch to the appropriate sub-handler based on view.
+        let view = args.get("view").and_then(|v| v.as_str()).unwrap_or("");
+
+        match view {
+            "detail" | "" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "qualified_name".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+
+                let (mut result, is_error) =
+                    self.handle_symbol_detail(&serde_json::Value::Object(mapped));
+                if !warnings.is_empty() && !is_error {
+                    if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result) {
+                        add_json_warnings(&mut parsed, warnings.clone(), vec![]);
+                        if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+                            result = pretty;
+                        }
+                    }
+                }
+                (result, is_error)
+            }
+            "context" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("includeCode") {
+                    mapped.insert("includeCode".into(), v.clone());
+                }
+                if let Some(v) = args.get("includeFilePeers") {
+                    mapped.insert("includeFilePeers".into(), v.clone());
+                }
+                if let Some(v) = args.get("include_roots") {
+                    mapped.insert("include_roots".into(), v.clone());
+                }
+                self.handle_context(ctx, &serde_json::Value::Object(mapped))
+            }
+            "usages" => {
+                let mut mapped = serde_json::Map::new();
+                mapped.insert(
+                    "symbol".into(),
+                    serde_json::Value::String(symbol.qualified_name.clone()),
+                );
+                if let Some(v) = args.get("limit") {
+                    mapped.insert("limit".into(), v.clone());
+                }
+                self.handle_usages(&serde_json::Value::Object(mapped))
+            }
+            other => (
+                format!("Unknown view: '{other}'. Must be one of: detail, context, usages"),
+                true,
+            ),
+        }
     }
 }

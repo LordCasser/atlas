@@ -24,6 +24,11 @@ mod path;
 mod explore;
 mod impact;
 
+// Re-export calls-dispatch items moved from mod.rs so they remain reachable
+// via `tools::CallsDispatch` / `tools::resolve_calls_dispatch` (used by resume.rs
+// and graph_tests.rs).  The `calls` module is private, so this bridge is required.
+pub(crate) use calls::{CallsDispatch, resolve_calls_dispatch};
+
 /// Extract the qualified name from a SymbolInput for display/logging.
 fn symbol_input_qname(input: &SymbolInput) -> &str {
     match input {

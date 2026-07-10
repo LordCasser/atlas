@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use atlas_engine::{EdgeKind, InvestigationFocus, SymbolId};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{
     not_found_resolution_qname, parse_edge_kind, parse_symbol_arg,
@@ -635,5 +635,72 @@ impl ToolRouter {
             lr
         };
         lr.build_with_args(resp, args, self)
+    }
+}
+
+// ── calls dispatch ────────────────────────────────────────────────────
+
+/// Result of [`resolve_calls_dispatch`] - which sub-handler should process the call.
+pub(crate) enum CallsDispatch {
+    CallGraph(serde_json::Value),
+    Callers,
+    Callees,
+    Error(String),
+}
+
+// ── calls dispatch helper ─────────────────────────────────────────
+
+pub(crate) fn resolve_calls_dispatch(args: &serde_json::Value) -> CallsDispatch {
+    let direction = crate::tools::get_str(args, "direction");
+    let depth = crate::tools::get_u64(args, "depth").unwrap_or(1);
+
+    let raw_kinds = args.get("edge_kinds").and_then(|v| v.as_array());
+    let (is_wildcard, edge_kinds): (bool, Vec<&str>) = match raw_kinds {
+        Some(arr) => {
+            let kinds: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            (kinds.is_empty(), kinds)
+        }
+        None => (false, vec!["calls", "instantiates", "implements"]),
+    };
+    let is_default_edges = !is_wildcard && edge_kinds == ["calls", "instantiates", "implements"];
+    let is_custom_edges = !is_wildcard && !is_default_edges;
+
+    if is_custom_edges || is_wildcard || depth > 1 || direction == "both" || direction.is_empty() {
+        let call_args = if args.get("depth").is_none() {
+            let mut m = serde_json::Map::new();
+            if let Some(obj) = args.as_object() {
+                m.clone_from(obj);
+            }
+            m.insert(
+                "depth".into(),
+                serde_json::Value::Number(serde_json::Number::from(depth)),
+            );
+            serde_json::Value::Object(m)
+        } else {
+            args.clone()
+        };
+        CallsDispatch::CallGraph(call_args)
+    } else {
+        match direction {
+            "incoming" => CallsDispatch::Callers,
+            "outgoing" => CallsDispatch::Callees,
+            other => CallsDispatch::Error(format!(
+                "Unknown direction: '{other}'. Must be one of: incoming, outgoing, both"
+            )),
+        }
+    }
+}
+
+impl ToolRouter {
+    // ── calls ────────────────────────────────────────────────────────
+
+    /// Handle `calls` tool - dispatch by `direction`/`depth`/`edge_kinds`.
+    pub(crate) fn handle_calls(&self, args: &Value) -> (String, bool) {
+        match resolve_calls_dispatch(args) {
+            CallsDispatch::CallGraph(call_args) => self.handle_callgraph(&call_args),
+            CallsDispatch::Callers => self.handle_callers(args),
+            CallsDispatch::Callees => self.handle_callees(args),
+            CallsDispatch::Error(e) => (e, true),
+        }
     }
 }

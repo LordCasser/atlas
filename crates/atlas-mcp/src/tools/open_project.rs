@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use atlas_engine::Store;
 
-use super::{MAX_FILE_PATH_LENGTH, ToolRouter};
+use super::{MAX_FILE_PATH_LENGTH, ToolRouter, get_str};
+
+use serde_json::{Value, json};
 
 #[derive(serde::Serialize)]
 struct OpenProjectResult {
@@ -163,5 +165,44 @@ fn open_error(message: &str) -> OpenProjectResult {
         db_path: String::new(),
         error: Some(message.to_string()),
         note: None,
+    }
+}
+
+impl ToolRouter {
+    /// Handle `project` tool - dispatch by `action`.
+    pub(crate) fn handle_project(&self, args: &Value) -> (String, bool) {
+        let action = get_str(args, "action");
+        match action {
+            "open" => self.handle_open_project(args),
+            "status" if self.project.is_active() => self.handle_status(),
+            "status" => (
+                serde_json::to_string_pretty(&json!({
+                    "state": "not_open",
+                    "active_project": null,
+                    "open_required": true,
+                    "message": "Open a project before using code-analysis tools."
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                false,
+            ),
+            "files" if self.project.is_active() => self.handle_files(args),
+            "files" => (
+                serde_json::to_string_pretty(&json!({
+                    "ok": false,
+                    "error": "No active project. Call project(action=\"open\") first."
+                }))
+                .unwrap_or_else(|e| e.to_string()),
+                true,
+            ),
+            "" => (
+                "Missing required 'action' parameter. Must be one of: open, status, files"
+                    .to_string(),
+                true,
+            ),
+            other => (
+                format!("Unknown action: '{other}'. Must be one of: open, status, files"),
+                true,
+            ),
+        }
     }
 }

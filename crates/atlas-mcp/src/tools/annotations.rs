@@ -13,7 +13,7 @@ use atlas_engine::{FpAnnotation, Language};
 use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 impl ToolRouter {
     /// Handle `annotate_fp_dispatch` — declare a function-pointer dispatch mapping.
@@ -403,6 +403,22 @@ impl ToolRouter {
                 true,
             ),
             Err(e) => (json!({"error": e}).to_string(), true),
+        }
+    }
+}
+
+impl ToolRouter {
+    /// Handle `fp_dispatches` tool - dispatch by `action`.
+    pub(crate) fn handle_fp_dispatches(&self, args: &Value) -> (String, bool) {
+        let action = get_str(args, "action");
+        match action {
+            "add" => self.handle_annotate_fp_dispatch(args),
+            "list" | "" => self.handle_list_fp_annotations(),
+            "delete" => self.handle_delete_fp_annotation(args),
+            other => (
+                format!("Unknown action: '{other}'. Must be one of: add, list, delete"),
+                true,
+            ),
         }
     }
 }

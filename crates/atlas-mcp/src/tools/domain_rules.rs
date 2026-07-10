@@ -1,7 +1,7 @@
 //! Domain rules management tools: annotate, list, learn.
 
 use super::{ToolRouter, get_str};
-use serde_json::json;
+use serde_json::{Value, json};
 
 impl ToolRouter {
     pub(crate) fn handle_atlas_annotate(&self, args: &serde_json::Value) -> (String, bool) {
@@ -165,6 +165,21 @@ impl ToolRouter {
                 )
             }
             Err(e) => (format!("Rule learning failed: {e}"), true),
+        }
+    }
+
+    /// Handle `domain_rules` tool - dispatch by `action`.
+    pub(crate) fn handle_domain_rules(&self, args: &Value) -> (String, bool) {
+        let action = get_str(args, "action");
+        match action {
+            "add" => self.handle_atlas_annotate(args),
+            "list" | "" => self.handle_atlas_domain_rules(args),
+            "delete" => self.handle_atlas_domain_rules(args),
+            "learn" => self.handle_atlas_rule_learn(args),
+            other => (
+                format!("Unknown action: '{other}'. Must be one of: add, list, delete, learn"),
+                true,
+            ),
         }
     }
 }
