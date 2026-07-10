@@ -396,3 +396,12 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 | **Focus 塞 engine 源码树** | **真布局债（低优先级）** | `atlas-engine/src/focus/*` 仍在 engine 树内；`focus_materialize` 是唯一已 crate 化的 materialize 子 crate。布局随意但非正确性问题，长期可独立 crate。 |
 
 **结论**：前 3 项已治理/修复/收敛，不应再列为债；Schema V2 是已接受策略；仅 Focus 布局为真债（低优先级）。
+
+### 10.4 DEBT-3 god files 拆分
+
+- ✅ `atlas-mcp/src/tools/mod.rs` 的 3,372 行内嵌 `tools::tests` 已机械迁移到
+  `mod_tests.rs`；测试仍是 `tools` 的直接子模块，私有访问、测试名和行为不变。
+  生产 router 文件由 5,973 行降到 2,601 行。
+- Remaining: `tools/mod.rs` 的 dispatch / shared helper 仍约 2.6k 行，
+  `tools/graph.rs` 仍约 3.7k 行；后续只按清晰职责边界逐步迁移 handler，
+  不在文件拆分阶段改逻辑或接口。

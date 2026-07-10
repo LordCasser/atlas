@@ -68,6 +68,11 @@ All notable changes to Atlas will be documented in this file.
   `JobContext` and the dead ClosurePlanner workset/sibling/regex-bootstrap
   branches that public reachability had hidden from dead-code analysis. A
   source ratchet prevents pipeline mechanisms from returning to the facade.
+- God-file reduction (structural only): move the 3,372-line inline
+  `tools::tests` module from `atlas-mcp/src/tools/mod.rs` to `mod_tests.rs`.
+  The module remains a direct child of `tools`, preserving private access and
+  test names while reducing the production router file from 5,973 to 2,601
+  lines. Handler decomposition remains separate follow-up work.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam
