@@ -1019,7 +1019,7 @@ analysis response
 - **抽取层 helper 只承载机械一致性**：`languages::shared` 可以统一 `TextRange`、deterministic ID、`ScopeDef`、`BindingDef`、`ReferenceUse`、常见 `DataNode` 默认字段和 call-expression 查找。语言语义差异、特殊 AST 形状、return/callsite/field 规则必须留在各语言 adapter；禁止回到大型 `GenericExtractor`。
 - **trait 默认实现只表达真正相同的规则**：如 `LanguageRuleKinds::validate_rule` 这类跨语言完全一致的校验可以进入 trait default；只要某语言的 rule kind、pattern、metadata 或展示名语义不同，就必须在 registry 中显式覆盖，而不是在默认实现里堆条件分支。
 - **MCP analysis envelope 只有一个构建路径**：触发 lazy structural/dataflow、focus refinement 的 tool 响应必须通过 `AnalysisEnvelope` 等共享 builder 注入 `analysis`（含 `scope`/`summary`/`basis`/`retry_after_ms`）、`coverage_counts`、`gaps`（GapRecord 数组）、`query_id` 和 `QuerySnapshot`。`precision_tier`、`hint`、`lazy_diagnostics`、`partial_result`、`background_refinement`、`analysis.unit`、`analysis.coverage`、`analysis.missing`、`analysis.state`、`analysis.next_action` 等字段不应出现在公共响应中；可操作建议进入稳定的 `error` 或 `message` 字段。需要保留的低层诊断只能进入内部 debug 日志或显式 debug-only 工具。Graph、trace、search、context handler 不得手写同一 envelope，以免字段、status 或 retry 语义漂移。
-- **public facade 改造以目标 API 为准**：快速原型期允许 breaking change。`atlas-engine` re-export 应保持调用者 ergonomics，但不得为了旧调用方式保留 wrapper、别名或过渡 API。`Internal / Prelude` re-export 可以服务 workspace 内部，但不得被文档描述为稳定外部 API。
+- **public facade 改造以目标 API 为准**：快速原型期允许 breaking change。`atlas-engine` 顶层 supported API 由高层入口及其可命名的参数/返回类型闭包组成；不得 re-export `phase_*`、dirty/cleanup、planner workset、parser pool、summary store 等机制入口，也不得为了旧调用方式保留 wrapper、别名或过渡 API。当前 `analysis`、`trace`、`dossier`、`rule_engine` 和 Focus 控制模块因 workspace sibling 消费仍为普通 `pub`，归类为 workspace-internal、不承诺外部稳定；后续只能通过迁移完整 use case 的所有权来收紧，不能用 facade `pub(crate)` 伪造跨 crate 可见性。
 - **测试支撑 API 不等同于死代码**：仅测试使用的构造器或 provider 注入点必须通过 `pub(crate)`、`#[cfg(test)]` 或注释明确用途；不能因为生产路径零调用就删除，也不能用无理由的 `#[allow(dead_code)]` 掩盖。
 - **policy module 可以优先于 policy struct**：当规则只是一组纯函数和一个 guard（例如 index precision downgrade）时，保持自由函数模块更清晰。只有当对象需要携带跨入口生命周期、统一日志/遥测、或多条规则共同依赖的状态时，才引入 `Policy` struct。
 
@@ -1266,7 +1266,7 @@ DoubleFree/UseAfterFree 检测基于每次状态转换。C/C++ 默认资源语�
 
 ## 14. 引擎拆分与 Corpus 边界
 
-- `atlas-engine` facade 目前已稳定，可作为独立 crate 被其他程序使用。
+- `atlas-engine` 的 supported 顶层 facade 可作为独立 crate 使用；稳定范围是高层入口及其公开签名类型闭包。为 MCP/CLI 暂留的 workspace-internal 模块不属于该承诺。
 - `atlas-engine` 不依赖 CLI 参数解析、MCP transport 或交互格式。
 - Corpus（大型多版本源码索引系统）不并入 Atlas 主体。
 - Corpus 以 Git blob/tag/path/version mapping 为核心索引模型，不复用 Atlas 的 path-based `FileId`。

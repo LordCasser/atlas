@@ -952,16 +952,8 @@ impl FocusRuntime {
             return Ok(());
         }
         // Share Arc materialize with foreground + scheduler ClosureEngines.
-        let engine = ClosureEngine::new(
-            self.store.clone(),
-            self.materialize.clone(),
-            self.project_root.clone(),
-        );
-        let sched_engine = ClosureEngine::new(
-            self.store.clone(),
-            self.materialize.clone(),
-            self.project_root.clone(),
-        );
+        let engine = ClosureEngine::new(self.store.clone(), self.materialize.clone());
+        let sched_engine = ClosureEngine::new(self.store.clone(), self.materialize.clone());
 
         self.closure_engine = Some(engine);
         self.scheduler.lock().unwrap().set_engine(sched_engine);

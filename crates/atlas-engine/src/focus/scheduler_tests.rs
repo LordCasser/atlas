@@ -66,7 +66,7 @@ fn test_file_with_structural_complete(store: &Store, path: &str) -> types::ids::
 
 fn test_engine_for_store(store: Arc<Store>) -> super::engine::ClosureEngine {
     let m = crate::FocusMaterialize::open(store.clone(), None);
-    super::engine::ClosureEngine::new(store, m, None)
+    super::engine::ClosureEngine::new(store, m)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

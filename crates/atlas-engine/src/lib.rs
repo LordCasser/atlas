@@ -40,8 +40,6 @@ pub mod focus;
 mod index_precision;
 /// Investigation context: MCP-session-scoped analysis focus for Focus job prioritization.
 pub mod investigation;
-/// Unified job context: shared cancellation and progress for long-running operations.
-pub mod job_context;
 mod lazy_budget;
 /// AnswerQuality tier computation for Focus materialize transparency.
 pub mod precision;
@@ -53,18 +51,19 @@ pub mod symbol_selector;
 
 // ── Stable Public API ─────────────────────────────────────────────────────
 // These items form the intended, stable contract of the Atlas engine.
-// External consumers should rely only on these.  Breaking changes will
-// be signaled by a semver bump.
+// External consumers should rely only on these. During the current prototype
+// phase, intentional breaking changes are documented rather than shimmed.
 
 /// Extraction: entry points and mode control.
 pub use extraction::{
-    ExtractionMode, create_frontend, extract_file_with_mode, parse_analysis_mode,
+    ExtractionMode, LanguageFrontend, create_frontend, extract_file_with_mode, parse_analysis_mode,
 };
 
 /// Sync layer: core indexing pipeline and progress protocol.
 pub use filesync::{
-    ChangedFiles, FileLock, IndexLockHeld, IndexPipeline, IndexPipelineOptions, NoopSink, PhaseName,
-    ProgressEvent, ProgressSink, SyncEngine,
+    ChangedFiles, FileLock, IndexLockHeld, IndexPipeline, IndexPipelineOptions, IndexPipelineStats,
+    NoopSink, PhaseName, ProgressEvent, ProgressSink, SyncEngine, SyncStats,
+    index_pipeline::PipelinePhaseTiming,
 };
 
 /// Database store and schema version.
@@ -72,12 +71,14 @@ pub use db::{CURRENT_SCHEMA_VERSION, Store};
 
 /// Graph layer: builder, query engine, snapshots, annotation materialization.
 pub use graph::{
-    GraphBuilder, GraphEngine, GraphPath, GraphSnapshot, NodeIx, TraversalDirection,
-    materialize_annotations,
+    CallGraphView, CompositePathScore, ForwardFrontier, FrontierNode, GraphBuilder,
+    GraphBuilderStats, GraphEngine, GraphPath, GraphSnapshot, NodeIx, PathBreakpoint,
+    PathBreakpointKind, PathEdge, PathEdgeDirection, RankedPath, Subgraph, TraversalConfig,
+    TraversalDirection, materialize_annotations,
 };
 
 /// Resolution layer: reference resolver and path aliases.
-pub use resolution::{PathAliasConfig, ReferenceResolver, ResolutionStats};
+pub use resolution::{PathAliasConfig, PathAliasResolver, ReferenceResolver, ResolutionStats};
 
 /// Analysis: trace engine (low-level; does not trigger Focus materialize).
 ///
@@ -88,11 +89,12 @@ pub use analysis::trace::TraceEngine as RawTraceEngine;
 /// Analysis: trace query responses.
 pub use analysis::trace::TraceQueryResponse;
 
-/// Context layer: AI context builder (callers, callees, peers).
-pub use context::ContextBuilder;
+/// Context layer: AI context builder and its public view types.
+pub use context::{CalleeDetail, CallerDetail, ContextBuilder, ContextView};
 
-/// Search layer: FTS5 + fuzzy search engine.
-pub use search::{SearchEngine, SearchResult};
+/// Search layer: FTS5 + fuzzy search engine and query parser.
+pub use search::query_parser::{ParsedQuery, parse_query};
+pub use search::{SearchEngine, SearchOptions, SearchResult};
 
 /// Scoped search: shared orchestration for MCP/TUI search with lazy structural fallback.
 pub use scoped_search::{
@@ -135,7 +137,7 @@ pub use closure_planner::IncludeRoot;
 pub use index_precision::{guard_against_precision_downgrade, is_rich_catalog_tier};
 
 /// Workspace abstractions.
-pub use workspace::Workspace;
+pub use workspace::{ProjectRoot, SourcePath, Workspace};
 
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
@@ -147,78 +149,16 @@ pub use types::*;
 // (CLI, MCP, TUI).  They may change between minor versions without
 // notice.  External integrators should not rely on them.
 
-/// Closure planner internals: planner, dependency closure, prioritized worksets.
-pub use closure_planner::{ClosurePlanner, DependencyClosure, PrioritizedWorkset};
-
-/// Index precision internals: mode names and downgrade detection helpers.
-pub use index_precision::{
-    extraction_mode_name, recommended_extract_recipe_for, would_downgrade_index_precision,
-};
-
-
-
 /// Analysis: lifecycle and branch diff engines (full crate re-export).
 pub use analysis;
-/// Analysis: domain rules, lifecycle proof, and rule learning.
-pub use analysis::domain_rules;
-pub use analysis::lifecycle_proof;
-/// Analysis: C/C++ ownership rules consumer.
-pub use analysis::ownership_rules::CppOwnershipRules;
-pub use analysis::rule_learning;
-/// Analysis: summary builder.
-pub use analysis::summary::SummaryBuilder;
 /// Analysis: trace module (for qualified access to trace sub-items).
 pub use analysis::trace;
-
-/// Context internals: caller/callee detail types and context view.
-pub use context::{CalleeDetail, CallerDetail, ContextView};
 
 /// Dossier: Symbol Dossier builder for atlas_explore tool.
 pub use dossier;
 
-/// Summary persistence internals: build stats and low-level store.
-pub use db::summary::{SummaryBuildStats, SummaryStore};
-
 /// Domain rules: language-agnostic rule engine (aliased).
 pub use domain_rules as rule_engine;
-
-/// Extraction internals: language frontends, parser pool, grammar registry.
-pub use extraction::{
-    LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig, available_languages,
-};
-
-/// Sync layer internals: dirty-set tracking, phase functions, pipeline runners.
-pub use filesync::{
-    DirtySet, ExtractedFile, ExtractedFiles, ExtractionPhaseStats, GraphResult, IndexPipelineStats,
-    SyncStats, WriteBatchStats, build_dirty_set, clean_stale_file_ids, clean_stale_file_paths,
-    discovery, phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
-    phase_commit_path_alias_config, phase_dirty_check, phase_discover, phase_extract_serial,
-    phase_finalize, phase_init_frontends, phase_materialize_annotations, phase_resolve_and_build,
-    phase_write_batched, phase_write_single, run_index_pipeline, source_file_id,
-};
-
-/// Graph layer internals: advanced query types and path internals.
-pub use graph::{
-    CallGraphView, CompositePathScore, ForwardFrontier, FrontierNode, GraphBuilderStats,
-    PathBreakpoint, PathBreakpointKind, PathEdge, PathEdgeDirection, RankedPath, Subgraph,
-    TraversalConfig,
-};
-
-/// Job context: shared cancellation token and progress sink for long operations.
-pub use job_context::JobContext;
-
-/// Resolution internals: path-alias resolver, session, config hashing.
-pub use resolution::{
-    PATH_ALIAS_CONFIG_FILES, PathAliasResolver, ResolutionSession, commit_config_hashes,
-    detect_config_change,
-};
-
-pub use search::SearchOptions;
-/// Search internals: query parser and options.
-pub use search::query_parser::{ParsedQuery, parse_query};
-
-/// Workspace internals: project root and source path types.
-pub use workspace::{ProjectRoot, SourcePath};
 
 // ─── Engine ────────────────────────────────────────────────────────────────
 
@@ -546,6 +486,36 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facade_does_not_reexport_pipeline_mechanisms() {
+        let facade = include_str!("lib.rs")
+            .split("// ─── Engine")
+            .next()
+            .expect("facade declarations precede Engine implementation");
+        for forbidden in [
+            "ClosurePlanner",
+            "DependencyClosure",
+            "PrioritizedWorkset",
+            "JobContext",
+            "LanguageRegistry",
+            "ParseWorkerPool",
+            "ResolutionSession",
+            "SummaryStore",
+            "WorkerConfig",
+            "build_dirty_set",
+            "clean_stale_file_ids",
+            "clean_stale_file_paths",
+            "phase_",
+            "run_index_pipeline",
+            "source_file_id",
+        ] {
+            assert!(
+                !facade.contains(forbidden),
+                "facade must not re-export internal mechanism {forbidden}"
+            );
+        }
+    }
 
     #[test]
     fn engine_constructs_in_memory() {

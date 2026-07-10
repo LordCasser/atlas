@@ -24,12 +24,15 @@ use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBud
 
 fn test_closure_engine(store: Arc<Store>) -> ClosureEngine {
     let m = FocusMaterialize::open(store.clone(), None);
-    ClosureEngine::new(store, m, None)
+    ClosureEngine::new(store, m)
 }
 
-fn test_closure_engine_with_root(store: Arc<Store>, project_root: Option<std::path::PathBuf>) -> ClosureEngine {
+fn test_closure_engine_with_root(
+    store: Arc<Store>,
+    project_root: Option<std::path::PathBuf>,
+) -> ClosureEngine {
     let m = FocusMaterialize::open(store.clone(), project_root.clone());
-    ClosureEngine::new(store, m, project_root)
+    ClosureEngine::new(store, m)
 }
 
 /// Create an in-memory Store with schema initialized.
@@ -282,7 +285,6 @@ fn test_locate_seed_symbol() {
             lazy_structural,
             crate::focus::materialize::dataflow_for_test(store, None),
         ),
-        None,
     );
 
     let window = FocusWindow {
@@ -738,7 +740,6 @@ fn test_build_closure_records_gap_on_missing_file() {
             lazy_structural,
             crate::focus::materialize::dataflow_for_test(store, None),
         ),
-        None,
     );
 
     let window = FocusWindow {
@@ -1835,7 +1836,6 @@ fn cold_incoming_callgraph_materializes_reference_candidates() {
             lazy_structural,
             crate::focus::materialize::dataflow_for_test(store.clone(), None),
         ),
-        None,
     );
     let window = FocusWindow {
         seed: FocusSeed::Symbol {
@@ -2524,7 +2524,6 @@ fn test_scoped_resolution_empty_closure_no_crash() {
             lazy_structural,
             crate::focus::materialize::dataflow_for_test(store.clone(), None),
         ),
-        None,
     );
 
     let window = FocusWindow {

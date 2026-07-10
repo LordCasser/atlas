@@ -13,7 +13,7 @@
 //!
 //! # Strategies
 //!
-//! - [`ClosureStrategy::ImportNeighborhood`] delegates to [`ClosurePlanner`].
+//! - [`ClosureStrategy::ImportNeighborhood`] delegates to `ClosurePlanner`.
 //! - [`ClosureStrategy::SameDirectory`] uses [`Store::list_file_ids_in_scope`].
 //! - [`ClosureStrategy::CallGraph`] expands via scoped reference resolutions
 //!   from the DB (calls/inbound calls), limited to depth=1 per iteration with
@@ -79,15 +79,10 @@ pub struct ClosureEngine {
     pub(crate) materialize: FocusMaterialize,
     pub(crate) resolver: RefCell<ReferenceResolver>,
     pub(crate) graph_builder: FocusGraphBuilder,
-    pub(crate) project_root: Option<std::path::PathBuf>,
 }
 
 impl ClosureEngine {
-    pub fn new(
-        store: Arc<Store>,
-        materialize: FocusMaterialize,
-        project_root: Option<std::path::PathBuf>,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, materialize: FocusMaterialize) -> Self {
         let resolver = RefCell::new(ReferenceResolver::new(store.clone()));
         let graph_builder = FocusGraphBuilder::new(store.clone());
         ClosureEngine {
@@ -95,7 +90,6 @@ impl ClosureEngine {
             materialize,
             resolver,
             graph_builder,
-            project_root,
         }
     }
 
@@ -678,14 +672,12 @@ impl ClosureEngine {
             return Ok(Vec::new());
         }
 
-        let planner = ClosurePlanner::new(self.store.clone(), self.project_root.clone())
+        let planner = ClosurePlanner::new(self.store.clone())
             .with_include_roots(window.include_roots.clone())
             .with_limits(depth, max_files.max(1));
         let mut dependencies = HashSet::new();
         for file_id in &closure.files {
-            let planned = planner.plan_closure(file_id)?;
-            dependencies.extend(planned.direct_deps);
-            dependencies.extend(planned.transitive_deps);
+            dependencies.extend(planner.plan_dependencies(file_id)?);
         }
         dependencies.retain(|file_id| !closure.files.contains(file_id));
         let mut dependencies: Vec<_> = dependencies.into_iter().collect();

@@ -1,9 +1,8 @@
 //! ClosurePlanner — dependency-closure-aware lazy extraction planning.
 //!
 //! Given a seed file (e.g., `bar.ts` that imports `./foo`), the
-//! ClosurePlanner expands the build set to include dependency files
-//! BEFORE the seed is built, ensuring symbols from dependencies are
-//! resolvable during cross-file reference resolution.
+//! ClosurePlanner returns a bounded import dependency set. Focus materializes
+//! resolution symbols for that set before scoped cross-file resolution.
 //!
 //! # Design
 //!
@@ -22,14 +21,10 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::LazyLock;
 
 use anyhow::Result;
 use db::Store;
-use regex::Regex;
-use types::ids::{FileId, ImportId};
-use types::structs::ImportDef;
-use types::{ImportKind, layer, status};
+use types::ids::FileId;
 
 /// A directory to search when resolving angle-bracket includes (`#include <...>`).
 ///
@@ -40,47 +35,18 @@ pub struct IncludeRoot {
     pub path: String,
 }
 
-/// Snapshot of a seed file's dependency graph.
-#[derive(Debug, Clone)]
-pub struct DependencyClosure {
-    pub seed_file: FileId,
-    /// Depth 1: files the seed directly imports.
-    pub direct_deps: Vec<FileId>,
-    /// Depth 2+: files that dependencies import.
-    pub transitive_deps: Vec<FileId>,
-    /// Dependencies that are missing a structural layer.
-    pub missing_structural: Vec<FileId>,
-    /// Dependencies that are missing a resolution_symbols layer
-    /// (and not already covered by missing_structural).
-    pub missing_resolution_symbols: Vec<FileId>,
-    /// Dependencies that are missing even a manifest layer.
-    pub missing_manifest: Vec<FileId>,
-    /// Deepest BFS level reached in this closure.
-    pub max_depth_reached: usize,
-    /// Total number of unique files in the closure (incl. seed).
-    pub total_files: usize,
-}
-
-/// Ordered build list for lazy extraction: dependencies first, seed last.
-#[derive(Debug)]
-pub struct PrioritizedWorkset {
-    pub order: Vec<FileId>,
-}
-
 /// Plans dependency closures for lazy extraction.
-pub struct ClosurePlanner {
+pub(crate) struct ClosurePlanner {
     store: Arc<Store>,
-    project_root: Option<std::path::PathBuf>,
     include_roots: Vec<IncludeRoot>,
     max_depth: usize,
     max_closure_files: usize,
 }
 
 impl ClosurePlanner {
-    pub fn new(store: Arc<Store>, project_root: Option<std::path::PathBuf>) -> Self {
+    pub(crate) fn new(store: Arc<Store>) -> Self {
         Self {
             store,
-            project_root,
             include_roots: Vec::new(),
             max_depth: 2,
             max_closure_files: 30,
@@ -88,7 +54,7 @@ impl ClosurePlanner {
     }
 
     /// Override the default BFS depth and file-count limits.
-    pub fn with_limits(mut self, max_depth: usize, max_closure_files: usize) -> Self {
+    pub(crate) fn with_limits(mut self, max_depth: usize, max_closure_files: usize) -> Self {
         self.max_depth = max_depth;
         self.max_closure_files = max_closure_files;
         self
@@ -98,44 +64,28 @@ impl ClosurePlanner {
     ///
     /// Each root is a project-relative directory to search when resolving
     /// `#include <...>` directives (C/C++).
-    pub fn with_include_roots(mut self, roots: Vec<IncludeRoot>) -> Self {
+    pub(crate) fn with_include_roots(mut self, roots: Vec<IncludeRoot>) -> Self {
         self.include_roots = roots;
         self
     }
 
-    /// Compute the dependency closure for a seed file.
+    /// Compute the bounded import dependencies for a seed file.
     ///
     /// BFS from seed through imports, resolving module strings to file_ids.
     /// Respects [`self.max_depth`] and [`self.max_closure_files`].
-    pub fn plan_closure(&self, seed: &FileId) -> Result<DependencyClosure> {
+    pub(crate) fn plan_dependencies(&self, seed: &FileId) -> Result<Vec<FileId>> {
         let mut visited: HashSet<FileId> = HashSet::new();
         let mut queue: VecDeque<FileId> = VecDeque::new();
 
         visited.insert(*seed);
         queue.push_back(*seed);
 
-        let mut direct_deps: Vec<FileId> = Vec::new();
-        let mut transitive_deps: Vec<FileId> = Vec::new();
-        let mut missing_structural: Vec<FileId> = Vec::new();
-        let mut missing_resolution_symbols: Vec<FileId> = Vec::new();
-        let mut missing_manifest: Vec<FileId> = Vec::new();
-        let mut max_depth_reached: usize = 0;
-
-        // Classify the seed file itself
-        self.classify_file(
-            seed,
-            &mut missing_structural,
-            &mut missing_resolution_symbols,
-            &mut missing_manifest,
-        );
-
-        for depth in 0..self.max_depth {
+        let mut dependencies = Vec::new();
+        for _ in 0..self.max_depth {
             let level_size = queue.len();
             if level_size == 0 {
                 break;
             }
-            max_depth_reached = depth;
-
             // Collect files at this BFS level
             let mut current_level: Vec<FileId> = Vec::with_capacity(level_size);
             for _ in 0..level_size {
@@ -143,16 +93,6 @@ impl ClosurePlanner {
             }
 
             for file_id in &current_level {
-                // Classify dep files at this depth
-                if depth > 0 {
-                    self.classify_file(
-                        file_id,
-                        &mut missing_structural,
-                        &mut missing_resolution_symbols,
-                        &mut missing_manifest,
-                    );
-                }
-
                 let importing_file_dir = match self.get_file_dir(file_id) {
                     Ok(d) => d,
                     Err(e) => {
@@ -200,12 +140,7 @@ impl ClosurePlanner {
                     if !visited.contains(&target_id) {
                         visited.insert(target_id);
                         queue.push_back(target_id);
-
-                        if depth == 0 {
-                            direct_deps.push(target_id);
-                        } else {
-                            transitive_deps.push(target_id);
-                        }
+                        dependencies.push(target_id);
                     }
                 }
 
@@ -219,150 +154,10 @@ impl ClosurePlanner {
             }
         }
 
-        Ok(DependencyClosure {
-            seed_file: *seed,
-            direct_deps,
-            transitive_deps,
-            missing_structural,
-            missing_resolution_symbols,
-            missing_manifest,
-            max_depth_reached,
-            total_files: visited.len(),
-        })
-    }
-
-    /// Build a prioritized workset from a closure.
-    ///
-    /// Order: direct deps first, then transitive deps, seed file last.
-    /// Dependencies come BEFORE the seed, so resolution sees stable symbols.
-    pub fn prioritize(&self, closure: &DependencyClosure) -> PrioritizedWorkset {
-        let mut order: Vec<FileId> = Vec::new();
-        let mut seen: HashSet<FileId> = HashSet::new();
-
-        for dep in closure
-            .direct_deps
-            .iter()
-            .chain(closure.transitive_deps.iter())
-        {
-            if seen.insert(*dep) {
-                order.push(*dep);
-            }
-        }
-
-        // Seed file last — so resolution sees its dependencies' symbols
-        if seen.insert(closure.seed_file) {
-            order.push(closure.seed_file);
-        }
-
-        PrioritizedWorkset { order }
-    }
-
-    /// Tiered prioritization: deps (limited) → seed → remaining deps → transitive.
-    ///
-    /// Ensures the seed file is built before budget exhaustion can prevent
-    /// it. Direct deps before seed ensure cross-file resolution works on
-    /// the symbols that matter most.
-    pub fn prioritize_with_reservation(
-        &self,
-        closure: &DependencyClosure,
-        max_deps_before_seed: usize,
-    ) -> PrioritizedWorkset {
-        let mut order: Vec<FileId> = Vec::new();
-        let mut seen: HashSet<FileId> = HashSet::new();
-
-        // Tier 1: first N direct deps (ensures resolution can find key symbols)
-        for dep in closure.direct_deps.iter().take(max_deps_before_seed) {
-            if seen.insert(*dep) {
-                order.push(*dep);
-            }
-        }
-
-        // Tier 2: seed file — the user's actual query target
-        if seen.insert(closure.seed_file) {
-            order.push(closure.seed_file);
-        }
-
-        // Tier 3: remaining direct deps
-        for dep in closure.direct_deps.iter().skip(max_deps_before_seed) {
-            if seen.insert(*dep) {
-                order.push(*dep);
-            }
-        }
-
-        // Tier 4: transitive deps (lowest priority; may be skipped on budget exhaustion)
-        for dep in &closure.transitive_deps {
-            if seen.insert(*dep) {
-                order.push(*dep);
-            }
-        }
-
-        PrioritizedWorkset { order }
-    }
-
-    /// Convenience: plan + prioritize in one call.
-    pub fn plan_for_seed(&self, seed: &FileId) -> Result<PrioritizedWorkset> {
-        // Bootstrap: if seed is manifest-only and has no imports in DB,
-        // scan the source file directly for import statements.
-        let _ = self.bootstrap_imports_from_source(seed);
-
-        // Discover same-name companion files (e.g., "foo.c" ↔ "foo.h").
-        let siblings = self.discover_sibling_files(seed)?;
-
-        let mut closure = self.plan_closure(seed)?;
-
-        // Inject discovered sibling files as additional direct deps, so
-        // they are built before the seed during lazy extraction.
-        for sibling_id in &siblings {
-            if !closure.direct_deps.contains(sibling_id)
-                && !closure.transitive_deps.contains(sibling_id)
-                && *sibling_id != closure.seed_file
-            {
-                closure.direct_deps.push(*sibling_id);
-                closure.total_files += 1;
-            }
-        }
-
-        Ok(self.prioritize_with_reservation(&closure, 10))
+        Ok(dependencies)
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
-
-    /// Classify a file for missing layers.
-    fn classify_file(
-        &self,
-        file_id: &FileId,
-        missing_structural: &mut Vec<FileId>,
-        missing_resolution_symbols: &mut Vec<FileId>,
-        missing_manifest: &mut Vec<FileId>,
-    ) {
-        if !self.has_complete_layer(file_id, layer::STRUCTURAL) {
-            missing_structural.push(*file_id);
-        }
-        // resolution_symbols: structural is a superset, so only track when
-        // neither structural nor resolution_symbols is complete.
-        if !self.has_complete_layer(file_id, layer::STRUCTURAL)
-            && !self.has_complete_layer(file_id, layer::RESOLUTION_SYMBOLS)
-        {
-            missing_resolution_symbols.push(*file_id);
-        }
-        if !self.has_complete_layer(file_id, layer::MANIFEST) {
-            missing_manifest.push(*file_id);
-        }
-    }
-
-    /// Check whether a file has a complete layer matching its current
-    /// content hash.
-    fn has_complete_layer(&self, file_id: &FileId, layer_name: &str) -> bool {
-        let file_info = match self.store.get_file(file_id) {
-            Ok(Some(fi)) => fi,
-            _ => return false,
-        };
-
-        match self.store.get_file_extraction_state(file_id, layer_name) {
-            Ok(Some((s, hash))) => s == status::COMPLETE && hash == file_info.content_hash,
-            _ => false,
-        }
-    }
 
     /// Get the parent directory of a file's project-relative path.
     ///
@@ -432,161 +227,6 @@ impl ClosurePlanner {
         }
         Ok(None)
     }
-
-    /// Discover same-name companion files (e.g., "foo.c" ↔ "foo.h").
-    ///
-    /// When processing a seed `.c` file, discovers a same-name `.h` in the
-    /// same directory; when processing a `.h` file, discovers a same-name
-    /// `.c`.  Other extensions (`.cc`, `.cpp`, `.cxx`, `.hpp`, `.hxx`) are
-    /// also handled.
-    fn discover_sibling_files(&self, file_id: &FileId) -> Result<Vec<FileId>> {
-        let file_info = match self.store.get_file(file_id)? {
-            Some(fi) => fi,
-            None => return Ok(vec![]),
-        };
-        let path = std::path::Path::new(&file_info.path);
-        let parent = match path.parent() {
-            Some(p) => p,
-            None => return Ok(vec![]),
-        };
-        let stem = match path.file_stem() {
-            Some(s) => s.to_string_lossy().to_string(),
-            None => return Ok(vec![]),
-        };
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        // Determine the companion extension
-        let companion_ext = if ext == "c" || ext == "cc" || ext == "cpp" || ext == "cxx" {
-            "h"
-        } else if ext == "h" || ext == "hpp" || ext == "hxx" {
-            "c"
-        } else {
-            return Ok(vec![]);
-        };
-
-        // Check if companion file exists in DB
-        let companion_path = parent.join(format!("{stem}.{companion_ext}"));
-        let normalized = normalize_path(&companion_path);
-        let companion_id = FileId::generate(&normalized);
-        match self.store.get_file(&companion_id)? {
-            Some(_) => Ok(vec![companion_id]),
-            None => Ok(vec![]),
-        }
-    }
-
-    /// Bootstrap imports for a seed file by scanning source directly.
-    ///
-    /// This is used when the seed file is manifest-only and has no imports
-    /// in the database.  Scans for C #include and C++ include patterns
-    /// directly from source text.
-    ///
-    /// Errors are logged but not propagated — the caller falls back to
-    /// DB-only import lookup.
-    fn bootstrap_imports_from_source(&self, file_id: &FileId) -> Result<()> {
-        // Only bootstrap if no imports exist yet
-        match self.store.find_imports_by_file(file_id) {
-            Ok(imports) if !imports.is_empty() => return Ok(()),
-            Err(_) => { /* proceed with bootstrap */ }
-            _ => { /* proceed with bootstrap */ }
-        }
-
-        let file_info = self
-            .store
-            .get_file(file_id)?
-            .ok_or_else(|| anyhow::anyhow!("file not found: {file_id:?}"))?;
-
-        let resolved_path = self.resolve_source_path(&file_info.path);
-        let source = match std::fs::read_to_string(&resolved_path) {
-            Ok(s) => s,
-            Err(_) => return Ok(()), // File not on disk — skip
-        };
-
-        // Scan for include/import patterns
-        let imports = scan_c_includes(file_id, &source);
-
-        // Write discovered imports to DB
-        if !imports.is_empty() {
-            self.store.insert_imports(&imports)?;
-        }
-        Ok(())
-    }
-
-    fn resolve_source_path(&self, relative: &str) -> std::path::PathBuf {
-        match &self.project_root {
-            Some(root) => root.join(relative),
-            None => std::path::PathBuf::from(relative),
-        }
-    }
-}
-
-// ── C include scanner ───────────────────────────────────────────────────────
-
-/// Scan C source for `#include` directives.
-///
-/// Lightweight regex-based scanner for `#include "..."` and `#include <...>`
-/// patterns.  Used as a fallback when the manifest index lacks import rows.
-///
-/// Distinguishes local from system includes per the C standard:
-/// - `#include "..."` → always relative (searches including file's directory first)
-/// - `#include <...>` → never relative (system/library include paths)
-///
-/// Compiled once, then reused for every scanned C file. Avoids per-call
-/// re-compilation of a static regex pattern.
-static QUOTE_INCLUDE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r##"#include\s+"([^"]+)""##).unwrap());
-
-/// Compiled once, then reused for every scanned C file. Avoids per-call
-/// re-compilation of a static regex pattern.
-static ANGLE_INCLUDE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"#include\s+<([^>]+)>"#).unwrap());
-
-pub(crate) fn scan_c_includes(file_id: &FileId, source: &str) -> Vec<ImportDef> {
-    let quote_re = &QUOTE_INCLUDE_RE;
-    let angle_re = &ANGLE_INCLUDE_RE;
-    let mut imports = Vec::new();
-
-    // Quoted includes: always relative (C standard §6.10.2)
-    for (cap_idx, cap) in quote_re.captures_iter(source).enumerate() {
-        let module = cap[1].to_string();
-        let start_byte = cap.get(0).map_or(cap_idx as u32, |m| m.start() as u32);
-        let import_id = ImportId::generate(file_id, "include", &module, None, start_byte);
-        imports.push(ImportDef {
-            id: import_id,
-            file_id: *file_id,
-            kind: ImportKind::Include,
-            module,
-            imported_name: String::new(),
-            local_name: None,
-            alias: None,
-            is_wildcard: false,
-            is_relative: true,
-            range: Default::default(),
-        });
-    }
-
-    // Angle includes: never relative (system/external headers)
-    for (cap_idx, cap) in angle_re.captures_iter(source).enumerate() {
-        let module = cap[1].to_string();
-        let start_byte = cap.get(0).map_or(cap_idx as u32, |m| m.start() as u32);
-        let import_id = ImportId::generate(file_id, "include", &module, None, start_byte);
-        imports.push(ImportDef {
-            id: import_id,
-            file_id: *file_id,
-            kind: ImportKind::Include,
-            module,
-            imported_name: String::new(),
-            local_name: None,
-            alias: None,
-            is_wildcard: false,
-            is_relative: false,
-            range: Default::default(),
-        });
-    }
-
-    imports
 }
 
 // ── Path normalisation (no filesystem access) ─────────────────────────────
@@ -659,74 +299,6 @@ mod tests {
         assert_eq!(normalize_path(p), "foo");
     }
 
-    // ── Integration tests (ignored — require multi-file DB setup) ──────
-
-    // ── Bootstrap scanner tests ─────────────────────────────────────
-
-    #[test]
-    fn bootstrap_scanner_quote_vs_angle() {
-        // Verify that scan_c_includes correctly distinguishes local
-        // `#include "..."` (is_relative=true) from system `<...>`
-        // (is_relative=false).
-        use types::ids::FileId;
-
-        let file_id = FileId::generate("src/main.c");
-        let source = concat!(
-            "#include \"util.h\"\n",
-            "#include <stdio.h>\n",
-            "#include \"dir/helper.h\"\n",
-            "#include <stdlib.h>\n",
-            "int main() { return 0; }\n",
-        );
-
-        let imports = scan_c_includes(&file_id, source);
-
-        assert_eq!(imports.len(), 4, "should discover all 4 includes");
-
-        // Quoted includes are always relative
-        let util = imports.iter().find(|i| i.module == "util.h").unwrap();
-        assert!(util.is_relative, "#include \"util.h\" must be relative");
-
-        let helper = imports.iter().find(|i| i.module == "dir/helper.h").unwrap();
-        assert!(
-            helper.is_relative,
-            "#include \"dir/helper.h\" must be relative"
-        );
-
-        // Angle includes are never relative
-        let stdio = imports.iter().find(|i| i.module == "stdio.h").unwrap();
-        assert!(
-            !stdio.is_relative,
-            "#include <stdio.h> must NOT be relative"
-        );
-
-        let stdlib = imports.iter().find(|i| i.module == "stdlib.h").unwrap();
-        assert!(
-            !stdlib.is_relative,
-            "#include <stdlib.h> must NOT be relative"
-        );
-    }
-
-    #[test]
-    fn bootstrap_scanner_empty_source_returns_empty() {
-        use types::ids::FileId;
-        let file_id = FileId::generate("src/empty.c");
-        let imports = scan_c_includes(&file_id, "");
-        assert!(imports.is_empty(), "empty source should produce no imports");
-    }
-
-    #[test]
-    fn bootstrap_scanner_no_includes_returns_empty() {
-        use types::ids::FileId;
-        let file_id = FileId::generate("src/main.c");
-        let source = "int main() { return 0; }\n";
-        let imports = scan_c_includes(&file_id, source);
-        assert!(
-            imports.is_empty(),
-            "source without includes should produce no imports"
-        );
-    }
-
     // ── Include root resolution tests ─────────────────────────────────
 
     #[test]
@@ -760,7 +332,7 @@ mod tests {
             })
             .unwrap();
 
-        let planner = ClosurePlanner::new(store, None).with_include_roots(vec![
+        let planner = ClosurePlanner::new(store).with_include_roots(vec![
             IncludeRoot {
                 path: "include".to_string(),
             },
@@ -787,83 +359,5 @@ mod tests {
         // A non-existent module should return None
         let missing = planner.resolve_angle_include("nonexistent/baz.h").unwrap();
         assert!(missing.is_none(), "unknown module should return None");
-    }
-
-    // ── Sibling discovery tests ───────────────────────────────────────
-
-    #[test]
-    fn test_sibling_discovery_c_to_h() {
-        let store = std::sync::Arc::new({
-            let s = Store::open_in_memory().unwrap();
-            s.init_schema().unwrap();
-            s
-        });
-
-        let main_c_id = FileId::generate("kernel/main.c");
-        let main_h_id = FileId::generate("kernel/main.h");
-
-        store
-            .upsert_file(&FileInfo {
-                file_id: main_c_id,
-                path: "kernel/main.c".into(),
-                language: Language::C,
-                content_hash: "abc".into(),
-                status: ParseStatus::Success,
-            })
-            .unwrap();
-        store
-            .upsert_file(&FileInfo {
-                file_id: main_h_id,
-                path: "kernel/main.h".into(),
-                language: Language::C,
-                content_hash: "abc".into(),
-                status: ParseStatus::Success,
-            })
-            .unwrap();
-
-        let planner = ClosurePlanner::new(store, None);
-
-        // From main.c, discover main.h
-        let siblings = planner.discover_sibling_files(&main_c_id).unwrap();
-        assert_eq!(siblings.len(), 1, "should discover one sibling file");
-        assert_eq!(siblings[0], main_h_id, "should discover main.h from main.c");
-    }
-
-    #[test]
-    fn test_sibling_discovery_h_to_c() {
-        let store = std::sync::Arc::new({
-            let s = Store::open_in_memory().unwrap();
-            s.init_schema().unwrap();
-            s
-        });
-
-        let main_c_id = FileId::generate("kernel/main.c");
-        let main_h_id = FileId::generate("kernel/main.h");
-
-        store
-            .upsert_file(&FileInfo {
-                file_id: main_c_id,
-                path: "kernel/main.c".into(),
-                language: Language::C,
-                content_hash: "abc".into(),
-                status: ParseStatus::Success,
-            })
-            .unwrap();
-        store
-            .upsert_file(&FileInfo {
-                file_id: main_h_id,
-                path: "kernel/main.h".into(),
-                language: Language::C,
-                content_hash: "abc".into(),
-                status: ParseStatus::Success,
-            })
-            .unwrap();
-
-        let planner = ClosurePlanner::new(store, None);
-
-        // From main.h, discover main.c
-        let siblings = planner.discover_sibling_files(&main_h_id).unwrap();
-        assert_eq!(siblings.len(), 1, "should discover one sibling file");
-        assert_eq!(siblings[0], main_c_id, "should discover main.c from main.h");
     }
 }

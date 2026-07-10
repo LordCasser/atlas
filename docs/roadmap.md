@@ -228,9 +228,21 @@ Lazy structural extraction has a budget cap (~18s / 30 files for foreground, ~60
 
 ## 5. Public API stabilization
 
-`atlas-engine` already exists as a facade crate. The next step is API stabilization:
+`atlas-engine` already exists as a facade crate. API stabilization proceeds from
+the supported high-level entry points and their complete signature type closure:
 
-- Define the minimal supported public API surface.
+- ✅ Top-level facade no longer re-exports zero-call `phase_*`,
+  `run_index_pipeline`, dirty/cleanup helpers, `ClosurePlanner` worksets,
+  parser-pool internals, summary persistence internals, or resolution-session
+  helpers. Stable Engine/Index/Graph/Search/Workspace entries re-export the
+  argument and return types needed to name their public signatures.
+- ✅ Unused `JobContext` and dead ClosurePlanner workset/sibling/regex-bootstrap
+  paths were deleted instead of hidden behind compatibility aliases or
+  `allow(dead_code)`.
+- Remaining: `analysis`, `trace`, `dossier`, `rule_engine`, and Focus control
+  modules are still ordinary `pub` because MCP/CLI sibling crates consume them.
+  Narrowing these requires moving complete use cases to an owning engine/leaf
+  boundary; `pub(crate)` on the facade is not a valid cross-crate solution.
 - Avoid leaking internal schema details unnecessarily.
 - Document feature flags and language availability.
 - Keep CLI/MCP as consumers of the same engine behavior.

@@ -61,6 +61,13 @@ All notable changes to Atlas will be documented in this file.
   engine-to-MCP callback registry; resume remains idempotent. Failed
   incremental refresh batches are requeued without inflating the cumulative
   lazy-write count, so the one-shot feed is not lost on transient errors.
+- Facade narrowing (breaking): remove zero-call planner, pipeline phase,
+  parser-pool, summary-store, resolution-session, and config-helper re-exports
+  from `atlas-engine`. Stable entry points now re-export the concrete argument
+  and return types needed to name their public signatures. Delete the unused
+  `JobContext` and the dead ClosurePlanner workset/sibling/regex-bootstrap
+  branches that public reachability had hidden from dead-code analysis. A
+  source ratchet prevents pipeline mechanisms from returning to the facade.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam

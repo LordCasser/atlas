@@ -146,8 +146,8 @@ impl CommandContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::{FactCoverage, FileInfo, ParseStatus, source_file_id};
     use atlas_engine::{ExtractionMode, Language, guard_against_precision_downgrade};
+    use atlas_engine::{FactCoverage, FileId, FileInfo, ParseStatus};
     use tempfile::TempDir;
 
     /// A valid temp directory with no `.atlas/` should succeed with creator modes.
@@ -270,7 +270,7 @@ mod tests {
     }
 
     fn seed_file_layer(store: &Store, path: &str, layer: &str) {
-        let file_id = source_file_id(Path::new(path)).expect("file id");
+        let file_id = FileId::generate(path);
         let content_hash = "fresh-hash";
         store
             .upsert_file(&FileInfo {

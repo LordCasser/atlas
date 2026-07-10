@@ -54,7 +54,7 @@ mod tests {
 
     fn test_engine(store: Arc<Store>) -> ClosureEngine {
         let m = FocusMaterialize::open(store.clone(), None);
-        ClosureEngine::new(store, m, None)
+        ClosureEngine::new(store, m)
     }
 
     // ── Test: E2E Full Closure Build ────────────────────────────────────────
