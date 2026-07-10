@@ -721,6 +721,15 @@ impl FocusRuntime {
         self.scheduler.lock().unwrap().has_pending()
     }
 
+    /// Take files materialized by background jobs since the previous drain.
+    ///
+    /// This is the project-wide refresh feed. It is independent of any single
+    /// query snapshot so both fresh requests and resume replays see completed
+    /// background writes.
+    pub fn take_background_refresh_files(&self) -> Vec<FileId> {
+        self.job_tracker.take_refresh_files()
+    }
+
     /// Enqueue file-focused background warming without building a foreground closure.
     ///
     /// Search uses this after returning a fast partial result: the current

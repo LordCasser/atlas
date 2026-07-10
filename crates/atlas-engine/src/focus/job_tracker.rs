@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use types::FileId;
 
-/// Tracks completion of background focus closure-building jobs.
+/// Tracks completion and graph-refresh publication for background focus jobs.
 ///
 /// Shared between [`FocusRuntime`] (which submits job IDs) and
 /// [`FocusScheduler`] (which reports completions). Enables the MCP
@@ -15,6 +15,11 @@ pub struct JobTracker {
     terminal: Mutex<HashMap<String, Option<String>>>,
     /// Files materialized by each background closure.
     built_files: Mutex<HashMap<String, Vec<FileId>>>,
+    /// Materialized files not yet handed to the graph refresh consumer.
+    ///
+    /// This is intentionally separate from `built_files`: query snapshots need
+    /// stable per-job history, while graph refresh needs one-shot delivery.
+    pending_refresh_files: Mutex<HashSet<FileId>>,
     /// Recorded build durations (in milliseconds) for completed jobs,
     /// used to compute ETA for pending jobs.
     build_times: Mutex<Vec<u64>>,
@@ -26,6 +31,7 @@ impl JobTracker {
         Self {
             terminal: Mutex::new(HashMap::new()),
             built_files: Mutex::new(HashMap::new()),
+            pending_refresh_files: Mutex::new(HashSet::new()),
             build_times: Mutex::new(Vec::new()),
         }
     }
@@ -51,14 +57,18 @@ impl JobTracker {
 
     pub fn record_built_files(&self, job_id: &str, files: impl IntoIterator<Item = FileId>) {
         let mut unique = HashSet::new();
-        let files = files
+        let files: Vec<FileId> = files
             .into_iter()
             .filter(|file_id| unique.insert(*file_id))
             .collect();
         self.built_files
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(job_id.to_string(), files);
+            .insert(job_id.to_string(), files.clone());
+        self.pending_refresh_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(files);
     }
 
     pub fn built_files_for(&self, job_ids: &[String]) -> Vec<FileId> {
@@ -70,6 +80,19 @@ impl JobTracker {
             .flatten()
             .copied()
             .filter(|file_id| seen.insert(*file_id))
+            .collect()
+    }
+
+    /// Take files built by background jobs since the previous drain.
+    ///
+    /// Per-job history remains available through [`Self::built_files_for`].
+    /// This one-shot view lets a fresh request observe background writes without
+    /// carrying closure IDs across requests.
+    pub(crate) fn take_refresh_files(&self) -> Vec<FileId> {
+        self.pending_refresh_files
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
             .collect()
     }
 
@@ -267,6 +290,26 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(files.contains(&first));
         assert!(files.contains(&second));
+    }
+
+    #[test]
+    fn refresh_files_are_deduplicated_drained_once_and_keep_job_history() {
+        let tracker = JobTracker::new();
+        let first = types::FileId::generate("first.c");
+        let second = types::FileId::generate("second.c");
+        tracker.record_built_files("job-1", [first, second]);
+        tracker.record_built_files("job-2", [second]);
+
+        let refresh_files = tracker.take_refresh_files();
+        assert_eq!(refresh_files.len(), 2);
+        assert!(refresh_files.contains(&first));
+        assert!(refresh_files.contains(&second));
+        assert!(tracker.take_refresh_files().is_empty());
+
+        let job_files = tracker.built_files_for(&["job-1".into(), "job-2".into()]);
+        assert_eq!(job_files.len(), 2);
+        assert!(job_files.contains(&first));
+        assert!(job_files.contains(&second));
     }
 
     #[test]

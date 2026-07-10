@@ -352,9 +352,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 - annotation 测试 seed 已改走 `overlay_runtime`（去掉测试侧 `store.upsert_fp_annotation`）。
 - 回归网：calls 1-hop/signature/depth 警告；Focus Phase2 `ArgToParam` 无 summary；N5 + `focus_equivalence_vs_full_index`；FileLock 共享 reject。
 - 死 `AnalysisNeeds` 变体已删；`contract_for` V1 路由全覆盖。
-
-**已知限制（不影响当前正确性）：**
-- BUG-6 / U4 防御性 ratchet：`maybe_refresh_graph` 在 resume 路径 drain 后台 built_files，但 fresh-call（非 resume）路径 `replay_focus_result` 为 `None`，drain 不触发。原始 BUG-6 目标（缩短 fresh-call 陈旧窗口）尚未解决，需要 engine 层 `mark_done` 回调钩子或 mcp 层跨 prepare 携带 closure id，两者均超出当前 mcp-only 范围。当前 retry 契约（架构 §1.7 终态必然可达）兜底 fresh-call 终态。
+- BUG-6 fresh-call 陈旧窗口已关闭：`JobTracker` 同时保留 resume 所需的按 job built-files 历史与 project-wide 一次性刷新集合；`maybe_refresh_graph` 不依赖 `replay_focus_result`，每次都在 incremental batch 前经 `FocusRuntime` / `QueryRuntime` drain 后台写入。无需 listener 回调或跨请求 closure-id 状态。
 
 强制测试矩阵见 [`testing.md`](./testing.md) §2.11。
 

@@ -52,19 +52,15 @@ All notable changes to Atlas will be documented in this file.
   shrinks to 1 (`active_project.rs` project-open factory - construction-time
   `FocusMaterialize::open`, a documented legitimate exception); residual ceiling
   is now `assert!(allowlist.len() <= 1)`.
-- BUG-6 / U4 (mcp-only, defensive ratchet): `maybe_refresh_graph` now drains
-  background closure built files from the shared `JobTracker` carried by
-  `replay_focus_result` into the lazy refresh queue (via
-  `QueryRuntime::record_background_built_files`) before
-  `take_incremental_batch`. **Scope limitation**: the drain triggers only when
-  `replay_focus_result` is `Some` (the resume path); on a fresh (non-resume)
-  request `replay_focus_result` is `None` and the drain does not fire. On the
-  resume path, `materialized_files()` already drains closure built files, so
-  U4 is defensive/idempotent there. The original BUG-6 goal (shorten the stale
-  window for fresh calls) remains unaddressed -- closing it requires either an
-  engine-layer callback on `FocusRuntime`/`FocusScheduler` `mark_done` or
-  mcp-layer cross-prepare closure-id carrying, both out of the current
-  mcp-only surgical scope.
+- BUG-6 fresh-call graph refresh: `JobTracker::record_built_files` now retains
+  both stable per-job history for `resume_query` and a deduplicated one-shot
+  project refresh feed. `maybe_refresh_graph` drains that feed through
+  `FocusRuntime` / `QueryRuntime` before `take_incremental_batch`, independent
+  of `replay_focus_result`. Fresh graph requests therefore observe completed
+  closure and file-warming writes without cross-request closure IDs or an
+  engine-to-MCP callback registry; resume remains idempotent. Failed
+  incremental refresh batches are requeued without inflating the cumulative
+  lazy-write count, so the one-shot feed is not lost on transient errors.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam

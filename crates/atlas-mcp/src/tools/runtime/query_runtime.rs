@@ -154,28 +154,21 @@ impl QueryRuntime {
             .same_stack_as(other)
     }
 
-    /// Drain background-built files recorded against `result`'s pending jobs
-    /// into the lazy refresh queue.
+    /// Drain project-wide background-built files into the lazy refresh queue.
     ///
-    /// Background closures record their built files to the shared
-    /// [`JobTracker`](atlas_engine::focus::job_tracker::JobTracker) carried by
-    /// [`FocusResult`] (the same `Arc` held by `FocusRuntime`). This reads the
-    /// files built for `result`'s pending closure + extraction job ids and
-    /// records them to [`LazyRefreshQueue`] so the next
-    /// `take_incremental_batch` sees them before draining.
+    /// `FocusRuntime` owns the shared job tracker, so this feed covers jobs from
+    /// prior query snapshots and file-focused warming as well as the current
+    /// request. The tracker retains per-job history for `resume_query` while
+    /// exposing each file only once through this refresh feed.
     ///
-    /// Returns the files that were recorded (empty if none / no tracker). Safe
-    /// to call on every `maybe_refresh_graph`: the queue dedups.
-    pub fn record_background_built_files(&self, result: &FocusResult) -> Vec<FileId> {
-        let Some(tracker) = result.job_tracker.as_ref() else {
-            return Vec::new();
-        };
-        let mut ids: Vec<String> = result.pending_closure_ids.clone();
-        ids.extend(result.pending_extraction_job_ids.iter().cloned());
-        if ids.is_empty() {
-            return Vec::new();
-        }
-        let built = tracker.built_files_for(&ids);
+    /// Returns the files recorded to the queue. Safe to call on every graph
+    /// refresh; the tracker drain and queue are both deduplication-aware.
+    pub fn record_background_built_files(&self) -> Vec<FileId> {
+        let built = self
+            .focus_runtime
+            .lock()
+            .unwrap()
+            .take_background_refresh_files();
         if !built.is_empty() {
             self.lazy_refresh_queue.record_lazy_writes(&built);
         }

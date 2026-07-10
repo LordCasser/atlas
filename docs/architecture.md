@@ -1130,8 +1130,8 @@ Progress token 只影响观测通道，不改变终态策略：
 | Focus state | `tasks`, `resume_query` |
 
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
-- Focus/lazy 写入通过 `record_lazy_writes()` 进入刷新队列；后续 graph-backed 请求由 `maybe_refresh_graph()` 批量增量刷新，累计变更过大时退化为完整 snapshot rebuild。
-- 后台 closure 完成时通过 `JobTracker::record_built_files` 记录其构建文件，但不会自动进入 lazy 刷新队列。`maybe_refresh_graph()` 在 `take_incremental_batch` 之前先经 `QueryRuntime::record_background_built_files` 把 `replay_focus_result` 携带的 `JobTracker` 中已完成后台 closure 的 built_files 倒入刷新队列（BUG-6/U4 防御性 ratchet）。**局限**：该 drain 仅在 `replay_focus_result` 为 `Some`（即 resume 路径）时触发；fresh（非 resume）请求 `replay_focus_result` 为 `None`，drain 不触发。resume 路径上 `materialized_files()` 已 drain closure built_files，故 U4 在该路径是防御性/幂等的。BUG-6 原始目标（缩短 fresh-call 陈旧窗口）尚未解决——需要 engine 层 `mark_done` 回调钩子或 mcp 层跨 prepare 携带 closure id，两者均超出当前 mcp-only 范围。
+- Focus/lazy 写入通过 `record_lazy_writes()` 进入刷新队列；后续 graph-backed 请求由 `maybe_refresh_graph()` 批量增量刷新，累计变更过大时退化为完整 snapshot rebuild；增量刷新失败的 batch 原样回队且不重复累计 lazy-write count，避免一次性写入信号丢失。
+- 后台 closure 完成时通过 `JobTracker::record_built_files` 同时写入两种视图：按 job 保留的 built-files 历史供 `resume_query` 判定与重放，以及 project-wide、去重、一次性消费的 graph-refresh 集合。`maybe_refresh_graph()` 不依赖 `replay_focus_result`，会在 `take_incremental_batch` 之前经 `FocusRuntime::take_background_refresh_files` / `QueryRuntime::record_background_built_files` drain 后者到 lazy 刷新队列。因此 fresh 请求、resume replay 和不携带 query snapshot 的 file-focused warming 都共享同一刷新边界；无需 engine 回调 listener 或 MCP 跨请求保存 closure ID。重复 drain 为空，resume 的 `materialized_files()` 与刷新队列去重保持幂等。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
 - `project(action="open")` 不索引，只同步激活项目并打开持久化的 `project/.atlas/atlas.db`；MCP 不暴露 storage mode。
 - MCP 查询路径不探测或同步整个工作树。磁盘文件与持久化索引的全项目同步由显式 CLI `atlas sync`/`atlas index` 负责；查询触发的 lazy extraction 只更新当前 scope/closure，并通过 `tasks`、`query_id` 和 analysis envelope 暴露状态。

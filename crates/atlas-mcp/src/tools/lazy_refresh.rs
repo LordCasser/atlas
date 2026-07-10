@@ -90,6 +90,17 @@ impl LazyRefreshQueue {
         batch
     }
 
+    /// Return a failed incremental-refresh batch without counting it as new work.
+    pub(crate) fn requeue_incremental_batch(&self, file_ids: &[FileId]) {
+        if file_ids.is_empty() {
+            return;
+        }
+        self.pending_file_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(file_ids.iter().copied());
+    }
+
     /// Check and reset the deferred full-rebuild flag.
     /// Returns true if a rebuild was scheduled, false otherwise.
     /// Called by try_apply_or_spawn_rebuild to decide whether
@@ -223,5 +234,25 @@ mod tests {
         q.record_lazy_writes(&[f1]);
         let batch = q.take_incremental_batch(500);
         assert_eq!(batch.len(), 1);
+    }
+
+    #[test]
+    fn failed_batch_can_be_requeued_without_inflating_write_count() {
+        let q = LazyRefreshQueue::new();
+        let f1 = FileId::generate("a.rs");
+        let f2 = FileId::generate("b.rs");
+        q.record_lazy_writes(&[f1, f2]);
+
+        let batch = q.take_incremental_batch(500);
+        assert_eq!(batch.len(), 2);
+        let count_before = q.cumulative_count.load(Ordering::Relaxed);
+
+        q.requeue_incremental_batch(&batch);
+
+        assert_eq!(q.cumulative_count.load(Ordering::Relaxed), count_before);
+        let retried = q.take_incremental_batch(500);
+        assert_eq!(retried.len(), 2);
+        assert!(retried.contains(&f1));
+        assert!(retried.contains(&f2));
     }
 }

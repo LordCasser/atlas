@@ -648,18 +648,11 @@ impl ToolRouter {
             return Ok(());
         }
 
-        // BUG-6 / U4: defensively drain background-built files into the lazy
-        // refresh queue *before* the incremental batch. Background closures
-        // record their built files to the shared JobTracker carried by
-        // `replay_focus_result`. This drain fires only on the resume path
-        // (where `replay_focus_result` is `Some`); on a fresh (non-resume)
-        // request it does not fire. On the resume path `materialized_files()`
-        // already drains closure built files, so this is defensive/idempotent
-        // there. The fresh-call stale window (original BUG-6 goal) remains
-        // open. Idempotent: the queue and the tracker both dedup.
-        if let Some(result) = self.replay_focus_result.as_ref() {
-            project.query_runtime.record_background_built_files(result);
-        }
+        // Drain the project-wide background refresh feed before taking the
+        // incremental batch. This is independent of replay state, so a fresh
+        // graph request sees writes completed by an earlier closure or warming
+        // job without carrying closure IDs across requests.
+        project.query_runtime.record_background_built_files();
 
         // Step 1: Always flush pending incremental writes (no cooldown).
         // This ensures lazy writes from THIS request are visible before graph queries.
@@ -667,10 +660,17 @@ impl ToolRouter {
             .query_runtime
             .lazy_refresh_queue
             .take_incremental_batch(500);
-        project
+        if let Err(error) = project
             .graph_runtime
             .state
-            .refresh_graph_for_files(&project.store, &batch)?;
+            .refresh_graph_for_files(&project.store, &batch)
+        {
+            project
+                .query_runtime
+                .lazy_refresh_queue
+                .requeue_incremental_batch(&batch);
+            return Err(error);
+        }
         // Cache invalidation: new store data may have changed layer distribution.
         // Lazy writes affect the graph — bump generation so the next check triggers rebuild.
         if !batch.is_empty() {
@@ -5864,68 +5864,106 @@ mod tests {
         );
     }
 
-    // ── BUG-6 / U4: background closure built-file drain ──────────────
+    // ── BUG-6: fresh-request background closure refresh ──────────────
 
-    /// Background closures record their built files to the shared JobTracker
-    /// carried by `replay_focus_result`. `maybe_refresh_graph` must drain those
-    /// files into the lazy refresh queue before `take_incremental_batch`, so a
-    /// call arriving after a background closure completed (but before a fresh
-    /// `prepare`) sees the new edges without waiting for resume.
+    /// A non-replay request has no FocusResult carrying closure IDs from prior
+    /// requests. The runtime-owned refresh feed must still publish a completed
+    /// background job's graph writes before the next graph query.
     #[test]
-    fn maybe_refresh_drains_background_built_files_from_replay_focus_result() {
-        use atlas_engine::focus::job_tracker::JobTracker;
-        use std::sync::Arc;
-
+    fn maybe_refresh_without_replay_drains_runtime_background_built_files_once() {
+        let tmp = tempfile::tempdir().unwrap();
         let store = test_store();
-        let file_id = register_test_file(&store, "src/warmed.c");
-        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        let caller_file = register_test_file(&store, "src/caller.ts");
+        let callee_file = register_test_file(&store, "src/callee.ts");
+        for file_id in [caller_file, callee_file] {
+            store
+                .upsert_file_extraction_state(
+                    &file_id,
+                    "structural",
+                    "hash1",
+                    "complete",
+                    atlas_engine::FactCoverage::default(),
+                )
+                .unwrap();
+        }
+        insert_test_symbol(&store, caller_file, "caller");
+        insert_test_symbol(&store, callee_file, "callee");
+        let caller_id = SymbolId::generate(&caller_file, "typescript", "caller", "function", None);
+        let callee_id = SymbolId::generate(&callee_file, "typescript", "callee", "function", None);
+
+        let router = ToolRouter::new_empty(store.clone(), tmp.path().to_path_buf());
         router.ensure_graph_initialized().unwrap();
+        assert!(
+            router
+                .project()
+                .graph_runtime
+                .provider()
+                .graph_snapshot()
+                .unwrap()
+                .callees(&caller_id)
+                .callees
+                .is_empty()
+        );
 
-        // Simulate a completed background closure: the shared JobTracker
-        // records the files it built for closure job "bg_cl_1".
-        let tracker = Arc::new(JobTracker::new());
-        let bg_job = "bg_cl_1".to_string();
-        tracker.record_built_files(&bg_job, [file_id]);
-        tracker.mark_done(&bg_job);
+        // Obtain the runtime-owned tracker through a normal foreground result.
+        // SemanticFunction is seed-only and does not enqueue graph expansion.
+        let (focus_result, warnings) =
+            router.prepare_focus_query(Some(atlas_engine::QueryIntent::SemanticFunction {
+                symbol_name: "caller".into(),
+                file_id: Some(caller_file),
+                symbol_id: Some(caller_id),
+            }));
+        assert!(
+            warnings.is_empty(),
+            "unexpected focus warnings: {warnings:?}"
+        );
+        let tracker = focus_result.unwrap().job_tracker.unwrap();
 
-        // Replay router carries the focus result with the pending closure id.
-        let focus_result = atlas_engine::focus::runtime::FocusResult {
-            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
-            quality: None,
-            gaps: vec![],
-            pending_closure_ids: vec![bg_job],
-            pending_extraction_job_ids: vec![],
-            closure_id: None,
-            seed_symbol_id: None,
-            seed_file_id: None,
-            built_files: vec![],
-            coverage_counts: None,
-            job_tracker: Some(tracker),
-        };
-        let replay = ToolRouter::for_resume(router.project(), Some(focus_result));
+        // Simulate the scheduler's post-build publication after graph init.
+        insert_test_edge(&store, caller_id, callee_id);
+        tracker.record_built_files("bg_cl_1", [caller_file, caller_file]);
+        tracker.mark_done("bg_cl_1");
 
-        // No prior lazy writes: the only way the incremental batch becomes
-        // non-empty here is via the U4 background-built-file drain.
-        let gen_before = replay
+        let gen_before = router
             .project()
             .graph_runtime
             .last_graph_generation
             .load(std::sync::atomic::Ordering::Relaxed);
 
-        replay.maybe_refresh_graph().unwrap();
+        // This is a fresh request path: replay_focus_result is None.
+        router.maybe_refresh_graph().unwrap();
 
-        // The background-built file was drained into the lazy refresh queue,
-        // fed `take_incremental_batch` (non-empty batch) and bumped
-        // graph_generation.
         assert!(
-            replay
+            router
                 .project()
                 .graph_runtime
                 .last_graph_generation
                 .load(std::sync::atomic::Ordering::Relaxed)
                 > gen_before,
-            "background-built files should be drained to lazy_refresh_queue \
-             and bump graph_generation on maybe_refresh_graph"
+            "fresh refresh should consume the runtime background feed"
+        );
+        let graph = router
+            .project()
+            .graph_runtime
+            .provider()
+            .graph_snapshot()
+            .unwrap();
+        assert_eq!(graph.callees(&caller_id).callees.len(), 1);
+
+        let gen_after_first = router
+            .project()
+            .graph_runtime
+            .last_graph_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+        router.maybe_refresh_graph().unwrap();
+        assert_eq!(
+            router
+                .project()
+                .graph_runtime
+                .last_graph_generation
+                .load(std::sync::atomic::Ordering::Relaxed),
+            gen_after_first,
+            "the one-shot runtime feed must not republish the same file"
         );
     }
 }
