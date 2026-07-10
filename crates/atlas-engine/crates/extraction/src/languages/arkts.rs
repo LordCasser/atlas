@@ -1,24 +1,34 @@
-//! ArkTS frontend spec — thin wrapper around TypeScript.
+//! ArkTS frontend spec — TypeScript grammar with byte-stable normalization.
 //!
 //! ArkTS (HarmonyOS) uses TypeScript-compatible syntax with `.ets`/`.sts` extensions.
-//! Delegates all normalization to `TypeScriptFrontendSpec`, only overriding `language()`.
+//! It delegates standard syntax to the TypeScript frontend. Before parsing, ArkTS
+//! `struct` declarations are rewritten to the equal-length token `class ` so the
+//! fallback grammar can preserve their members and scopes without shifting ranges.
 //!
-//! ## Recovery Layer
-//!
-//! ArkTS has one syntax not in TS: the `struct` keyword for declarative UI components.
-//! Tree-sitter treats `struct Index { ... }` as an ERROR node because `struct` is not
-//! valid TS.  [`ArkTsRecovery`] implements [`RecoverySpec`] to recover these as
-//! `SymbolKind::Struct` definitions with `ScopeKind::Struct` scopes.
+//! ArkUI trailing-block calls such as `Column() { ... }` still produce local ERROR
+//! nodes. The ArkTS queries repair the one systematic artifact produced by the TS
+//! grammar: nested component calls represented as object-literal methods.
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NormalizeCtx, ParserSpec, RecoverySpec, ReferenceExtractorSpec,
-    ScopeExtractorSpec, SymbolExtractorSpec,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
-use crate::languages::shared::SymbolDefBuilder;
+use crate::languages::shared::make_scope_def_auto_name;
+use std::borrow::Cow;
 use std::path::Path;
 use types::capability::FeatureSupport;
 use types::*;
+
+const ARKTS_DEFINITIONS_QUERY: &str = concat!(
+    include_str!("../../queries/typescript/definitions.scm"),
+    "\n(public_field_definition name: (property_identifier) @definition.field)\n"
+);
+
+const ARKTS_REFERENCES_QUERY: &str = concat!(
+    include_str!("../../queries/typescript/references.scm"),
+    "\n(expression_statement (object (method_definition name: (property_identifier) @reference.call)))\n"
+);
 
 /// ArkTS adapter — delegates to TypeScript internally.
 pub(crate) struct ArkTsAdapter;
@@ -34,7 +44,28 @@ fn normalize_arkts_definition(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<SymbolDef> {
-    super::typescript::normalize_ts_definition(capture_name, node, source, file_id, Language::ArkTS)
+    if capture_name == "definition.method" && is_declarative_block_method(node) {
+        return None;
+    }
+
+    let mut symbol = super::typescript::normalize_ts_definition(
+        capture_name,
+        node,
+        source,
+        file_id,
+        Language::ArkTS,
+    )?;
+    if symbol.kind == SymbolKind::Class && is_arkts_struct(node, source) {
+        symbol.kind = SymbolKind::Struct;
+        symbol.id = SymbolId::generate(
+            &file_id,
+            Language::ArkTS.as_str(),
+            &symbol.qualified_name,
+            SymbolKind::Struct.as_str(),
+            None::<&str>,
+        );
+    }
+    Some(symbol)
 }
 
 fn normalize_arkts_reference(
@@ -44,6 +75,13 @@ fn normalize_arkts_reference(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<ReferenceUse> {
+    if capture_name == "reference.type"
+        && node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "class_declaration")
+    {
+        return None;
+    }
     super::typescript::normalize_ts_reference(capture_name, node, source, file_id)
 }
 
@@ -60,11 +98,105 @@ fn normalize_arkts_import(
 fn normalize_arkts_scope(
     capture_name: &str,
     node: tree_sitter::Node,
-    _source: &str,
+    source: &str,
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<ScopeDef> {
+    if capture_name == "scope.method" && is_declarative_block_method(node) {
+        return None;
+    }
+    if capture_name == "scope.class" && is_arkts_struct(node, source) {
+        let mut range = super::node_range(node);
+        let keyword_start = arkts_struct_keyword_start(node, source)?;
+        let prefix = &source.as_bytes()[..keyword_start];
+        range.start_byte = keyword_start as u32;
+        range.start_line = prefix.iter().filter(|byte| **byte == b'\n').count() as u32;
+        range.start_column = prefix
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(keyword_start, |newline| keyword_start - newline - 1)
+            as u32;
+        return Some(make_scope_def_auto_name(file_id, ScopeKind::Struct, range));
+    }
     super::typescript::normalize_ts_scope(capture_name, node, file_id)
+}
+
+fn is_arkts_struct(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    arkts_struct_keyword_start(node, source).is_some()
+}
+
+fn arkts_struct_keyword_start(node: tree_sitter::Node<'_>, source: &str) -> Option<usize> {
+    let declaration = if node.kind() == "class_declaration" {
+        node
+    } else {
+        let mut current = node;
+        loop {
+            let Some(parent) = current.parent() else {
+                return None;
+            };
+            if parent.kind() == "class_declaration" {
+                break parent;
+            }
+            current = parent;
+        }
+    };
+    let name = declaration.child_by_field_name("name")?;
+    let prefix = source.get(declaration.start_byte()..name.start_byte())?;
+    let trimmed = prefix.trim_end();
+    let keyword_start = trimmed.len().checked_sub("struct".len())?;
+    (trimmed.get(keyword_start..) == Some("struct"))
+        .then_some(declaration.start_byte() + keyword_start)
+}
+
+fn is_declarative_block_method(node: tree_sitter::Node<'_>) -> bool {
+    let method = if node.kind() == "method_definition" {
+        node
+    } else {
+        match node.parent() {
+            Some(parent) if parent.kind() == "method_definition" => parent,
+            _ => return false,
+        }
+    };
+    method
+        .parent()
+        .filter(|parent| parent.kind() == "object")
+        .and_then(|object| object.parent())
+        .is_some_and(|parent| parent.kind() == "expression_statement")
+}
+
+fn normalize_struct_keywords(source: &str) -> Cow<'_, str> {
+    let bytes = source.as_bytes();
+    let mut normalized: Option<Vec<u8>> = None;
+    let mut offset = 0;
+
+    while let Some(relative) = source[offset..].find("struct") {
+        let start = offset + relative;
+        let end = start + "struct".len();
+        let before_is_ident = source[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '$'));
+        let after_is_space = bytes.get(end).is_some_and(u8::is_ascii_whitespace);
+        let mut name_start = end;
+        while bytes.get(name_start).is_some_and(u8::is_ascii_whitespace) {
+            name_start += 1;
+        }
+        let has_name = source[name_start..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_alphabetic() || matches!(ch, '_' | '$'));
+
+        if !before_is_ident && after_is_space && has_name {
+            let output = normalized.get_or_insert_with(|| bytes.to_vec());
+            output[start..end].copy_from_slice(b"class ");
+        }
+        offset = end;
+    }
+
+    match normalized {
+        Some(bytes) => Cow::Owned(String::from_utf8(bytes).expect("ASCII replacement is UTF-8")),
+        None => Cow::Borrowed(source),
+    }
 }
 
 // ── Slot trait implementations ──────────────────────────────────────────
@@ -76,11 +208,14 @@ impl ParserSpec for ArkTsAdapter {
     fn tree_sitter_language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
     }
+    fn parser_source<'a>(&self, source: &'a str) -> Cow<'a, str> {
+        normalize_struct_keywords(source)
+    }
 }
 
 impl SymbolExtractorSpec for ArkTsAdapter {
     fn definition_query(&self) -> &str {
-        include_str!("../../queries/typescript/definitions.scm")
+        ARKTS_DEFINITIONS_QUERY
     }
     fn manifest_query(&self) -> &str {
         include_str!("../../queries/typescript/manifest.scm")
@@ -101,7 +236,7 @@ impl SymbolExtractorSpec for ArkTsAdapter {
 
 impl ReferenceExtractorSpec for ArkTsAdapter {
     fn reference_query(&self) -> &str {
-        include_str!("../../queries/typescript/references.scm")
+        ARKTS_REFERENCES_QUERY
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
@@ -200,243 +335,6 @@ impl DataflowSpec for ArkTsAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// ArkTS-specific recovery — struct declarations via ERROR node repair
-// ---------------------------------------------------------------------------
-
-/// Recovers ArkTS `struct` declarations from tree-sitter ERROR nodes.
-///
-/// ArkTS uses `struct` for declarative UI components (e.g., `struct Index { ... }`).
-/// Since tree-sitter-typescript does not recognize `struct`, it produces an ERROR node.
-/// This recovery walks ERROR nodes, identifies those starting with `"struct "`,
-/// and creates proper `SymbolKind::Struct` definitions with `ScopeKind::Struct` scopes.
-pub(crate) struct ArkTsRecovery;
-
-impl RecoverySpec for ArkTsRecovery {
-    fn recover_definitions(
-        &self,
-        source: &str,
-        tree: &tree_sitter::Tree,
-        file_id: FileId,
-        symbols: &mut Vec<SymbolDef>,
-        scopes: &mut Vec<ScopeDef>,
-    ) {
-        let root = tree.root_node();
-        let source_bytes = source.as_bytes();
-
-        // Walk all nodes looking for ERROR nodes containing "struct" keyword.
-        // Deduplicate by struct name to avoid nested ERROR nodes producing duplicates.
-        let mut recovered: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut to_visit: Vec<tree_sitter::Node<'_>> = vec![root];
-
-        while let Some(node) = to_visit.pop() {
-            if node.kind() == "ERROR" {
-                if let Ok(text) = node.utf8_text(source_bytes) {
-                    if let Some((struct_name, struct_offset)) = extract_struct_name(text) {
-                        if recovered.insert(struct_name.to_string()) {
-                            if let Some((def_range, name_range)) =
-                                find_struct_range(node, struct_name, struct_offset, source_bytes)
-                            {
-                                let symbol = build_struct_symbol(
-                                    file_id,
-                                    struct_name,
-                                    def_range,
-                                    name_range,
-                                );
-                                let scope =
-                                    build_struct_scope(file_id, struct_name, def_range, name_range);
-
-                                symbols.push(symbol);
-                                scopes.push(scope);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Push children in reverse so we process in document order
-            for i in (0..node.child_count()).rev() {
-                if let Some(child) = node.child(i as u32) {
-                    to_visit.push(child);
-                }
-            }
-        }
-    }
-
-    fn recover_scopes(
-        &self,
-        _source: &str,
-        _tree: &tree_sitter::Tree,
-        _file_id: FileId,
-        _symbols: &mut Vec<SymbolDef>,
-        _scopes: &mut Vec<ScopeDef>,
-    ) {
-        // v1: No additional scope recovery needed.
-        // The struct scope ranges set in recover_definitions() already cover the
-        // entire struct body, enabling correct container binding via
-        // build_scope_tree() → assign_containers().
-        //
-        // Reserved for v2: recovery of struct members (methods, @State fields)
-        // that tree-sitter may fail to parse inside the struct body.
-    }
-}
-
-/// Extract the struct name from ERROR node text by searching for "struct" keyword.
-///
-/// Returns (struct_name, byte_offset_of_struct_keyword_in_error_text).
-///
-/// e.g., `"struct Index {"` → `Some(("Index", 0))`
-///        `"@Component\nstruct Index {"` → `Some(("Index", 11))`
-fn extract_struct_name(error_text: &str) -> Option<(&str, usize)> {
-    // Search for "struct" as a standalone keyword (not part of another word).
-    let mut offset = 0usize;
-    while let Some(pos) = error_text[offset..].find("struct") {
-        let abs_pos = offset + pos;
-        // Check word boundary before: must be at start or preceded by whitespace
-        let before_ok = abs_pos == 0
-            || error_text
-                .as_bytes()
-                .get(abs_pos.wrapping_sub(1))
-                .is_some_and(|b| b.is_ascii_whitespace());
-        // Check word boundary after: must be end, whitespace, or `{`
-        let after_ok = error_text
-            .as_bytes()
-            .get(abs_pos + "struct".len())
-            .is_none_or(|b| b.is_ascii_whitespace() || *b == b'{');
-        if before_ok && after_ok {
-            let after_keyword = error_text[abs_pos + "struct".len()..].trim_start();
-            let name = after_keyword.split(['{', '\n', '\r']).next()?.trim();
-            if !name.is_empty() {
-                return Some((name, abs_pos));
-            }
-        }
-        offset = abs_pos + "struct".len();
-    }
-    None
-}
-
-/// Find the struct's definition range (from `struct` keyword to closing `}`)
-/// and the name range (byte offsets for the struct name).
-///
-/// Uses brace-matching from the opening `{` to find the closing `}`.
-fn find_struct_range(
-    error_node: tree_sitter::Node,
-    struct_name: &str,
-    struct_keyword_offset_in_error: usize,
-    source_bytes: &[u8],
-) -> Option<(TextRange, TextRange)> {
-    let error_start = error_node.start_byte();
-    let struct_keyword_pos = error_start + struct_keyword_offset_in_error;
-
-    // Find the opening `{` in source starting from struct_keyword_pos
-    let source_slice = &source_bytes[struct_keyword_pos..];
-    let brace_offset = source_slice.iter().position(|&b| b == b'{')?;
-    let open_brace_pos = struct_keyword_pos + brace_offset;
-
-    // Brace-match to find closing `}`
-    let close_brace_pos = match_brace(source_bytes, open_brace_pos)?;
-
-    // Find struct name position in source
-    // The name appears after "struct " and before `{`
-    let name_start = struct_keyword_pos + "struct ".len();
-    // Find exact name position by scanning from name_start
-    let name_byte_offset = source_bytes[name_start..]
-        .windows(struct_name.len())
-        .position(|w| w == struct_name.as_bytes())?;
-    let name_start_byte = (name_start + name_byte_offset) as u32;
-    let name_end_byte = name_start_byte + struct_name.len() as u32;
-
-    let def_range = TextRange {
-        start_byte: error_start as u32,
-        end_byte: (close_brace_pos + 1) as u32,
-        start_line: error_node.start_position().row as u32,
-        start_column: error_node.start_position().column as u32,
-        // end_line/end_column are approximate — the closing `}` position
-        end_line: 0,
-        end_column: 0,
-    };
-
-    let name_range = TextRange {
-        start_byte: name_start_byte,
-        end_byte: name_end_byte,
-        start_line: 0,
-        start_column: 0,
-        end_line: 0,
-        end_column: 0,
-    };
-
-    Some((def_range, name_range))
-}
-
-/// Brace-match: given the byte position of an opening `{`, find the matching `}`.
-///
-/// Handles nested braces by counting depth.
-fn match_brace(source_bytes: &[u8], open_pos: usize) -> Option<usize> {
-    let mut depth: u32 = 0;
-    for (i, &b) in source_bytes[open_pos..].iter().enumerate() {
-        match b {
-            b'{' => depth += 1,
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(open_pos + i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Build a [`SymbolDef`] for a recovered struct.
-fn build_struct_symbol(
-    file_id: FileId,
-    name: &str,
-    def_range: TextRange,
-    name_range: TextRange,
-) -> SymbolDef {
-    SymbolDefBuilder::new(
-        file_id,
-        Language::ArkTS,
-        SymbolKind::Struct,
-        name.to_string(),
-        name.to_string(),
-        def_range,
-    )
-    .name_range(name_range)
-    .build()
-}
-
-/// Build a [`ScopeDef`] for a recovered struct.
-///
-/// CRITICAL: scope range MUST include the struct name_range so that
-/// `build_scope_tree()` → `assign_containers()` can correctly bind
-/// struct members to the struct symbol.
-fn build_struct_scope(
-    file_id: FileId,
-    _name: &str,
-    def_range: TextRange,
-    _name_range: TextRange,
-) -> ScopeDef {
-    let scope_id = ScopeId::generate(
-        &file_id,
-        None::<&ScopeId>,
-        ScopeKind::Struct.as_str(),
-        def_range.start_byte,
-    );
-    let scope_name = format!("struct#{}", def_range.start_byte);
-
-    ScopeDef {
-        id: scope_id,
-        file_id,
-        kind: ScopeKind::Struct,
-        name: scope_name.clone(),
-        scope_path: scope_name,
-        parent_id: None,
-        range: def_range,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Factory — direct slot construction, no adapter wrapper needed.
 // ---------------------------------------------------------------------------
 
@@ -456,13 +354,100 @@ pub(crate) fn arkts_frontend() -> LanguageFrontend {
         lexical: Box::new(ArkTsAdapter),
         dataflow: Box::new(ArkTsAdapter),
         capability: LanguageCapabilityProfile::for_language(Language::ArkTS),
-        recovery: Box::new(ArkTsRecovery),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declarative_struct_preserves_members_and_ui_call_ownership() {
+        let source = r#"@Component
+struct MainPage {
+  @StorageLink('webUrl') webUrl: string = '';
+
+  build() {
+    Row() {
+      Column() {
+        Web({ src: this.webUrl })
+      }
+    }
+  }
+}"#;
+        let file_id = FileId::generate("MainPage.ets");
+        let frontend = arkts_frontend();
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            file_id,
+            Path::new("MainPage.ets"),
+            source,
+            "probe",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(facts.file.status, ParseStatus::Partial);
+        let struct_symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "MainPage")
+            .unwrap();
+        assert_eq!(struct_symbol.kind, SymbolKind::Struct);
+
+        let field = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "webUrl")
+            .unwrap();
+        assert_eq!(field.kind, SymbolKind::Field);
+        assert_eq!(
+            field.container,
+            Some(struct_symbol.id),
+            "field={field:#?}\nscopes={:#?}",
+            facts.scopes
+        );
+
+        let build = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "build")
+            .unwrap();
+        assert_eq!(build.kind, SymbolKind::Method);
+        assert_eq!(build.container, Some(struct_symbol.id));
+        assert!(!facts.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Method && matches!(symbol.name.as_str(), "Row" | "Column")
+        }));
+
+        for component in ["Row", "Column", "Web"] {
+            let reference = facts
+                .references
+                .iter()
+                .find(|reference| {
+                    reference.kind == ReferenceKind::Call && reference.name == component
+                })
+                .unwrap_or_else(|| panic!("missing UI call reference for {component}"));
+            assert_eq!(reference.source_symbol, Some(build.id));
+        }
+        assert!(!facts.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Call && reference.name == "build"
+        }));
+        assert!(facts.callsites.iter().all(|callsite| {
+            callsite.caller == build.id || callsite.range.start_byte < build.range.start_byte
+        }));
+    }
+
+    #[test]
+    fn struct_normalization_is_byte_stable_and_token_bounded() {
+        let source = "struct MainPage {}\nstruct 页面 {}\nconst restructure = 'struct';";
+        let normalized = normalize_struct_keywords(source);
+        assert_eq!(normalized.len(), source.len());
+        assert_eq!(
+            normalized,
+            "class  MainPage {}\nclass  页面 {}\nconst restructure = 'struct';"
+        );
+    }
 
     #[test]
     fn test_arkts_adapter_metadata() {
@@ -502,122 +487,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_struct_name_simple() {
-        assert_eq!(extract_struct_name("struct Index {"), Some(("Index", 0)));
-    }
-
-    #[test]
-    fn test_extract_struct_name_no_brace() {
-        assert_eq!(extract_struct_name("struct Index "), Some(("Index", 0)));
-    }
-
-    #[test]
-    fn test_extract_struct_name_multiline() {
-        assert_eq!(
-            extract_struct_name("struct\nMyComp\n{\n"),
-            Some(("MyComp", 0))
-        );
-    }
-
-    #[test]
-    fn test_extract_struct_name_with_decorator() {
-        // "@Component\n" is 11 bytes; "struct" starts at offset 11
-        assert_eq!(
-            extract_struct_name("@Component\nstruct Index {"),
-            Some(("Index", 11))
-        );
-    }
-
-    #[test]
-    fn test_extract_struct_name_not_struct() {
-        assert_eq!(extract_struct_name("function foo()"), None);
-    }
-
-    #[test]
-    fn test_extract_struct_name_empty() {
-        assert_eq!(extract_struct_name("struct {"), None);
-    }
-
-    #[test]
-    fn test_extract_struct_name_multiple_decorators() {
-        // Multiple decorators before struct
-        let result = extract_struct_name("@Entry @Component struct Index {");
+    fn test_arkts_reference_query_parses() {
+        let spec = ArkTsAdapter;
+        let lang = spec.tree_sitter_language();
+        let query = tree_sitter::Query::new(&lang, spec.reference_query());
         assert!(
-            result.is_some(),
-            "should find struct with multiple decorators"
+            query.is_ok(),
+            "reference query must compile: {:?}",
+            query.err()
         );
-        let (name, offset) = result.unwrap();
-        assert_eq!(name, "Index");
-        assert!(offset > 0, "offset should be after decorators");
-    }
-
-    #[test]
-    fn test_extract_struct_name_decorator_newline() {
-        // Decorator on own line, struct on next line
-        assert_eq!(
-            extract_struct_name("@Component\nstruct CategorySamples {"),
-            Some(("CategorySamples", 11))
-        );
-    }
-
-    #[test]
-    fn test_extract_struct_name_decorator_space() {
-        // Decorator with space before struct on same line
-        let result = extract_struct_name("@Component struct Foo {");
-        assert!(result.is_some());
-        let (name, offset) = result.unwrap();
-        assert_eq!(name, "Foo");
-        assert!(offset > 0);
-    }
-
-    #[test]
-    fn test_extract_struct_name_struct_in_middle() {
-        // "struct" appears later in the text, not at start
-        let result = extract_struct_name("some garbage struct Bar {");
-        assert!(result.is_some());
-        let (name, offset) = result.unwrap();
-        assert_eq!(name, "Bar");
-        assert!(offset > 0);
-    }
-
-    #[test]
-    fn test_extract_struct_name_struct_in_identifier() {
-        // "struct" as part of another identifier — should NOT match
-        assert_eq!(extract_struct_name("restructure code"), None);
-        assert_eq!(extract_struct_name("@Component struct{restructure}"), None); // no name before {
-        // But if space-separated, it IS a keyword match
-        let r = extract_struct_name("struct\n");
-        // "struct" at start followed by newline but no { and no name → should be None or return empty
-        assert_eq!(r, None);
-    }
-
-    #[test]
-    fn test_extract_struct_name_no_string_keyword() {
-        // No "struct" keyword at all
-        assert_eq!(extract_struct_name("function foo()"), None);
-        assert_eq!(extract_struct_name("@State count: number = 0"), None);
-        assert_eq!(extract_struct_name("class Foo { }"), None);
-    }
-
-    #[test]
-    fn test_extract_struct_name_only_keyword() {
-        // Just "struct" with no name
-        assert_eq!(extract_struct_name("struct"), None);
-        assert_eq!(extract_struct_name("struct "), None); // trailing space but no name
-    }
-
-    #[test]
-    fn test_match_brace_simple() {
-        let src = b"struct Foo { build() {} }";
-        let open = src.iter().position(|&b| b == b'{').unwrap();
-        let close = match_brace(src, open);
-        assert_eq!(close, Some(src.len() - 1));
-    }
-
-    #[test]
-    fn test_match_brace_nested() {
-        let src = b"{ outer { inner } outer }";
-        let close = match_brace(src, 0);
-        assert_eq!(close, Some(src.len() - 1));
     }
 }

@@ -1,18 +1,36 @@
 {
   "symbols": [
     {
-      "name": "Column",
+      "name": "ComplexWidget",
+      "kind": "struct"
+    },
+    {
+      "name": "title",
+      "kind": "field"
+    },
+    {
+      "name": "count",
+      "kind": "field"
+    },
+    {
+      "name": "build",
       "kind": "method",
       "signature": "()"
     },
     {
-      "name": "ComplexWidget",
-      "kind": "struct"
+      "name": "increment",
+      "kind": "method",
+      "signature": "()"
+    },
+    {
+      "name": "aboutToAppear",
+      "kind": "method",
+      "signature": "(): void"
     }
   ],
   "references": [
     {
-      "text": "build",
+      "text": "Column",
       "kind": "call"
     },
     {
@@ -24,16 +42,8 @@
       "kind": "field_access"
     },
     {
-      "text": "increment",
-      "kind": "call"
-    },
-    {
       "text": "count",
       "kind": "field_access"
-    },
-    {
-      "text": "aboutToAppear",
-      "kind": "call"
     },
     {
       "text": "info",
@@ -50,41 +60,47 @@
       "kind": "file"
     },
     {
-      "name": "struct#432",
+      "name": "Struct#389",
       "kind": "struct"
     },
     {
-      "name": "Method#534",
+      "name": "Method#466",
       "kind": "method"
     },
     {
-      "name": "Block#543",
+      "name": "Block#474",
       "kind": "block"
     },
     {
-      "name": "Block#593",
+      "name": "Block#489",
       "kind": "block"
     },
     {
-      "name": "Block#645",
+      "name": "Method#527",
+      "kind": "method"
+    },
+    {
+      "name": "Block#539",
+      "kind": "block"
+    },
+    {
+      "name": "Method#569",
+      "kind": "method"
+    },
+    {
+      "name": "Block#591",
       "kind": "block"
     }
   ],
   "callsites": [
     {
-      "caller": "ComplexWidget"
+      "caller": "build"
     },
     {
-      "caller": "Column"
+      "caller": "build"
     },
     {
-      "caller": "ComplexWidget"
-    },
-    {
-      "caller": "ComplexWidget"
-    },
-    {
-      "caller": "ComplexWidget"
+      "caller": "aboutToAppear"
     }
   ]
 }

@@ -11,8 +11,8 @@ use crate::languages::{node_range, node_text};
 use types::*;
 
 use crate::frontend::{
-    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
-    NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
+    ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
 };
 use types::capability::FeatureSupport;
 
@@ -437,7 +437,6 @@ pub(crate) fn python_frontend() -> LanguageFrontend {
         lexical: Box::new(PythonAdapter),
         dataflow: Box::new(PythonAdapter),
         capability: LanguageCapabilityProfile::for_language(Language::Python),
-        recovery: Box::new(NoOpRecovery),
     })
 }
 

@@ -1,13 +1,13 @@
 {
   "symbols": [
     {
+      "name": "SimpleWidget",
+      "kind": "struct"
+    },
+    {
       "name": "build",
       "kind": "method",
       "signature": "()"
-    },
-    {
-      "name": "SimpleWidget",
-      "kind": "struct"
     }
   ],
   "references": [
@@ -26,7 +26,7 @@
       "kind": "file"
     },
     {
-      "name": "struct#350",
+      "name": "Struct#350",
       "kind": "struct"
     },
     {

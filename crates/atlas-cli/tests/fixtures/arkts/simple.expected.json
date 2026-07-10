@@ -9,6 +9,10 @@
       "kind": "class"
     },
     {
+      "name": "port",
+      "kind": "field"
+    },
+    {
       "name": "constructor",
       "kind": "method",
       "signature": "(port: number)"
@@ -29,10 +33,6 @@
     }
   ],
   "references": [
-    {
-      "text": "Server",
-      "kind": "type_reference"
-    },
     {
       "text": "port",
       "kind": "field_access"

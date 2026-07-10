@@ -12,8 +12,8 @@ use crate::languages::{node_range, node_text};
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
-    ScopeExtractorSpec, SymbolExtractorSpec,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_value,
@@ -267,7 +267,6 @@ pub(crate) fn php_frontend() -> LanguageFrontend {
         lexical: Box::new(PhpAdapter),
         dataflow: Box::new(PhpAdapter),
         capability: cap,
-        recovery: Box::new(NoOpRecovery),
     })
 }
 

@@ -107,7 +107,12 @@ pub fn extract_file_with_mode(
     // 1. Parse (P2: uses thread-local parser to avoid per-file alloc)
     let ts_lang = frontend.parser.tree_sitter_language();
     let source_bytes = source.as_bytes();
-    let tree = tl_parse(&ts_lang, source_bytes, file_path, language)?;
+    let parser_source = frontend.parser.parser_source(source);
+    anyhow::ensure!(
+        parser_source.len() == source.len(),
+        "parser source normalization must preserve byte offsets"
+    );
+    let tree = tl_parse(&ts_lang, parser_source.as_bytes(), file_path, language)?;
     let root = tree.root_node();
 
     if root.has_error() {
@@ -149,18 +154,6 @@ pub fn extract_file_with_mode(
         return Err(cancelled_error(file_path, language));
     }
 
-    // Recovery hook: recover tree-sitter parse artifacts (e.g., ArkTS struct).
-    // MUST run before Manifest early-return so recovered symbols appear in manifest mode.
-    // Pass an empty scopes vec — scope recovery happens after scope extraction.
-    let mut recovery_scopes: Vec<ScopeDef> = Vec::new();
-    frontend.recovery.recover_definitions(
-        source,
-        &tree,
-        file_id,
-        &mut symbols,
-        &mut recovery_scopes,
-    );
-
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
         retain_manifest_top_level_symbols(&mut symbols, root);
@@ -179,7 +172,7 @@ pub fn extract_file_with_mode(
                 },
             },
             symbols,
-            scopes: recovery_scopes,
+            scopes: vec![],
             references: vec![],
             imports: vec![],
             exports: vec![],
@@ -245,14 +238,6 @@ pub fn extract_file_with_mode(
     if token.is_cancelled() {
         return Err(cancelled_error(file_path, language));
     }
-
-    // 5a. Merge recovery scopes (from recover_definitions) and run scope recovery.
-    //     This runs before build_scope_tree() so recovered scopes participate in
-    //     container assignment.
-    scopes.extend(recovery_scopes);
-    frontend
-        .recovery
-        .recover_scopes(source, &tree, file_id, &mut symbols, &mut scopes);
 
     // 6. Raw edges are now populated downstream by GraphBuilder (new P3 path).
     //    Old normalize_dataflow path was removed in favor of DataFlowBuilder.

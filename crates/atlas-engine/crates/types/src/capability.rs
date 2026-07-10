@@ -962,15 +962,14 @@ mod profiles {
     // ---- ArkTS (DataflowInterproc) ---------------------------------------------
     // NOTE: Golden fixtures fx27 (ArgToParam), fx28 (ReturnToCall),
     //       fx30 (@Component decorator), and fx31 (class-as-struct) exist.
-    //       ArkTS delegates to the TypeScript frontend; known gaps:
-    //       - `struct` keyword not parsed (TS grammar, use `class` fallback)
-    //       - ArkTS-specific constructs (@Builder, @Link, @Provide, @Consume,
-    //         @StorageLink, @StorageProp, etc.) are not yet verified
-    //       - `ets` / `sts` specific syntax not covered by TS queries
+    //       ArkTS delegates to the TypeScript frontend with byte-stable `struct`
+    //       normalization. Declarative members and UI call ownership are verified.
+    //       ArkUI trailing-block syntax still yields local parse errors, and
+    //       decorator-driven implicit state flow is handled separately from parsing.
     //
     // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
-    // Confidence at 0.60: basic TS-compatible syntax works, with
-    // ArkTS-specific constructs not yet verified.
+    // Confidence remains 0.60 because the TS grammar does not fully accept
+    // ArkUI trailing-block syntax and CFG is unavailable.
 
     const ARKTS_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "arkts",
@@ -990,7 +989,7 @@ mod profiles {
         ],
         unsupported: &["cfg", "scope_aware_binding"],
         limitations: &[
-            "TS grammar fallback (ArkTS-specific constructs @Builder/@Link/@Provide not yet verified)",
+            "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
             "scope-chain-aware binding with shadowing support",
         ],
         feature_overrides: &[
@@ -2690,7 +2689,7 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "TS grammar fallback (ArkTS-specific constructs @Builder/@Link/@Provide not yet verified)",
+                "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
                 "scope-chain-aware binding with shadowing support",
             ]
         );

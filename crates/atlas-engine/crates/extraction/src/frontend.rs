@@ -29,6 +29,7 @@ use types::enums::Language;
 use types::ids::{DataNodeId, FileId};
 use types::structs::{ImportDef, ReferenceUse, ScopeDef, SymbolDef};
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -71,6 +72,14 @@ pub trait ParserSpec: Send + Sync {
     fn language(&self) -> Language;
     /// Tree-sitter Language grammar for parsing.
     fn tree_sitter_language(&self) -> tree_sitter::Language;
+    /// Return the source presented to tree-sitter.
+    ///
+    /// Language frontends may perform byte-length-preserving normalization for
+    /// syntax that a fallback grammar cannot recognize. Ranges in the parsed
+    /// tree must remain valid against the original source.
+    fn parser_source<'a>(&self, source: &'a str) -> Cow<'a, str> {
+        Cow::Borrowed(source)
+    }
     /// Feature support for parsing.
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
@@ -178,70 +187,6 @@ pub(crate) trait DataflowSpec: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// Recovery spec
-// ---------------------------------------------------------------------------
-
-/// Recovery hook for languages that need to repair tree-sitter parse artifacts.
-///
-/// Called BEFORE manifest early-return and BEFORE scope_tree building.
-/// Uses source text + AST hybrid to recover definitions and scopes
-/// that tree-sitter cannot parse natively (e.g., ArkTS `struct`).
-pub trait RecoverySpec: Send + Sync {
-    /// Recover definitions that tree-sitter missed (e.g., ERROR node wrappers).
-    ///
-    /// Called after `extract_definition_symbols()`.
-    /// Receives mutable access to symbols list so recovered definitions
-    /// appear in both Manifest and Structural modes.
-    fn recover_definitions(
-        &self,
-        source: &str,
-        tree: &tree_sitter::Tree,
-        file_id: FileId,
-        symbols: &mut Vec<SymbolDef>,
-        scopes: &mut Vec<ScopeDef>,
-    );
-
-    /// Recover scopes that tree-sitter missed.
-    ///
-    /// Called after `scope_extractor.extract_scopes()` but before
-    /// `build_scope_tree()`.  Receives mutable access to both collections
-    /// because scope recovery may need to recover container-enclosed
-    /// members (e.g., struct methods).
-    fn recover_scopes(
-        &self,
-        source: &str,
-        tree: &tree_sitter::Tree,
-        file_id: FileId,
-        symbols: &mut Vec<SymbolDef>,
-        scopes: &mut Vec<ScopeDef>,
-    );
-}
-
-/// Default no-op recovery — does nothing.
-pub struct NoOpRecovery;
-
-impl RecoverySpec for NoOpRecovery {
-    fn recover_definitions(
-        &self,
-        _source: &str,
-        _tree: &tree_sitter::Tree,
-        _file_id: FileId,
-        _symbols: &mut Vec<SymbolDef>,
-        _scopes: &mut Vec<ScopeDef>,
-    ) {
-    }
-    fn recover_scopes(
-        &self,
-        _source: &str,
-        _tree: &tree_sitter::Tree,
-        _file_id: FileId,
-        _symbols: &mut Vec<SymbolDef>,
-        _scopes: &mut Vec<ScopeDef>,
-    ) {
-    }
-}
-
-// ---------------------------------------------------------------------------
 // FrontendParts
 // ---------------------------------------------------------------------------
 
@@ -259,7 +204,6 @@ pub struct FrontendParts {
     pub lexical: Box<dyn LexicalBindingSpec>,
     pub(crate) dataflow: Box<dyn DataflowSpec>,
     pub capability: LanguageCapabilityProfile,
-    pub recovery: Box<dyn RecoverySpec>,
 }
 
 // ---------------------------------------------------------------------------
@@ -293,8 +237,6 @@ pub struct LanguageFrontend {
     pub(crate) dataflow: Box<dyn DataflowSpec>,
     /// Language capability profile (used by TraceEngine for gating).
     pub capability: LanguageCapabilityProfile,
-    /// Parse artifact recovery (e.g., ArkTS `struct` via ERROR nodes).
-    pub recovery: Box<dyn RecoverySpec>,
 }
 
 impl LanguageFrontend {
@@ -313,7 +255,6 @@ impl LanguageFrontend {
             lexical: parts.lexical,
             dataflow: parts.dataflow,
             capability: parts.capability,
-            recovery: parts.recovery,
         }
     }
 

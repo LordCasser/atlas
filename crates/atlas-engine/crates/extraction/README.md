@@ -44,6 +44,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
 
 For detailed capability profiles, see `types::LanguageCapabilityProfile`.
 
+ArkTS uses the TypeScript grammar with a byte-length-preserving `struct` to
+`class ` parser normalization. This preserves declarative component fields,
+methods, scopes, and UI call ownership against the original source ranges.
+ArkUI trailing-block calls remain best-effort grammar input, so a file may
+correctly expose recovered structural facts while retaining `partial` parse status.
+
 Type symbols use their complete defining scope. This applies to multiline
 struct/class/union/interface/trait/enum declarations, including the closing delimiter.
 Lazy cache validation recognizes older one-line ranges in supported brace-based languages

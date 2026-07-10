@@ -11,8 +11,8 @@ use crate::dataflow_builder::{NodePosKey, create_assign_edges_from_expression_li
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
-    ScopeExtractorSpec, SymbolExtractorSpec,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
 use crate::languages::shared::{
     SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
@@ -348,7 +348,6 @@ pub(crate) fn go_frontend() -> LanguageFrontend {
         lexical: Box::new(GoAdapter),
         dataflow: Box::new(GoAdapter),
         capability: cap,
-        recovery: Box::new(NoOpRecovery),
     })
 }
 

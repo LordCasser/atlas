@@ -13,8 +13,8 @@ use crate::dataflow_builder::NodePosKey;
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
-    ScopeExtractorSpec, SymbolExtractorSpec,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
 use crate::languages::shared::{
     SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
@@ -362,7 +362,6 @@ pub(crate) fn kotlin_frontend() -> LanguageFrontend {
         lexical: Box::new(KotlinAdapter),
         dataflow: Box::new(KotlinAdapter),
         capability: cap,
-        recovery: Box::new(NoOpRecovery),
     })
 }
 

@@ -1,10 +1,10 @@
 // Golden test fixture: ArkTS struct (complex)
 // Covers: struct with decorator, fields, multiple methods, nested UI DSL
 // Verifies that:
-//  1. The struct symbol is recovered as kind=struct
-//  2. The struct scope is recovered and covers the full declaration body
-//  3. TS-parsed methods (build, increment, aboutToAppear) are bound to the struct
-//  4. Decorator (@Component) and type annotations do not interfere with recovery
+//  1. The struct symbol is normalized as kind=struct
+//  2. Fields and real methods retain struct ownership
+//  3. Nested UI DSL calls retain build() as their caller
+//  4. Decorators and type annotations preserve original source ranges
 
 @Component
 struct ComplexWidget {

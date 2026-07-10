@@ -163,7 +163,6 @@ pub struct SymbolDefBuilder {
     name: String,
     qualified_name: String,
     range: TextRange,
-    name_range: Option<TextRange>,
     signature: Option<String>,
     exported: bool,
 }
@@ -185,17 +184,9 @@ impl SymbolDefBuilder {
             name,
             qualified_name,
             range,
-            name_range: None,
             signature: None,
             exported: false,
         }
-    }
-
-    /// Set the name-only range (for precise go-to-definition).
-    /// If not set, falls back to `range`.
-    pub fn name_range(mut self, r: TextRange) -> Self {
-        self.name_range = Some(r);
-        self
     }
 
     /// Set the function/method signature string.
@@ -232,7 +223,7 @@ impl SymbolDefBuilder {
             file_id: self.file_id,
             language: self.language,
             range: self.range,
-            name_range: self.name_range.unwrap_or(self.range),
+            name_range: self.range,
             signature: self.signature,
             visibility: None,
             exported: self.exported,

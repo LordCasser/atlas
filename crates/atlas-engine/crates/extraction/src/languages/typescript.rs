@@ -14,8 +14,8 @@ use crate::languages::shared::{
 use crate::languages::{node_range, node_text};
 
 use crate::frontend::{
-    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NoOpRecovery,
-    NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
+    Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
+    ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
 };
 
 use types::*;
@@ -544,7 +544,6 @@ pub fn typescript_frontend() -> LanguageFrontend {
         lexical: Box::new(TypeScriptFrontendSpec),
         dataflow: Box::new(TypeScriptFrontendSpec),
         capability: LanguageCapabilityProfile::for_language(Language::TypeScript),
-        recovery: Box::new(NoOpRecovery),
     })
 }
 
@@ -656,6 +655,7 @@ fn ts_definition_kind(capture: &str) -> Option<SymbolKind> {
     match capture {
         "definition.function" => Some(SymbolKind::Function),
         "definition.method" => Some(SymbolKind::Method),
+        "definition.field" => Some(SymbolKind::Field),
         "definition.class" => Some(SymbolKind::Class),
         "definition.interface" => Some(SymbolKind::Interface),
         "definition.enum" => Some(SymbolKind::Enum),

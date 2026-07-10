@@ -5,8 +5,8 @@
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
-    LexicalBindingSpec, NoOpRecovery, NormalizeCtx, ParserSpec, ReferenceExtractorSpec,
-    ScopeExtractorSpec, SymbolExtractorSpec,
+    LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
+    SymbolExtractorSpec,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -194,7 +194,6 @@ pub(crate) fn javascript_frontend() -> LanguageFrontend {
         lexical: Box::new(JavaScriptAdapter),
         dataflow: Box::new(JavaScriptAdapter),
         capability: LanguageCapabilityProfile::for_language(Language::JavaScript),
-        recovery: Box::new(NoOpRecovery),
     })
 }
 

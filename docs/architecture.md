@@ -190,7 +190,9 @@ tree-sitter 0.26 parser
 - LanguageAdapter 不填跨文件语义结果。
 - Adapter 不手写重复的 enclosing function/source_symbol 逻辑；source、scope、binding 由 binder 统一处理。
 - 单文件失败必须结构化记录，不中断项目索引。
-- ArkTS 复用 TypeScript grammar，但 language 必须是 `arkts`。
+- ArkTS 复用 TypeScript grammar，但 language 必须是 `arkts`。parser slot 以等长
+  `struct` → `class ` 归一化保留声明式组件的字段、方法和 scope；ArkUI trailing-block
+  调用仍可能产生局部 parse error，ArkTS normalizer 必须消除伪 method 并恢复 call ownership。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - 所有 14 种语言均默认编译。
 
@@ -578,7 +580,7 @@ LanguageCapabilityProfile
 | Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
 | C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
-| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar fallback；CFG 未实现 |
+| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar + 等长 struct 归一化；trailing-block parse status 仍可能 partial；CFG 未实现 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
 | Rust | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |
