@@ -464,30 +464,49 @@ pub fn compute_ignored_mismatches(
 // Store-dependent resolution functions
 // =========================================================================
 
-/// Look up candidates by qualified name.
+/// Look up candidates by exact `qualified_name`.
 ///
 /// Returns `Vec` of `(SymbolDef, resolved_file_path)` tuples.
 pub fn lookup_candidates(store: &Store, qname: &str) -> Result<Vec<(SymbolDef, String)>, String> {
     let symbols = store
         .find_symbols_by_qname(qname)
         .map_err(|e| format!("Lookup error: {e}"))?;
+    Ok(attach_file_paths(store, symbols))
+}
 
-    if !symbols.is_empty() {
-        return Ok(symbols
-            .into_iter()
-            .map(|s| {
-                let path = store
-                    .get_file(&s.file_id)
-                    .ok()
-                    .flatten()
-                    .map(|f| f.path)
-                    .unwrap_or_default();
-                (s, path)
-            })
-            .collect());
+/// Look up candidates by exact simple `name` (last segment for methods/members).
+///
+/// Used when the user searches an unqualified short name (`GetDev`) or when an
+/// exact qname miss should fall back to the trailing segment of a qualified
+/// input. Multiple hits are intentional — callers/MCP surface them as
+/// [`SymbolResolution::Ambiguous`] with full `qualified_name` + `symbol_ref`
+/// so the client can re-query precisely.
+pub fn lookup_candidates_by_simple_name(
+    store: &Store,
+    simple: &str,
+) -> Result<Vec<(SymbolDef, String)>, String> {
+    if simple.is_empty() {
+        return Ok(vec![]);
     }
+    let symbols = store
+        .find_symbols_by_name(simple)
+        .map_err(|e| format!("Lookup error: {e}"))?;
+    Ok(attach_file_paths(store, symbols))
+}
 
-    Ok(vec![])
+fn attach_file_paths(store: &Store, symbols: Vec<SymbolDef>) -> Vec<(SymbolDef, String)> {
+    symbols
+        .into_iter()
+        .map(|s| {
+            let path = store
+                .get_file(&s.file_id)
+                .ok()
+                .flatten()
+                .map(|f| f.path)
+                .unwrap_or_default();
+            (s, path)
+        })
+        .collect()
 }
 
 /// Score all candidates for a selector, sorted descending.
@@ -575,15 +594,22 @@ fn lookup_candidates_by_selector_name_in_path(
     Ok(candidates)
 }
 
+/// Last path segment of a language-qualified name (`.`, `::`, `\` separators).
 fn simple_symbol_name(qname: &str) -> &str {
     qname
-        .rsplit(&['.', ':'])
+        .rsplit(['.', ':', '\\'])
         .find(|part| !part.is_empty())
         .unwrap_or(qname)
 }
 
 fn is_unqualified_symbol_name(qname: &str) -> bool {
-    !qname.contains('.') && !qname.contains(':')
+    !qname.contains('.') && !qname.contains(':') && !qname.contains('\\')
+}
+
+/// True when the user-looking string is a short name (or we only matched via
+/// simple-name fallback) — multi-hits should return Ambiguous with full qnames.
+fn is_simple_name_query(input: &str) -> bool {
+    is_unqualified_symbol_name(input.trim())
 }
 
 /// Unified symbol resolution entry point.
@@ -598,20 +624,66 @@ pub fn resolve_symbol_input(
     }
 }
 
-/// Resolve by plain qualified name — no scoring, no selector hints.
+/// Resolve by plain user string (qualified or short name).
+///
+/// Lookup order (no legacy-DB special cases):
+/// 1. Exact `qualified_name` match.
+/// 2. Else simple-name match on the last segment (`GetDev` from `CertUtils::GetDev`,
+///    or the whole string when the user typed a short name).
+///
+/// **UX contract:** short-name / simple-name multi-hits return
+/// [`SymbolResolution::Ambiguous`] with full `qualified_name` + `symbol_ref` on
+/// each candidate so agents re-query with a precise selector. Graph tools using
+/// [`SymbolResolutionPolicy::Aggregate`] also union edges across those ids.
 pub fn resolve_by_name(
     store: &Store,
     qname: &str,
     _policy: SymbolResolutionPolicy,
 ) -> Result<SymbolResolution, String> {
-    let candidates = lookup_candidates(store, qname)?;
+    let input = qname.trim();
+    if input.is_empty() {
+        return Ok(SymbolResolution::NotFound {
+            qname: qname.into(),
+            suggestions: vec![],
+        });
+    }
 
+    let mut via_simple_name = false;
+    let mut candidates = lookup_candidates(store, input)?;
+    if candidates.is_empty() {
+        let simple = simple_symbol_name(input);
+        // Avoid double-query when input was already that simple string and qname
+        // miss implies name miss too — still query name (qname≠name for methods).
+        candidates = lookup_candidates_by_simple_name(store, simple)?;
+        via_simple_name = !candidates.is_empty();
+    }
+
+    let reason = if via_simple_name || is_simple_name_query(input) {
+        // Even unique exact-qname of an unqualified free function stays
+        // "qualified_name_exact" when via_simple is false and input is simple
+        // but matched via qname first — prefer exact reason when qname hit.
+        if via_simple_name {
+            "simple_name_match"
+        } else if candidates
+            .first()
+            .is_some_and(|(s, _)| s.qualified_name == input)
+        {
+            "qualified_name_exact"
+        } else {
+            "simple_name_match"
+        }
+    } else {
+        "qualified_name_exact"
+    };
+
+    // Short-name multi-match: always Ambiguous so the client sees full qnames.
+    // Exact multi-qname (same qname, different files) also Ambiguous.
     match candidates.len() {
         0 => Ok(SymbolResolution::NotFound {
-            qname: qname.into(),
-            suggestions: find_similar_names(store, qname, 5),
+            qname: input.into(),
+            suggestions: find_similar_names(store, input, 5),
         }),
-        1 => {
+        1 if !via_simple_name || candidates[0].0.qualified_name == input => {
             let (sym, path) = &candidates[0];
             let line = sym.range.start_line.saturating_add(1);
             Ok(SymbolResolution::Single {
@@ -624,6 +696,29 @@ pub fn resolve_by_name(
                     language: sym.language.as_str().to_string(),
                     match_info: MatchInfo {
                         mode: MatchMode::UniqueQname,
+                        ignored_mismatches: vec![],
+                        path_match: None,
+                        line_delta: None,
+                    },
+                },
+            })
+        }
+        1 => {
+            // Unique simple-name hit whose stored qname differs from user input
+            // (e.g. typed `GetDev`, resolved `CertUtils::GetDev`). Still Single
+            // but mode Scored + reason so clients can display the real qname.
+            let (sym, path) = &candidates[0];
+            let line = sym.range.start_line.saturating_add(1);
+            Ok(SymbolResolution::Single {
+                symbol_id: sym.id,
+                resolved: ResolvedSymbol {
+                    qualified_name: sym.qualified_name.clone(),
+                    file_path: path.clone(),
+                    line,
+                    kind: sym.kind.as_str().to_string(),
+                    language: sym.language.as_str().to_string(),
+                    match_info: MatchInfo {
+                        mode: MatchMode::Scored,
                         ignored_mismatches: vec![],
                         path_match: None,
                         line_delta: None,
@@ -644,7 +739,7 @@ pub fn resolve_by_name(
                         kind: sym.kind.as_str().to_string(),
                         language: sym.language.as_str().to_string(),
                         score: 0,
-                        reasons: vec!["qualified_name_exact".into()],
+                        reasons: vec![reason.into()],
                         symbol_ref: SymbolSelector {
                             qualified_name: sym.qualified_name.clone(),
                             file_path: Some(path.clone()),
@@ -825,7 +920,7 @@ pub fn resolve_by_selector(
 /// Find up to `limit` qualified names similar to `qname`, by matching the
 /// simple (unqualified) name portion.
 pub fn find_similar_names(store: &Store, qname: &str, limit: usize) -> Vec<String> {
-    let simple = qname.rsplit(&['.', ':']).next().unwrap_or(qname);
+    let simple = simple_symbol_name(qname);
     match store.find_symbols_by_name(simple) {
         Ok(symbols) => symbols
             .iter()
@@ -1261,6 +1356,128 @@ mod tests {
         assert_eq!(result.len(), 1, "should find exactly one candidate");
         assert_eq!(result[0].0.qualified_name, "Engine.run");
         assert!(!result[0].1.is_empty(), "file_path should not be empty");
+    }
+
+    fn insert_named(
+        store: &Store,
+        path: &str,
+        lang: Language,
+        qname: &str,
+        kind: SymbolKind,
+        line: u32,
+    ) -> SymbolId {
+        let file_id = FileId::generate(path);
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: path.into(),
+                language: lang,
+                content_hash: path.into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        let mut sym = make_symbol(kind, lang, qname, line);
+        sym.file_id = file_id;
+        let lang_s = lang.as_str();
+        sym.id = SymbolId::generate(&file_id, lang_s, qname, kind.as_str(), None);
+        let id = sym.id;
+        store.insert_symbols(&[sym]).unwrap();
+        id
+    }
+
+    /// Short name `GetDev` must resolve via simple-name fallback when qname is
+    /// `CertUtils::GetDev` (C++ method UX).
+    #[test]
+    fn resolve_by_name_short_name_hits_cpp_style_method() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        insert_named(
+            &store,
+            "cert.cpp",
+            Language::Cpp,
+            "CertUtils::GetDev",
+            SymbolKind::Method,
+            10,
+        );
+
+        let res = resolve_by_name(&store, "GetDev", SymbolResolutionPolicy::Aggregate).unwrap();
+        match res {
+            SymbolResolution::Single { resolved, .. } => {
+                assert_eq!(resolved.qualified_name, "CertUtils::GetDev");
+                assert!(
+                    matches!(resolved.match_info.mode, MatchMode::Scored),
+                    "short-name unique hit should be Scored, got {:?}",
+                    resolved.match_info.mode
+                );
+            }
+            other => panic!("expected Single for unique short name, got {other:?}"),
+        }
+
+        // Full qname still works.
+        let res = resolve_by_name(
+            &store,
+            "CertUtils::GetDev",
+            SymbolResolutionPolicy::Aggregate,
+        )
+        .unwrap();
+        match res {
+            SymbolResolution::Single { resolved, .. } => {
+                assert_eq!(resolved.qualified_name, "CertUtils::GetDev");
+                assert!(
+                    matches!(resolved.match_info.mode, MatchMode::UniqueQname),
+                    "exact qname should be UniqueQname, got {:?}",
+                    resolved.match_info.mode
+                );
+            }
+            other => panic!("expected UniqueQname Single, got {other:?}"),
+        }
+    }
+
+    /// Multiple short-name hits → Ambiguous with full qnames + symbol_ref for
+    /// disambiguation (UX: guide agent to re-query with precise qname).
+    #[test]
+    fn resolve_by_name_short_name_ambiguous_guides_with_qnames() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        insert_named(
+            &store,
+            "a.cpp",
+            Language::Cpp,
+            "CertUtils::GetDev",
+            SymbolKind::Method,
+            10,
+        );
+        insert_named(
+            &store,
+            "b.cpp",
+            Language::Cpp,
+            "OtherUtils::GetDev",
+            SymbolKind::Method,
+            20,
+        );
+
+        let res = resolve_by_name(&store, "GetDev", SymbolResolutionPolicy::Aggregate).unwrap();
+        match res {
+            SymbolResolution::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2);
+                let qnames: Vec<_> = candidates.iter().map(|c| c.qualified_name.as_str()).collect();
+                assert!(qnames.contains(&"CertUtils::GetDev"));
+                assert!(qnames.contains(&"OtherUtils::GetDev"));
+                for c in &candidates {
+                    assert!(
+                        c.reasons.iter().any(|r| r == "simple_name_match"),
+                        "expected simple_name_match reason, got {:?}",
+                        c.reasons
+                    );
+                    assert_eq!(c.symbol_ref.qualified_name, c.qualified_name);
+                    assert!(
+                        c.symbol_ref.file_path.is_some(),
+                        "symbol_ref must carry file for precise re-query"
+                    );
+                }
+            }
+            other => panic!("expected Ambiguous for multi short-name, got {other:?}"),
+        }
     }
 
     #[test]

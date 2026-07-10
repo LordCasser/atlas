@@ -56,12 +56,32 @@ fn normalize_cpp_reference(
     file_id: FileId,
 ) -> Option<ReferenceUse> {
     let kind = cpp_reference_kind(capture_name)?;
-    let text = node_text(node, source)?;
-    let name = text.clone();
+    // Captured node is the simple name (identifier / field_identifier).
+    let name = node_text(node, source)?;
     let range = node_range(node);
 
+    // Prefer full qualified text when the capture sits under qualified_identifier
+    // (e.g. call CertUtils::GetDev → name=GetDev, text=CertUtils::GetDev).
+    let (text, receiver) = if let Some(parent) = node.parent() {
+        if parent.kind() == "qualified_identifier" {
+            let full = node_text(parent, source).unwrap_or_else(|| name.clone());
+            let recv = parent
+                .child_by_field_name("scope")
+                .and_then(|s| node_text(s, source));
+            (full, recv)
+        } else {
+            (name.clone(), None)
+        }
+    } else {
+        (name.clone(), None)
+    };
+
     // source_symbol is resolved by SemanticBinder after extraction.
-    Some(make_reference_use(file_id, kind, text, name, range))
+    let mut r = make_reference_use(file_id, kind, text, name, range);
+    if let Some(recv) = receiver {
+        r.receiver = Some(recv);
+    }
+    Some(r)
 }
 
 fn normalize_cpp_import(

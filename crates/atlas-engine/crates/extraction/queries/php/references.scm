@@ -6,9 +6,10 @@
 (function_call_expression
   function: (name) @reference.call)
 
-;; Qualified function calls (e.g. \strlen)
+;; Qualified function calls (e.g. \Foo\bar) — capture last name segment only
 (function_call_expression
-  function: (qualified_name) @reference.call)
+  function: (qualified_name
+    (name) @reference.call))
 
 ;; Method calls (->)
 (member_call_expression

@@ -51,6 +51,11 @@ All notable changes to Atlas will be documented in this file.
 - Docs: architecture/testing/roadmap/requirements record DEBT-8 current facts
   (dispatcher ownership, purity dual guard, residual allowlist, §2.11 test matrix);
   change history lives in this file.
+- Symbol resolve UX: plain-string lookup falls back to simple `name` when exact
+  `qualified_name` misses (e.g. `GetDev` → `CertUtils::GetDev`); multi short-name
+  hits return `Ambiguous` with full qnames + `symbol_ref` for disambiguation.
+  C++/PHP qualified calls capture the last name segment so Calls edges resolve
+  (re-index required for existing projects).
 
 ### Release hardening
 

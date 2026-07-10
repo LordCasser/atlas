@@ -261,6 +261,8 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 | Focus⊆Index 邻域 | §2.6.2 N5 + `focus_equivalence_vs_full_index` | Focus 冷路径与 Full 基线多维可比 |
 | Cross-fn Phase2 | `focus_mode_phase2_arg_to_param_without_summary` | **无 summary** 时 `SummaryEdgeProvider` 仍产出 `ArgToParam`（防误删 Phase2） |
 | FileLock 互斥 | `reject_if_held_by_foreign_live_pid` 等 | 其他 live PID → `cli_index_lock_held`；同 PID 豁免 |
+| 短名 / 限定名解析 | `resolve_by_name_short_name_*` | 短名 `GetDev` 命中 `CertUtils::GetDev`；多短名 → Ambiguous + 全 qname `symbol_ref`；精确 qname 仍 UniqueQname |
+| C++ 限定调用边 | structural index 样例 `CertUtils::GetDev()` | call ref `name=GetDev` 且 resolved；存在 `Calls` 边调用方 → method |
 
 发布前至少：`cargo test -p atlas-mcp --lib` 与 `cargo test -p atlas-engine --lib` 全绿。
 | 单元正则 | `LinuxAugmenter` 直接测 | 无符号匹配、非 C 文件 no-op、syscall diagnostic 文案 |
