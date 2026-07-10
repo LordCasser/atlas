@@ -2044,6 +2044,88 @@ shutdown();
         );
     }
 
+    /// C++ qualified call `CertUtils::GetDev()` must resolve and create a Calls edge
+    /// (requires re-index after extraction query change; not a legacy-DB path).
+    #[test]
+    fn test_cpp_qualified_call_creates_calls_edge() {
+        let source = r#"
+class CertUtils {
+public:
+    static int GetDev();
+};
+
+int CertUtils::GetDev() {
+    return 1;
+}
+
+int use_dev() {
+    return CertUtils::GetDev();
+}
+"#;
+        let file_id = FileId::generate("cert_utils.cpp");
+        let frontend = create_frontend(Language::Cpp).expect("cpp frontend");
+        let facts = extract_full(
+            &frontend,
+            file_id,
+            &PathBuf::from("cert_utils.cpp"),
+            source,
+            "abc",
+        )
+        .expect("cpp extract");
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).expect("insert");
+
+        let mut resolver = ReferenceResolver::new(Arc::clone(&store));
+        let (resolved, stats) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .expect("resolve");
+        assert!(
+            stats.resolved > 0,
+            "expected resolved refs, got stats={stats:?}"
+        );
+
+        // Call ref simple name + resolved target.
+        let call_resolved = resolved.iter().any(|(r, _)| {
+            r.kind == ReferenceKind::Call && r.name == "GetDev"
+        });
+        assert!(
+            call_resolved,
+            "expected resolved Call ref name=GetDev; resolved={:?}",
+            resolved
+                .iter()
+                .filter(|(r, _)| r.kind == ReferenceKind::Call)
+                .map(|(r, t)| (&r.name, &r.text, t.symbol_id))
+                .collect::<Vec<_>>()
+        );
+
+        let builder = GraphBuilder::new(Arc::clone(&store));
+        let build_stats = builder.build_all(&resolved);
+        assert!(
+            build_stats.edges_built > 0,
+            "expected edges, got {build_stats:?}"
+        );
+
+        let graph = GraphEngine::from_store(store.as_ref(), 0.0).expect("graph build failed");
+        let get_dev = store
+            .find_symbols_by_qname("CertUtils::GetDev")
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("GetDev symbol");
+        let callers = graph.callers(&get_dev.id);
+        let caller_names: Vec<&str> = callers
+            .callers
+            .iter()
+            .map(|ix| graph.snapshot().node(*ix).name.as_str())
+            .collect();
+        assert!(
+            caller_names.contains(&"use_dev"),
+            "expected use_dev to call CertUtils::GetDev, got {caller_names:?}"
+        );
+    }
+
     /// Reproduce suspected bug: aliased import `import { foo as bar }`
     /// should still resolve `bar()` → Calls → `foo`.
     #[test]

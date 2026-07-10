@@ -2149,6 +2149,134 @@ int main() {
         assert!(result.is_ok(), "Insert failed: {:?}", result.err());
     }
 
+    /// C++ qualified call `CertUtils::GetDev()` must capture simple name + full text.
+    /// (Resolution layer keys off `name`; diagnostics use `text` / `receiver`.)
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn test_cpp_qualified_call_ref_simple_name_and_full_text() {
+        let source = r#"
+class CertUtils {
+public:
+    static int GetDev();
+};
+
+int CertUtils::GetDev() {
+    return 1;
+}
+
+int use_dev() {
+    return CertUtils::GetDev();
+}
+"#;
+        let file_id = FileId::generate("cert_utils.cpp");
+        let frontend = create_frontend(Language::Cpp).unwrap();
+        let facts = extract_full(
+            &frontend,
+            file_id,
+            &PathBuf::from("cert_utils.cpp"),
+            source,
+            "abc",
+        )
+        .expect("extract cpp");
+
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|s| s.name == "GetDev" && s.qualified_name == "CertUtils::GetDev"),
+            "expected method symbol CertUtils::GetDev, got {:?}",
+            facts
+                .symbols
+                .iter()
+                .map(|s| (&s.name, &s.qualified_name))
+                .collect::<Vec<_>>()
+        );
+
+        let call = facts
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Call && r.name == "GetDev")
+            .expect("expected call ref with simple name GetDev");
+        assert_eq!(
+            call.text, "CertUtils::GetDev",
+            "text should be full qualified call span"
+        );
+        assert_eq!(
+            call.receiver.as_deref(),
+            Some("CertUtils"),
+            "receiver should be scope prefix"
+        );
+
+        // Nested A::B::method — outermost text / receiver prefix.
+        let nested = r#"
+namespace A {
+namespace B {
+int method();
+}
+}
+int caller() { return A::B::method(); }
+"#;
+        let nid = FileId::generate("nested.cpp");
+        let nf = extract_full(
+            &create_frontend(Language::Cpp).unwrap(),
+            nid,
+            &PathBuf::from("nested.cpp"),
+            nested,
+            "abc",
+        )
+        .expect("extract nested");
+        let ncall = nf
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Call && r.name == "method")
+            .expect("nested qualified call");
+        assert_eq!(ncall.text, "A::B::method");
+        assert_eq!(ncall.receiver.as_deref(), Some("A::B"));
+    }
+
+    /// PHP `\Foo\bar()` must capture last segment as name and full path as text.
+    #[cfg(feature = "php")]
+    #[test]
+    fn test_php_qualified_call_ref_simple_name_and_full_text() {
+        let source = r#"<?php
+namespace Foo {
+    function bar() { return 1; }
+}
+namespace {
+    function use_bar() { return \Foo\bar(); }
+}
+"#;
+        let file_id = FileId::generate("qualified.php");
+        let frontend = create_frontend(Language::Php).unwrap();
+        let facts = extract_full(
+            &frontend,
+            file_id,
+            &PathBuf::from("qualified.php"),
+            source,
+            "abc",
+        )
+        .expect("extract php");
+
+        let call = facts
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Call && r.name == "bar")
+            .expect("expected call ref name=bar for \\Foo\\bar()");
+        assert!(
+            call.text.contains("Foo") && call.text.contains("bar"),
+            "text should preserve qualified path, got {:?}",
+            call.text
+        );
+        // Prefix may be "\Foo" or "Foo" depending on leading slash in source span.
+        assert!(
+            call.receiver
+                .as_ref()
+                .is_some_and(|r| r.contains("Foo")),
+            "receiver should carry namespace prefix, got {:?}",
+            call.receiver
+        );
+    }
+
     // ── Lazy dataflow integration tests ─────────────────────────────────
 
     // ── ResolutionSymbols tests ─────────────────────────────────────

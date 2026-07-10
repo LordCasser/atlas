@@ -60,21 +60,8 @@ fn normalize_cpp_reference(
     let name = node_text(node, source)?;
     let range = node_range(node);
 
-    // Prefer full qualified text when the capture sits under qualified_identifier
-    // (e.g. call CertUtils::GetDev → name=GetDev, text=CertUtils::GetDev).
-    let (text, receiver) = if let Some(parent) = node.parent() {
-        if parent.kind() == "qualified_identifier" {
-            let full = node_text(parent, source).unwrap_or_else(|| name.clone());
-            let recv = parent
-                .child_by_field_name("scope")
-                .and_then(|s| node_text(s, source));
-            (full, recv)
-        } else {
-            (name.clone(), None)
-        }
-    } else {
-        (name.clone(), None)
-    };
+    // Walk to the outermost qualified_identifier so nested A::B::C keeps full text.
+    let (text, receiver) = qualified_call_text_and_receiver(node, source, &name);
 
     // source_symbol is resolved by SemanticBinder after extraction.
     let mut r = make_reference_use(file_id, kind, text, name, range);
@@ -82,6 +69,35 @@ fn normalize_cpp_reference(
         r.receiver = Some(recv);
     }
     Some(r)
+}
+
+/// For `A::B::C`, tree-sitter nests `qualified_identifier` nodes. Walk to the
+/// outermost ancestor so `text` is the full span and `receiver` is the prefix
+/// before the last `::` segment.
+fn qualified_call_text_and_receiver(
+    name_node: tree_sitter::Node,
+    source: &str,
+    simple_name: &str,
+) -> (String, Option<String>) {
+    let mut outermost: Option<tree_sitter::Node> = None;
+    let mut cur = name_node.parent();
+    while let Some(p) = cur {
+        if p.kind() == "qualified_identifier" {
+            outermost = Some(p);
+            cur = p.parent();
+        } else {
+            break;
+        }
+    }
+    let Some(qi) = outermost else {
+        return (simple_name.to_string(), None);
+    };
+    let full = node_text(qi, source).unwrap_or_else(|| simple_name.to_string());
+    let receiver = full
+        .rsplit_once("::")
+        .map(|(prefix, _)| prefix.to_string())
+        .filter(|p| !p.is_empty());
+    (full, receiver)
 }
 
 fn normalize_cpp_import(

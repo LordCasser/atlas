@@ -606,12 +606,6 @@ fn is_unqualified_symbol_name(qname: &str) -> bool {
     !qname.contains('.') && !qname.contains(':') && !qname.contains('\\')
 }
 
-/// True when the user-looking string is a short name (or we only matched via
-/// simple-name fallback) — multi-hits should return Ambiguous with full qnames.
-fn is_simple_name_query(input: &str) -> bool {
-    is_unqualified_symbol_name(input.trim())
-}
-
 /// Unified symbol resolution entry point.
 pub fn resolve_symbol_input(
     store: &Store,
@@ -652,29 +646,10 @@ pub fn resolve_by_name(
     let mut candidates = lookup_candidates(store, input)?;
     if candidates.is_empty() {
         let simple = simple_symbol_name(input);
-        // Avoid double-query when input was already that simple string and qname
-        // miss implies name miss too — still query name (qname≠name for methods).
+        // qname≠name for methods: still try simple name after exact-qname miss.
         candidates = lookup_candidates_by_simple_name(store, simple)?;
         via_simple_name = !candidates.is_empty();
     }
-
-    let reason = if via_simple_name || is_simple_name_query(input) {
-        // Even unique exact-qname of an unqualified free function stays
-        // "qualified_name_exact" when via_simple is false and input is simple
-        // but matched via qname first — prefer exact reason when qname hit.
-        if via_simple_name {
-            "simple_name_match"
-        } else if candidates
-            .first()
-            .is_some_and(|(s, _)| s.qualified_name == input)
-        {
-            "qualified_name_exact"
-        } else {
-            "simple_name_match"
-        }
-    } else {
-        "qualified_name_exact"
-    };
 
     // Short-name multi-match: always Ambiguous so the client sees full qnames.
     // Exact multi-qname (same qname, different files) also Ambiguous.
@@ -706,7 +681,7 @@ pub fn resolve_by_name(
         1 => {
             // Unique simple-name hit whose stored qname differs from user input
             // (e.g. typed `GetDev`, resolved `CertUtils::GetDev`). Still Single
-            // but mode Scored + reason so clients can display the real qname.
+            // but mode Scored so clients can display the real qname.
             let (sym, path) = &candidates[0];
             let line = sym.range.start_line.saturating_add(1);
             Ok(SymbolResolution::Single {
@@ -727,6 +702,11 @@ pub fn resolve_by_name(
             })
         }
         _ => {
+            let reason = if via_simple_name {
+                "simple_name_match"
+            } else {
+                "qualified_name_exact"
+            };
             let scored: Vec<ScoredCandidate> = candidates
                 .iter()
                 .take(MAX_AGGREGATION_CANDIDATES)

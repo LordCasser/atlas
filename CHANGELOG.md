@@ -55,7 +55,9 @@ All notable changes to Atlas will be documented in this file.
   `qualified_name` misses (e.g. `GetDev` → `CertUtils::GetDev`); multi short-name
   hits return `Ambiguous` with full qnames + `symbol_ref` for disambiguation.
   C++/PHP qualified calls capture the last name segment so Calls edges resolve
-  (re-index required for existing projects).
+  (re-index required for existing projects). PHP normalizer mirrors C++ for
+  full `text`/`receiver`; nested C++ `A::B::C` keeps outermost span; extraction
+  + resolution tests lock `CertUtils::GetDev` / `\Foo\bar` and Calls edges.
 
 ### Release hardening
 

@@ -63,13 +63,33 @@ fn normalize_php_reference(
     file_id: FileId,
 ) -> Option<ReferenceUse> {
     let kind = php_reference_kind(capture_name)?;
-    let raw_text = node_text(node, source)?;
-    // Strip `$` prefix for variable-like references
-    let text = raw_text.trim_start_matches('$').to_string();
-    let name = text.clone();
+    let raw_name = node_text(node, source)?;
+    // Strip `$` prefix for variable-like references (dynamic method names).
+    let name = raw_name.trim_start_matches('$').to_string();
     let range = node_range(node);
 
-    Some(make_reference_use(file_id, kind, text, name, range))
+    // Qualified calls capture the trailing `name` under `qualified_name`.
+    // Mirror C++: name = last segment, text = full `\Foo\bar`, receiver = prefix.
+    let (text, receiver) = if let Some(parent) = node.parent() {
+        if parent.kind() == "qualified_name" {
+            let full = node_text(parent, source).unwrap_or_else(|| name.clone());
+            let recv = full
+                .rsplit_once('\\')
+                .map(|(prefix, _)| prefix.trim_end_matches('\\').to_string())
+                .filter(|p| !p.is_empty());
+            (full, recv)
+        } else {
+            (name.clone(), None)
+        }
+    } else {
+        (name.clone(), None)
+    };
+
+    let mut r = make_reference_use(file_id, kind, text, name, range);
+    if let Some(recv) = receiver {
+        r.receiver = Some(recv);
+    }
+    Some(r)
 }
 
 fn normalize_php_import(
