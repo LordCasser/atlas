@@ -49,6 +49,9 @@ ArkTS uses the TypeScript grammar with a byte-length-preserving `struct` to
 methods, scopes, and UI call ownership against the original source ranges.
 ArkUI trailing-block calls remain best-effort grammar input, so a file may
 correctly expose recovered structural facts while retaining `partial` parse status.
+Query-time tracing separately bridges `AppStorage.set`/`setOrCreate` values to
+matching `@StorageProp`/`@StorageLink` field reads. Matching is syntactic; reverse
+links, default initialization, and process boundaries are not modeled.
 
 Type symbols use their complete defining scope. This applies to multiline
 struct/class/union/interface/trait/enum declarations, including the closing delimiter.

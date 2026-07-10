@@ -82,7 +82,18 @@ fn normalize_arkts_reference(
     {
         return None;
     }
-    super::typescript::normalize_ts_reference(capture_name, node, source, file_id)
+    let mut reference =
+        super::typescript::normalize_ts_reference(capture_name, node, source, file_id)?;
+    if let Some(member) = node
+        .parent()
+        .filter(|parent| parent.kind() == "member_expression")
+    {
+        reference.receiver = member
+            .child_by_field_name("object")
+            .and_then(|object| object.utf8_text(source.as_bytes()).ok())
+            .map(str::to_string);
+    }
+    Some(reference)
 }
 
 fn normalize_arkts_import(

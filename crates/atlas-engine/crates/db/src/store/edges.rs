@@ -522,6 +522,34 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find callsites by unresolved/resolved callee name and receiver text.
+    ///
+    /// This is a syntactic lookup: it intentionally does not require symbol
+    /// resolution, which makes it suitable for framework APIs defined outside
+    /// the indexed project.
+    pub fn find_callsites_by_name_and_receiver(
+        &self,
+        name: &str,
+        receiver: &str,
+        language: Language,
+    ) -> anyhow::Result<Vec<Callsite>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT cs.callsite_id, cs.reference_id, cs.caller, cs.receiver, cs.args_json,
+                    cs.range_start_byte, cs.range_end_byte, cs.range_start_line, cs.range_start_column,
+                    cs.range_end_line, cs.range_end_column,
+                    cs.callee_start_line, cs.callee_start_column, cs.callee_end_line, cs.callee_end_column,
+                    cs.callee_start_byte, cs.callee_end_byte
+             FROM callsites cs
+             JOIN \"references\" r ON r.reference_id = cs.reference_id
+             JOIN files f ON f.file_id = r.file_id
+             WHERE r.name = ?1 AND cs.receiver = ?2 AND f.language = ?3
+             ORDER BY r.file_id, cs.range_start_byte",
+        )?;
+        let rows = stmt.query_map(params![name, receiver, language.as_str()], row_to_callsite)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find all callsites whose resolved callee is the given symbol.
     ///
     /// JOINs `callsites` with `references` to filter by `resolved_symbol_id`.

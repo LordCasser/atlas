@@ -438,10 +438,10 @@ fn ts_caller_path_returns_none_for_root_function() {
     );
 }
 
-/// Interproc bridge: verify that SummaryEdgeProvider connects a callee
+/// Interproc bridge: verify that RuntimeEdgeProvider connects a callee
 /// Parameter node to the caller's call-arg DataNode via ArgToParam edge.
 ///
-/// This test directly exercises the SummaryEdgeProvider (not the full slicer
+/// This test directly exercises the RuntimeEdgeProvider (not the full slicer
 /// pipeline) because the current TS dataflow model captures expression-level
 /// DataNodes (e.g. `x + y` as one Expr), so the slicer BFS doesn't naturally
 /// reach Parameter nodes from use-sites.  The bridge itself is the critical
@@ -484,12 +484,12 @@ function run(): void {
         );
     }
 
-    // ── Verify SummaryEdgeProvider produces ArgToParam edges ──
+    // ── Verify RuntimeEdgeProvider produces ArgToParam edges ──
     let input_param = params
         .iter()
         .find(|dn| dn.name.as_deref() == Some("input"))
         .expect("should find input parameter");
-    let provider = atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
+    let provider = atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
     let edges = provider
         .virtual_incoming(&input_param.id, store.as_ref())
         .expect("virtual_incoming should succeed");
@@ -501,7 +501,7 @@ function run(): void {
         .collect();
     assert!(
         !arg_edges.is_empty(),
-        "SummaryEdgeProvider should produce ArgToParam edges from caller arg \
+        "RuntimeEdgeProvider should produce ArgToParam edges from caller arg \
          to callee param; found {} edges total, {} ArgToParam",
         edges.len(),
         arg_edges.len(),
@@ -524,11 +524,11 @@ function run(): void {
     }
 }
 
-/// Interproc return bridge: verify that SummaryEdgeProvider connects a caller's
+/// Interproc return bridge: verify that RuntimeEdgeProvider connects a caller's
 /// call-result Expr (assign_value with callsite_id) to the callee's return
 /// sources via ReturnToCall edges.
 ///
-/// This test directly exercises the SummaryEdgeProvider (not the full slicer
+/// This test directly exercises the RuntimeEdgeProvider (not the full slicer
 /// pipeline).  The bridge matches callee return→caller call-result.
 #[test]
 fn ts_interproc_return_bridges_to_caller_call_result() {
@@ -576,8 +576,8 @@ function run(): void {
         "call_result Expr must have callsite_id for return bridge"
     );
 
-    // ── Verify SummaryEdgeProvider produces ReturnToCall edges ──
-    let provider = atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
+    // ── Verify RuntimeEdgeProvider produces ReturnToCall edges ──
+    let provider = atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
     let edges = provider
         .virtual_incoming(&call_result_expr.id, store.as_ref())
         .expect("virtual_incoming should succeed");
@@ -588,7 +588,7 @@ function run(): void {
         .collect();
     assert!(
         !return_edges.is_empty(),
-        "SummaryEdgeProvider should produce ReturnToCall edges from callee \
+        "RuntimeEdgeProvider should produce ReturnToCall edges from callee \
          return to caller call-result Expr; found {} edges total, {} ReturnToCall",
         edges.len(),
         return_edges.len(),
@@ -609,6 +609,161 @@ function run(): void {
             "virtual edge should target the caller's call-result Expr"
         );
     }
+}
+
+#[test]
+fn arkts_app_storage_bridges_writer_value_to_web_bound_field() {
+    let files = &[
+        (
+            "EntryAbility.ets",
+            r#"export function initialize(input: string): void {
+  AppStorage.setOrCreate("webUrl", input);
+  AppStorage.set(StorageKey.COLOR_MODE, input);
+}"#,
+        ),
+        (
+            "Unrelated.ts",
+            r#"export function fake(input: string): void {
+  AppStorage.setOrCreate("webUrl", input);
+}"#,
+        ),
+        (
+            "MainPage.ets",
+            r#"@Component
+export struct MainPage {
+  @StorageLink('webUrl') webUrl: string = '';
+  @StorageProp(StorageKey.COLOR_MODE) colorMode: string = '';
+  plainUrl: string = '';
+
+  build() {
+    Web({ src: this.webUrl })
+    Text(this.colorMode)
+    Text(this.plainUrl)
+  }
+}"#,
+        ),
+    ];
+    let (store, _stats) = index_files(files);
+    let producer_file = FileId::generate("EntryAbility.ets");
+    let consumer_file = FileId::generate("MainPage.ets");
+
+    let producer = store
+        .find_callsites_by_name_and_receiver(
+            "setOrCreate",
+            "AppStorage",
+            atlas_engine::Language::ArkTS,
+        )
+        .expect("AppStorage callsite query");
+    assert_eq!(
+        producer.len(),
+        1,
+        "callsites={:#?}\nreferences={:#?}",
+        store.find_callsites_by_file(&producer_file).unwrap(),
+        store.find_references_by_file(&producer_file).unwrap()
+    );
+    let value_node_id = producer[0].args[1]
+        .data_node_id
+        .expect("setOrCreate value argument must have a data node");
+    assert_eq!(
+        store
+            .get_data_node(&value_node_id)
+            .unwrap()
+            .unwrap()
+            .file_id,
+        producer_file
+    );
+
+    let consumer_nodes = store.find_data_nodes_by_file(&consumer_file).unwrap();
+    let field_read = consumer_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Field
+                && node.name.as_deref() == Some("webUrl")
+                && node.access_path.as_deref() == Some("this.webUrl")
+        })
+        .expect("Web src field read");
+
+    let references = store.find_references_by_file(&consumer_file).unwrap();
+    let web_reference = references
+        .iter()
+        .find(|reference| {
+            reference.kind == atlas_engine::ReferenceKind::Call && reference.name == "Web"
+        })
+        .expect("Web sink reference");
+    let web_callsite = store
+        .find_callsite_by_reference_id(&web_reference.id)
+        .unwrap()
+        .expect("Web sink callsite");
+    let web_arg_range = web_callsite.args[0].range.expect("Web src argument range");
+    assert!(web_arg_range.start_byte <= field_read.range.start_byte);
+    assert!(web_arg_range.end_byte >= field_read.range.end_byte);
+
+    let provider = atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
+    let edges = provider
+        .virtual_incoming(&field_read.id, store.as_ref())
+        .expect("AppStorage virtual edge");
+    let state_edge = edges
+        .iter()
+        .find(|edge| edge.kind == DataFlowKind::StateFlow)
+        .expect("matching AppStorage state edge");
+    assert_eq!(state_edge.source_id, value_node_id);
+    assert_eq!(state_edge.target_id, field_read.id);
+    assert!(state_edge.provenance.contains("webUrl"));
+
+    let color_read = consumer_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Field
+                && node.access_path.as_deref() == Some("this.colorMode")
+        })
+        .expect("StorageProp field read");
+    let color_edges = provider
+        .virtual_incoming(&color_read.id, store.as_ref())
+        .expect("StorageKey state edge");
+    assert!(color_edges.iter().any(|edge| {
+        edge.kind == DataFlowKind::StateFlow && edge.provenance.contains("StorageKey.COLOR_MODE")
+    }));
+
+    let plain_read = consumer_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Field && node.access_path.as_deref() == Some("this.plainUrl")
+        })
+        .expect("plain field read");
+    assert!(
+        provider
+            .virtual_incoming(&plain_read.id, store.as_ref())
+            .expect("plain field lookup")
+            .iter()
+            .all(|edge| edge.kind != DataFlowKind::StateFlow),
+        "an undecorated field must not inherit the preceding StorageProp key"
+    );
+
+    let (line, column) = mid_point(
+        field_read.range.start_line,
+        field_read.range.start_column,
+        field_read.range.end_line,
+        field_read.range.end_column,
+    );
+    let sink = Locator::locate(store.as_ref(), &consumer_file, line, column).unwrap();
+    let sink_node = sink.data_node.as_ref().expect("located Web argument");
+    assert_eq!(sink_node.kind, DataNodeKind::CallArg);
+    let sink_edges = provider
+        .virtual_incoming(&sink_node.id, store.as_ref())
+        .expect("AppStorage edge into located Web argument");
+    assert!(sink_edges.iter().any(|edge| {
+        edge.kind == DataFlowKind::StateFlow
+            && edge.source_id == value_node_id
+            && edge.target_id == sink_node.id
+    }));
+    let path = Slicer::slice(store.as_ref(), &sink, 10, Some(&provider))
+        .unwrap()
+        .expect("state-backed Web field should be traceable");
+    assert!(
+        path.steps
+            .iter()
+            .any(|step| step.edge_kind == DataFlowKind::StateFlow)
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -2278,7 +2433,7 @@ function compute(): number {
 
     // Find data node for `n` (parameter of double).
     // Tracing backward from the callee's parameter triggers the
-    // interprocedural bridge (SummaryEdgeProvider) which creates ArgToParam
+    // interprocedural bridge (RuntimeEdgeProvider) which creates ArgToParam
     // edges from the caller's CallArg (input) to the callee's Parameter (n).
     let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
     let n_nodes: Vec<_> = data_nodes
@@ -2301,8 +2456,8 @@ function compute(): number {
 
     // For nested calls, we need interprocedural bridging to cross
     // function boundaries.
-    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+    use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
         .expect("slice error")
         .expect("nested call trace must produce path");
 
@@ -2368,8 +2523,8 @@ function main(): number {
     .expect("locate failed");
 
     // Interprocedural bridge is needed to cross helper() → result boundary.
-    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+    use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
         .expect("slice error")
         .expect("cross-function trace must produce path");
 

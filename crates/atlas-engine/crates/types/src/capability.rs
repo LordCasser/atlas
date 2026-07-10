@@ -964,8 +964,8 @@ mod profiles {
     //       fx30 (@Component decorator), and fx31 (class-as-struct) exist.
     //       ArkTS delegates to the TypeScript frontend with byte-stable `struct`
     //       normalization. Declarative members and UI call ownership are verified.
-    //       ArkUI trailing-block syntax still yields local parse errors, and
-    //       decorator-driven implicit state flow is handled separately from parsing.
+    //       ArkUI trailing-block syntax still yields local parse errors. Query-time
+    //       tracing bridges verified AppStorage writes into reactive field reads.
     //
     // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
     // Confidence remains 0.60 because the TS grammar does not fully accept
@@ -991,6 +991,7 @@ mod profiles {
         limitations: &[
             "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
             "scope-chain-aware binding with shadowing support",
+            "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
         ],
         feature_overrides: &[
             (
@@ -2691,6 +2692,7 @@ mod tests {
             vec![
                 "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
                 "scope-chain-aware binding with shadowing support",
+                "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
             ]
         );
 

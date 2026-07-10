@@ -562,6 +562,8 @@ CREATE INDEX IF NOT EXISTS idx_references_file
     ON "references"(file_id);
 CREATE INDEX IF NOT EXISTS idx_references_source
     ON "references"(source_symbol);
+CREATE INDEX IF NOT EXISTS idx_references_name
+    ON "references"(name);
 CREATE INDEX IF NOT EXISTS idx_references_resolved
     ON "references"(resolved_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_references_unresolved

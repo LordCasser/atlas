@@ -85,6 +85,12 @@ pub trait DataflowReader {
 /// Read-only access to callsites, bindings, and CFG.
 pub trait CallGraphReader {
     fn find_callsites_by_file(&self, file_id: &FileId) -> Result<Vec<Callsite>>;
+    fn find_callsites_by_name_and_receiver(
+        &self,
+        name: &str,
+        receiver: &str,
+        language: Language,
+    ) -> Result<Vec<Callsite>>;
     fn find_resolved_callsites_by_callee(&self, callee: &SymbolId)
     -> Result<Vec<ResolvedCallsite>>;
     fn find_callsites_by_id(&self, id: &CallsiteId) -> Result<Vec<Callsite>>;

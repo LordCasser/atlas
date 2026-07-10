@@ -48,6 +48,7 @@ pub const ALL_WRITE_INDEXES: &[&str] = &[
     "idx_imports_module",
     // references (ALL — Phase 7 will UPDATE these without index maintenance)
     "idx_references_file",
+    "idx_references_name",
     "idx_references_resolved",
     "idx_references_source",
     "idx_references_unresolved",
@@ -117,6 +118,7 @@ pub const FINAL_QUERY_INDEXES: &[&str] = &[
     "idx_files_language",
     // references
     "idx_references_file",
+    "idx_references_name",
     "idx_references_resolved",
     "idx_references_source",
     "idx_references_unresolved",

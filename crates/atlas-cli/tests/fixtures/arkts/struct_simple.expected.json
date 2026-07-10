@@ -40,7 +40,8 @@
   ],
   "callsites": [
     {
-      "caller": "build"
+      "caller": "build",
+      "receiver": "console"
     }
   ]
 }

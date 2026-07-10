@@ -603,6 +603,8 @@ impl Store {
             // references
             "idx_references_file" =>
                 "CREATE INDEX IF NOT EXISTS idx_references_file ON \"references\"(file_id)".into(),
+            "idx_references_name" =>
+                "CREATE INDEX IF NOT EXISTS idx_references_name ON \"references\"(name)".into(),
             "idx_references_source" =>
                 "CREATE INDEX IF NOT EXISTS idx_references_source ON \"references\"(source_symbol)".into(),
             "idx_references_resolved" =>
@@ -1101,6 +1103,14 @@ impl DataflowReader for Store {
 impl CallGraphReader for Store {
     fn find_callsites_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<Callsite>> {
         Store::find_callsites_by_file(self, file_id)
+    }
+    fn find_callsites_by_name_and_receiver(
+        &self,
+        name: &str,
+        receiver: &str,
+        language: types::enums::Language,
+    ) -> anyhow::Result<Vec<Callsite>> {
+        Store::find_callsites_by_name_and_receiver(self, name, receiver, language)
     }
     fn find_resolved_callsites_by_callee(
         &self,

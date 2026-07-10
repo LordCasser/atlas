@@ -100,7 +100,8 @@
       "caller": "build"
     },
     {
-      "caller": "aboutToAppear"
+      "caller": "aboutToAppear",
+      "receiver": "console"
     }
   ]
 }

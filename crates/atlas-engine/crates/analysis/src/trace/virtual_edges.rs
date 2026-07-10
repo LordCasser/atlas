@@ -1,4 +1,4 @@
-//! Virtual edges for inter-procedural dataflow tracing.
+//! Virtual edges for runtime dataflow tracing.
 //!
 //! When the backward slicer hits a function boundary (parameter node at the
 //! top of a function, or call-return node with an associated [`Callsite`]),
@@ -11,15 +11,15 @@
 //! || Direction || From || To || When ||
 //! || Backward (caller arg → callee param) || CallArg DataNode in caller || Parameter DataNode in callee || Slicer reaches a Parameter node with known callers ||
 //! || Backward (callee return → caller result) || Return DataNode in callee || Expr/CallResult DataNode in caller || Slicer reaches a call-result node with known callee ||
+//! || Backward (framework state write → reactive field read) || AppStorage value argument || `@StorageLink` / `@StorageProp` field access || Keys match ||
 //!
-//! The [`SummaryEdgeProvider`] uses [`super::summary::FunctionSummary`] to
-//! bridge these gaps.  When no summary exists yet it falls back to
-//! direct-join heuristics (match callsite callee symbol → callee params;
-//! match call-arg DataNode → callee param by index).
+//! The [`RuntimeEdgeProvider`] uses [`super::summary::FunctionSummary`] to
+//! bridge call boundaries and ArkTS framework-managed state. When no summary
+//! exists yet it falls back to direct callsite joins.
 
 use db::TraceStore;
 use types::dataflow::DataFlowEdge;
-use types::enums::{DataFlowKind, DataNodeKind};
+use types::enums::{DataFlowKind, DataNodeKind, Language, ReferenceKind, SymbolKind};
 use types::ids::{DataNodeId, SymbolId};
 use types::structs::Callsite;
 
@@ -27,11 +27,10 @@ use types::structs::Callsite;
 // TraceEdge — a cross-boundary dataflow connection
 // ---------------------------------------------------------------------------
 
-/// A virtual edge that connects data nodes across function boundaries.
+/// A virtual edge that connects data nodes across semantic boundaries.
 ///
 /// Unlike [`DataFlowEdge`] which stays within a single function, `TraceEdge`
-/// bridges caller-callee or callee-caller transitions needed for
-/// inter-procedural backward tracing.
+/// bridges caller-callee transitions or framework-managed state channels.
 #[derive(Debug, Clone)]
 pub struct TraceEdge {
     /// Source of the data flow (caller-side for backward tracing).
@@ -51,10 +50,10 @@ pub struct TraceEdge {
 // TraceEdgeProvider trait
 // ---------------------------------------------------------------------------
 
-/// Provider of virtual inter-procedural trace edges.
+/// Provider of virtual runtime trace edges.
 ///
-/// Implementations bridge the gap between intra-procedural dataflow (which
-/// stays within a single function) and cross-function tracing.
+/// Implementations bridge the gap between intra-procedural dataflow and
+/// semantic transitions that do not have a source-level assignment edge.
 pub trait TraceEdgeProvider: Send + Sync {
     /// Return virtual edges whose **target** is the given node.  For backward
     /// tracing, these are edges *into* this node from across a call boundary.
@@ -66,24 +65,25 @@ pub trait TraceEdgeProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// SummaryEdgeProvider — bridges using FunctionSummary
+// RuntimeEdgeProvider — bridges using FunctionSummary
 // ---------------------------------------------------------------------------
 
-/// Bridges call boundaries using [`FunctionSummary`] and direct DB joins.
+/// Bridges call boundaries and framework state using query-time DB joins.
 ///
 /// ## Strategy (in priority order)
 ///
-/// 1. **Parameter node** → find callers via `callsites_by_callee`, match
+/// 1. **ArkTS reactive field** → match its decorator key to AppStorage writes.
+/// 2. **Parameter node** → find callers via `callsites_by_callee`, match
 ///    each caller's call-arg DataNode to this parameter by arg_index.
-/// 2. **CallReturn / Expr nodes with callsite_id** → find the callee
+/// 3. **CallReturn / Expr nodes with callsite_id** → find the callee
 ///    function, look up its summary, connect each ReturnFlow source back
 ///    to this call-result node.
-/// 3. **Direct callsite join** — when summary is unavailable, match
+/// 4. **Direct callsite join** — when summary is unavailable, match
 ///    caller call-arg DataNodes to callee parameters using the existing
 ///    `callsite_id` on DataNodes and the callsite's callee symbol.
-pub struct SummaryEdgeProvider;
+pub struct RuntimeEdgeProvider;
 
-impl TraceEdgeProvider for SummaryEdgeProvider {
+impl TraceEdgeProvider for RuntimeEdgeProvider {
     fn virtual_incoming(
         &self,
         target_id: &DataNodeId,
@@ -93,6 +93,7 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
             Some(n) => n,
             None => return Ok(vec![]),
         };
+        let mut runtime_edges = arkts_state_incoming(&target_node, store)?;
 
         // ── Phase 1: try CrossFunctionBridge (persisted summaries) ──
         let bridge_edges = match target_node.kind {
@@ -110,13 +111,14 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
         };
 
         if !bridge_edges.is_empty() {
-            return Ok(bridge_edges);
+            runtime_edges.extend(bridge_edges);
+            return Ok(runtime_edges);
         }
 
         // ── Phase 2: runtime BFS join (Focus primary; Full when no summary) ──
         // Focus never runs summary phase, so this path is the designed cross-
         // function bridge for query-time materialize — not a legacy shim.
-        let mut edges: Vec<TraceEdge> = Vec::new();
+        let mut edges = runtime_edges;
 
         match target_node.kind {
             // ── Parameter: find direct + indirect callers ──
@@ -294,6 +296,166 @@ impl TraceEdgeProvider for SummaryEdgeProvider {
     }
 }
 
+fn arkts_state_incoming(
+    target: &types::dataflow::DataNode,
+    store: &dyn TraceStore,
+) -> anyhow::Result<Vec<TraceEdge>> {
+    if !matches!(
+        target.kind,
+        DataNodeKind::Field | DataNodeKind::CallArg | DataNodeKind::Expr
+    ) {
+        return Ok(vec![]);
+    }
+    let Some(function_id) = target.function_id else {
+        return Ok(vec![]);
+    };
+    if store
+        .find_symbol_by_id(&function_id)?
+        .is_none_or(|function| function.language != Language::ArkTS)
+    {
+        return Ok(vec![]);
+    }
+
+    let field_reads = if target.kind == DataNodeKind::Field {
+        vec![target.clone()]
+    } else {
+        store
+            .find_data_nodes_by_file(&target.file_id)?
+            .into_iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Field
+                    && node.function_id == target.function_id
+                    && node.range.start_byte >= target.range.start_byte
+                    && node.range.end_byte <= target.range.end_byte
+            })
+            .collect()
+    };
+
+    let mut edges = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for field_read in field_reads {
+        for edge in arkts_state_for_field(&field_read, target.id, store)? {
+            if seen.insert(edge.source_id) {
+                edges.push(edge);
+            }
+        }
+    }
+    Ok(edges)
+}
+
+fn arkts_state_for_field(
+    field_read: &types::dataflow::DataNode,
+    target_id: DataNodeId,
+    store: &dyn TraceStore,
+) -> anyhow::Result<Vec<TraceEdge>> {
+    let Some(field_name) = field_read.name.as_deref() else {
+        return Ok(vec![]);
+    };
+
+    let symbols = store.find_symbols_by_file(&field_read.file_id)?;
+    let Some(owner) = field_read
+        .function_id
+        .and_then(|function_id| symbols.iter().find(|symbol| symbol.id == function_id))
+        .and_then(|function| function.container)
+    else {
+        return Ok(vec![]);
+    };
+    let field = symbols.iter().find(|symbol| {
+        symbol.kind == SymbolKind::Field
+            && symbol.name == field_name
+            && symbol.container == Some(owner)
+    });
+    let Some(field) = field.filter(|field| field.language == Language::ArkTS) else {
+        return Ok(vec![]);
+    };
+    let Some(container_id) = field.container else {
+        return Ok(vec![]);
+    };
+
+    let previous_field_start = symbols
+        .iter()
+        .filter(|symbol| {
+            symbol.kind == SymbolKind::Field
+                && symbol.container == Some(container_id)
+                && symbol.range.start_byte < field.range.start_byte
+        })
+        .map(|symbol| symbol.range.start_byte)
+        .max()
+        .unwrap_or(0);
+    let references = store.find_references_by_file(&field_read.file_id)?;
+    let callsites = store.find_callsites_by_file(&field_read.file_id)?;
+    let annotation = callsites
+        .iter()
+        .filter(|callsite| {
+            callsite.caller == container_id
+                && callsite.range.start_byte > previous_field_start
+                && callsite.range.end_byte <= field.range.start_byte
+        })
+        .filter_map(|callsite| {
+            let reference_id = callsite.reference_id?;
+            let reference = references
+                .iter()
+                .find(|reference| reference.id == reference_id)?;
+            (reference.kind == ReferenceKind::Call
+                && matches!(reference.name.as_str(), "StorageLink" | "StorageProp"))
+            .then_some(callsite)
+        })
+        .max_by_key(|callsite| callsite.range.start_byte);
+    let Some(annotation) = annotation else {
+        return Ok(vec![]);
+    };
+    let Some(key) = annotation
+        .args
+        .first()
+        .map(|arg| canonical_state_key(&arg.value))
+    else {
+        return Ok(vec![]);
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut edges = Vec::new();
+    for setter in ["setOrCreate", "set"] {
+        for callsite in
+            store.find_callsites_by_name_and_receiver(setter, "AppStorage", Language::ArkTS)?
+        {
+            if callsite.args.len() < 2 || canonical_state_key(&callsite.args[0].value) != key {
+                continue;
+            }
+            let Some(source_id) = callsite.args[1].data_node_id else {
+                continue;
+            };
+            if !seen.insert(source_id) {
+                continue;
+            }
+            edges.push(TraceEdge {
+                source_id,
+                target_id,
+                kind: DataFlowKind::StateFlow,
+                confidence: 0.72,
+                provenance: format!(
+                    "ArkTS AppStorage.{setter}({key}) → reactive field {}",
+                    field.qualified_name
+                ),
+            });
+        }
+    }
+    Ok(edges)
+}
+
+fn canonical_state_key(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 {
+        let bytes = trimmed.as_bytes();
+        if matches!(
+            (bytes[0], bytes[trimmed.len() - 1]),
+            (b'\'', b'\'') | (b'"', b'"')
+        ) {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Helper — convert TraceEdge → DataFlowEdge for slicer compatibility
 // ---------------------------------------------------------------------------
@@ -376,10 +538,21 @@ mod tests {
     use types::structs::{ArgumentFact, Callsite, ReferenceUse, ResolvedTarget, TextRange};
 
     #[test]
+    fn arkts_state_keys_match_literal_quote_styles_and_exact_expressions() {
+        assert_eq!(canonical_state_key(" 'webUrl' "), "webUrl");
+        assert_eq!(canonical_state_key("\"webUrl\""), "webUrl");
+        assert_eq!(
+            canonical_state_key("StorageKey . COLOR_MODE"),
+            "StorageKey.COLOR_MODE"
+        );
+        assert_eq!(canonical_state_key("'page context'"), "page context");
+    }
+
+    #[test]
     fn provider_returns_empty_on_missing_data() -> anyhow::Result<()> {
         let store = Store::open_in_memory()?;
         store.init_schema()?;
-        let provider = SummaryEdgeProvider;
+        let provider = RuntimeEdgeProvider;
 
         // Parameter without function_id or callers — DB has nothing
         let file_id = FileId::generate("test.ts");
@@ -557,7 +730,7 @@ mod tests {
         }])?;
 
         // No FunctionSummary inserted → Phase 1 empty; Phase 2 must still bridge.
-        let provider = SummaryEdgeProvider;
+        let provider = RuntimeEdgeProvider;
         let edges = provider.virtual_incoming(&param_id, &store)?;
         assert!(
             !edges.is_empty(),

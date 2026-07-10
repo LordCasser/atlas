@@ -190,9 +190,12 @@ tree-sitter 0.26 parser
 - LanguageAdapter 不填跨文件语义结果。
 - Adapter 不手写重复的 enclosing function/source_symbol 逻辑；source、scope、binding 由 binder 统一处理。
 - 单文件失败必须结构化记录，不中断项目索引。
-- ArkTS 复用 TypeScript grammar，但 language 必须是 `arkts`。parser slot 以等长
+- ArkTS 核心语言是 TypeScript 的静态类型约束子集，前端复用 TypeScript grammar，但
+  language 必须是 `arkts`。parser slot 以等长
   `struct` → `class ` 归一化保留声明式组件的字段、方法和 scope；ArkUI trailing-block
-  调用仍可能产生局部 parse error，ArkTS normalizer 必须消除伪 method 并恢复 call ownership。
+  是 UI 声明式扩展，仍可能产生局部 parse error，ArkTS normalizer 必须消除伪 method 并
+  恢复 call ownership。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
+  为依据，不把 ArkUI 语法错误归因于 ArkTS 核心语法。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - 所有 14 种语言均默认编译。
 
@@ -502,9 +505,14 @@ trace             = inter-procedural, by composing summaries and/or runtime brid
 
 - `SummaryBuilder` 从 dataflow_edges BFS 计算函数摘要（**Full** 管线 / summary phase）。
 - 摘要表支持全量与按函数增量构建；sync 时失效受影响行并重建。
-- `trace_variable` 等能力门控 **local dataflow**（非 summaries）。跨函数边由 `SummaryEdgeProvider` 提供：
+- `trace_variable` 等能力门控 **local dataflow**（非 summaries）。跨函数边由 `RuntimeEdgeProvider` 提供：
   1. **Phase 1 — `CrossFunctionBridge`**：有摘要时 O(1) 查表（ArgToParam / ReturnToCall）。
   2. **Phase 2 — runtime BFS join**：无摘要时的路径。
+- `RuntimeEdgeProvider` 同时承载不应写入函数内 `dataflow_edges` 的框架状态桥。ArkTS 当前
+  将 `AppStorage.set/setOrCreate(key, value)` 的 value 参数，以查询时 `StateFlow` 连接到
+  同 key 的 `@StorageProp` / `@StorageLink` 字段读取及其外层调用参数。key 只做字符串引号
+  与空白规范化，不执行常量/枚举求值；反向 `StorageLink` 写回、字段默认值初始化及进程边界
+  暂不建模。该语义遵循官方 [AppStorage 状态模型](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-appstorage)。
 
 **模式语义（强制）**
 
@@ -580,7 +588,7 @@ LanguageCapabilityProfile
 | Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
 | C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
-| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall) | TS grammar + 等长 struct 归一化；trailing-block parse status 仍可能 partial；CFG 未实现 |
+| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；trailing-block parse status 仍可能 partial；CFG 未实现 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
 | Rust | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |

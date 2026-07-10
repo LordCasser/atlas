@@ -292,6 +292,7 @@ fn should_trace_backward(kind: &DataFlowKind) -> bool {
             | DataFlowKind::ReturnValue
             | DataFlowKind::ReturnToCall
             | DataFlowKind::ReceiverToThis
+            | DataFlowKind::StateFlow
     )
 }
 
@@ -379,6 +380,7 @@ fn kind_description(kind: &DataFlowKind) -> &'static str {
         DataFlowKind::ReturnValue => "expression → return",
         DataFlowKind::ReturnToCall => "return → callsite (cross-function)",
         DataFlowKind::ReceiverToThis => "receiver → self",
+        DataFlowKind::StateFlow => "framework state flow",
         DataFlowKind::Phi => "phi (control-flow merge)",
     }
 }
@@ -434,6 +436,7 @@ mod tests {
             DataFlowKind::ArgToCall,
             DataFlowKind::ArgToParam,
             DataFlowKind::ReturnValue,
+            DataFlowKind::StateFlow,
             DataFlowKind::Phi,
         ] {
             assert!(!kind_description(kind).is_empty());

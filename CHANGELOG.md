@@ -99,6 +99,14 @@ All notable changes to Atlas will be documented in this file.
   (re-index required for existing projects). PHP normalizer mirrors C++ for
   full `text`/`receiver`; nested C++ `A::B::C` keeps outermost span; extraction
   + resolution tests lock `CertUtils::GetDev` / `\Foo\bar` and Calls edges.
+- ArkTS declarative components now preserve `struct` members, `build()` scope,
+  UI call ownership, and member-call receivers through byte-stable parser
+  normalization. ArkUI trailing blocks may still report `partial`, but their
+  usable structural facts no longer collapse to global calls. Query-time trace
+  adds `StateFlow` from ArkTS `AppStorage.set/setOrCreate` values to matching
+  `@StorageProp`/`@StorageLink` field reads and UI call arguments. Matching is
+  syntactic; reverse links, default initialization, and process boundaries are
+  explicitly not modeled.
 
 ### Release hardening
 

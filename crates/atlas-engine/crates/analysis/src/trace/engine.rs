@@ -34,7 +34,7 @@ use types::trace::{
     BoundaryKind, BoundaryMarker, Evidence, LazySummary, TraceDiagnostic, TracePath, TracePoint,
 };
 
-use super::virtual_edges::SummaryEdgeProvider;
+use super::virtual_edges::RuntimeEdgeProvider;
 
 // ─── Response envelope ────────────────────────────────────────────────────
 
@@ -242,7 +242,7 @@ impl TraceEngine {
             self.store.as_ref(),
             &sink,
             max_depth,
-            Some(&SummaryEdgeProvider),
+            Some(&RuntimeEdgeProvider),
         ) {
             Ok(Some(mut path)) => {
                 path.capability = cap.clone();

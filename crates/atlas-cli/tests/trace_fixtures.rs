@@ -341,7 +341,7 @@ fn fx2_multi_assignment_chain_complete() {
 /// the backward slice from the callee's parameter `base` must include an
 /// ArgToParam edge from the caller's argument.
 ///
-/// Cross‑file bridging is provided by SummaryEdgeProvider; evidence on each
+/// Cross‑file bridging is provided by RuntimeEdgeProvider; evidence on each
 /// step is built by the slicer via file‑path lookup in the store.
 #[test]
 fn fx3_cross_file_arg_to_param_bridge() {
@@ -373,8 +373,8 @@ fn fx3_cross_file_arg_to_param_bridge() {
     );
     let base_node = base_nodes[0];
 
-    // Use interprocedural bridging via SummaryEdgeProvider.
-    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
+    // Use interprocedural bridging via RuntimeEdgeProvider.
+    use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
     let point = Locator::locate(
         store.as_ref(),
         &helper_id,
@@ -382,7 +382,7 @@ fn fx3_cross_file_arg_to_param_bridge() {
         base_node.range.start_column + 1,
     )
     .expect("locate failed");
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
         .expect("slice error")
         .expect("cross-file trace must produce path");
 
@@ -415,7 +415,7 @@ fn fx3_cross_file_arg_to_param_bridge() {
 /// FX4: When `let result = helper()` is in main.ts, the backward slice from
 /// `result` must cross into helper.ts via ReturnToCall edge.
 ///
-/// Cross‑file bridging is provided by SummaryEdgeProvider; evidence on each
+/// Cross‑file bridging is provided by RuntimeEdgeProvider; evidence on each
 /// step is built by the slicer via file‑path lookup in the store.
 #[test]
 fn fx4_cross_file_return_to_call_bridge() {
@@ -445,8 +445,8 @@ fn fx4_cross_file_return_to_call_bridge() {
     )
     .expect("locate failed");
 
-    use atlas_engine::trace::virtual_edges::SummaryEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&SummaryEdgeProvider))
+    use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
+    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
         .expect("slice error")
         .expect("cross-file return trace must produce path");
 

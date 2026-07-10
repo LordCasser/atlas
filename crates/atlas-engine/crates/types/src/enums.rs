@@ -1031,7 +1031,7 @@ impl DataNodeKind {
 // DataFlowKind — data-flow edge kinds
 // ---------------------------------------------------------------------------
 
-/// 10 data-flow edge kinds.  Used by [`super::dataflow::DataFlowEdge`].
+/// Data-flow edge kinds. Used by [`super::dataflow::DataFlowEdge`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataFlowKind {
@@ -1055,6 +1055,8 @@ pub enum DataFlowKind {
     ReturnToCall,
     /// Receiver flows to `this` / `self` inside callee.
     ReceiverToThis,
+    /// Value transfer through a framework-managed state channel.
+    StateFlow,
     /// Phi node (SSA merge point, e.g. after if-else).
     Phi,
 }
@@ -1072,6 +1074,7 @@ impl DataFlowKind {
             Self::ReturnValue => "return_value",
             Self::ReturnToCall => "return_to_call",
             Self::ReceiverToThis => "receiver_to_this",
+            Self::StateFlow => "state_flow",
             Self::Phi => "phi",
         }
     }
@@ -1089,6 +1092,7 @@ impl DataFlowKind {
             "return_value" => Some(Self::ReturnValue),
             "return_to_call" => Some(Self::ReturnToCall),
             "receiver_to_this" => Some(Self::ReceiverToThis),
+            "state_flow" => Some(Self::StateFlow),
             "phi" => Some(Self::Phi),
             _ => None,
         }
@@ -1443,6 +1447,15 @@ mod tests {
         assert_eq!(json, "\"calls\"");
         let back: EdgeKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn test_state_flow_kind_roundtrip() {
+        assert_eq!(DataFlowKind::StateFlow.as_str(), "state_flow");
+        assert_eq!(
+            DataFlowKind::from_str("state_flow"),
+            Some(DataFlowKind::StateFlow)
+        );
     }
 
     // --- Confidence ---

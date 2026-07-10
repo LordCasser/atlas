@@ -4,7 +4,7 @@
 //!
 //! `CrossFunctionBridge` is **Phase 1**: O(1) lookups against persisted summary
 //! tables (Full index after summary build). When it returns empty, callers use
-//! **Phase 2** runtime BFS in `SummaryEdgeProvider`.
+//! **Phase 2** runtime BFS in `RuntimeEdgeProvider`.
 //!
 //! | Mode | Phase 1 summaries | Phase 2 runtime BFS |
 //! |------|-------------------|---------------------|
@@ -32,7 +32,7 @@ use crate::trace::virtual_edges::TraceEdge;
 /// Phase 1: inter-procedural edges from persisted summaries.
 ///
 /// Empty when no summary rows exist. Callers then use Phase 2 runtime BFS
-/// (`SummaryEdgeProvider`) — required for Focus, where summaries are not built.
+/// (`RuntimeEdgeProvider`) — required for Focus, where summaries are not built.
 pub struct CrossFunctionBridge;
 
 impl CrossFunctionBridge {
@@ -42,7 +42,7 @@ impl CrossFunctionBridge {
     /// `summary_call_arg_sources` (via [`TraceStore::query_call_arg_sources`])
     /// to find the call-argument's upstream sources.
     ///
-    /// Empty when no summary data; `SummaryEdgeProvider` continues with Phase 2.
+    /// Empty when no summary data; `RuntimeEdgeProvider` continues with Phase 2.
     pub fn incoming_for_param(
         param_id: &DataNodeId,
         store: &dyn TraceStore,
@@ -116,7 +116,7 @@ impl CrossFunctionBridge {
     /// the call-result node.
     ///
     /// Returns empty when no summary data is available; the caller
-    /// (`SummaryEdgeProvider`) falls back to runtime BFS in that case.
+    /// (`RuntimeEdgeProvider`) falls back to runtime BFS in that case.
     pub fn incoming_for_call_result(
         call_result_id: &DataNodeId,
         store: &dyn TraceStore,
@@ -175,7 +175,7 @@ impl CrossFunctionBridge {
 
 // ---------------------------------------------------------------------------
 // Shared traversal helpers — used by both CrossFunctionBridge and
-// SummaryEdgeProvider (virtual_edges.rs) to avoid duplicated logic.
+// RuntimeEdgeProvider (virtual_edges.rs) to avoid duplicated logic.
 // ---------------------------------------------------------------------------
 
 /// Find the 0-based index of a Parameter [`DataNode`] within its function.
