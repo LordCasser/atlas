@@ -7,8 +7,12 @@
 //! shrinks; new hits fail the test.
 //!
 //! Analysis engines (`FieldLifecycleEngine` / `BranchDiffEngine`) are migrated
-//! to `runtime/analysis_runtime.rs` (Task 10). Residual allowlist is non-analysis
-//! only: god-router locks, annotation test seeds, project-open factory.
+//! to `runtime/analysis_runtime.rs` (Task 10). The god-router no longer locks
+//! `focus_runtime` directly (delegates via `QueryRuntime`), and annotation test
+//! seeds go through `overlay_runtime`. The only residual allowlist entry is
+//! `active_project.rs`, whose `FocusMaterialize::open` is a project-open
+//! *factory* (construction-time, not per-request orchestration) - a documented
+//! legitimate exception.
 
 #![cfg(test)]
 
@@ -35,12 +39,9 @@ const FORBIDDEN: &[&str] = &[
 /// Paths relative to `crates/atlas-mcp/src/tools/` that may still contain hits
 /// during migration. **Only shrink.** Empty = fully pure.
 const ALLOWLIST: &[&str] = &[
-    // God-router still owns prepare/refresh/orchestration until sub-dispatchers land.
-    "mod.rs",
-    // annotations tests still seed via store.upsert_fp_annotation; production path
-    // already uses overlay_runtime.
-    "annotations.rs",
-    // Project open must construct FocusMaterialize once (factory, not per-request).
+    // Project-open factory: constructs `FocusMaterialize` once at project
+    // initialization via `FocusMaterialize::open`. NOT per-request
+    // orchestration. Legitimate exception - factory != handler orchestration.
     "active_project.rs",
 ];
 
@@ -159,10 +160,11 @@ fn handler_purity_allowlist_only_shrinks_documented() {
             "analysis handler {banned} must not be on purity allowlist after DEBT-8 migration"
         );
     }
-    // Current residual ceiling (non-analysis factory/test seeds + god-router).
+    // Current residual ceiling: only the project-open factory exception
+    // remains (construction-time `FocusMaterialize::open`, not per-request).
     assert!(
-        ALLOWLIST.len() <= 3,
-        "ALLOWLIST grew beyond residual baseline (3); only shrink"
+        ALLOWLIST.len() <= 1,
+        "ALLOWLIST grew beyond residual baseline (1); only shrink"
     );
 }
 

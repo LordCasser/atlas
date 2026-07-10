@@ -44,6 +44,27 @@ All notable changes to Atlas will be documented in this file.
   Purity allowlist shrinks to 3 (`mod.rs`, `annotations.rs`, `active_project.rs`);
   unused allowlist entries fail; dual ratchet (engine-name + orchestration
   patterns including `find_cfg_*` / compose / rules load).
+- DEBT-8 ratchet completion: god-router no longer takes `focus_runtime.lock()`
+  directly (new `QueryRuntime` delegates `enqueue_file_focus_warm` /
+  `focus_materialize_has_structural_rebuilder` / `focus_materialize_same_stack_as`;
+  the `focus_runtime` field is now private). Annotation test seeds route through
+  `overlay_runtime` instead of `store.upsert_fp_annotation(`. Purity allowlist
+  shrinks to 1 (`active_project.rs` project-open factory - construction-time
+  `FocusMaterialize::open`, a documented legitimate exception); residual ceiling
+  is now `assert!(allowlist.len() <= 1)`.
+- BUG-6 / U4 (mcp-only, defensive ratchet): `maybe_refresh_graph` now drains
+  background closure built files from the shared `JobTracker` carried by
+  `replay_focus_result` into the lazy refresh queue (via
+  `QueryRuntime::record_background_built_files`) before
+  `take_incremental_batch`. **Scope limitation**: the drain triggers only when
+  `replay_focus_result` is `Some` (the resume path); on a fresh (non-resume)
+  request `replay_focus_result` is `None` and the drain does not fire. On the
+  resume path, `materialized_files()` already drains closure built files, so
+  U4 is defensive/idempotent there. The original BUG-6 goal (shorten the stale
+  window for fresh calls) remains unaddressed -- closing it requires either an
+  engine-layer callback on `FocusRuntime`/`FocusScheduler` `mark_done` or
+  mcp-layer cross-prepare closure-id carrying, both out of the current
+  mcp-only surgical scope.
 - Fix CallGraph stub test for depth=1 hard error + explicit WindowBudget.
 - Shared exclusive-lock reject diagnostic on `Store` (filesync + dataflow loader DRY).
 - Lock Task 3 calls 1-hop/depth-warning/signature tests; Focus Phase2 ArgToParam

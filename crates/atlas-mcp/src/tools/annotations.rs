@@ -490,7 +490,10 @@ mod tests {
         let field = insert_sym(&store, fa, "do_it", "Curl_handler.do_it", SymbolKind::Field);
         let target = insert_sym(&store, fb, "Curl_http", "Curl_http", SymbolKind::Function);
 
-        // Add annotation and materialize edges
+        // Build the annotation seed via the production mutation path
+        // (`overlay_runtime`) instead of a direct store write - handler purity
+        // (DEBT-8) forbids `store.upsert_fp_annotation(` in handler source. The
+        // router is constructed up-front so the overlay runtime is available.
         let ann_id = annotation_id(&field, "do_it");
         let ann = FpAnnotation {
             annotation_id: ann_id.clone(),
@@ -499,14 +502,18 @@ mod tests {
             target_symbol: target,
             confidence: Confidence::new(1.0),
         };
-        store.upsert_fp_annotation(&ann).unwrap();
+        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
+        router
+            .project()
+            .overlay_runtime
+            .upsert_fp_annotation(&ann)
+            .unwrap();
         let count = atlas_engine::materialize_annotations(&store).unwrap();
         assert_eq!(count, 1, "materialize should create 1 edge");
         let edges_before = store.find_edges_by_source(&field).unwrap();
         assert!(!edges_before.is_empty(), "edge should exist before delete");
 
         // Delete via ToolRouter's handle_delete_fp_annotation
-        let router = ToolRouter::new_empty(store.clone(), PathBuf::from("/tmp"));
         let args = json!({"annotation_id": ann_id});
         let (result, is_error) = router.handle_delete_fp_annotation(&args);
         assert!(!is_error, "delete should succeed: {result}");

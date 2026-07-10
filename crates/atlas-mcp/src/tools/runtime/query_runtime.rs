@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use atlas_engine::FileId;
 use atlas_engine::IncludeRoot;
 use atlas_engine::Store;
 use atlas_engine::FocusMaterialize;
@@ -36,7 +37,11 @@ use crate::tools::lazy_refresh::LazyRefreshQueue;
 /// background expansion through the underlying FocusRuntime.
 pub struct QueryRuntime {
     /// Focus runtime with required Focus materialize (construction-time inject).
-    pub focus_runtime: Mutex<FocusRuntime>,
+    ///
+    /// Private on purpose: all access goes through the delegate methods below
+    /// so handler source never takes `focus_runtime.lock()` directly (DEBT-8
+    /// handler purity). The field is still reachable from within this module.
+    focus_runtime: Mutex<FocusRuntime>,
     pub cache: CacheState,
     pub lazy_refresh_queue: Arc<LazyRefreshQueue>,
     store: Arc<Store>,
@@ -110,6 +115,71 @@ impl QueryRuntime {
 
     pub fn detect_access_strategy(&self) -> AccessStrategy {
         self.focus_runtime.lock().unwrap().detect_access_strategy()
+    }
+
+    /// Enqueue background file-focused warming without building a foreground
+    /// closure (search uses this after returning a fast partial result).
+    ///
+    /// Thin delegate over [`FocusRuntime::enqueue_file_focus_warm`] so handler
+    /// source never takes `focus_runtime.lock()` directly (DEBT-8 purity).
+    pub fn enqueue_file_focus_warm(&self, file_ids: &[FileId]) -> anyhow::Result<Vec<String>> {
+        self.focus_runtime
+            .lock()
+            .unwrap()
+            .enqueue_file_focus_warm(file_ids)
+    }
+
+    /// Whether the Focus runtime's materialize has a structural rebuilder.
+    ///
+    /// Audit probe for the construction-time invariant test (DEBT-8 purity:
+    /// tests must not lock `focus_runtime` directly).
+    #[allow(dead_code)] // exercised by the construction-time invariant test only
+    pub fn focus_materialize_has_structural_rebuilder(&self) -> bool {
+        self.focus_runtime
+            .lock()
+            .unwrap()
+            .materialize()
+            .has_structural_rebuilder()
+    }
+
+    /// Whether the Focus runtime's materialize shares the same Arc stack as
+    /// `other`. Symmetric with [`FocusMaterialize::same_stack_as`]; audit probe
+    /// for the construction-time invariant test.
+    #[allow(dead_code)] // exercised by the construction-time invariant test only
+    pub fn focus_materialize_same_stack_as(&self, other: &FocusMaterialize) -> bool {
+        self.focus_runtime
+            .lock()
+            .unwrap()
+            .materialize()
+            .same_stack_as(other)
+    }
+
+    /// Drain background-built files recorded against `result`'s pending jobs
+    /// into the lazy refresh queue.
+    ///
+    /// Background closures record their built files to the shared
+    /// [`JobTracker`](atlas_engine::focus::job_tracker::JobTracker) carried by
+    /// [`FocusResult`] (the same `Arc` held by `FocusRuntime`). This reads the
+    /// files built for `result`'s pending closure + extraction job ids and
+    /// records them to [`LazyRefreshQueue`] so the next
+    /// `take_incremental_batch` sees them before draining.
+    ///
+    /// Returns the files that were recorded (empty if none / no tracker). Safe
+    /// to call on every `maybe_refresh_graph`: the queue dedups.
+    pub fn record_background_built_files(&self, result: &FocusResult) -> Vec<FileId> {
+        let Some(tracker) = result.job_tracker.as_ref() else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = result.pending_closure_ids.clone();
+        ids.extend(result.pending_extraction_job_ids.iter().cloned());
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let built = tracker.built_files_for(&ids);
+        if !built.is_empty() {
+            self.lazy_refresh_queue.record_lazy_writes(&built);
+        }
+        built
     }
 
     /// Check whether the project has a full (non-manifest) index.

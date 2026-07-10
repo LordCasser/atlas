@@ -479,8 +479,7 @@ impl ToolRouter {
         }
 
         let project = self.project();
-        let mut runtime = project.query_runtime.focus_runtime.lock().unwrap();
-        match runtime.enqueue_file_focus_warm(file_ids) {
+        match project.query_runtime.enqueue_file_focus_warm(file_ids) {
             Ok(job_ids) => job_ids,
             Err(err) => {
                 tracing::warn!("background focus warming enqueue failed: {err:#}");
@@ -647,6 +646,19 @@ impl ToolRouter {
             .load(Ordering::Acquire)
         {
             return Ok(());
+        }
+
+        // BUG-6 / U4: defensively drain background-built files into the lazy
+        // refresh queue *before* the incremental batch. Background closures
+        // record their built files to the shared JobTracker carried by
+        // `replay_focus_result`. This drain fires only on the resume path
+        // (where `replay_focus_result` is `Some`); on a fresh (non-resume)
+        // request it does not fire. On the resume path `materialized_files()`
+        // already drains closure built files, so this is defensive/idempotent
+        // there. The fresh-call stale window (original BUG-6 goal) remains
+        // open. Idempotent: the queue and the tracker both dedup.
+        if let Some(result) = self.replay_focus_result.as_ref() {
+            project.query_runtime.record_background_built_files(result);
         }
 
         // Step 1: Always flush pending incremental writes (no cooldown).
@@ -4607,19 +4619,20 @@ mod tests {
                 .has_structural_rebuilder(),
             "AnalysisRuntime must share configured Focus materialize dataflow"
         );
-        let fr = project.query_runtime.focus_runtime.lock().unwrap();
         assert!(
-            fr.materialize().has_structural_rebuilder(),
+            project
+                .query_runtime
+                .focus_materialize_has_structural_rebuilder(),
             "FocusRuntime must use rebuilder-configured materialize at construction"
         );
         assert!(
-            project
-                .materialize
-                .same_stack_as(project.engine.lock().unwrap().materialize()),
+            project.materialize.same_stack_as(project.engine.lock().unwrap().materialize()),
             "Engine must share the same FocusMaterialize Arc stack"
         );
         assert!(
-            project.materialize.same_stack_as(fr.materialize()),
+            project
+                .query_runtime
+                .focus_materialize_same_stack_as(&project.materialize),
             "FocusRuntime must share the same FocusMaterialize Arc stack"
         );
     }
@@ -5848,6 +5861,71 @@ mod tests {
             router.project().graph_runtime.state.edge_count(),
             edge_before,
             "second refresh within cooldown should not change edge count"
+        );
+    }
+
+    // ── BUG-6 / U4: background closure built-file drain ──────────────
+
+    /// Background closures record their built files to the shared JobTracker
+    /// carried by `replay_focus_result`. `maybe_refresh_graph` must drain those
+    /// files into the lazy refresh queue before `take_incremental_batch`, so a
+    /// call arriving after a background closure completed (but before a fresh
+    /// `prepare`) sees the new edges without waiting for resume.
+    #[test]
+    fn maybe_refresh_drains_background_built_files_from_replay_focus_result() {
+        use atlas_engine::focus::job_tracker::JobTracker;
+        use std::sync::Arc;
+
+        let store = test_store();
+        let file_id = register_test_file(&store, "src/warmed.c");
+        let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+        router.ensure_graph_initialized().unwrap();
+
+        // Simulate a completed background closure: the shared JobTracker
+        // records the files it built for closure job "bg_cl_1".
+        let tracker = Arc::new(JobTracker::new());
+        let bg_job = "bg_cl_1".to_string();
+        tracker.record_built_files(&bg_job, [file_id]);
+        tracker.mark_done(&bg_job);
+
+        // Replay router carries the focus result with the pending closure id.
+        let focus_result = atlas_engine::focus::runtime::FocusResult {
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
+            gaps: vec![],
+            pending_closure_ids: vec![bg_job],
+            pending_extraction_job_ids: vec![],
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: vec![],
+            coverage_counts: None,
+            job_tracker: Some(tracker),
+        };
+        let replay = ToolRouter::for_resume(router.project(), Some(focus_result));
+
+        // No prior lazy writes: the only way the incremental batch becomes
+        // non-empty here is via the U4 background-built-file drain.
+        let gen_before = replay
+            .project()
+            .graph_runtime
+            .last_graph_generation
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        replay.maybe_refresh_graph().unwrap();
+
+        // The background-built file was drained into the lazy refresh queue,
+        // fed `take_incremental_batch` (non-empty batch) and bumped
+        // graph_generation.
+        assert!(
+            replay
+                .project()
+                .graph_runtime
+                .last_graph_generation
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > gen_before,
+            "background-built files should be drained to lazy_refresh_queue \
+             and bump graph_generation on maybe_refresh_graph"
         );
     }
 }

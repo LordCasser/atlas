@@ -347,13 +347,14 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 
 **已完成（当前事实）：**
 - `AnalysisRuntime` 为 `lifecycle` / `branch_diff` / semantic impact 真 dispatcher（能力门控、dataflow I/O、compose、rules、engine）；`graph.rs` 只提供 impact 子图目标。
-- `handler_purity` 双层守卫：engine 名 + orchestration 模式；allowlist 残量 3 且必须有真实命中。
+- `handler_purity` 双层守卫：engine 名 + orchestration 模式；allowlist 残量 1（`active_project.rs` project-open 工厂，合法例外）且必须有真实命中；残量上限 `assert!(allowlist.len() <= 1)`。
+- god-router（`tools/mod.rs`）已迁出 allowlist：`focus_runtime` 字段私有，`focus_runtime.lock()` 直连消除，统一走 `QueryRuntime` 委托（`enqueue_file_focus_warm` / `focus_materialize_*`）。
+- annotation 测试 seed 已改走 `overlay_runtime`（去掉测试侧 `store.upsert_fp_annotation`）。
 - 回归网：calls 1-hop/signature/depth 警告；Focus Phase2 `ArgToParam` 无 summary；N5 + `focus_equivalence_vs_full_index`；FileLock 共享 reject。
 - 死 `AnalysisNeeds` 变体已删；`contract_for` V1 路由全覆盖。
 
-**同 ratchet 后续（非回归，不影响当前正确性）：**
-- god-router（`tools/mod.rs` focus prepare/lock）迁出 allowlist。
-- annotations 测试 seed 改走 overlay_runtime（去掉测试侧 `store.upsert_fp_annotation`）。
+**已知限制（不影响当前正确性）：**
+- BUG-6 / U4 防御性 ratchet：`maybe_refresh_graph` 在 resume 路径 drain 后台 built_files，但 fresh-call（非 resume）路径 `replay_focus_result` 为 `None`，drain 不触发。原始 BUG-6 目标（缩短 fresh-call 陈旧窗口）尚未解决，需要 engine 层 `mark_done` 回调钩子或 mcp 层跨 prepare 携带 closure id，两者均超出当前 mcp-only 范围。当前 retry 契约（架构 §1.7 终态必然可达）兜底 fresh-call 终态。
 
 强制测试矩阵见 [`testing.md`](./testing.md) §2.11。
 
