@@ -107,6 +107,12 @@ All notable changes to Atlas will be documented in this file.
   `@StorageProp`/`@StorageLink` field reads and UI call arguments. Matching is
   syntactic; reverse links, default initialization, and process boundaries are
   explicitly not modeled.
+- ArkTS named function/method CFG is enabled through the shared TypeScript
+  walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
+  edges. ArkUI trailing blocks remain single statements and nested arrow
+  callbacks do not receive independent CFGs; official language restrictions
+  are not treated as validated invariants because Atlas does not run the ArkTS
+  compiler.
 
 ### Release hardening
 

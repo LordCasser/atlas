@@ -102,7 +102,7 @@ The original baseline implementation blockers are closed and covered by the rele
 
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
-> **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 13 capability-enabled languages; PHP remains unsupported. ArkTS CFG is enabled via TS grammar fallback with WithLimitations(0.60), verified by golden fixtures and trace tests. ArkTS constraint invariants (no var, no destructuring, no function expressions) boost lexical/dataflow/use-def/interproc confidence to 0.65. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
+> **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 13 capability-enabled languages; PHP remains unsupported. ArkTS named function/method CFG is enabled via TS grammar fallback with WithLimitations(0.55), verified by golden fixtures and trace tests. ArkUI trailing blocks collapse to statements and nested arrow callbacks do not have independent CFGs. Golden fixtures prove covered patterns, not compiler validity or a global confidence increase.
 
 ### 2.2 Index scope / manifest + Focus materialize
 
@@ -375,7 +375,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 全部默认语言的 `LanguageCapabilityProfile` 经 `ProfileSpec` + `build_profile()` 声明构造。  
 身份与一致性由 `test_<lang>_profile_identity` 及四项全局 profile 测试约束。
 
-特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65；C++ `include_resolution`；PHP `cfg` Unsupported；ArkTS `cfg` WithLimitations(0.60)、lexical/dataflow/use-def/interproc WithLimitations(0.65) via constraint invariants；Cangjie 全支持集；`FeatureOverride` 变体 `Confidence` | `WithLimitations` | `Unsupported`。
+特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65；C++ `include_resolution`；PHP `cfg` Unsupported；ArkTS `cfg` WithLimitations(0.55)、其余 TS-fallback dataflow 能力 WithLimitations(0.60)；Cangjie 全支持集；`FeatureOverride` 变体 `Confidence` | `WithLimitations` | `Unsupported`。
 
 **`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
 
@@ -390,7 +390,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 | 设计味 | 判决 | 代码事实 |
 |--------|------|----------|
 | **精度三词爆炸**（Mode/Mask/Precision/Level/GraphMode/IndexMode） | ✅ **已治理** | `architecture.md §1.1`（L29-33）已有 L0-L4 分层命名表；L21+L357 显式禁止再引入第二个 `IndexMode` 类型；`testing.md` L17 已同步。政策+类型层已解决。 |
-| **DataflowFull 总档通胀**（14 语言全 DataflowFull，ArkTS/PHP 无 CFG） | ✅ **已修复** | `capability.rs` L228 枚举为 `CapabilityLevel::DataflowInterproc`——无 `DataflowFull` 存在；ArkTS CFG 已于 Phase 1 推进至 WithLimitations(0.60)，PHP（L1381）仍 Unsupported。§2.1 已使用 `DataflowInterproc` 新名。 |
+| **DataflowFull 总档通胀**（14 语言全 DataflowFull，ArkTS/PHP 无 CFG） | ✅ **已修复** | `capability.rs` L228 枚举为 `CapabilityLevel::DataflowInterproc`——无 `DataflowFull` 存在；ArkTS named function/method CFG 为 WithLimitations(0.55)，PHP（L1381）仍 Unsupported。§2.1 已使用 `DataflowInterproc` 新名。 |
 | **LinuxAugment 双路径漂移**（index/lazy 路径分裂） | ✅ **已收敛** | `post_extract.rs` L1-6：Index 和 lazy structural 统一走 `extract_file_with_mode` -> `apply_post_extract_hooks`；3 个提取入口（extract.rs L201/L344/L769）共用。路径一致性已解决。 |
 | **Schema V2 无迁移** | **已接受策略** | 架构 §6.1 明确"不保留旧 schema 运行时补丁路径"；`doctor` 存在；坏库 reject+重建指引已有。产品策略，非遗留。 |
 | **Focus 塞 engine 源码树** | **真布局债（低优先级）** | `atlas-engine/src/focus/*` 仍在 engine 树内；`focus_materialize` 是唯一已 crate 化的 materialize 子 crate。布局随意但非正确性问题，长期可独立 crate。 |

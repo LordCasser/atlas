@@ -1,4 +1,4 @@
-// ArkTS constraint-pattern fixture: exercises invariants that simplify analysis.
+// ArkTS core-pattern fixture: verifies fallback coverage, not confidence claims.
 // - let/const block-scoped bindings (no var)
 // - dot-only field access (no bracket access)
 // - named function declarations (no function expressions)

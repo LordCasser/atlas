@@ -2324,7 +2324,6 @@ function createPoint(): Point {
 #[test]
 #[cfg(feature = "arkts")]
 fn fx_cfg_if_else_arkts() {
-    let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "cfg_if.ets",
         r#"function testIf(x: number): number {
@@ -2354,13 +2353,6 @@ fn fx_cfg_if_else_arkts() {
         let cfg_nodes = store
             .find_cfg_nodes_by_function(&sym.id)
             .expect("cfg_nodes");
-        eprintln!(
-            "=== {} CFG nodes: {:#?}",
-            sym.name,
-            cfg_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
-        );
-
-        // ── Node kind assertions ──
         assert!(
             cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
             "missing Entry"
@@ -2373,8 +2365,11 @@ fn fx_cfg_if_else_arkts() {
             cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
             "missing Branch"
         );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "missing Join"
+        );
 
-        // ── Edge assertions ──
         let mut edges = Vec::new();
         for node in &cfg_nodes {
             let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
@@ -2397,7 +2392,6 @@ fn fx_cfg_if_else_arkts() {
 #[test]
 #[cfg(feature = "arkts")]
 fn fx_cfg_loop_arkts() {
-    let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "cfg_loop.ets",
         r#"function sum(n: number): number {
@@ -2427,12 +2421,6 @@ fn fx_cfg_loop_arkts() {
         let cfg_nodes = store
             .find_cfg_nodes_by_function(&sym.id)
             .expect("cfg_nodes");
-        eprintln!(
-            "=== {} CFG nodes: {:#?}",
-            sym.name,
-            cfg_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
-        );
-
         assert!(
             cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
             "missing Entry"
@@ -2442,20 +2430,24 @@ fn fx_cfg_loop_arkts() {
             "missing Exit"
         );
 
-        // For loops produce a Loop node and LoopBack edge
-        let has_loop = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop);
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "missing Loop"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Statement),
+            "missing loop-body Statement"
+        );
         let mut edges = Vec::new();
         for node in &cfg_nodes {
             let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
             edges.extend(e);
         }
 
-        if has_loop {
-            assert!(
-                edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
-                "missing LoopBack edge for loop body"
-            );
-        }
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+            "missing LoopBack edge for loop body"
+        );
     }
 }
 

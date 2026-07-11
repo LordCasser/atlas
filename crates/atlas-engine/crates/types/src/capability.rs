@@ -967,13 +967,10 @@ mod profiles {
     //       ArkUI trailing-block syntax still yields local parse errors. Query-time
     //       tracing bridges verified AppStorage writes into reactive field reads.
     //
-    // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
-    // ArkTS migration-guide constraints (no var, no destructuring, no bracket
-    // field access, no delete, no function expressions, no method reassignment,
-    // no apply/call/bind) are trusted invariants that simplify analysis relative
-    // to TypeScript. Confidence is boosted to 0.65 for features whose TS edge
-    // cases are eliminated by these constraints; CFG is at 0.60 (verified by
-    // golden fixtures + trace tests).
+    // ArkTS delegates core syntax to the TypeScript frontend. Atlas does not run
+    // the ArkTS compiler, so migration-guide restrictions cannot be treated as
+    // validated input invariants. ArkUI trailing blocks and nested callbacks
+    // remain explicit analysis boundaries.
 
     const ARKTS_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "arkts",
@@ -995,43 +992,43 @@ mod profiles {
         unsupported: &["scope_aware_binding"],
         limitations: &[
             "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
-            "scope-chain-aware binding with shadowing support",
+            "scope-chain binding is heuristic and does not independently model ArkUI callback ownership",
             "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
         ],
         feature_overrides: &[
             (
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
-                    0.65,
+                    0.60,
                     &[
-                        "ArkTS invariants (no var, no destructuring) eliminate TS binding edge cases; scope-chain-aware binding via TS grammar",
+                        "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized",
                     ],
                 ),
             ),
             (
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
-                    0.65,
+                    0.60,
                     &[
-                        "ArkTS invariants (no destructuring, no bracket field access, no delete) simplify dataflow via TS grammar",
+                        "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort",
                     ],
                 ),
             ),
             (
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
-                    0.65,
+                    0.60,
                     &[
-                        "ArkTS block-scoped let/const with no var hoisting; scope-chain-aware binding via TS grammar",
+                        "scope-chain-aware use-def via TS grammar; no ArkTS compiler validation is performed",
                     ],
                 ),
             ),
             (
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
-                    0.60,
+                    0.55,
                     &[
-                        "Control-flow graph with branch/loop body traversal implemented via TS grammar fallback; ArkUI trailing-block expression_statements are modeled as Statement nodes",
+                        "named function and method branch/loop body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
                         "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
                     ],
                 ),
@@ -1039,9 +1036,9 @@ mod profiles {
             (
                 FeatureField::InterproceduralSummaries,
                 FeatureOverride::WithLimitations(
-                    0.65,
+                    0.60,
                     &[
-                        "ArkTS invariants (no function expressions, no method reassignment, no apply/call/bind) stabilize call targets; ArgToParam verified, ReturnToCall verified",
+                        "ArgToParam and ReturnToCall are verified for resolved calls; framework callbacks and polymorphic targets remain best-effort",
                     ],
                 ),
             ),
@@ -2679,8 +2676,8 @@ mod tests {
     }
 
     /// Verify the ArkTS profile produced by `arkts_profile()` matches the
-    /// expected values - including CFG as WithLimitations(0.60) and constraint-
-    /// invariant-boosted confidence (0.65) for lexical/dataflow/use-def/interproc.
+    /// expected values - including CFG as WithLimitations(0.55) and explicit
+    /// ArkUI/parser boundaries for lexical/dataflow/use-def/interproc.
     #[test]
     fn test_arkts_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::ArkTS);
@@ -2708,7 +2705,7 @@ mod tests {
             p.limitations,
             vec![
                 "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
-                "scope-chain-aware binding with shadowing support",
+                "scope-chain binding is heuristic and does not independently model ArkUI callback ownership",
                 "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
             ]
         );
@@ -2744,27 +2741,27 @@ mod tests {
         assert_eq!(
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
-                0.65,
+                0.60,
                 vec![
-                    "ArkTS invariants (no var, no destructuring) eliminate TS binding edge cases; scope-chain-aware binding via TS grammar"
+                    "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized"
                 ],
             )
         );
         assert_eq!(
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
-                0.65,
+                0.60,
                 vec![
-                    "ArkTS invariants (no destructuring, no bracket field access, no delete) simplify dataflow via TS grammar"
+                    "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort"
                 ],
             )
         );
         assert_eq!(
             fm.use_def,
             FeatureSupport::supported_with_limitations(
-                0.65,
+                0.60,
                 vec![
-                    "ArkTS block-scoped let/const with no var hoisting; scope-chain-aware binding via TS grammar"
+                    "scope-chain-aware use-def via TS grammar; no ArkTS compiler validation is performed"
                 ],
             )
         );
@@ -2772,9 +2769,9 @@ mod tests {
         assert_eq!(
             fm.cfg,
             FeatureSupport::supported_with_limitations(
-                0.60,
+                0.55,
                 vec![
-                    "Control-flow graph with branch/loop body traversal implemented via TS grammar fallback; ArkUI trailing-block expression_statements are modeled as Statement nodes",
+                    "named function and method branch/loop body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
                     "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
                 ],
             )
@@ -2782,9 +2779,9 @@ mod tests {
         assert_eq!(
             fm.interprocedural_summaries,
             FeatureSupport::supported_with_limitations(
-                0.65,
+                0.60,
                 vec![
-                    "ArkTS invariants (no function expressions, no method reassignment, no apply/call/bind) stabilize call targets; ArgToParam verified, ReturnToCall verified"
+                    "ArgToParam and ReturnToCall are verified for resolved calls; framework callbacks and polymorphic targets remain best-effort"
                 ],
             )
         );

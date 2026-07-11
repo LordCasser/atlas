@@ -110,7 +110,11 @@ impl SourceExtractor {
         // Run extraction; the parser is returned to cache on every path.
         let result = (|| -> Option<String> {
             parser.set_language(&ts_lang).ok()?;
-            let tree = parser.parse(source.as_bytes(), None)?;
+            let parser_source = frontend.parser.parser_source(source);
+            if parser_source.len() != source.len() {
+                return None;
+            }
+            let tree = parser.parse(parser_source.as_bytes(), None)?;
             let root = tree.root_node();
 
             // Find the CST node at the symbol's byte position.
@@ -225,8 +229,8 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Struct, C | Cpp) => &["struct_specifier"],
         (Struct, Go) => &["type_declaration"],
         (Struct, Rust) => &["struct_item"],
-        // ArkTS struct is byte-stable normalized to class_declaration pre-parse.
-        (Struct, TypeScript | JavaScript | ArkTS) => &["class_declaration", "class_expression"],
+        // ArkTS parser_source normalizes `struct` to `class ` without shifting bytes.
+        (Struct, ArkTS) => &["class_declaration"],
 
         // ── Interfaces / Traits ──
         (Interface, Cangjie) => &["interfaceDefinition"],
@@ -264,5 +268,53 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
 
         // ── No known enclosing node for these kinds ──
         _ => &[],
+    }
+}
+
+#[cfg(all(test, feature = "arkts"))]
+mod tests {
+    use std::path::Path;
+
+    use extraction::{ExtractionMode, extract_file_with_mode};
+    use types::{FileId, SymbolKind};
+
+    use super::*;
+
+    #[test]
+    fn arkts_struct_source_uses_frontend_parser_normalization() {
+        let temp = tempfile::tempdir().unwrap();
+        let relative_path = Path::new("MainPage.ets");
+        let source = "@Component\nstruct MainPage {\n  build() {\n    Text('ready')\n  }\n}\n";
+        std::fs::write(temp.path().join(relative_path), source).unwrap();
+
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_id = FileId::generate("MainPage.ets");
+        let mut facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative_path,
+            source,
+            "source-extractor-test",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let struct_symbol = facts
+            .symbols
+            .iter_mut()
+            .find(|symbol| symbol.kind == SymbolKind::Struct)
+            .expect("ArkTS struct symbol");
+        struct_symbol.range = struct_symbol.name_range;
+        let struct_id = struct_symbol.id;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+
+        let extracted = SourceExtractor::new(store, temp.path().to_path_buf())
+            .extract_source(&struct_id)
+            .expect("complete struct source");
+        assert!(extracted.contains("build()"), "source={extracted:?}");
+        assert!(extracted.contains("Text('ready')"), "source={extracted:?}");
     }
 }

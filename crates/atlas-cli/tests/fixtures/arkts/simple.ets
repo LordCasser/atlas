@@ -1,6 +1,6 @@
 // Golden test fixture: ArkTS simple
 // Covers: function/class/variable definitions, call/field access, import/export, scope nesting
-// Uses TypeScript-compatible syntax (ArkTS is a TypeScript superset).
+// Uses TypeScript-compatible syntax retained under ArkTS constraints.
 
 import { Router } from "@ohos/express";
 
