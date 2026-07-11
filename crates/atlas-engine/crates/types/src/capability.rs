@@ -969,7 +969,8 @@ mod profiles {
     //
     // ArkTS delegates to the TypeScript frontend for extraction + dataflow.
     // Confidence remains 0.60 because the TS grammar does not fully accept
-    // ArkUI trailing-block syntax and CFG is unavailable.
+    // ArkUI trailing-block syntax; CFG runs via TS grammar fallback
+    // (WithLimitations 0.55).
 
     const ARKTS_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "arkts",
@@ -986,8 +987,9 @@ mod profiles {
             "call_arguments",
             "return_flow",
             "interprocedural_dataflow",
+            "cfg",
         ],
-        unsupported: &["cfg", "scope_aware_binding"],
+        unsupported: &["scope_aware_binding"],
         limitations: &[
             "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
             "scope-chain-aware binding with shadowing support",
@@ -1019,7 +1021,13 @@ mod profiles {
             ),
             (
                 FeatureField::Cfg,
-                FeatureOverride::Unsupported(&["CFG builder not implemented for ArkTS"]),
+                FeatureOverride::WithLimitations(
+                    0.55,
+                    &[
+                        "Control-flow graph with branch/loop body traversal implemented via TS grammar fallback; ArkUI trailing-block expression_statements are modeled as Statement nodes",
+                        "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
+                    ],
+                ),
             ),
             (
                 FeatureField::InterproceduralSummaries,
@@ -2664,7 +2672,7 @@ mod tests {
     }
 
     /// Verify the ArkTS profile produced by `arkts_profile()` matches the
-    /// expected values — including the Unsupported CFG (in the unsupported list).
+    /// expected values - including CFG as WithLimitations(0.55) via TS grammar fallback.
     #[test]
     fn test_arkts_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::ArkTS);
@@ -2684,9 +2692,10 @@ mod tests {
             "call_arguments",
             "return_flow",
             "interprocedural_dataflow",
+            "cfg",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["cfg", "scope_aware_binding"]);
+        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
         assert_eq!(
             p.limitations,
             vec![
@@ -2747,10 +2756,16 @@ mod tests {
                 vec!["scope-chain-aware binding with shadowing support"],
             )
         );
-        // CFG unsupported
+        // CFG supported with limitations (TS grammar fallback)
         assert_eq!(
             fm.cfg,
-            FeatureSupport::unsupported("CFG builder not implemented for ArkTS")
+            FeatureSupport::supported_with_limitations(
+                0.55,
+                vec![
+                    "Control-flow graph with branch/loop body traversal implemented via TS grammar fallback; ArkUI trailing-block expression_statements are modeled as Statement nodes",
+                    "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
+                ],
+            )
         );
         assert_eq!(
             fm.interprocedural_summaries,

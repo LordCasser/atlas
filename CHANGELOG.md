@@ -1023,7 +1023,7 @@ Shared search engine used by both MCP and TUI.
 
 ### Extraction
 
-- **RecoverySpec** trait: post-extraction recovery for ArkTS structs.
+- **RecoverySpec** trait: post-extraction recovery for ArkTS structs. (Superseded by byte-stable `struct`->`class ` pre-parse normalization in `normalize_struct_keywords`; see `arkts.rs`.)
 - ArkTS golden fixtures for struct declarations.
 
 ### Bug fixes

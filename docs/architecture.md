@@ -588,7 +588,7 @@ LanguageCapabilityProfile
 | Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | |
 | C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | 函数指针 limited depth 3 |
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 模板/重载/ADL 不建模 |
-| ArkTS | DataflowInterproc | ✗ | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；trailing-block parse status 仍可能 partial；CFG 未实现 |
+| ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；trailing-block parse status 仍可能 partial；CFG via TS grammar fallback |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | 泛型未捕获 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `using_statement` CFG；partial classes 未合并 |
 | Rust | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | 宏/borrow 语义不建模 |
@@ -622,7 +622,7 @@ LanguageCapabilityProfile
 - `ParseWorkerPool` — 支持 max file size、panic isolation、结构化 `ExtractionError` 和 `IndexReport`。
 - `SemanticBinder` — 统一填充 source/scope/binding。
 - `LexicalBinder` + `DataFlowBuilder` — 词法绑定与数据流。
-- `CfgBuilder` — 函数级 CFG；当前除 ArkTS、PHP 外的 12 种语言均在 capability profile 中声明支持。
+- `CfgBuilder` — 函数级 CFG；当前除 PHP 外的 13 种语言均在 capability profile 中声明支持。
 - Golden test framework 覆盖 14 种语言。
 
 符号源码范围是抽取事实，不由展示层猜测。函数/方法使用 enclosing callable

@@ -225,6 +225,8 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Struct, C | Cpp) => &["struct_specifier"],
         (Struct, Go) => &["type_declaration"],
         (Struct, Rust) => &["struct_item"],
+        // ArkTS struct is byte-stable normalized to class_declaration pre-parse.
+        (Struct, TypeScript | JavaScript | ArkTS) => &["class_declaration", "class_expression"],
 
         // ── Interfaces / Traits ──
         (Interface, Cangjie) => &["interfaceDefinition"],

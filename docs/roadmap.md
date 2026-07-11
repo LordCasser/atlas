@@ -102,7 +102,7 @@ The original baseline implementation blockers are closed and covered by the rele
 
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
-> **CFG status (updated 2026-06)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 12 capability-enabled languages; ArkTS and PHP remain unsupported. Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
+> **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 13 capability-enabled languages; PHP remains unsupported. ArkTS CFG is enabled via TS grammar fallback with WithLimitations(0.55). Golden fixtures cover core branch/loop behavior and language-specific resource constructs, including C#, Ruby, Kotlin, and Cangjie in addition to the original TypeScript/Python/Java/C/C++/Go/Rust set.
 
 ### 2.2 Index scope / manifest + Focus materialize
 
@@ -295,7 +295,7 @@ CFG + DataFlow
 - Lifecycle uses a path-sensitive field-state lattice and consumes composed effects.
 - Branch diff compares semantic effects across sibling branches rather than raw statement counts.
 - Resource-operation registries cover C/C++, Rust, Go, Python, TypeScript, Java, C#, Kotlin, PHP, and Ruby patterns; language-specific meaning stays outside the generic domain-rules core.
-- Capability profiles currently expose CFG for 12 languages; ArkTS and PHP remain the exceptions.
+- Capability profiles currently expose CFG for 13 languages; PHP remains the exception.
 
 ### 8.2 Remaining precision work
 
@@ -375,7 +375,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 全部默认语言的 `LanguageCapabilityProfile` 经 `ProfileSpec` + `build_profile()` 声明构造。  
 身份与一致性由 `test_<lang>_profile_identity` 及四项全局 profile 测试约束。
 
-特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65；C++ `include_resolution`；ArkTS/PHP `cfg` Unsupported；Cangjie 全支持集；`FeatureOverride` 变体 `Confidence` | `WithLimitations` | `Unsupported`。
+特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65；C++ `include_resolution`；PHP `cfg` Unsupported；ArkTS `cfg` WithLimitations(0.55)；Cangjie 全支持集；`FeatureOverride` 变体 `Confidence` | `WithLimitations` | `Unsupported`。
 
 **`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
 

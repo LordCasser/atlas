@@ -219,7 +219,7 @@ Level 5: lightweight interprocedural summaries
 | Java | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
 | C | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
 | C++ | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
-| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG 未实现 | 显示 `arkts via TypeScript grammar` provenance |
+| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55) via TS grammar fallback | 显示 `arkts via TypeScript grammar` provenance |
 | Go | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
 | C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.72 | `using_statement` 和 branch/loop CFG；partial classes limitation |
 | Rust | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.70 | 宏与 borrow 语义不建模 |

@@ -26,15 +26,15 @@
       "kind": "file"
     },
     {
-      "name": "Struct#350",
+      "name": "Struct#326",
       "kind": "struct"
     },
     {
-      "name": "Method#374",
+      "name": "Method#350",
       "kind": "method"
     },
     {
-      "name": "Block#382",
+      "name": "Block#358",
       "kind": "block"
     }
   ],
@@ -42,6 +42,29 @@
     {
       "caller": "build",
       "receiver": "console"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
     }
   ]
 }

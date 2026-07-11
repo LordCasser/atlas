@@ -2319,6 +2319,146 @@ function createPoint(): Point {
     );
 }
 
+/// Verify ArkTS CFG body traversal for if/else:
+/// Entry, Branch, Statement nodes in branches, TrueBranch/FalseBranch edges, Join, Exit.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx_cfg_if_else_arkts() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_if.ets",
+        r#"function testIf(x: number): number {
+    if (x > 0) {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_if.ets");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+        eprintln!(
+            "=== {} CFG nodes: {:#?}",
+            sym.name,
+            cfg_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+        );
+
+        // ── Node kind assertions ──
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "missing Exit"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "missing Branch"
+        );
+
+        // ── Edge assertions ──
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::TrueBranch),
+            "missing TrueBranch edge for consequence body"
+        );
+        assert!(
+            edges.iter().any(|e| e.kind == CfgEdgeKind::FalseBranch),
+            "missing FalseBranch edge for alternative body"
+        );
+    }
+}
+
+/// Verify ArkTS CFG body traversal for for loop:
+/// Loop node, Statement node in body, LoopBack edge, Normal exit.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx_cfg_loop_arkts() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let files = &[(
+        "cfg_loop.ets",
+        r#"function sum(n: number): number {
+    let total: number = 0;
+    for (let i = 0; i < n; i++) {
+        total += i;
+    }
+    return total;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.ets");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+    let func_syms: Vec<_> = symbols
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            )
+        })
+        .collect();
+    assert!(!func_syms.is_empty(), "expected at least one function");
+
+    for sym in &func_syms {
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&sym.id)
+            .expect("cfg_nodes");
+        eprintln!(
+            "=== {} CFG nodes: {:#?}",
+            sym.name,
+            cfg_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+        );
+
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
+            "missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
+            "missing Exit"
+        );
+
+        // For loops produce a Loop node and LoopBack edge
+        let has_loop = cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop);
+        let mut edges = Vec::new();
+        for node in &cfg_nodes {
+            let e = store.find_cfg_edges_by_source(&node.id).expect("cfg_edges");
+            edges.extend(e);
+        }
+
+        if has_loop {
+            assert!(
+                edges.iter().any(|e| e.kind == CfgEdgeKind::LoopBack),
+                "missing LoopBack edge for loop body"
+            );
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Cangjie: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────

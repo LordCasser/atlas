@@ -164,7 +164,7 @@ fn parse_language(s: &str) -> Option<Language> {
         "java" => Some(Language::Java),
         "c" => Some(Language::C),
         "cpp" | "c++" => Some(Language::Cpp),
-        "arkts" | "ark-ts" | "ets" => Some(Language::ArkTS),
+        "arkts" | "ark-ts" | "ets" | "sts" => Some(Language::ArkTS),
         #[cfg(feature = "cangjie")]
         "cangjie" | "cj" => Some(Language::Cangjie),
         "go" => Some(Language::Go),

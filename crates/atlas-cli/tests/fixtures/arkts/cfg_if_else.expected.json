@@ -1,0 +1,98 @@
+{
+  "symbols": [
+    {
+      "name": "classify",
+      "kind": "function",
+      "signature": "(score: number): string"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#48",
+      "kind": "function"
+    },
+    {
+      "name": "Block#89",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#95",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#112",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#145",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#162",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#195",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#212",
+      "kind": "block"
+    },
+    {
+      "name": "Block#245",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

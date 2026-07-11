@@ -1,0 +1,170 @@
+{
+  "symbols": [
+    {
+      "name": "sum",
+      "kind": "function",
+      "signature": "(n: number): number"
+    },
+    {
+      "name": "total",
+      "kind": "variable"
+    },
+    {
+      "name": "i",
+      "kind": "variable"
+    },
+    {
+      "name": "countdown",
+      "kind": "function",
+      "signature": "(start: number): number"
+    },
+    {
+      "name": "count",
+      "kind": "variable"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#48",
+      "kind": "function"
+    },
+    {
+      "name": "Block#80",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#113",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#141",
+      "kind": "block"
+    },
+    {
+      "name": "Function#190",
+      "kind": "function"
+    },
+    {
+      "name": "Block#232",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#269",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#287",
+      "kind": "block"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}
