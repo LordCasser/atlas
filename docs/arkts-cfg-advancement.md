@@ -66,6 +66,11 @@ ArkTS 与 TypeScript 共享 CFG node-kind 配置。以下模式已由 ArkTS gold
 - 查询时 `StateFlow`：
   `AppStorage.set/setOrCreate(key, value)` -> 同 key 的
   `@StorageProp/@StorageLink` 字段读取和外层 UI call argument。
+- 字段必须是精确的 `this.<decorated field>`；`other.<same name>` 不桥接。
+- key 匹配保留 literal / expression 类别，字符串 `'StorageKey.X'` 不等于表达式
+  `StorageKey.X`。表达式未解析到常量值，因此 confidence 不高于 `0.60`。
+- 冷 Focus 通过 `StateChannel` closure 查找跨目录 writer；resume replay 时由 Engine 为匹配 key 的
+  writer function materialize dataflow，终态路径不依赖预建 full index。
 
 `StateFlow` 不写入函数内 `dataflow_edges`，也不创建虚构 AppStorage 实体；它由
 `RuntimeEdgeProvider` 在查询时生成。

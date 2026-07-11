@@ -392,7 +392,7 @@ impl Engine {
         let lazy_start = std::time::Instant::now();
         let mut partial = false;
         let mut lazy_diagnostics: Vec<TraceDiagnostic> = Vec::new();
-        let lazy_summary: Option<LazySummary>;
+        let mut lazy_summary: Option<LazySummary>;
         match self
             .materialize
             .dataflow()
@@ -444,6 +444,85 @@ impl Engine {
                         .with_code("lazy_dataflow_build_failed"),
                 );
             }
+        }
+
+        let is_arkts = cap
+            .as_ref()
+            .is_some_and(|profile| profile.language == Language::ArkTS.as_str());
+        if is_arkts {
+            match analysis::trace::virtual_edges::arkts_state_writer_functions_for_file(
+                file_id,
+                self.store.as_ref(),
+            ) {
+                Ok(writer_functions) => {
+                    let mut state_window_truncated = false;
+                    let mut state_window_pending = false;
+                    for function_id in writer_functions {
+                        match self
+                            .materialize
+                            .dataflow()
+                            .ensure_for_function(&function_id, None)
+                        {
+                            Ok(window) => {
+                                state_window_truncated |= window.truncated;
+                                if window.units_pending > 0 {
+                                    partial = true;
+                                    state_window_pending = true;
+                                }
+                                if let Some(summary) = lazy_summary.as_mut() {
+                                    summary.units_built += window.units_built;
+                                    summary.units_cached += window.units_cached;
+                                    summary.units_pending += window.units_pending;
+                                    summary.truncated |= window.truncated;
+                                    for job_id in window.pending_job_ids {
+                                        if !summary.pending_job_ids.contains(&job_id) {
+                                            summary.pending_job_ids.push(job_id);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                partial = true;
+                                lazy_diagnostics.push(
+                                    TraceDiagnostic::warning(&format!(
+                                        "AppStorage writer dataflow build failed: {error}"
+                                    ))
+                                    .with_code("state_source_dataflow_build_failed"),
+                                );
+                            }
+                        }
+                    }
+                    if state_window_truncated {
+                        partial = true;
+                        lazy_diagnostics.push(
+                            TraceDiagnostic::warning(
+                                "AppStorage writer dataflow reached its internal budget. Result is partial.",
+                            )
+                            .with_code("state_source_dataflow_budget_exceeded"),
+                        );
+                    }
+                    if state_window_pending {
+                        lazy_diagnostics.push(
+                            TraceDiagnostic::warning(
+                                "AppStorage writer dataflow is being built by another request. Retry after the reported pending job completes.",
+                            )
+                            .with_code("state_source_dataflow_already_building"),
+                        );
+                    }
+                }
+                Err(error) => {
+                    partial = true;
+                    lazy_diagnostics.push(
+                        TraceDiagnostic::warning(&format!(
+                            "AppStorage writer discovery failed: {error}"
+                        ))
+                        .with_code("state_source_discovery_failed"),
+                    );
+                }
+            }
+        }
+        if let Some(summary) = lazy_summary.as_mut() {
+            summary.duration_ms = lazy_start.elapsed().as_millis() as u64;
         }
 
         // Delegate to analysis TraceEngine

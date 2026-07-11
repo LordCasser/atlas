@@ -60,7 +60,11 @@ fn call_direction(direction: Option<&str>) -> Direction {
     }
 }
 
-fn strategies_for(intent: &QueryIntent, background: bool) -> Vec<ClosureStrategy> {
+fn strategies_for(
+    intent: &QueryIntent,
+    background: bool,
+    language: Language,
+) -> Vec<ClosureStrategy> {
     let import = ClosureStrategy::ImportNeighborhood { depth: 1 };
     let type_depth = if background { 2 } else { 1 };
     match intent {
@@ -107,9 +111,13 @@ fn strategies_for(intent: &QueryIntent, background: bool) -> Vec<ClosureStrategy
             import,
         ],
         QueryIntent::Search { .. } => vec![import, ClosureStrategy::SameDirectory],
-        QueryIntent::TracePoint { .. } | QueryIntent::TraceVariable { .. } => {
-            vec![import, ClosureStrategy::SameDirectory]
-        }
+        QueryIntent::TracePoint { .. } => vec![import, ClosureStrategy::SameDirectory],
+        QueryIntent::TraceVariable { .. } if language == Language::ArkTS => vec![
+            import,
+            ClosureStrategy::SameDirectory,
+            ClosureStrategy::StateChannel,
+        ],
+        QueryIntent::TraceVariable { .. } => vec![import, ClosureStrategy::SameDirectory],
     }
 }
 
@@ -528,7 +536,7 @@ impl FocusRuntime {
         };
         let minimal_window = FocusWindow {
             seed: seed.clone(),
-            strategies: strategies_for(intent, false),
+            strategies: strategies_for(intent, false, language),
             include_roots: include_roots.clone(),
             budget: minimal_budget,
             language,
@@ -602,7 +610,7 @@ impl FocusRuntime {
         };
         let bg_window = FocusWindow {
             seed,
-            strategies: strategies_for(intent, true),
+            strategies: strategies_for(intent, true, language),
             include_roots: include_roots.clone(),
             budget: background_budget,
             language,

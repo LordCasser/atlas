@@ -20,6 +20,8 @@
 //!   multi-hop handled by fixed-point re-query.
 //! - [`ClosureStrategy::TypeGraph`] expands via pre-computed type-reference
 //!   traversal using type symbol kinds (Struct/Class/Enum/Interface/Trait).
+//! - [`ClosureStrategy::StateChannel`] discovers files that write framework
+//!   state referenced by the seed closure.
 //!
 //! # Visibility
 //!
@@ -63,7 +65,9 @@ fn required_resolution_kinds(strategies: &[ClosureStrategy]) -> HashSet<Referenc
                     ReferenceKind::Implementation,
                 ]);
             }
-            ClosureStrategy::ImportNeighborhood { .. } | ClosureStrategy::SameDirectory => {}
+            ClosureStrategy::ImportNeighborhood { .. }
+            | ClosureStrategy::SameDirectory
+            | ClosureStrategy::StateChannel => {}
         }
     }
     kinds
@@ -634,6 +638,9 @@ impl ClosureEngine {
                         relevant_symbols.extend(symbols);
                     }
                 }
+                ClosureStrategy::StateChannel => {
+                    additions.extend(self.expand_state_channels(closure)?);
+                }
             }
         }
 
@@ -644,6 +651,41 @@ impl ClosureEngine {
         additions.retain(|f| !closure.visited.contains(f));
 
         Ok((additions, relevant_symbols.into_iter().collect()))
+    }
+
+    fn expand_state_channels(&self, closure: &FocusClosure) -> Result<Vec<FileId>> {
+        let mut has_arkts_reactive_state = false;
+        for file_id in &closure.files {
+            if self
+                .store
+                .get_file(file_id)?
+                .is_none_or(|file| file.language != Language::ArkTS)
+            {
+                continue;
+            }
+            if self
+                .store
+                .find_references_by_file(file_id)?
+                .iter()
+                .any(|reference| {
+                    reference.kind == ReferenceKind::Call
+                        && matches!(reference.name.as_str(), "StorageLink" | "StorageProp")
+                })
+            {
+                has_arkts_reactive_state = true;
+                break;
+            }
+        }
+        if !has_arkts_reactive_state {
+            return Ok(Vec::new());
+        }
+
+        let structural = self.materialize.structural();
+        let mut candidates = structural.candidate_files_referencing("AppStorage.setOrCreate")?;
+        candidates.extend(structural.candidate_files_referencing("AppStorage.set")?);
+        candidates.sort_by_key(FileId::to_hex);
+        candidates.dedup();
+        Ok(candidates)
     }
 
     /// Extract a single file using Focus structural materialize.

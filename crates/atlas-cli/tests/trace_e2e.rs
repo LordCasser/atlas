@@ -617,8 +617,9 @@ fn arkts_app_storage_bridges_writer_value_to_web_bound_field() {
         (
             "EntryAbility.ets",
             r#"export function initialize(input: string): void {
-  AppStorage.setOrCreate("webUrl", input);
+  AppStorage.setOrCreate<string>("webUrl", input);
   AppStorage.set(StorageKey.COLOR_MODE, input);
+  AppStorage.set("StorageKey.COLOR_MODE", input);
 }"#,
         ),
         (
@@ -632,11 +633,13 @@ fn arkts_app_storage_bridges_writer_value_to_web_bound_field() {
             r#"@Component
 export struct MainPage {
   @StorageLink('webUrl') webUrl: string = '';
-  @StorageProp(StorageKey.COLOR_MODE) colorMode: string = '';
+  @StorageProp(StorageKey.COLOR_MODE) @Watch('onColorModeChange') colorMode: string = '';
   plainUrl: string = '';
 
   build() {
+    const other = { webUrl: 'local' };
     Web({ src: this.webUrl })
+    Text(other.webUrl)
     Text(this.colorMode)
     Text(this.plainUrl)
   }
@@ -710,6 +713,21 @@ export struct MainPage {
     assert_eq!(state_edge.target_id, field_read.id);
     assert!(state_edge.provenance.contains("webUrl"));
 
+    let unrelated_field_read = consumer_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Field && node.access_path.as_deref() == Some("other.webUrl")
+        })
+        .expect("same-named field on an unrelated receiver");
+    assert!(
+        provider
+            .virtual_incoming(&unrelated_field_read.id, store.as_ref())
+            .expect("unrelated field lookup")
+            .iter()
+            .all(|edge| edge.kind != DataFlowKind::StateFlow),
+        "AppStorage state must only bridge reads of the decorated component field"
+    );
+
     let color_read = consumer_nodes
         .iter()
         .find(|node| {
@@ -723,6 +741,19 @@ export struct MainPage {
     assert!(color_edges.iter().any(|edge| {
         edge.kind == DataFlowKind::StateFlow && edge.provenance.contains("StorageKey.COLOR_MODE")
     }));
+    let lookalike_literal_source = store
+        .find_callsites_by_name_and_receiver("set", "AppStorage", atlas_engine::Language::ArkTS)
+        .unwrap()
+        .into_iter()
+        .find(|callsite| callsite.args[0].value == "\"StorageKey.COLOR_MODE\"")
+        .and_then(|callsite| callsite.args[1].data_node_id)
+        .expect("lookalike literal setter value");
+    assert!(
+        color_edges
+            .iter()
+            .all(|edge| edge.source_id != lookalike_literal_source),
+        "a string literal must not alias an enum-member key expression"
+    );
 
     let plain_read = consumer_nodes
         .iter()

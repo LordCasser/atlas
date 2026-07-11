@@ -510,9 +510,15 @@ trace             = inter-procedural, by composing summaries and/or runtime brid
   2. **Phase 2 — runtime BFS join**：无摘要时的路径。
 - `RuntimeEdgeProvider` 同时承载不应写入函数内 `dataflow_edges` 的框架状态桥。ArkTS 当前
   将 `AppStorage.set/setOrCreate(key, value)` 的 value 参数，以查询时 `StateFlow` 连接到
-  同 key 的 `@StorageProp` / `@StorageLink` 字段读取及其外层调用参数。key 只做字符串引号
-  与空白规范化，不执行常量/枚举求值；反向 `StorageLink` 写回、字段默认值初始化及进程边界
+  同 key 的 `@StorageProp` / `@StorageLink` 字段读取及其外层调用参数。字段读取必须是精确的
+  `this.<field>`；同名的其他 receiver 不得桥接。key 只做字符串引号与空白规范化，同时保留
+  literal / expression 类别，不执行常量/枚举求值。literal 精确匹配 confidence 0.72，未解析
+  表达式匹配不高于 ArkTS 0.60。反向 `StorageLink` 写回、字段默认值初始化、时序及进程边界
   暂不建模。该语义遵循官方 [AppStorage 状态模型](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-appstorage)。
+- 冷 Focus 的 ArkTS variable trace 使用 `StateChannel` closure strategy。该策略仅在 seed closure
+  已出现 `StorageProp` / `StorageLink` 时，通过统一 candidate provider 发现跨目录
+  `AppStorage.set/setOrCreate` 文件；resume 时 `Engine::trace_variable` 只为匹配 reactive key 的
+  writer function materialize dataflow。`RuntimeEdgeProvider` 保持只读，不读取源码或调度工作。
 
 **模式语义（强制）**
 

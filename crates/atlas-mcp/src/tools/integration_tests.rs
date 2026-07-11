@@ -347,6 +347,91 @@ mod focus_tests {
         );
     }
 
+    #[test]
+    fn cold_arkts_trace_materializes_cross_directory_appstorage_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let files = [
+            (
+                "pages/MainPage.ets",
+                r#"@Component
+struct MainPage {
+  @StorageLink('webUrl') webUrl: string = '';
+  build() {
+    Web({ src: this.webUrl })
+  }
+}"#,
+            ),
+            (
+                "entryability/EntryAbility.ets",
+                r#"export function initialize(input: string): void {
+  AppStorage.setOrCreate<string>('webUrl', input);
+}"#,
+            ),
+        ];
+        let store = fresh_focus_store();
+        for (path, source) in files {
+            let full_path = root.path().join(path);
+            std::fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+            std::fs::write(&full_path, source).unwrap();
+            store
+                .upsert_file(&atlas_engine::FileInfo {
+                    file_id: atlas_engine::FileId::generate(path),
+                    path: path.to_string(),
+                    language: atlas_engine::Language::ArkTS,
+                    content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+                    status: atlas_engine::ParseStatus::Success,
+                })
+                .unwrap();
+        }
+
+        let router = ToolRouter::new_empty(store.clone(), root.path().to_path_buf());
+        let args = json!({
+            "kind": "variable",
+            "file_path": "pages/MainPage.ets",
+            "line": 5,
+            "column": 22,
+            "max_depth": 10,
+        });
+        let (response, is_error) = router.handle_trace_variable(&args);
+        assert!(!is_error, "initial trace failed: {response}");
+        let mut trace = parse_json(&response);
+        for _ in 0..100 {
+            if trace["analysis"].get("retry_after_ms").is_none() {
+                break;
+            }
+            let query_id = trace["query_id"]
+                .as_str()
+                .expect("retryable trace must carry query_id");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let (resumed, resume_error) =
+                router.handle_resume_query(&json!({"query_id": query_id}));
+            assert!(!resume_error, "resume trace failed: {resumed}");
+            trace = parse_json(&resumed);
+        }
+
+        assert!(
+            trace["analysis"].get("retry_after_ms").is_none(),
+            "cold ArkTS trace did not converge: {trace}"
+        );
+        let steps = trace["result"]["steps"]
+            .as_array()
+            .expect("terminal trace path steps");
+        assert!(
+            steps
+                .iter()
+                .any(|step| step["edge_kind"] == json!("state_flow")),
+            "terminal cold trace must include AppStorage StateFlow: {trace}"
+        );
+        assert!(
+            store
+                .has_dataflow_for_file(&atlas_engine::FileId::generate(
+                    "entryability/EntryAbility.ets"
+                ))
+                .unwrap(),
+            "writer dataflow must be materialized before the terminal trace"
+        );
+    }
+
     /// When FocusRuntime is active, handler responses should carry analysis
     /// envelope fields (state, scope, summary).  Accepts the case where the
     /// underlying DB already has a full index (focus not needed).

@@ -20,7 +20,7 @@
 use db::TraceStore;
 use types::dataflow::DataFlowEdge;
 use types::enums::{DataFlowKind, DataNodeKind, Language, ReferenceKind, SymbolKind};
-use types::ids::{DataNodeId, SymbolId};
+use types::ids::{DataNodeId, FileId, SymbolId};
 use types::structs::Callsite;
 
 // ---------------------------------------------------------------------------
@@ -343,6 +343,55 @@ fn arkts_state_incoming(
     Ok(edges)
 }
 
+/// Find materialized writer functions for reactive AppStorage keys declared in a file.
+///
+/// Focus uses this after its state-channel closure has added writer files, so
+/// their function-local dataflow can be built before the runtime edge query.
+pub fn arkts_state_writer_functions_for_file(
+    file_id: &FileId,
+    store: &dyn TraceStore,
+) -> anyhow::Result<Vec<SymbolId>> {
+    let references = store.find_references_by_file(file_id)?;
+    let reactive_keys: std::collections::HashSet<_> = store
+        .find_callsites_by_file(file_id)?
+        .into_iter()
+        .filter_map(|callsite| {
+            let reference_id = callsite.reference_id?;
+            let reference = references
+                .iter()
+                .find(|reference| reference.id == reference_id)?;
+            (reference.kind == ReferenceKind::Call
+                && matches!(reference.name.as_str(), "StorageLink" | "StorageProp"))
+            .then(|| callsite.args.first())
+            .flatten()
+            .map(|arg| canonical_state_key(&arg.value))
+        })
+        .collect();
+    if reactive_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut functions = Vec::new();
+    for setter in ["setOrCreate", "set"] {
+        for callsite in
+            store.find_callsites_by_name_and_receiver(setter, "AppStorage", Language::ArkTS)?
+        {
+            if callsite.args.len() >= 2
+                && callsite
+                    .args
+                    .first()
+                    .map(|arg| canonical_state_key(&arg.value))
+                    .is_some_and(|key| reactive_keys.contains(&key))
+            {
+                functions.push(callsite.caller);
+            }
+        }
+    }
+    functions.sort_by_key(SymbolId::to_hex);
+    functions.dedup();
+    Ok(functions)
+}
+
 fn arkts_state_for_field(
     field_read: &types::dataflow::DataNode,
     target_id: DataNodeId,
@@ -351,6 +400,14 @@ fn arkts_state_for_field(
     let Some(field_name) = field_read.name.as_deref() else {
         return Ok(vec![]);
     };
+    if field_read
+        .access_path
+        .as_deref()
+        .and_then(|path| path.strip_prefix("this."))
+        != Some(field_name)
+    {
+        return Ok(vec![]);
+    }
 
     let symbols = store.find_symbols_by_file(&field_read.file_id)?;
     let Some(owner) = field_read
@@ -404,7 +461,7 @@ fn arkts_state_for_field(
     let Some(annotation) = annotation else {
         return Ok(vec![]);
     };
-    let Some(key) = annotation
+    let Some((key, key_is_literal)) = annotation
         .args
         .first()
         .map(|arg| canonical_state_key(&arg.value))
@@ -418,7 +475,11 @@ fn arkts_state_for_field(
         for callsite in
             store.find_callsites_by_name_and_receiver(setter, "AppStorage", Language::ArkTS)?
         {
-            if callsite.args.len() < 2 || canonical_state_key(&callsite.args[0].value) != key {
+            if callsite.args.len() < 2 {
+                continue;
+            }
+            let (setter_key, setter_key_is_literal) = canonical_state_key(&callsite.args[0].value);
+            if setter_key != key || setter_key_is_literal != key_is_literal {
                 continue;
             }
             let Some(source_id) = callsite.args[1].data_node_id else {
@@ -431,7 +492,7 @@ fn arkts_state_for_field(
                 source_id,
                 target_id,
                 kind: DataFlowKind::StateFlow,
-                confidence: 0.72,
+                confidence: if key_is_literal { 0.72 } else { 0.60 },
                 provenance: format!(
                     "ArkTS AppStorage.{setter}({key}) → reactive field {}",
                     field.qualified_name
@@ -442,7 +503,7 @@ fn arkts_state_for_field(
     Ok(edges)
 }
 
-fn canonical_state_key(value: &str) -> String {
+fn canonical_state_key(value: &str) -> (String, bool) {
     let trimmed = value.trim();
     if trimmed.len() >= 2 {
         let bytes = trimmed.as_bytes();
@@ -450,10 +511,13 @@ fn canonical_state_key(value: &str) -> String {
             (bytes[0], bytes[trimmed.len() - 1]),
             (b'\'', b'\'') | (b'"', b'"')
         ) {
-            return trimmed[1..trimmed.len() - 1].to_string();
+            return (trimmed[1..trimmed.len() - 1].to_string(), true);
         }
     }
-    trimmed.chars().filter(|ch| !ch.is_whitespace()).collect()
+    (
+        trimmed.chars().filter(|ch| !ch.is_whitespace()).collect(),
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -539,13 +603,20 @@ mod tests {
 
     #[test]
     fn arkts_state_keys_match_literal_quote_styles_and_exact_expressions() {
-        assert_eq!(canonical_state_key(" 'webUrl' "), "webUrl");
-        assert_eq!(canonical_state_key("\"webUrl\""), "webUrl");
+        assert_eq!(canonical_state_key(" 'webUrl' "), ("webUrl".into(), true));
+        assert_eq!(canonical_state_key("\"webUrl\""), ("webUrl".into(), true));
         assert_eq!(
             canonical_state_key("StorageKey . COLOR_MODE"),
-            "StorageKey.COLOR_MODE"
+            ("StorageKey.COLOR_MODE".into(), false)
         );
-        assert_eq!(canonical_state_key("'page context'"), "page context");
+        assert_eq!(
+            canonical_state_key("'page context'"),
+            ("page context".into(), true)
+        );
+        assert_ne!(
+            canonical_state_key("'StorageKey.COLOR_MODE'"),
+            canonical_state_key("StorageKey.COLOR_MODE")
+        );
     }
 
     #[test]

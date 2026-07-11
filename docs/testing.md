@@ -260,7 +260,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 | calls 1-hop 契约 | `callers_depth_param_*` / `callees_with_depth_gt_1_*` / `callers_include_signature_*` | depth 警告；多跳 depth 仍 1-hop；signature 来自 store |
 | Focus⊆Index 邻域 | §2.6.2 N5 + `focus_equivalence_vs_full_index` | Focus 冷路径与 Full 基线多维可比 |
 | Cross-fn Phase2 | `focus_mode_phase2_arg_to_param_without_summary` | **无 summary** 时 `RuntimeEdgeProvider` 仍产出 `ArgToParam`（防误删 Phase2） |
-| ArkTS AppStorage | `arkts_app_storage_bridges_writer_value_to_web_bound_field` | `set/setOrCreate` value 通过精确 key 匹配到 `StorageProp/StorageLink` 字段与 UI `CallArg`；未装饰字段不得继承前一装饰器 |
+| ArkTS AppStorage | `arkts_app_storage_bridges_writer_value_to_web_bound_field` + `cold_arkts_trace_materializes_cross_directory_appstorage_writer` | `set/setOrCreate` value 通过精确 key 匹配到 `StorageProp/StorageLink` 字段与 UI `CallArg`；literal/expression 与 receiver 不得误合并；冷 Focus 跨目录 writer 经 resume materialize 后必须出现 `StateFlow` |
 | FileLock 互斥 | `reject_if_held_by_foreign_live_pid` 等 | 其他 live PID → `cli_index_lock_held`；同 PID 豁免 |
 | 短名 / 限定名解析 | `resolve_by_name_short_name_*`（atlas-engine） | 短名 `GetDev` 命中 `CertUtils::GetDev`；多短名 → Ambiguous + 全 qname `symbol_ref`；精确 qname 仍 UniqueQname |
 | C++ 限定调用抽取 | `test_cpp_qualified_call_ref_simple_name_and_full_text`（extraction） | ref.name=`GetDev`、text=`CertUtils::GetDev`、receiver=`CertUtils`；嵌套 `A::B::method` 全文/前缀正确 |

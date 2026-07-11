@@ -105,8 +105,11 @@ All notable changes to Atlas will be documented in this file.
   usable structural facts no longer collapse to global calls. Query-time trace
   adds `StateFlow` from ArkTS `AppStorage.set/setOrCreate` values to matching
   `@StorageProp`/`@StorageLink` field reads and UI call arguments. Matching is
-  syntactic; reverse links, default initialization, and process boundaries are
-  explicitly not modeled.
+  syntactic but preserves literal-vs-expression identity and requires an exact
+  `this.<field>` read. Cold Focus traces add a state-channel closure, materialize
+  cross-directory writer dataflow, and converge through `resume_query`.
+  Reverse links, default initialization, timing, and process boundaries remain
+  explicitly unmodeled.
 - ArkTS named function/method CFG is enabled through the shared TypeScript
   walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
   edges. ArkUI trailing blocks remain single statements and nested arrow

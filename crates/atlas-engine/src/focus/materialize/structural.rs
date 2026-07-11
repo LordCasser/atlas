@@ -1058,7 +1058,8 @@ fn run_rg_candidate_paths(
     cmd.args(["--files-with-matches", "--no-heading", "--max-count=1"]);
     for glob in [
         "*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.rs", "*.go", "*.java", "*.py", "*.ts",
-        "*.tsx", "*.js", "*.jsx", "*.php", "*.rb", "*.kt", "*.kts",
+        "*.tsx", "*.js", "*.jsx", "*.ets", "*.sts", "*.cs", "*.php", "*.rb", "*.kt", "*.kts",
+        "*.cj",
     ] {
         cmd.arg("--type-add").arg(format!("atlassrc:{glob}"));
     }
@@ -1911,6 +1912,32 @@ mod tests {
             !candidates.is_empty(),
             "should return results when .atlasignore does not exist"
         );
+    }
+
+    #[test]
+    fn candidates_from_ripgrep_covers_all_nonstandard_language_extensions() {
+        if !rg_available() {
+            eprintln!("skipping test: rg not available");
+            return;
+        }
+
+        let files = [
+            ("src/main.ets", "frameworkProbe()"),
+            ("src/main.sts", "frameworkProbe()"),
+            ("src/Main.cs", "frameworkProbe()"),
+            ("src/main.cj", "frameworkProbe()"),
+        ];
+        let (_store, root, provider) = setup_ripgrep_test(&files, None);
+
+        let candidates = provider.candidates_for_symbol("frameworkProbe").unwrap();
+        cleanup_ripgrep_test(&root);
+
+        for (path, _) in files {
+            assert!(
+                candidates.contains(&FileId::generate(path)),
+                "{path} should participate in candidate discovery: {candidates:?}"
+            );
+        }
     }
 
     #[test]

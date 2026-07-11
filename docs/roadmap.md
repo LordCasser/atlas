@@ -104,6 +104,8 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) traverses branch/loop bodies for 13 capability-enabled languages; PHP remains unsupported. ArkTS named function/method CFG is enabled via TS grammar fallback with WithLimitations(0.55), verified by golden fixtures and trace tests. ArkUI trailing blocks collapse to statements and nested arrow callbacks do not have independent CFGs. Golden fixtures prove covered patterns, not compiler validity or a global confidence increase.
 
+> **ArkTS state-flow status (updated 2026-07)**: `AppStorage.set/setOrCreate` incoming flow is query-time `StateFlow`, with exact `this`-field and literal/expression key-category matching. Full-cache and cold Focus paths are both covered; cold Focus uses `StateChannel` closure discovery plus writer-function dataflow materialization on resume. Reverse `StorageLink`, constant evaluation, timing, and process boundaries remain explicit limitations.
+
 ### 2.2 Index scope / manifest + Focus materialize
 
 - **Scope Index** — `--include` / `--scope` / `--exclude`.

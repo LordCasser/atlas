@@ -80,6 +80,8 @@ pub enum ClosureStrategy {
     CallGraph { direction: Direction, depth: u32 },
     /// Expand through type definitions.
     TypeGraph { max_depth: u32 },
+    /// Expand through framework-managed state channels discovered from seed facts.
+    StateChannel,
 }
 
 // ---------------------------------------------------------------------------

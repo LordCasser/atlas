@@ -1091,7 +1091,7 @@ fn impact_focus_plan_expands_the_call_graph() {
         symbol_name: "root".into(),
         depth: Some(4),
     };
-    let strategies = super::strategies_for(&intent, true);
+    let strategies = super::strategies_for(&intent, true, Language::C);
 
     assert!(strategies.iter().any(|strategy| matches!(
         strategy,
@@ -1126,10 +1126,36 @@ fn path_and_calls_depth_drive_background_fixed_point() {
         0,
         "foreground preparation must stop at the seed; requested graph depth belongs to background refinement"
     );
-    assert!(super::strategies_for(&calls, true).iter().any(|strategy| {
-        matches!(
-            strategy,
-            crate::focus::types::ClosureStrategy::ImportNeighborhood { depth: 1 }
-        )
-    }));
+    assert!(
+        super::strategies_for(&calls, true, Language::C)
+            .iter()
+            .any(|strategy| {
+                matches!(
+                    strategy,
+                    crate::focus::types::ClosureStrategy::ImportNeighborhood { depth: 1 }
+                )
+            })
+    );
+}
+
+#[test]
+fn arkts_variable_trace_expands_framework_state_channels() {
+    let file_id = FileId::generate("MainPage.ets");
+    let intent = QueryIntent::TraceVariable {
+        file_id,
+        line: 10,
+        column: 5,
+    };
+
+    let strategies = super::strategies_for(&intent, true, Language::ArkTS);
+    assert!(
+        strategies
+            .iter()
+            .any(|strategy| matches!(strategy, crate::focus::types::ClosureStrategy::StateChannel))
+    );
+    assert!(
+        !super::strategies_for(&intent, true, Language::TypeScript)
+            .iter()
+            .any(|strategy| matches!(strategy, crate::focus::types::ClosureStrategy::StateChannel))
+    );
 }

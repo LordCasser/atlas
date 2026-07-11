@@ -349,6 +349,65 @@ fn test_build_closure_max_iterations_limit() {
 }
 
 #[test]
+fn arkts_state_channel_discovers_cross_directory_writer() {
+    let store = test_store();
+    let root = tempfile::tempdir().unwrap();
+    let consumer_path = "pages/MainPage.ets";
+    let producer_path = "entryability/EntryAbility.ets";
+    let consumer_source = r#"@Component
+struct MainPage {
+  @StorageLink('webUrl') webUrl: string = '';
+  build() { Web({ src: this.webUrl }) }
+}"#;
+    let producer_source = r#"export function initialize(input: string): void {
+  AppStorage.setOrCreate<string>('webUrl', input);
+}"#;
+
+    for (path, source) in [
+        (consumer_path, consumer_source),
+        (producer_path, producer_source),
+    ] {
+        let full_path = root.path().join(path);
+        std::fs::create_dir_all(full_path.parent().unwrap()).unwrap();
+        std::fs::write(&full_path, source).unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: FileId::generate(path),
+                path: path.to_string(),
+                language: Language::ArkTS,
+                content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+    }
+
+    let consumer_id = FileId::generate(consumer_path);
+    let producer_id = FileId::generate(producer_path);
+    let engine = test_engine_with_root(store, root.path());
+    let window = FocusWindow {
+        seed: FocusSeed::Position {
+            file_id: consumer_id,
+            line: 4,
+            column: 18,
+        },
+        strategies: vec![ClosureStrategy::StateChannel],
+        include_roots: Vec::new(),
+        budget: WindowBudget::default(),
+        language: Language::ArkTS,
+        max_iterations: 1,
+    };
+
+    let closure = engine
+        .build_closure(&window, "test-arkts-state-channel")
+        .unwrap();
+    assert!(closure.files.contains(&consumer_id));
+    assert!(
+        closure.files.contains(&producer_id),
+        "AppStorage writer must enter the semantic closure: {closure:#?}"
+    );
+}
+
+#[test]
 fn test_build_closure_with_position_seed() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/lib.rs");

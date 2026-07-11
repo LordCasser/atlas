@@ -993,7 +993,7 @@ mod profiles {
         limitations: &[
             "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
             "scope-chain binding is heuristic and does not independently model ArkUI callback ownership",
-            "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
+            "AppStorage set/setOrCreate to StorageProp/StorageLink requires exact this-field and syntactic key-category matching; reverse writes, default initialization, timing, and process boundaries are not modeled",
         ],
         feature_overrides: &[
             (
@@ -2706,7 +2706,7 @@ mod tests {
             vec![
                 "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
                 "scope-chain binding is heuristic and does not independently model ArkUI callback ownership",
-                "AppStorage set/setOrCreate to StorageProp/StorageLink uses exact syntactic key matching; reverse writes, default initialization, and process boundaries are not modeled",
+                "AppStorage set/setOrCreate to StorageProp/StorageLink requires exact this-field and syntactic key-category matching; reverse writes, default initialization, timing, and process boundaries are not modeled",
             ]
         );
 
