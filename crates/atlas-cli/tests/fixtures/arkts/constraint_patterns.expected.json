@@ -1,0 +1,510 @@
+{
+  "symbols": [
+    {
+      "name": "Model",
+      "kind": "interface"
+    },
+    {
+      "name": "ConstraintDemo",
+      "kind": "struct"
+    },
+    {
+      "name": "model",
+      "kind": "field"
+    },
+    {
+      "name": "count",
+      "kind": "field"
+    },
+    {
+      "name": "constructor",
+      "kind": "method",
+      "signature": "(model: Model)"
+    },
+    {
+      "name": "increment",
+      "kind": "method",
+      "signature": "(): void"
+    },
+    {
+      "name": "classify",
+      "kind": "method",
+      "signature": "(value: number): string"
+    },
+    {
+      "name": "result",
+      "kind": "variable"
+    },
+    {
+      "name": "sumRange",
+      "kind": "method",
+      "signature": "(start: number, end: number): number"
+    },
+    {
+      "name": "total",
+      "kind": "variable"
+    },
+    {
+      "name": "i",
+      "kind": "variable"
+    },
+    {
+      "name": "format",
+      "kind": "method",
+      "signature": "(): string"
+    },
+    {
+      "name": "label",
+      "kind": "variable"
+    },
+    {
+      "name": "process",
+      "kind": "function",
+      "signature": "(model: Model): number"
+    },
+    {
+      "name": "demo",
+      "kind": "variable"
+    },
+    {
+      "name": "classification",
+      "kind": "variable"
+    },
+    {
+      "name": "sum",
+      "kind": "variable"
+    }
+  ],
+  "references": [
+    {
+      "text": "Model",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Model",
+      "kind": "type_reference"
+    },
+    {
+      "text": "Model",
+      "kind": "type_reference"
+    },
+    {
+      "text": "model",
+      "kind": "field_access"
+    },
+    {
+      "text": "count",
+      "kind": "field_access"
+    },
+    {
+      "text": "count",
+      "kind": "field_access"
+    },
+    {
+      "text": "count",
+      "kind": "field_access"
+    },
+    {
+      "text": "model",
+      "kind": "field_access"
+    },
+    {
+      "text": "name",
+      "kind": "field_access"
+    },
+    {
+      "text": "Model",
+      "kind": "type_reference"
+    },
+    {
+      "text": "ConstraintDemo",
+      "kind": "type_reference"
+    },
+    {
+      "text": "ConstraintDemo",
+      "kind": "instantiation"
+    },
+    {
+      "text": "increment",
+      "kind": "call"
+    },
+    {
+      "text": "increment",
+      "kind": "field_access"
+    },
+    {
+      "text": "increment",
+      "kind": "call"
+    },
+    {
+      "text": "increment",
+      "kind": "field_access"
+    },
+    {
+      "text": "classify",
+      "kind": "call"
+    },
+    {
+      "text": "classify",
+      "kind": "field_access"
+    },
+    {
+      "text": "count",
+      "kind": "field_access"
+    },
+    {
+      "text": "sumRange",
+      "kind": "call"
+    },
+    {
+      "text": "sumRange",
+      "kind": "field_access"
+    }
+  ],
+  "imports": [
+    {
+      "module": "",
+      "imported_name": "process"
+    },
+    {
+      "module": "",
+      "imported_name": "ConstraintDemo"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Interface#312",
+      "kind": "interface"
+    },
+    {
+      "name": "Struct#361",
+      "kind": "struct"
+    },
+    {
+      "name": "Method#427",
+      "kind": "method"
+    },
+    {
+      "name": "Block#453",
+      "kind": "block"
+    },
+    {
+      "name": "Method#504",
+      "kind": "method"
+    },
+    {
+      "name": "Block#522",
+      "kind": "block"
+    },
+    {
+      "name": "Method#563",
+      "kind": "method"
+    },
+    {
+      "name": "Block#595",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#624",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#639",
+      "kind": "block"
+    },
+    {
+      "name": "Block#678",
+      "kind": "block"
+    },
+    {
+      "name": "Method#741",
+      "kind": "method"
+    },
+    {
+      "name": "Block#786",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#818",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#858",
+      "kind": "block"
+    },
+    {
+      "name": "Method#914",
+      "kind": "method"
+    },
+    {
+      "name": "Block#931",
+      "kind": "block"
+    },
+    {
+      "name": "Function#1007",
+      "kind": "function"
+    },
+    {
+      "name": "Block#1046",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "process",
+      "receiver": "demo"
+    },
+    {
+      "caller": "process",
+      "receiver": "demo"
+    },
+    {
+      "caller": "process",
+      "receiver": "demo"
+    },
+    {
+      "caller": "process",
+      "receiver": "demo"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "return",
+      "kind": "normal"
+    }
+  ]
+}

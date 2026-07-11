@@ -300,6 +300,12 @@ fn golden_arkts_struct_complex() {
 
 #[cfg(feature = "arkts")]
 #[test]
+fn golden_arkts_constraint_patterns() {
+    run_golden("arkts", "constraint_patterns", "ets", Language::ArkTS);
+}
+
+#[cfg(feature = "arkts")]
+#[test]
 fn golden_arkts_cfg_basic() {
     run_golden("arkts", "cfg_basic", "ets", Language::ArkTS);
 }

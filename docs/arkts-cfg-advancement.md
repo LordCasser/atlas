@@ -4,7 +4,7 @@
 > **目标**：基于 `typescript-to-arkts-migration-guide.md` 分析 ArkTS 约束对 CFG 构建、Dataflow 管道、语法事实提取 Pipeline 的影响，推进 ArkTS CFG 从 Unsupported → WithLimitations。
 > **原则**：ArkTS 的约束不是"要检查的规则"，而是"可以依赖的不变量"——合法 ArkTS 代码比等价 TS 代码语义更简单，这些不变量可以而且应该被利用来提升分析精度。
 
-> **实施状态**：Phase 1 已实施。ArkTS CFG 已从 Unsupported 推进到 WithLimitations(0.55)。G1-G4 缺口已修复。
+> **实施状态**：Phase 1 已实施。ArkTS CFG 已从 Unsupported 推进到 WithLimitations(0.60)。G1-G4 缺口已修复。Phase 2 已实施：基于 ArkTS 约束不变量（no var/destructuring/delete/func-expr/method-reassignment/apply-call-bind），lexical/dataflow/use-def/interproc confidence 从 0.60 提升至 0.65，CFG 从 0.55 提升至 0.60。
 
 ---
 

@@ -219,7 +219,7 @@ Level 5: lightweight interprocedural summaries
 | Java | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
 | C | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
 | C++ | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
-| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55) via TS grammar fallback | 显示 `arkts via TypeScript grammar` provenance |
+| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.60)；lexical/dataflow/use-def/interproc WithLimitations(0.65) via constraint invariants | 显示 `arkts via TypeScript grammar` provenance |
 | Go | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
 | C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.72 | `using_statement` 和 branch/loop CFG；partial classes limitation |
 | Rust | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.70 | 宏与 borrow 语义不建模 |
@@ -353,7 +353,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 阶段完成条件：
 
-1. 所有 14 种 DataflowInterproc 语言维持 trace 所需 facts 与 ArgToParam/ReturnToCall fixture；CFG 以 capability profile 为准（当前仅 ArkTS、PHP 不支持）。
+1. 所有 14 种 DataflowInterproc 语言维持 trace 所需 facts 与 ArgToParam/ReturnToCall fixture；CFG 以 capability profile 为准（当前仅 PHP 不支持）。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖"指定位置 → 变量来源 → caller path"。
 3. 所有语言维持 DataflowInterproc 边界；具体 gap 通过 capability profile、golden fixture 和端到端断言文档化，不用 ignored/should-panic 测试伪装已支持能力。
 4. MCP 或 high-level `Engine` 能按 file/line/column 查询 trace point / backward trace，并能按 symbol selector 查询 caller path；CLI 当前不提供 trace 子命令。
