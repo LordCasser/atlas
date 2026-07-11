@@ -26,7 +26,8 @@ original .ets source
      -> byte-stable `struct` -> `class ` normalization
   -> tree-sitter TypeScript grammar
   -> ArkTS normalizers
-     -> Class -> Struct
+     -> class_declaration / fallback class -> Struct
+     -> brace-balanced complete Struct range
      -> reject ArkUI fake methods
      -> recover UI calls and build() ownership
   -> lexical/dataflow/CFG consumers
@@ -36,13 +37,16 @@ original .ets source
 原源码完全一致。AST range 最终仍用于切原源码，不能使用改变 offset 的 source rewrite。
 
 `SourceExtractor` 也遵守这一约束。它不能绕过 frontend 后直接以 TypeScript grammar 重解析原始
-ArkTS，否则 `struct` 不会形成 `class_declaration`，AST 源码提取会静默退回 stored range。
+ArkTS，否则 `struct` 不会形成可识别 class。若 fallback class AST 的终点早于已存 Struct range，
+AST definition 必须被拒绝并退回完整 stored range。
 
 ## 3. 已支持能力
 
 ### 3.1 声明式结构事实
 
 - `struct`、字段、真实方法和 scope 可恢复。
+- 参数化 component decorator + trailing chain 形成的 fallback `class` 也可恢复；Struct range
+  使用跳过 string/template/regex/comment 的 brace balance 覆盖真实 closing brace。
 - `build()` 是真实 Method，不再是全局假调用。
 - `Row`、`Column`、`Web` 等 UI 调用保留 `build()` caller。
 - 成员调用保留 receiver，允许识别 `AppStorage.set/setOrCreate`。

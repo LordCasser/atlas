@@ -22,12 +22,23 @@ use types::*;
 
 const ARKTS_DEFINITIONS_QUERY: &str = concat!(
     include_str!("../../queries/typescript/definitions.scm"),
+    "\n(class name: (type_identifier) @definition.class)\n",
     "\n(public_field_definition name: (property_identifier) @definition.field)\n"
+);
+
+const ARKTS_MANIFEST_QUERY: &str = concat!(
+    include_str!("../../queries/typescript/manifest.scm"),
+    "\n(class name: (type_identifier) @definition.class)\n"
 );
 
 const ARKTS_REFERENCES_QUERY: &str = concat!(
     include_str!("../../queries/typescript/references.scm"),
     "\n(expression_statement (object (method_definition name: (property_identifier) @reference.call)))\n"
+);
+
+const ARKTS_SCOPES_QUERY: &str = concat!(
+    include_str!("../../queries/typescript/scopes.scm"),
+    "\n(class) @scope.class\n"
 );
 
 /// ArkTS adapter — delegates to TypeScript internally.
@@ -78,7 +89,7 @@ fn normalize_arkts_reference(
     if capture_name == "reference.type"
         && node
             .parent()
-            .is_some_and(|parent| parent.kind() == "class_declaration")
+            .is_some_and(|parent| matches!(parent.kind(), "class_declaration" | "class"))
     {
         return None;
     }
@@ -117,16 +128,7 @@ fn normalize_arkts_scope(
         return None;
     }
     if capture_name == "scope.class" && is_arkts_struct(node, source) {
-        let mut range = super::node_range(node);
-        let keyword_start = arkts_struct_keyword_start(node, source)?;
-        let prefix = &source.as_bytes()[..keyword_start];
-        range.start_byte = keyword_start as u32;
-        range.start_line = prefix.iter().filter(|byte| **byte == b'\n').count() as u32;
-        range.start_column = prefix
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(keyword_start, |newline| keyword_start - newline - 1)
-            as u32;
+        let range = arkts_struct_range(node, source)?;
         return Some(make_scope_def_auto_name(file_id, ScopeKind::Struct, range));
     }
     super::typescript::normalize_ts_scope(capture_name, node, file_id)
@@ -136,27 +138,102 @@ fn is_arkts_struct(node: tree_sitter::Node<'_>, source: &str) -> bool {
     arkts_struct_keyword_start(node, source).is_some()
 }
 
-fn arkts_struct_keyword_start(node: tree_sitter::Node<'_>, source: &str) -> Option<usize> {
-    let declaration = if node.kind() == "class_declaration" {
-        node
-    } else {
-        let mut current = node;
-        loop {
-            let Some(parent) = current.parent() else {
-                return None;
-            };
-            if parent.kind() == "class_declaration" {
-                break parent;
-            }
-            current = parent;
+fn enclosing_arkts_class(mut node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    loop {
+        if matches!(node.kind(), "class_declaration" | "class") {
+            return Some(node);
         }
-    };
+        node = node.parent()?;
+    }
+}
+
+fn arkts_struct_keyword_start(node: tree_sitter::Node<'_>, source: &str) -> Option<usize> {
+    let declaration = enclosing_arkts_class(node)?;
     let name = declaration.child_by_field_name("name")?;
     let prefix = source.get(declaration.start_byte()..name.start_byte())?;
     let trimmed = prefix.trim_end();
     let keyword_start = trimmed.len().checked_sub("struct".len())?;
     (trimmed.get(keyword_start..) == Some("struct"))
         .then_some(declaration.start_byte() + keyword_start)
+}
+
+fn arkts_struct_range(node: tree_sitter::Node<'_>, source: &str) -> Option<TextRange> {
+    let declaration = enclosing_arkts_class(node)?;
+    let start = arkts_struct_keyword_start(declaration, source)?;
+    let body_start = declaration.child_by_field_name("body")?.start_byte();
+    let end = matching_brace_end(declaration, source, body_start)?;
+    let bytes = source.as_bytes();
+    let start_prefix = &bytes[..start];
+    let end_prefix = &bytes[..end];
+    Some(TextRange {
+        start_byte: start as u32,
+        end_byte: end as u32,
+        start_line: start_prefix.iter().filter(|byte| **byte == b'\n').count() as u32,
+        start_column: start_prefix
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(start, |newline| start - newline - 1) as u32,
+        end_line: end_prefix.iter().filter(|byte| **byte == b'\n').count() as u32,
+        end_column: end_prefix
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(end, |newline| end - newline - 1) as u32,
+    })
+}
+
+fn matching_brace_end(
+    declaration: tree_sitter::Node<'_>,
+    source: &str,
+    open: usize,
+) -> Option<usize> {
+    let mut root = declaration;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+
+    let mut ignored = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if matches!(
+            node.kind(),
+            "comment" | "string" | "template_string" | "regex"
+        ) {
+            ignored.push((node.start_byte(), node.end_byte()));
+            continue;
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.children(&mut cursor));
+    }
+    ignored.sort_unstable();
+
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
+    let mut ignored_index = ignored.partition_point(|(_, end)| *end <= open);
+    let mut depth = 0_u32;
+    let mut offset = open;
+    while offset < bytes.len() {
+        if let Some((start, end)) = ignored.get(ignored_index).copied() {
+            if offset >= start {
+                offset = end.max(offset + 1);
+                ignored_index += 1;
+                continue;
+            }
+        }
+        match bytes[offset] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(offset + 1);
+                }
+            }
+            _ => {}
+        }
+        offset += 1;
+    }
+    None
 }
 
 fn is_declarative_block_method(node: tree_sitter::Node<'_>) -> bool {
@@ -229,7 +306,7 @@ impl SymbolExtractorSpec for ArkTsAdapter {
         ARKTS_DEFINITIONS_QUERY
     }
     fn manifest_query(&self) -> &str {
-        include_str!("../../queries/typescript/manifest.scm")
+        ARKTS_MANIFEST_QUERY
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
@@ -283,7 +360,7 @@ impl ImportExtractorSpec for ArkTsAdapter {
 
 impl ScopeExtractorSpec for ArkTsAdapter {
     fn scope_query(&self) -> &str {
-        include_str!("../../queries/typescript/scopes.scm")
+        ARKTS_SCOPES_QUERY
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()
@@ -374,7 +451,7 @@ mod tests {
 
     #[test]
     fn declarative_struct_preserves_members_and_ui_call_ownership() {
-        let source = r#"@Component
+        let source = r#"@Component({ freezeWhenInactive: true })
 struct MainPage {
   @StorageLink('webUrl') webUrl: string = '';
 
@@ -406,6 +483,15 @@ struct MainPage {
             .find(|symbol| symbol.name == "MainPage")
             .unwrap();
         assert_eq!(struct_symbol.kind, SymbolKind::Struct);
+        assert_eq!(
+            &source[struct_symbol.range.start_byte as usize..struct_symbol.range.end_byte as usize],
+            &source[source.find("struct MainPage").unwrap()..],
+            "struct range must cover the complete declaration"
+        );
+        assert_eq!(
+            struct_symbol.range.end_line,
+            source.lines().count() as u32 - 1
+        );
 
         let field = facts
             .symbols
@@ -457,6 +543,101 @@ struct MainPage {
         assert_eq!(
             normalized,
             "class  MainPage {}\nclass  页面 {}\nconst restructure = 'struct';"
+        );
+    }
+
+    #[test]
+    fn class_expression_fallback_preserves_struct_range_and_container() {
+        let source = r#"@Component({ freezeWhenInactive: true })
+struct MainPage {
+  private marker: string = '}';
+  private template: string = `}`;
+  // A brace in a comment must not terminate the struct: }
+  build() {
+    if (useNewUi()) {
+      HdsNavDestination() {
+        Text('new')
+      }
+      .height('100%')
+    } else {
+      NavDestination() {
+        Text('old')
+      }
+      .height('100%')
+    }
+  }
+}"#;
+        let frontend = arkts_frontend();
+        let parser_source = frontend.parser.parser_source(source);
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&frontend.parser.tree_sitter_language())
+            .unwrap();
+        let tree = parser.parse(parser_source.as_bytes(), None).unwrap();
+        let name_start = source.find("MainPage {").unwrap();
+        let mut node = tree
+            .root_node()
+            .descendant_for_byte_range(name_start, name_start + "MainPage".len())
+            .unwrap();
+        let mut ancestors = Vec::new();
+        loop {
+            ancestors.push(node.kind().to_string());
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+        assert!(ancestors.iter().any(|kind| kind == "class"));
+
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("MainPage.ets"),
+            Path::new("MainPage.ets"),
+            source,
+            "probe",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        let main_page = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "MainPage" && symbol.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(
+            facts
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.name == "MainPage")
+                .count(),
+            1
+        );
+        assert_eq!(main_page.range.end_line, source.lines().count() as u32 - 1);
+        assert_eq!(
+            &source[main_page.range.end_byte as usize - 1..main_page.range.end_byte as usize],
+            "}"
+        );
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.name == "build"
+                && symbol.kind == SymbolKind::Method
+                && symbol.container == Some(main_page.id)
+        }));
+
+        let manifest = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("MainPage.ets"),
+            Path::new("MainPage.ets"),
+            source,
+            "manifest-probe",
+            crate::ExtractionMode::Manifest,
+            &(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .symbols
+                .iter()
+                .any(|symbol| { symbol.name == "MainPage" && symbol.kind == SymbolKind::Struct })
         );
     }
 

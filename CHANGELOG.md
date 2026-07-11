@@ -110,6 +110,14 @@ All notable changes to Atlas will be documented in this file.
   cross-directory writer dataflow, and converge through `resume_query`.
   Reverse links, default initialization, timing, and process boundaries remain
   explicitly unmodeled.
+- ArkTS parameterized component decorators plus trailing ArkUI chains can make
+  the TypeScript grammar emit a fallback `class` expression instead of
+  `class_declaration`. ArkTS-owned definition/manifest/scope queries now cover
+  both forms; struct scope range recovery balances braces while excluding
+  parsed strings, templates, regexes, and comments. Focus rejects persisted
+  type ranges with inverted line intervals, and
+  `SourceExtractor` rejects truncated AST definitions in favor of the complete
+  stored range.
 - ArkTS named function/method CFG is enabled through the shared TypeScript
   walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
   edges. ArkUI trailing blocks remain single statements and nested arrow

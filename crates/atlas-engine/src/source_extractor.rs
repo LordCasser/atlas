@@ -128,6 +128,9 @@ impl SourceExtractor {
             // Extract the exact source text using the definition node's byte range.
             let def_start = def_node.start_byte() as usize;
             let def_end = def_node.end_byte() as usize;
+            if def_start > start_byte || def_end < end_byte {
+                return None;
+            }
             if def_start >= source.len() || def_end > source.len() || def_start >= def_end {
                 return None;
             }
@@ -140,15 +143,11 @@ impl SourceExtractor {
         result
     }
 
-    /// Fallback: line-based extraction from `TextRange`.
+    /// Fallback: exact extraction from the persisted byte range.
     fn extract_via_range(&self, sym: &SymbolDef, source: &str) -> Option<String> {
-        let all_lines: Vec<&str> = source.lines().collect();
-        let start = sym.range.start_line as usize;
-        let end = (sym.range.end_line as usize + 1).min(all_lines.len());
-        if start >= all_lines.len() {
-            return None;
-        }
-        Some(all_lines[start..end].join("\n"))
+        source
+            .get(sym.range.start_byte as usize..sym.range.end_byte as usize)
+            .map(str::to_string)
     }
 }
 
@@ -230,7 +229,7 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Struct, Go) => &["type_declaration"],
         (Struct, Rust) => &["struct_item"],
         // ArkTS parser_source normalizes `struct` to `class ` without shifting bytes.
-        (Struct, ArkTS) => &["class_declaration"],
+        (Struct, ArkTS) => &["class_declaration", "class"],
 
         // ── Interfaces / Traits ──
         (Interface, Cangjie) => &["interfaceDefinition"],
@@ -316,5 +315,62 @@ mod tests {
             .expect("complete struct source");
         assert!(extracted.contains("build()"), "source={extracted:?}");
         assert!(extracted.contains("Text('ready')"), "source={extracted:?}");
+    }
+
+    #[test]
+    fn arkts_struct_source_falls_back_when_class_ast_is_truncated() {
+        let temp = tempfile::tempdir().unwrap();
+        let relative_path = Path::new("MainPage.ets");
+        let source = r#"@Component({ freezeWhenInactive: true })
+struct MainPage {
+  build() {
+    if (useNewUi()) {
+      HdsNavDestination() { Text('new') }
+      .height('100%')
+    } else {
+      NavDestination() { Text('old') }
+      .height('100%')
+    }
+  }
+}
+"#;
+        std::fs::write(temp.path().join(relative_path), source).unwrap();
+
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_id = FileId::generate("MainPage.ets");
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative_path,
+            source,
+            "source-extractor-truncated-ast-test",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let struct_symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Struct)
+            .expect("ArkTS struct symbol");
+        assert_eq!(
+            struct_symbol.range.end_line,
+            source.lines().count() as u32 - 1
+        );
+        let struct_id = struct_symbol.id;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+
+        let extracted = SourceExtractor::new(store, temp.path().to_path_buf())
+            .extract_source(&struct_id)
+            .expect("complete struct source");
+        assert!(
+            extracted.contains("HdsNavDestination"),
+            "source={extracted:?}"
+        );
+        assert!(extracted.contains("NavDestination"), "source={extracted:?}");
+        assert!(extracted.ends_with("  }\n}"), "source={extracted:?}");
     }
 }

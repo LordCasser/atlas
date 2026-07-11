@@ -449,11 +449,17 @@ impl LazyStructuralService {
                         | types::SymbolKind::Interface
                         | types::SymbolKind::Trait
                         | types::SymbolKind::Enum
-                ) && symbol.range.start_line == symbol.range.end_line
+                ) && symbol.range.start_line >= symbol.range.end_line
             })
             .collect();
         if type_symbols.is_empty() {
             return Ok(true);
+        }
+        if type_symbols
+            .iter()
+            .any(|symbol| symbol.range.start_line > symbol.range.end_line)
+        {
+            return Ok(false);
         }
 
         let relative_path = Path::new(&file.path);
@@ -1530,6 +1536,61 @@ mod tests {
             .find(|symbol| symbol.name == "stale")
             .unwrap();
         assert!(rebuilt.range.end_line > rebuilt.range.start_line);
+    }
+
+    #[cfg(feature = "arkts")]
+    #[test]
+    fn inverted_arkts_type_lines_force_structural_rebuild() {
+        let store = test_store();
+        let root = tempfile::tempdir().unwrap();
+        let path = "MainPage.ets";
+        let source = "@Component({ freezeWhenInactive: true })\nstruct MainPage {\n  build() { Text('ready') }\n}\n";
+        std::fs::write(root.path().join(path), source).unwrap();
+
+        let fid = FileId::generate(path);
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let mut facts = extract_file_with_mode(
+            &frontend,
+            fid,
+            Path::new(path),
+            source,
+            &hash,
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let stale = facts
+            .symbols
+            .iter_mut()
+            .find(|symbol| symbol.name == "MainPage")
+            .unwrap();
+        assert!(stale.range.start_line > 0);
+        stale.range.end_line = 0;
+        store.insert_file_facts(&facts).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &fid,
+                layer::STRUCTURAL,
+                &hash,
+                status::COMPLETE,
+                FactCoverage::default(),
+            )
+            .unwrap();
+
+        let svc = LazyStructuralService::new(store.clone(), Some(root.path().to_path_buf()));
+        assert!(!svc.has_structural_layer(&fid).unwrap());
+
+        let result = svc.ensure_structural_for_file(&fid, None).unwrap();
+        assert_eq!(result.files_built, 1);
+        let rebuilt = store
+            .find_symbols_by_file(&fid)
+            .unwrap()
+            .into_iter()
+            .find(|symbol| symbol.name == "MainPage")
+            .unwrap();
+        assert!(rebuilt.range.end_line > rebuilt.range.start_line);
+        assert_eq!(rebuilt.range.end_byte as usize, source.trim_end().len());
     }
 
     #[cfg(feature = "rust")]

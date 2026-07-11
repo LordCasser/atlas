@@ -193,8 +193,11 @@ tree-sitter 0.26 parser
 - ArkTS 核心语言是 TypeScript 的静态类型约束子集，前端复用 TypeScript grammar，但
   language 必须是 `arkts`。parser slot 以等长
   `struct` → `class ` 归一化保留声明式组件的字段、方法和 scope；ArkUI trailing-block
-  是 UI 声明式扩展，仍可能产生局部 parse error，ArkTS normalizer 必须消除伪 method 并
-  恢复 call ownership。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
+  是 UI 声明式扩展，仍可能产生局部 parse error。带参数 decorator 和 trailing chain 可能令
+  TS grammar 将组件表示为嵌入表达式链的 `class`，而非 `class_declaration`；ArkTS 自有
+  definition/manifest/scope query 必须覆盖两者。Struct 的完整终点从真实 opening brace 做配对，
+  并跳过 parser 已识别的 string/template/regex/comment 区间；不得信任提前闭合的 fallback AST。
+  ArkTS normalizer 同时必须消除伪 method 并恢复 call ownership。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
   为依据，不把 ArkUI 语法错误归因于 ArkTS 核心语法。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - 所有 14 种语言均默认编译。

@@ -154,8 +154,8 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   resumable background fixed point.
 - Function-local semantic tools use a dedicated focus intent and do not enqueue unrelated
   call/type expansion.
-- Multiline type ranges across supported brace-based languages participate in the same
-  stale-cache invariant and one-time self-healing path.
+- Type ranges across supported brace-based languages participate in the same stale-cache
+  invariant and one-time self-healing path; persisted line intervals cannot be inverted.
 - TUI native search is independent of graph snapshot readiness; first detail loading and
   stale graph refresh run through the background job system.
 
@@ -337,7 +337,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 | Phase 0 | 内部 precision 收敛 | extraction/focus 内部使用结构化 precision；MCP 公共边界不暴露内部 precision |
 | Phase 1 | Bootstrap 冷启动 | `BootstrapManager`（Tier0 文件清单/Tier0.5 指纹/Tier1 SymbolHints/Tier2 机会性 manifest） |
 | Phase 2 | FocusRuntime + QueryIntent | `QueryIntent → FocusRuntime::prepare` 统一入口；`QueryRuntime` 封装 MCP 集成 |
-| Phase 3 | ClosureEngine | 策略驱动的有限不动点闭包扩展（ImportNeighborhood/CallGraph/TypeGraph），含预算控制 |
+| Phase 3 | ClosureEngine | 策略驱动的有限不动点闭包扩展（ImportNeighborhood/CallGraph/TypeGraph/StateChannel），含预算控制 |
 | Phase 4 | ScopedResolver + FocusGraphBuilder | 闭包作用域引用解析和 scoped graph overlay |
 | Phase 5 | MCP Response Envelope 统一 | `analysis`/`coverage_counts`/`gaps`/`query_id` 统一 public view，删除 `precision`/`work` 等伪信号 |
 | Phase 6 | 控制平面 | MCP 经 `FocusRuntime` + `FocusMaterialize`；无独立 lazy 控制面 |
