@@ -142,6 +142,14 @@ All notable changes to Atlas will be documented in this file.
   captured explicitly, aliases preserve source and local names, wildcard facts
   are marked correctly, and every import range covers its complete statement.
   Query-only predicate captures no longer leak normalization diagnostics.
+- TypeScript/JavaScript/ArkTS default imports and exports now preserve their
+  source-to-visible-name mapping. Re-export resolution starts from the actual
+  module files and follows named aliases, wildcard barrels, and default chains
+  deterministically instead of relying on a global same-name fallback.
+  Explicit bindings remain unresolved when the target module does not export
+  them, and wildcard re-exports no longer leak `default`.
+  `ReferenceKind::Instantiation` now produces `Instantiates` edges rather than
+  degrading every explicit `new` expression to a generic `References` edge.
 
 ### Release hardening
 

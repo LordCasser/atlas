@@ -187,19 +187,22 @@ pub(crate) fn normalize_ts_import(
     // For aliased imports/exports, the captured node is the alias (e.g. `bar` in
     // `import { foo as bar }`), but imported_name should hold the original exported
     // name. Walk up to the parent specifier's `name` field to get it.
-    let (imported_name, local_name) =
-        if capture_name == "import.alias" || capture_name == "export.alias" {
-            // parent is import_specifier or export_specifier — both have a `name` field
-            let original = node
-                .parent()
-                .and_then(|p| p.child_by_field_name("name"))
-                .and_then(|n| node_text(n, source))
-                .unwrap_or_else(|| imported_name.clone());
-            let alias = imported_name.clone(); // this is the alias text from ts_import_info
-            (original, Some(alias))
-        } else {
-            (imported_name, None)
-        };
+    let (imported_name, local_name) = if capture_name == "import.default" {
+        ("default".to_string(), Some(imported_name))
+    } else if capture_name == "export.default" {
+        (imported_name, Some("default".to_string()))
+    } else if capture_name == "import.alias" || capture_name == "export.alias" {
+        // parent is import_specifier or export_specifier — both have a `name` field
+        let original = node
+            .parent()
+            .and_then(|p| p.child_by_field_name("name"))
+            .and_then(|n| node_text(n, source))
+            .unwrap_or_else(|| imported_name.clone());
+        let alias = imported_name.clone(); // this is the alias text from ts_import_info
+        (original, Some(alias))
+    } else {
+        (imported_name, None)
+    };
     let is_relative = module.starts_with('.');
     let is_wildcard = matches!(capture_name, "import.namespace" | "export.module");
 
@@ -770,6 +773,10 @@ fn ts_import_info(
             let module = extract_export_module_from_ancestor(node, source);
             Some((ImportKind::ExportFrom, module, name))
         }
+        "export.default" => {
+            let name = node_text(node, source)?;
+            Some((ImportKind::ExportFrom, String::new(), name))
+        }
         // ── CommonJS exports ────────────────────────────────────────────
         // module.exports = x  → default export, self-referential (no module)
         "export.cjs_default" => {
@@ -962,7 +969,9 @@ import * as ns from './namespace';
 export { greet, add as plus } from './exports';
 export * from './wildcard';
 const helper = require('./helper');
-require('./require-effect');"#;
+require('./require-effect');
+class LocalService {}
+export default new LocalService();"#;
         let frontend = typescript_frontend();
         let facts = crate::extract_file_with_mode(
             &frontend,
@@ -976,10 +985,10 @@ require('./require-effect');"#;
         .unwrap();
 
         assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
-        assert_eq!(facts.imports.len(), 10, "{:?}", facts.imports);
+        assert_eq!(facts.imports.len(), 11, "{:?}", facts.imports);
 
         for (name, module, local_name, wildcard) in [
-            ("Client", "./client", None, false),
+            ("default", "./client", Some("Client"), false),
             ("foo", "./named", None, false),
             ("bar", "./named", Some("baz"), false),
             ("", "./side-effect", None, false),
@@ -989,6 +998,7 @@ require('./require-effect');"#;
             ("", "./wildcard", None, true),
             ("helper", "./helper", None, false),
             ("", "./require-effect", None, false),
+            ("LocalService", "", Some("default"), false),
         ] {
             let import = facts
                 .imports

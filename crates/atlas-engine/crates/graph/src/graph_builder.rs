@@ -271,7 +271,10 @@ impl GraphBuilder {
             None => return Ok(edges),
         };
 
-        let edge_kind = if reference.kind == ReferenceKind::Call {
+        let edge_kind = if matches!(
+            reference.kind,
+            ReferenceKind::Call | ReferenceKind::Instantiation
+        ) {
             match target_sym.kind {
                 SymbolKind::Class | SymbolKind::Struct => EdgeKind::Instantiates,
                 SymbolKind::Interface | SymbolKind::Trait => EdgeKind::Implements,
@@ -559,6 +562,42 @@ main();
             stats.edges_built > 0,
             "Expected >0 edges, got {}",
             stats.edges_built
+        );
+    }
+
+    #[test]
+    fn instantiation_reference_builds_instantiates_edge() {
+        let source = r#"class Widget {}
+function main(): void {
+    new Widget();
+}
+"#;
+        let file_id = FileId::generate("main.ts");
+        let frontend = ts_frontend();
+        let facts =
+            extract_full(&frontend, file_id, &PathBuf::from("main.ts"), source, "abc").unwrap();
+        let widget_id = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "Widget")
+            .unwrap()
+            .id;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .unwrap();
+        GraphBuilder::new(store.clone()).build_all(&resolved);
+
+        assert!(
+            store
+                .get_all_edges()
+                .unwrap()
+                .iter()
+                .any(|edge| { edge.target == widget_id && edge.kind == EdgeKind::Instantiates })
         );
     }
 

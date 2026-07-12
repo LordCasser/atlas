@@ -225,7 +225,8 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
   `name_range`，不得假设 `range.start_byte == name_range.start_byte`。
 - `ImportDef` 对每个 imported binding 产生一条事实；仅 side-effect import、bare require 和 wildcard
   re-export 使用空 `imported_name` 的 module-only 事实。同一语句不得同时产生冗余 module-only 与 binding
-  事实。`range` 覆盖完整 import/export/require 语句，`local_name` 仅在源码真实重命名时存在。
+  事实。`range` 覆盖完整 import/export/require 语句；`imported_name` 是源模块名称，`local_name`
+  是当前模块可见且与源名不同的绑定，包括 `as` 与 `default` 映射。
 - references 永不因为 resolved 而删除；unresolved references 必须保留。
 - callsite 必须能回溯到 reference location。
 - dataflow 使用 `DataNodeId → DataNodeId`，6 字段完整 TextRange。
@@ -548,6 +549,12 @@ trace             = inter-procedural, by composing summaries and/or runtime brid
 
 - `ReferenceResolver` 只产生 resolved facts。
 - `GraphBuilder` 从 resolved references、callsites、raw structural facts 生成 symbol-level edges。
+- import resolution 先约束到实际 module file，再按 re-export 的 outward name 选择映射并以 source name
+  递归；named alias、default 与 wildcard chain 不得依赖 project-wide 同名 fallback 偶然命中。
+- 显式 import binding 在目标 module 内解析失败即保持 unresolved，不得继续用 project-wide 同名
+  symbol 替代；ECMAScript wildcard re-export 不传播 `default`。
+- `ReferenceKind::Instantiation` 指向 class/struct 时必须生成 `Instantiates`，不得退化为普通
+  `References`。
 - `GraphSnapshot` 对消费者不可变；刷新时 writer 在独占可变引用（`&mut self`）下通过 `replace_files_in_place` 做增量更新，或对大变更集重建完整 snapshot。
 - 删除或修改文件时必须失效相关 references 和 edges。
 

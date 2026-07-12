@@ -455,7 +455,8 @@ pub struct ImportDef {
     /// The symbol name as defined in the source module.
     pub imported_name: String,
 
-    /// Local alias if renamed (e.g. `import foo as bar` → local_name = "bar").
+    /// Name visible in the containing module when it differs from
+    /// `imported_name` (e.g. `foo as bar`, or a `default` binding).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_name: Option<String>,
 

@@ -126,7 +126,9 @@ struct ImportDef {
 
 Each imported binding is one fact. Module-only facts are reserved for
 side-effect imports, bare requires, and wildcard re-exports. `range` covers the
-complete statement, and `local_name` is present only for an explicit rename.
+complete statement. `imported_name` is the source-module name; `local_name` is
+the distinct name visible in the containing module, including aliases and
+`default` mappings.
 
 ### Callsite
 ```rust

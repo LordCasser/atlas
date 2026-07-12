@@ -178,9 +178,8 @@ impl ImportResolver {
 
     /// Resolve through barrel re-export chains.
     ///
-    /// When an import resolves to a file that has ExportFrom facts
-    /// (i.e. it's a barrel file with `export * from './lib'`), this method
-    /// follows the re-export chain to find the original symbol definition.
+    /// Resolve the import inside its target module, following named, aliased,
+    /// wildcard, and default re-export mappings to the source definition.
     pub fn resolve_through_reexports(
         &self,
         import: &ImportDef,
@@ -217,15 +216,31 @@ impl ImportResolver {
         let mut resolved: Vec<SymbolDef> = Vec::new();
         let mut visited: std::collections::HashSet<FileId> = std::collections::HashSet::new();
 
-        for sym in &candidates {
-            visited.insert(sym.file_id);
-            if let Some(chain_sym) =
-                self.follow_reexport_chain(&sym.file_id, target_name, &mut visited, 0)
+        let mut target_file_ids: Vec<_> = self
+            .collect_imported_file_ids(std::slice::from_ref(import))
+            .into_iter()
+            .collect();
+        target_file_ids.sort_unstable();
+        let has_module_targets = !target_file_ids.is_empty();
+        for file_id in target_file_ids {
+            visited.insert(file_id);
+            if target_name != "default"
+                && let Ok(symbols) = self.store.find_symbols_by_file(&file_id)
+                && let Some(symbol) = symbols.iter().find(|symbol| symbol.name == target_name)
             {
-                resolved.push(chain_sym);
-            } else {
-                resolved.push(sym.clone());
+                resolved.push(symbol.clone());
+                continue;
             }
+            if let Some(symbol) = self.follow_reexport_chain(&file_id, target_name, &mut visited, 0)
+            {
+                resolved.push(symbol);
+            }
+        }
+        if resolved.is_empty() && !has_module_targets {
+            resolved = candidates;
+        } else if !resolved.is_empty() {
+            resolved.sort_by_key(|symbol| symbol.id);
+            resolved.dedup_by_key(|symbol| symbol.id);
         }
         // Cache result for subsequent references with same (file, module, name)
         let cache_key = (
@@ -264,8 +279,28 @@ impl ImportResolver {
         }
 
         for reexport in &reexports {
+            let source_name = if reexport.imported_name.is_empty() {
+                // ECMAScript wildcard re-exports do not forward `default`.
+                if name == "default" {
+                    continue;
+                }
+                name
+            } else {
+                let outward_name = reexport
+                    .local_name
+                    .as_deref()
+                    .unwrap_or(&reexport.imported_name);
+                if outward_name != name {
+                    continue;
+                }
+                reexport.imported_name.as_str()
+            };
             let module_path = &reexport.module;
             if module_path.is_empty() {
+                let symbols = self.store.find_symbols_by_file(file_id).ok()?;
+                if let Some(symbol) = symbols.iter().find(|symbol| symbol.name == source_name) {
+                    return Some(symbol.clone());
+                }
                 continue;
             }
 
@@ -283,13 +318,13 @@ impl ImportResolver {
 
                 // Search for the symbol in the target file
                 let symbols = self.store.find_symbols_by_file(&tf.file_id).ok()?;
-                if let Some(sym) = symbols.iter().find(|s| s.name == name) {
+                if let Some(sym) = symbols.iter().find(|s| s.name == source_name) {
                     return Some(sym.clone());
                 }
 
                 // Recurse: target file might itself be a barrel
                 if let Some(chain_sym) =
-                    self.follow_reexport_chain(&tf.file_id, name, visited, depth + 1)
+                    self.follow_reexport_chain(&tf.file_id, source_name, visited, depth + 1)
                 {
                     return Some(chain_sym);
                 }

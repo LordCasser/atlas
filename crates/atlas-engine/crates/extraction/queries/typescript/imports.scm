@@ -41,6 +41,37 @@
   (export_specifier
     alias: (identifier) @export.alias))
 
+; Named default declarations and local values map a local symbol to the
+; externally visible `default` binding.
+(export_statement
+  "default"
+  declaration: (class_declaration
+    name: (type_identifier) @export.default))
+
+(export_statement
+  "default"
+  declaration: (abstract_class_declaration
+    name: (type_identifier) @export.default))
+
+(export_statement
+  "default"
+  declaration: (function_declaration
+    name: (identifier) @export.default))
+
+(export_statement
+  "default"
+  declaration: (generator_function_declaration
+    name: (identifier) @export.default))
+
+(export_statement
+  "default"
+  value: (identifier) @export.default)
+
+(export_statement
+  "default"
+  value: (new_expression
+    constructor: (identifier) @export.default))
+
 ; ── CommonJS require imports ───────────────────────────────────────
 
 ; const / let / var x = require('./foo')

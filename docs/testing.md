@@ -85,6 +85,8 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 使用真实源码 fixture。
 - 使用 `Store::open_in_memory()` 可以，但必须经过正常 `insert_file_facts` 和 resolver/builder。
 - 必须断言关键结果的语义。
+- re-export 测试必须覆盖 source name 与 outward name 不同的 named alias、default import/export
+  以及 wildcard chain，并断言最终 `Calls`/`Instantiates` 指向源定义，不能只断言存在任意 edge。
 - 涉及 incremental sync 时，必须覆盖新增、修改、删除场景。
 
 ### 2.4 CLI 测试

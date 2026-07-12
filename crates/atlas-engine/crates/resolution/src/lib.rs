@@ -110,6 +110,15 @@ fn resolve_one_core(
         return Some(result);
     }
 
+    // An explicit import binding is a semantic boundary. If its target module
+    // does not export the requested name, a project-wide same-name symbol is
+    // not a valid substitute. Module-only/wildcard imports are not indexed by
+    // name and therefore retain the normal Strategy 6 behavior.
+    if ctx.imports_by_name.contains_key(&reference.name) {
+        MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+
     // Strategy 6: Project-wide name search with import-scoped pre-filtering
     {
         let _timer = StrategyTimer::new(&S6_TIME_NS);
@@ -272,14 +281,17 @@ pub(crate) fn resolve_contextual_strategies(
 
                 if let Ok(candidates) = import_resolver.resolve_import(import) {
                     if let Ok(chain_candidates) =
-                        import_resolver.resolve_through_reexports(import, candidates)
+                        import_resolver.resolve_through_reexports(import, candidates.clone())
                     {
+                        let chain_remapped = chain_candidates
+                            .iter()
+                            .any(|candidate| !candidates.iter().any(|c| c.id == candidate.id));
                         let compatible = chain_candidates
                             .iter()
                             .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
                             .cloned()
                             .collect::<Vec<_>>();
-                        if matches_by_alias {
+                        if matches_by_alias || chain_remapped {
                             if let Some(first) = compatible.first() {
                                 S5_COUNT.fetch_add(1, Ordering::Relaxed);
                                 return Some(ResolvedTarget {

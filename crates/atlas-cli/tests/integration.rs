@@ -1338,6 +1338,78 @@ function main() {
     );
 }
 
+#[test]
+fn ts_barrel_aliases_resolve_outward_names_to_source_names() {
+    let files = &[
+        (
+            "lib/service.ts",
+            r#"export function internalRun(): void {}
+export default class Service {}
+"#,
+        ),
+        (
+            "src/index.ts",
+            r#"export { internalRun as run } from '../lib/service';
+export { default as PublicService } from '../lib/service';
+"#,
+        ),
+        (
+            "src/wildcard.ts",
+            r#"export * from '../lib/service';
+"#,
+        ),
+        (
+            "src/app.ts",
+            r#"import DirectService from '../lib/service';
+import { run, PublicService } from './index';
+
+function main(): void {
+    run();
+    new PublicService();
+    new DirectService();
+}
+"#,
+        ),
+        (
+            "src/invalid-default.ts",
+            r#"import Service from './wildcard';
+
+function invalidDefault(): void {
+    new Service();
+}
+"#,
+        ),
+    ];
+
+    let (store, _) = index_files(files);
+    let source_file = FileId::generate("lib/service.ts");
+    let source_symbols = store.find_symbols_by_file(&source_file).unwrap();
+    let internal_run = source_symbols
+        .iter()
+        .find(|symbol| symbol.name == "internalRun")
+        .unwrap();
+    let service = source_symbols
+        .iter()
+        .find(|symbol| symbol.name == "Service")
+        .unwrap();
+    let edges = store.get_all_edges().unwrap();
+
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.target == internal_run.id && edge.kind == EdgeKind::Calls),
+        "barrel alias `run` must resolve to source symbol `internalRun`"
+    );
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| edge.target == service.id && edge.kind == EdgeKind::Instantiates)
+            .count(),
+        2,
+        "direct and named barrel default imports resolve, but `export *` must not leak default; edges: {edges:#?}"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────
 // Impact analysis end-to-end integration test
 // ────────────────────────────────────────────────────────────────
