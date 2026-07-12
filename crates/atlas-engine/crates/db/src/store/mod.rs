@@ -1328,6 +1328,93 @@ mod tests {
     }
 
     #[test]
+    fn test_find_references_by_name_and_kind() {
+        let store = test_store();
+        let file = test_file();
+        store.upsert_file(&file).unwrap();
+
+        let sym = test_symbol(file.file_id, "Foo", SymbolKind::Struct);
+        store.insert_symbols(&[sym.clone()]).unwrap();
+
+        // Two decoration references for @Component, one call reference named
+        // "Component" (should NOT match the decoration query).
+        let dec_range = TextRange {
+            start_byte: 0,
+            end_byte: 11,
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: 11,
+        };
+        let dec_ref = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&sym.id),
+                dec_range.start_byte,
+                dec_range.end_byte,
+                "Component",
+                ReferenceKind::Decoration,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(sym.id),
+            scope_id: None,
+            kind: ReferenceKind::Decoration,
+            text: "Component".into(),
+            name: "Component".into(),
+            receiver: None,
+            arity: None,
+            range: dec_range,
+            binding_id: None,
+            resolved: None,
+        };
+        let call_ref = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&sym.id),
+                100,
+                110,
+                "Component",
+                ReferenceKind::Call,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(sym.id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "Component".into(),
+            name: "Component".into(),
+            receiver: None,
+            arity: None,
+            range: TextRange {
+                start_byte: 100,
+                end_byte: 110,
+                start_line: 5,
+                start_column: 0,
+                end_line: 5,
+                end_column: 10,
+            },
+            binding_id: None,
+            resolved: None,
+        };
+        store
+            .insert_references(&[dec_ref.clone(), call_ref])
+            .unwrap();
+
+        // Decoration lookup by name should return exactly 1 reference.
+        let decorations = store
+            .find_references_by_name_and_kind("Component", ReferenceKind::Decoration)
+            .unwrap();
+        assert_eq!(decorations.len(), 1);
+        assert_eq!(decorations[0].id, dec_ref.id);
+        assert_eq!(decorations[0].kind, ReferenceKind::Decoration);
+
+        // A different name should return nothing.
+        let empty = store
+            .find_references_by_name_and_kind("State", ReferenceKind::Decoration)
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
     fn test_find_unresolved_call_references_by_source() {
         let store = test_store();
         let file = test_file();

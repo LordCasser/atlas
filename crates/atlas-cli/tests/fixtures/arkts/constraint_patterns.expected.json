@@ -18,11 +18,13 @@
     },
     {
       "name": "model",
-      "kind": "field"
+      "kind": "field",
+      "signature": ": Model"
     },
     {
       "name": "count",
-      "kind": "field"
+      "kind": "field",
+      "signature": ": number"
     },
     {
       "name": "constructor",

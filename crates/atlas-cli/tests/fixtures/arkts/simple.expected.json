@@ -6,7 +6,8 @@
     },
     {
       "name": "port",
-      "kind": "field"
+      "kind": "field",
+      "signature": ": number"
     },
     {
       "name": "constructor",

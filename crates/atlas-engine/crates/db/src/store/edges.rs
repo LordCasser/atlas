@@ -677,6 +677,24 @@ impl Store {
         }
     }
 
+    /// Find references by name and kind.
+    ///
+    /// Used by the MCP search layer to resolve decorator queries (e.g. searching
+    /// for "@Component" finds Decoration references with name "Component").
+    /// Leverages the `idx_references_name` index for an indexed lookup.
+    pub fn find_references_by_name_and_kind(
+        &self,
+        name: &str,
+        kind: ReferenceKind,
+    ) -> anyhow::Result<Vec<ReferenceUse>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "{REFERENCE_SELECT_NO_WHERE} WHERE name = ?1 AND kind = ?2"
+        ))?;
+        let rows = stmt.query_map(params![name, kind.as_str()], row_to_reference)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find all references that resolve to a given symbol (usages).
     pub fn find_references_by_symbol(
         &self,

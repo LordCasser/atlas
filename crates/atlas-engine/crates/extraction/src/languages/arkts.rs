@@ -70,6 +70,19 @@ fn normalize_arkts_definition(
         file_id,
         Language::ArkTS,
     )?;
+
+    // ArkTS-only: surface the `async` modifier in the signature string so
+    // that `async aboutToAppear()` renders as `async (): Promise<void>`.
+    // The shared `ts_extract_signature` does NOT include this prefix because
+    // TS/JS share that function and must not be affected by ArkTS changes.
+    // The `async_` boolean field is already set by `normalize_ts_definition`.
+    if symbol.async_ {
+        match &symbol.signature {
+            Some(existing) => symbol.signature = Some(format!("async {}", existing)),
+            None => symbol.signature = Some("async".to_string()),
+        }
+    }
+
     if symbol.kind == SymbolKind::Class && is_arkts_struct(node, source) {
         symbol.kind = SymbolKind::Struct;
         symbol.id = SymbolId::generate(
@@ -301,6 +314,12 @@ fn normalize_struct_keywords(source: &str) -> Cow<'_, str> {
     }
 }
 
+/// Maximum number of replacement-and-reparse iterations. Each iteration is a
+/// full AST traversal plus a full reparse; converging in practice takes 1-2
+/// rounds. The hard limit prevents pathological inputs from hanging the
+/// indexer.
+const MAX_DECLARATION_RECOVERY_ITERATIONS: usize = 3;
+
 fn recover_arkts_declaration_source(
     parser_source: &str,
     primary_root: tree_sitter::Node<'_>,
@@ -309,8 +328,8 @@ fn recover_arkts_declaration_source(
     // view only, an equal-width `if` token preserves its condition/body shape
     // while allowing the surrounding class and following declarations to close.
     let mut output = parser_source.as_bytes().to_vec();
-    let mut replacements = nested_method_name_ranges(primary_root);
-    if replacements.is_empty() {
+    let primary_replacements = nested_method_name_ranges(primary_root);
+    if primary_replacements.is_empty() {
         return None;
     }
 
@@ -318,7 +337,11 @@ fn recover_arkts_declaration_source(
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).ok()?;
 
-    loop {
+    let primary_has_class = has_class_declaration(primary_root);
+    let mut best_output: Option<Vec<u8>> = None;
+    let mut replacements = primary_replacements;
+
+    for _ in 0..MAX_DECLARATION_RECOVERY_ITERATIONS {
         for (start, end) in replacements.drain(..) {
             output[start] = b'i';
             output[start + 1] = b'f';
@@ -326,13 +349,66 @@ fn recover_arkts_declaration_source(
         }
 
         let tree = parser.parse(&output, None)?;
-        replacements = nested_method_name_ranges(tree.root_node());
+        let root = tree.root_node();
+
+        // Only accept a recovery iteration if it preserves (or creates)
+        // a class_declaration node. If the `if` replacement destroys the
+        // class_declaration (which happens when the ArkUI DSL is too
+        // complex for the `if` trick), the primary tree is strictly
+        // better for declaration extraction.
+        if has_class_declaration(root) {
+            best_output = Some(output.clone());
+        }
+
+        replacements = nested_method_name_ranges(root);
         if replacements.is_empty() {
             break;
         }
     }
 
-    String::from_utf8(output).ok()
+    // Only use recovered source if it actually preserves a class_declaration.
+    // Otherwise the primary tree (which at least has a partial class_declaration)
+    // is strictly better for declaration extraction.
+    match best_output {
+        Some(bytes) => {
+            let recovered = String::from_utf8(bytes).ok()?;
+            // Safety check: recovery must preserve byte offsets.
+            if recovered.len() == parser_source.len() {
+                Some(recovered)
+            } else {
+                None
+            }
+        }
+        None => {
+            // Recovery diverged: no iteration preserved class_declaration.
+            // If the primary tree HAS a class_declaration, use it directly.
+            // Otherwise (primary also lacks class_declaration), fall back to
+            // the last recovery attempt anyway - it can't be worse.
+            if primary_has_class {
+                None
+            } else {
+                String::from_utf8(output).ok()
+            }
+        }
+    }
+}
+
+/// Check whether a tree root contains a `class_declaration` node
+/// (directly or inside an `export_statement`).
+fn has_class_declaration(root: tree_sitter::Node<'_>) -> bool {
+    fn find_class(node: tree_sitter::Node<'_>) -> bool {
+        if node.kind() == "class_declaration" {
+            return true;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if find_class(child) {
+                return true;
+            }
+        }
+        false
+    }
+    find_class(root)
 }
 
 fn nested_method_name_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)> {
@@ -958,6 +1034,139 @@ function cardButtonStyle(color: ResourceColor) {
             query.is_ok(),
             "reference query must compile: {:?}",
             query.err()
+        );
+    }
+
+    // ── Decorator / field / async signature tests ──────────────────────────
+
+    fn extract_single(source: &str, path: &str) -> crate::languages::FileFacts {
+        let frontend = arkts_frontend();
+        crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate(path),
+            Path::new(path),
+            source,
+            "sig-test",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn decorated_struct_has_decorator_signature() {
+        let source = "@Component\nstruct Foo {\n  build() {}\n}\n";
+        let facts = extract_single(source, "Foo.ets");
+        let foo = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(
+            foo.signature.as_deref(),
+            Some("@Component"),
+            "struct with a single decorator should have the decorator name as its signature"
+        );
+    }
+
+    #[test]
+    fn decorated_struct_with_multiple_decorators_has_ordered_signature() {
+        // Both decorators on the same line as the struct keyword - the
+        // decorator matching logic requires the symbol name to be within
+        // 1 line of the decorator.
+        let source = "@Component @Entry\nstruct Bar {\n  build() {}\n}\n";
+        let facts = extract_single(source, "Bar.ets");
+        let bar = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "Bar" && s.kind == SymbolKind::Struct)
+            .unwrap();
+        assert_eq!(
+            bar.signature.as_deref(),
+            Some("@Component @Entry"),
+            "decorators should be ordered leftmost-first, separated by spaces"
+        );
+    }
+
+    #[test]
+    fn decorated_field_has_decorator_plus_type_signature() {
+        let source = "@Component\nstruct Widget {\n  @State count: number = 0;\n  build() {}\n}\n";
+        let facts = extract_single(source, "Widget.ets");
+        let count = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "count" && s.kind == SymbolKind::Field)
+            .unwrap();
+        assert_eq!(
+            count.signature.as_deref(),
+            Some("@State : number"),
+            "decorated field signature should be decorator prefix + type annotation"
+        );
+    }
+
+    #[test]
+    fn undecorated_field_has_type_annotation_signature() {
+        let source = "struct Plain {\n  title: string;\n  count: number = 1;\n}\n";
+        let facts = extract_single(source, "Plain.ets");
+        let title = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "title" && s.kind == SymbolKind::Field)
+            .unwrap();
+        assert_eq!(
+            title.signature.as_deref(),
+            Some(": string"),
+            "undecorated field should have just the type annotation as signature"
+        );
+    }
+
+    #[test]
+    fn async_function_signature_has_async_prefix() {
+        let source = "async function load(): Promise<void> {}\n";
+        let facts = extract_single(source, "load.ets");
+        let load = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "load" && s.kind == SymbolKind::Function)
+            .unwrap();
+        assert_eq!(
+            load.signature.as_deref(),
+            Some("async (): Promise<void>"),
+            "async function signature should be prefixed with 'async '"
+        );
+        assert!(load.async_, "async_ boolean flag must still be set");
+    }
+
+    #[test]
+    fn async_method_signature_has_async_prefix() {
+        let source = "class Service {\n  async fetch(url: string): Promise<string> {\n    return '';\n  }\n}\n";
+        let facts = extract_single(source, "Service.ets");
+        let fetch = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "fetch" && s.kind == SymbolKind::Method)
+            .unwrap();
+        assert_eq!(
+            fetch.signature.as_deref(),
+            Some("async (url: string): Promise<string>"),
+            "async method signature should be prefixed with 'async '"
+        );
+        assert!(fetch.async_);
+    }
+
+    #[test]
+    fn decorated_method_signature_combines_decorator_and_params() {
+        let source = "@Component\nstruct Card {\n  @Builder buildCard(label: string) {}\n}\n";
+        let facts = extract_single(source, "Card.ets");
+        let build_card = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "buildCard" && s.kind == SymbolKind::Method)
+            .unwrap();
+        assert_eq!(
+            build_card.signature.as_deref(),
+            Some("@Builder (label: string)"),
+            "decorated method signature should be decorator prefix + parameter list"
         );
     }
 }

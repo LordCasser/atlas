@@ -116,9 +116,16 @@ pub fn extract_file_with_mode(
     let tree = tl_parse(&ts_lang, parser_source.as_bytes(), file_path, language)?;
     let root = tree.root_node();
 
-    let declaration_source = frontend
-        .parser
-        .declaration_recovery_source(parser_source.as_ref(), root);
+    // Declaration recovery is only needed when the primary tree has parse
+    // errors (nested ArkUI methods only appear when the TS grammar fails on
+    // ArkUI DSL). Skipping it for clean files avoids a full AST traversal.
+    let declaration_source = if root.has_error() {
+        frontend
+            .parser
+            .declaration_recovery_source(parser_source.as_ref(), root)
+    } else {
+        None
+    };
     if let Some(source) = declaration_source.as_ref() {
         anyhow::ensure!(
             source.len() == parser_source.len(),
@@ -313,7 +320,7 @@ pub fn extract_file_with_mode(
             }
         }
     }
-    extend_decorated_symbol_ranges(&mut symbols, &references, source);
+    extend_decorated_symbol_ranges(&mut symbols, &references, source, language);
 
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
@@ -795,14 +802,26 @@ fn extend_decorated_symbol_ranges(
     symbols: &mut [SymbolDef],
     references: &[ReferenceUse],
     source: &str,
+    language: Language,
 ) {
+    use std::collections::BTreeMap;
+
+    // First pass: for each decorator, find the closest following decoratable
+    // symbol (same matching semantics as the original range-extension logic).
+    // Group decorators by their target symbol index so we can apply both the
+    // range extension and the signature-prefix update in a single second pass.
+    //
+    // Map: symbol index -> Vec of decorator references
+    let mut symbol_decorators: BTreeMap<usize, Vec<&ReferenceUse>> = BTreeMap::new();
+
     for decorator in references.iter().filter(|reference| {
         reference.kind == ReferenceKind::Decoration
             && source.as_bytes().get(reference.range.start_byte as usize) == Some(&b'@')
     }) {
-        let target = symbols
-            .iter_mut()
-            .filter(|symbol| {
+        let target_idx = symbols
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| {
                 matches!(
                     symbol.kind,
                     SymbolKind::Class
@@ -814,12 +833,55 @@ fn extend_decorated_symbol_ranges(
                 ) && symbol.name_range.start_byte >= decorator.range.end_byte
                     && symbol.name_range.start_line <= decorator.range.end_line.saturating_add(1)
             })
-            .min_by_key(|symbol| symbol.name_range.start_byte);
-        if let Some(symbol) = target {
-            if decorator.range.start_byte < symbol.range.start_byte {
-                symbol.range.start_byte = decorator.range.start_byte;
-                symbol.range.start_line = decorator.range.start_line;
-                symbol.range.start_column = decorator.range.start_column;
+            .min_by_key(|(_, symbol)| symbol.name_range.start_byte)
+            .map(|(idx, _)| idx);
+
+        if let Some(idx) = target_idx {
+            symbol_decorators.entry(idx).or_default().push(decorator);
+        }
+    }
+
+    // Second pass: extend each symbol's range to include the leftmost decorator
+    // (existing behavior for ALL languages with Decoration references) and
+    // prepend the decorator names to its signature (ArkTS ONLY — Python and
+    // other languages that produce Decoration references must not have their
+    // signatures altered by ArkTS-specific enrichment).
+    let enrich_signature = language == Language::ArkTS;
+
+    for (idx, mut decorators) in symbol_decorators {
+        // Sort by byte position (leftmost first) for a stable rendered prefix.
+        decorators.sort_by_key(|d| d.range.start_byte);
+
+        let symbol = &mut symbols[idx];
+
+        // Extend range to include the leftmost decorator (all languages).
+        if let Some(first) = decorators.first() {
+            if first.range.start_byte < symbol.range.start_byte {
+                symbol.range.start_byte = first.range.start_byte;
+                symbol.range.start_line = first.range.start_line;
+                symbol.range.start_column = first.range.start_column;
+            }
+        }
+
+        // Prepend decorator names to signature (ArkTS only).
+        if !enrich_signature {
+            continue;
+        }
+
+        // Build the decorator prefix. Reference names store the bare decorator
+        // name (e.g. "Component"), so we re-add the leading `@` here.
+        let prefix: String = decorators
+            .iter()
+            .map(|d| format!("@{}", d.name))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        match &symbol.signature {
+            Some(existing) => {
+                symbol.signature = Some(format!("{} {}", prefix, existing));
+            }
+            None => {
+                symbol.signature = Some(prefix);
             }
         }
     }
