@@ -167,107 +167,25 @@ fn search_empty_query_is_error() {
 }
 
 #[test]
-fn search_at_prefixed_query_triggers_decorator_fallback() {
-    use atlas_engine::{FileId, Language, ParseStatus, SymbolKind};
+fn search_at_prefixed_query_uses_scoped_search_service() {
+    use atlas_engine::{ExtractionMode, FileId, Language, create_frontend, extract_file_with_mode};
 
-    // Build an in-memory store with a single ArkTS file containing a
-    // @Component-decorated struct.  The decorator name is NOT in the FTS
-    // index, so the normal search returns 0 results and the fallback kicks in.
     let store = Store::open_in_memory().expect("open in-memory store");
     store.init_schema().expect("init schema");
     let store = Arc::new(store);
-
-    let file_path = "src/Widget.ets";
-    let file_id = FileId::generate(file_path);
-    store
-        .upsert_file(&atlas_engine::FileInfo {
-            file_id,
-            path: file_path.to_string(),
-            language: Language::ArkTS,
-            content_hash: "hash".to_string(),
-            status: ParseStatus::Success,
-        })
-        .unwrap();
-
-    // Insert a struct symbol "Widget" with name_range starting after the
-    // decorator.  The fallback uses name_range to match decorators to symbols.
-    let struct_range = atlas_engine::TextRange {
-        start_byte: 0,
-        end_byte: 50,
-        start_line: 0,
-        start_column: 0,
-        end_line: 2,
-        end_column: 1,
-    };
-    let widget_id = atlas_engine::SymbolId::generate(
-        &file_id,
-        "arkts",
-        "Widget",
-        SymbolKind::Struct.as_str(),
-        None,
-    );
-    let widget = atlas_engine::SymbolDef {
-        id: widget_id,
-        kind: SymbolKind::Struct,
-        name: "Widget".to_string(),
-        qualified_name: "Widget".to_string(),
-        symbol_path: vec!["Widget".to_string()],
-        file_id,
-        language: Language::ArkTS,
-        range: struct_range,
-        name_range: atlas_engine::TextRange {
-            start_byte: 12,
-            end_byte: 18,
-            start_line: 1,
-            start_column: 7,
-            end_line: 1,
-            end_column: 13,
-        },
-        signature: None,
-        visibility: None,
-        exported: false,
-        static_: false,
-        async_: false,
-        container: None,
-        scope_id: None,
-        package_name: None,
-        namespace_path: vec![],
-        layer: "structural".to_string(),
-    };
-    store.insert_symbols(&[widget]).unwrap();
-
-    // Insert a @Component decoration reference whose range precedes the
-    // struct name_range and is on the same/previous line.
-    let dec_range = atlas_engine::TextRange {
-        start_byte: 0,
-        end_byte: 11,
-        start_line: 0,
-        start_column: 0,
-        end_line: 0,
-        end_column: 11,
-    };
-    let dec_ref = atlas_engine::ReferenceUse {
-        id: atlas_engine::ReferenceId::generate(
-            &file_id,
-            None,
-            dec_range.start_byte,
-            dec_range.end_byte,
-            "Component",
-            atlas_engine::ReferenceKind::Decoration,
-        ),
-        file_id,
-        source_symbol: None,
-        scope_id: None,
-        kind: atlas_engine::ReferenceKind::Decoration,
-        text: "Component".to_string(),
-        name: "Component".to_string(),
-        receiver: None,
-        arity: None,
-        range: dec_range,
-        binding_id: None,
-        resolved: None,
-    };
-    store.insert_references(&[dec_ref]).unwrap();
+    let source = "@Component\nstruct Widget {\n  build() {}\n}\n";
+    let frontend = create_frontend(Language::ArkTS).unwrap();
+    let facts = extract_file_with_mode(
+        &frontend,
+        FileId::generate("src/Widget.ets"),
+        std::path::Path::new("src/Widget.ets"),
+        source,
+        "arkts-decorator-search",
+        ExtractionMode::Full,
+        &(),
+    )
+    .unwrap();
+    store.insert_file_facts(&facts).unwrap();
 
     let router = ToolRouter::new_empty(store, std::path::PathBuf::from("/test"));
     let (s, err) = router.handle_search(
@@ -277,14 +195,8 @@ fn search_at_prefixed_query_triggers_decorator_fallback() {
     assert!(!err, "search error: {s}");
     let r = parse_json(&s);
     let results = r["results"].as_array().expect("results array");
-    assert!(
-        !results.is_empty(),
-        "decorator search fallback should return the decorated struct"
-    );
-    assert!(
-        results.iter().any(|h| h["name"] == "Widget"),
-        "results should contain the Widget struct, got: {results:?}"
-    );
+    assert_eq!(r["total"], 1);
+    assert_eq!(results[0]["name"], "Widget");
 }
 
 // =========================================================================

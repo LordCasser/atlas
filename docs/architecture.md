@@ -949,7 +949,9 @@ discover files
 
 入口通过服务层编排能力，不直接组合低层 API：
 
-- `ScopedSearchService`：scope 感知搜索 + 定向 lazy structural。
+- `ScopedSearchService`：scope 感知搜索 + 定向 lazy structural；精确 `@Decorator`
+  查询由 service 基于 `Decoration` reference 与声明完整 range 统一解释，入口不得直接查询
+  Store 或重新推断 decoration ownership。
 - Tracing 经 `Engine` facade；`Engine` 负责触发 lazy dataflow，raw `TraceEngine` 仅消费已有 facts。
 - 约束：入口组合服务；服务组合 `Store`、extraction、graph 等；入口绝不对低层 API 做 ad-hoc 组合。
 

@@ -187,22 +187,6 @@ impl ToolRouter {
             .map(Self::search_result_to_hit)
             .collect();
 
-        // Fallback: if the normal FTS/exact/LIKE search returns 0 results AND
-        // the query starts with `@`, resolve decoration references by
-        // decorator name. This lets users search for `@Component` to find all
-        // symbols decorated with `@Component`, even though decorator names
-        // are not in the FTS index.
-        let hits = if hits.is_empty() && query.starts_with('@') {
-            let decorator_name = query.trim_start_matches('@');
-            if !decorator_name.is_empty() {
-                self.decorator_search_fallback(decorator_name, scope)
-            } else {
-                hits
-            }
-        } else {
-            hits
-        };
-
         let mut response = json!({
             "query": query,
             "scope": scope,
@@ -489,91 +473,6 @@ impl ToolRouter {
             line: sym.range.start_line,
             layer: sym.layer.clone(),
         }
-    }
-
-    /// Fallback for `@decorator` queries: resolve Decoration references by
-    /// name, then find the closest following decoratable symbol for each
-    /// reference (same matching logic as `extend_decorated_symbol_ranges`
-    /// in the extraction crate).
-    ///
-    /// This is necessary because decorator names are stored as references
-    /// (not in the FTS index), and `reference.source_symbol` is not reliable
-    /// for decorations — a struct-level decorator like `@Component struct Foo`
-    /// lives outside the struct's scope, so its `source_symbol` is `None`.
-    ///
-    /// Results are filtered to the requested `scope` (file path prefix) and
-    /// deduplicated by symbol ID.
-    fn decorator_search_fallback(&self, decorator_name: &str, scope: &str) -> Vec<SearchHit> {
-        use atlas_engine::{ReferenceKind, SymbolDef};
-
-        let refs = match self
-            .project()
-            .store
-            .find_references_by_name_and_kind(decorator_name, ReferenceKind::Decoration)
-        {
-            Ok(refs) => refs,
-            Err(_) => return Vec::new(),
-        };
-
-        // Cache symbols per file to avoid re-querying the same file.
-        let mut file_symbols_cache: std::collections::HashMap<FileId, Vec<SymbolDef>> =
-            std::collections::HashMap::new();
-
-        let mut seen = std::collections::HashSet::new();
-        let mut hits = Vec::new();
-        for reference in refs {
-            let symbols = file_symbols_cache
-                .entry(reference.file_id)
-                .or_insert_with(|| {
-                    self.project()
-                        .store
-                        .find_symbols_by_file(&reference.file_id)
-                        .unwrap_or_default()
-                });
-
-            // Find the closest following decoratable symbol — same logic as
-            // extend_decorated_symbol_ranges in extract.rs.
-            let target = symbols
-                .iter()
-                .filter(|symbol| {
-                    matches!(
-                        symbol.kind,
-                        SymbolKind::Class
-                            | SymbolKind::Struct
-                            | SymbolKind::Function
-                            | SymbolKind::Method
-                            | SymbolKind::Field
-                            | SymbolKind::Property
-                    ) && symbol.name_range.start_byte >= reference.range.end_byte
-                        && symbol.name_range.start_line
-                            <= reference.range.end_line.saturating_add(1)
-                })
-                .min_by_key(|symbol| symbol.name_range.start_byte);
-
-            if let Some(symbol) = target {
-                if !seen.insert(symbol.id) {
-                    continue;
-                }
-                let file_path = self
-                    .project()
-                    .store_query_runtime
-                    .resolve_file_path(&symbol.file_id);
-                if !file_path.starts_with(scope) {
-                    continue;
-                }
-                hits.push(SearchHit {
-                    name: symbol.name.clone(),
-                    qualified_name: symbol.qualified_name.clone(),
-                    kind: symbol.kind.as_str().to_string(),
-                    language: symbol.language.as_str().to_string(),
-                    score: 1.0, // exact decorator match
-                    file: file_path,
-                    line: symbol.range.start_line,
-                    layer: symbol.layer.clone(),
-                });
-            }
-        }
-        hits
     }
 
     /// Build the body for an ambiguous-symbol error response (without envelope).

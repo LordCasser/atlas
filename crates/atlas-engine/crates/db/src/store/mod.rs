@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_find_references_by_name_and_kind() {
+    fn test_find_references_by_name_and_kind_in_scope() {
         let store = test_store();
         let file = test_file();
         store.upsert_file(&file).unwrap();
@@ -1401,7 +1401,11 @@ mod tests {
 
         // Decoration lookup by name should return exactly 1 reference.
         let decorations = store
-            .find_references_by_name_and_kind("Component", ReferenceKind::Decoration)
+            .find_references_by_name_and_kind_in_scope(
+                "Component",
+                ReferenceKind::Decoration,
+                "src",
+            )
             .unwrap();
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].id, dec_ref.id);
@@ -1409,9 +1413,18 @@ mod tests {
 
         // A different name should return nothing.
         let empty = store
-            .find_references_by_name_and_kind("State", ReferenceKind::Decoration)
+            .find_references_by_name_and_kind_in_scope("State", ReferenceKind::Decoration, "src")
             .unwrap();
         assert!(empty.is_empty());
+
+        let outside_scope = store
+            .find_references_by_name_and_kind_in_scope(
+                "Component",
+                ReferenceKind::Decoration,
+                "other",
+            )
+            .unwrap();
+        assert!(outside_scope.is_empty());
     }
 
     #[test]

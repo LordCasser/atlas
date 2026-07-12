@@ -58,9 +58,21 @@ fn normalize_py_reference(
     file_id: FileId,
 ) -> Option<ReferenceUse> {
     let kind = py_reference_kind(capture_name)?;
-    let text = node_text(node, source)?;
-    let name = text.clone();
-    let range = node_range(node);
+    let name = node_text(node, source)?;
+    let (text, range) = if kind == ReferenceKind::Decoration {
+        let decorator = std::iter::successors(Some(node), |current| current.parent())
+            .find(|current| current.kind() == "decorator")?;
+        let decorator_text = node_text(decorator, source)?;
+        (
+            decorator_text
+                .strip_prefix('@')
+                .unwrap_or(&decorator_text)
+                .to_string(),
+            node_range(decorator),
+        )
+    } else {
+        (name.clone(), node_range(node))
+    };
 
     // source_symbol is resolved by SemanticBinder after extraction.
     Some(make_reference_use(file_id, kind, text, name, range))

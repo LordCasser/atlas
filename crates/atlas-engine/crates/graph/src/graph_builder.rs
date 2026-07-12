@@ -120,12 +120,21 @@ impl GraphBuilder {
             .flatten()
             .collect();
 
-        let edge_count = edges.len();
+        let callback_edges = Self::detect_callback_registrations(&edges, &self.store);
+        let scoped = resolved.iter().collect::<Vec<_>>();
+        let decorator_edges = self.detect_decorator_registrations(&scoped);
+        let all_edges = edges
+            .into_iter()
+            .chain(callback_edges)
+            .chain(decorator_edges)
+            .collect::<Vec<_>>();
+
+        let edge_count = all_edges.len();
         let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
         // Write edges to store, tracking actual success
-        let edges_written = if !edges.is_empty() {
-            match self.store.insert_edges(&edges) {
+        let edges_written = if !all_edges.is_empty() {
+            match self.store.insert_edges(&all_edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
                     warnings.push(format!(
@@ -967,6 +976,80 @@ main();
             "expected warnings on insert failure"
         );
     }
+
+    #[test]
+    fn python_decorator_registration_uses_declaration_range_ownership() {
+        let source = r#"def route(function):
+    return function
+
+@route
+def handler():
+    return None
+"#;
+        let file_id = FileId::generate("routes.py");
+        let frontend = create_frontend(Language::Python).unwrap();
+        let facts = extract_full(
+            &frontend,
+            file_id,
+            &PathBuf::from("routes.py"),
+            source,
+            "python-decorator",
+        )
+        .unwrap();
+        let route = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "route")
+            .unwrap()
+            .id;
+        let handler = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "handler")
+            .unwrap()
+            .id;
+        let decoration = facts
+            .references
+            .iter()
+            .find(|reference| reference.kind == ReferenceKind::Decoration)
+            .unwrap();
+        let handler_symbol = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.id == handler)
+            .unwrap();
+        assert!(
+            handler_symbol.range.start_byte <= decoration.range.start_byte
+                && handler_symbol.range.end_byte >= decoration.range.end_byte,
+            "handler range {:?} must contain decorator range {:?}",
+            handler_symbol.range,
+            decoration.range
+        );
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _) = resolver
+            .resolve_all_parallel(store.clone(), None, None)
+            .unwrap();
+        assert!(
+            resolved.iter().any(|(reference, target)| {
+                reference.kind == ReferenceKind::Decoration && target.symbol_id == route
+            }),
+            "route decorator must resolve: {resolved:?}"
+        );
+        let stats = GraphBuilder::new(store.clone()).build_all(&resolved);
+        assert!(stats.warnings.is_empty(), "warnings: {:?}", stats.warnings);
+
+        let edges = store.find_edges_by_source(&route).unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|edge| { edge.target == handler && edge.kind == EdgeKind::RegistersCallback }),
+            "route edges: {edges:?}"
+        );
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1122,11 +1205,9 @@ impl GraphBuilder {
     /// `RegistersCallback` edges from the decorator function to the
     /// decorated definition.
     ///
-    /// Uses line-number proximity: for each `Decoration` reference, finds
-    /// the nearest `Function`/`Method`/`Class` definition after it in the
-    /// same file.  This handles both module-level decorators (`@app.route`
-    /// on a top-level function) and class-level decorators (`@staticmethod`
-    /// on a method).
+    /// Extraction extends a decorated declaration's full range to include its
+    /// decorators. The tightest containing callable/type is therefore the
+    /// canonical target for both module-level and class-level decorators.
     fn detect_decorator_registrations(
         &self,
         scoped: &[&(ReferenceUse, ResolvedTarget)],
@@ -1174,18 +1255,15 @@ impl GraphBuilder {
                     Some(t) => t,
                     None => continue,
                 };
-                // Find the nearest definition that starts at or after the
-                // decorator reference's line.
-                let ref_line = r.range.start_line;
                 let nearest = definable
                     .iter()
-                    .filter(|d| d.range.start_line >= ref_line)
-                    .min_by_key(|d| d.range.start_line);
+                    .filter(|d| {
+                        d.range.start_byte <= r.range.start_byte
+                            && d.range.end_byte >= r.range.end_byte
+                    })
+                    .min_by_key(|d| d.range.byte_len());
 
                 if let Some(def) = nearest {
-                    if def.range.start_line - ref_line > 20 {
-                        continue;
-                    }
                     let edge = RawEdge::new(
                         EdgeId::generate(
                             &target.symbol_id,

@@ -125,6 +125,17 @@ All notable changes to Atlas will be documented in this file.
   TypeScript-compatible abstract classes, interface properties/methods, enum
   members, async flags, and decorator references now populate existing IR;
   member source extraction includes field decorators, types, and initializers.
+- ArkTS keeps callable signatures limited to interface shape: decorators remain
+  `Decoration` references, field types remain in complete member source ranges,
+  and `async` remains in `SymbolDef.async_`. `ScopedSearchService` now owns exact
+  `@Decorator` search, including lazy refinement, scope boundaries, kind and
+  language filters, limits, and total counts. Decorator
+  source recovery skips parser-recognized strings, templates, regexes, and
+  comments while balancing parameter lists across those regions.
+- Decorated declaration ranges now cover stacked decorators across languages;
+  Python decoration references preserve the full decorator range while keeping
+  a bare resolution name. Full and file-scoped graph builds both materialize
+  callback and Python decorator registration edges from that ownership fact.
 - Builtin resolution is terminal before project-wide matching. ArkTS `$r`
   therefore remains an external resource API instead of resolving to an
   unrelated JavaScript symbol; ArkTS decoration references likewise remain

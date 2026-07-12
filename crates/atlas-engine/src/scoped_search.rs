@@ -42,6 +42,7 @@
 //! })?;
 //! ```
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -50,7 +51,7 @@ use db::Store;
 use search::query_parser::parse_query;
 use search::scoring::{ScoreWeights, language_preference_bonus};
 use types::structs::AnswerQuality;
-use types::{FactCoverage, Language, SymbolDef, SymbolKind};
+use types::{FactCoverage, Language, ReferenceKind, SymbolDef, SymbolKind};
 
 use crate::LazyStructuralService;
 
@@ -180,8 +181,8 @@ impl ScopedSearchService {
     /// 3. Decide analysis level: [`SearchAnalysis::Manifest`] skips lazy;
     ///    [`SearchAnalysis::Structural`] always tries lazy on empty; [`SearchAnalysis::Auto`]
     ///    uses structural when `scope_file_count ≤ 30`.
-    /// 4. Run manifest search using store scoped-symbol methods (FTS5 → name
-    ///    exact → LIKE fallback).
+    /// 4. Run scoped fact search: exact `@Decorator` queries use Decoration
+    ///    references; symbol queries use FTS5 → exact name → LIKE fallback.
     /// 5. If empty results AND analysis ≥ Structural:
     ///    - Collect file IDs in scope.
     ///    - Trigger [`LazyStructuralService::ensure_structural_for_file_ids`].
@@ -199,6 +200,7 @@ impl ScopedSearchService {
         // Request-level filters take priority over parsed prefix filters.
         let language = req.language.or(parsed.language);
         let kind_filter = req.kind.or(parsed.kind_filter);
+        let decorator_name = decorator_query_name(&term);
 
         // 2. Normalize scope and count files in scope.
         let normalized_scope = req
@@ -303,15 +305,29 @@ impl ScopedSearchService {
         let candidate_multiplier = 4;
         let candidate_limit = (req.limit.saturating_mul(candidate_multiplier)).clamp(50, 1000);
 
-        let mut symbols = search_symbols_scoped(
-            &self.store,
-            &term,
-            &normalized_scope,
-            candidate_limit,
-            kind_filter,
-            language,
-            scope_file_count,
-        )?;
+        let run_search = || {
+            if let Some(name) = decorator_name {
+                search_decorated_symbols(
+                    &self.store,
+                    name,
+                    &normalized_scope,
+                    kind_filter,
+                    language,
+                )
+            } else {
+                search_symbols_scoped(
+                    &self.store,
+                    &term,
+                    &normalized_scope,
+                    candidate_limit,
+                    kind_filter,
+                    language,
+                    scope_file_count,
+                )
+            }
+        };
+
+        let mut symbols = run_search()?;
 
         let mut triggered_lazy = false;
         let mut lazy_covered_scope = false;
@@ -347,15 +363,7 @@ impl ScopedSearchService {
                     );
                 }
                 deferred_file_ids.extend(ensured.deferred_file_ids.iter().copied());
-                symbols = search_symbols_scoped(
-                    &self.store,
-                    &term,
-                    &normalized_scope,
-                    candidate_limit,
-                    kind_filter,
-                    language,
-                    scope_file_count,
-                )?;
+                symbols = run_search()?;
             } else {
                 let mut file_ids = if normalized_scope.is_empty() {
                     self.store
@@ -408,15 +416,7 @@ impl ScopedSearchService {
                     }
 
                     // Re-search after fresh structural data.
-                    symbols = search_symbols_scoped(
-                        &self.store,
-                        &term,
-                        &normalized_scope,
-                        candidate_limit,
-                        kind_filter,
-                        language,
-                        scope_file_count,
-                    )?;
+                    symbols = run_search()?;
                 }
                 // else: scope exists but no files — nothing to extract.
             }
@@ -435,7 +435,11 @@ impl ScopedSearchService {
                     .ok()
                     .flatten()
                     .map(|info| info.path);
-                let name_score = simple_score(&term, &sym);
+                let name_score = if decorator_name.is_some() {
+                    1.0
+                } else {
+                    simple_score(&term, &sym)
+                };
                 search::SearchResult {
                     symbol: sym,
                     score: search::scoring::SearchScore {
@@ -491,6 +495,97 @@ fn normalize_scope(scope: &str) -> String {
         .trim_start_matches('/')
         .trim_end_matches('/')
         .replace('\\', "/")
+}
+
+fn decorator_query_name(query: &str) -> Option<&str> {
+    let name = query.strip_prefix('@')?;
+    let mut bytes = name.bytes();
+    let first = bytes.next()?;
+    if !(first.is_ascii_alphabetic() || matches!(first, b'_' | b'$'))
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
+    {
+        return None;
+    }
+    Some(name)
+}
+
+fn search_decorated_symbols(
+    store: &Store,
+    decorator_name: &str,
+    scope: &str,
+    kind_filter: Option<SymbolKind>,
+    language: Option<Language>,
+) -> anyhow::Result<Vec<SymbolDef>> {
+    let references = store.find_references_by_name_and_kind_in_scope(
+        decorator_name,
+        ReferenceKind::Decoration,
+        scope,
+    )?;
+    if references.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let file_ids = references
+        .iter()
+        .map(|reference| reference.file_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut symbols_by_file: HashMap<_, Vec<_>> = HashMap::new();
+    const FILE_QUERY_BATCH: usize = 500;
+    for batch in file_ids.chunks(FILE_QUERY_BATCH) {
+        for symbol in store.find_symbols_by_files(batch)? {
+            symbols_by_file
+                .entry(symbol.file_id)
+                .or_default()
+                .push(symbol);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut symbols = Vec::new();
+    for reference in references {
+        let Some(file_symbols) = symbols_by_file.get(&reference.file_id) else {
+            continue;
+        };
+        let target = file_symbols
+            .iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Function
+                        | SymbolKind::Method
+                        | SymbolKind::Field
+                        | SymbolKind::Property
+                ) && symbol.range.start_byte <= reference.range.start_byte
+                    && symbol.range.end_byte >= reference.range.end_byte
+                    && kind_filter.is_none_or(|kind| symbol.kind == kind)
+                    && language.is_none_or(|lang| symbol.language == lang)
+            })
+            .min_by_key(|symbol| symbol.range.byte_len());
+        if let Some(symbol) = target.filter(|symbol| seen.insert(symbol.id)) {
+            symbols.push(symbol.clone());
+        }
+    }
+
+    let mut file_paths = HashMap::new();
+    for file_id in file_ids {
+        let path = store
+            .get_file(&file_id)?
+            .map(|file| file.path)
+            .unwrap_or_default();
+        file_paths.insert(file_id, path);
+    }
+    symbols.sort_by(|left, right| {
+        file_paths
+            .get(&left.file_id)
+            .cmp(&file_paths.get(&right.file_id))
+            .then(left.range.start_line.cmp(&right.range.start_line))
+            .then(left.qualified_name.cmp(&right.qualified_name))
+    });
+    Ok(symbols)
 }
 
 /// Simple name-based relevance score (0.0–1.0).
@@ -810,6 +905,22 @@ mod tests {
         };
         store.insert_symbols(&[sym]).unwrap();
         file_id
+    }
+
+    fn seed_decorated_struct(store: &Store, path: &str, name: &str, decorator: &str) {
+        let source = format!("@{decorator}\nstruct {name} {{\n  build() {{}}\n}}\n");
+        let frontend = extraction::create_frontend(Language::ArkTS).unwrap();
+        let facts = extraction::extract_file_with_mode(
+            &frontend,
+            types::FileId::generate(path),
+            Path::new(path),
+            &source,
+            "decorator-search-test",
+            extraction::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        store.insert_file_facts(&facts).unwrap();
     }
 
     fn test_service() -> ScopedSearchService {
@@ -1156,5 +1267,143 @@ mod tests {
                 .all(|r| r.symbol.language == Language::TypeScript),
             "explicit lang filter must filter exact-name results"
         );
+    }
+
+    #[test]
+    fn execute_decorator_query_owns_scope_filters_limits_and_totals() {
+        let svc = test_service();
+        seed_decorated_struct(&svc.store, "src/Widget.ets", "Widget", "Component");
+        seed_decorated_struct(&svc.store, "src-other/Other.ets", "Other", "Component");
+        seed_file_with_symbol(
+            &svc.store,
+            "src/component.ts",
+            Language::TypeScript,
+            "Component",
+            "Component",
+            SymbolKind::Function,
+        );
+
+        let response = svc
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(response.total, 1);
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].symbol.name, "Widget");
+        assert_eq!(response.results[0].score.name_score, 1.0);
+
+        let root = svc
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some(".".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(root.total, 2);
+        assert_eq!(
+            root.results
+                .iter()
+                .map(|result| result.symbol.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Other", "Widget"]
+        );
+
+        let limited = svc
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Manifest,
+                limit: 0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(limited.total, 1);
+        assert!(limited.results.is_empty());
+
+        let filtered = svc
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                kind: Some(SymbolKind::Method),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(filtered.total, 0);
+        assert!(filtered.results.is_empty());
+
+        let language_filtered = svc
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                language: Some(Language::TypeScript),
+                analysis: SearchAnalysis::Manifest,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(language_filtered.total, 0);
+        assert!(language_filtered.results.is_empty());
+    }
+
+    #[test]
+    fn execute_decorator_query_refines_manifest_file_to_structural() {
+        let project = tempfile::tempdir().unwrap();
+        let source_dir = project.path().join("src");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = "@Component\nstruct Widget {\n  build() {}\n}\n";
+        std::fs::write(source_dir.join("Widget.ets"), source).unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let file_id = types::FileId::generate("src/Widget.ets");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/Widget.ets".to_string(),
+                language: Language::ArkTS,
+                content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+                status: ParseStatus::Partial,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                &blake3::hash(source.as_bytes()).to_hex().to_string(),
+                "complete",
+                FactCoverage::from_layers(&["manifest"]),
+            )
+            .unwrap();
+
+        let materialize =
+            FocusMaterialize::open(Arc::clone(&store), Some(project.path().to_path_buf()));
+        let service = ScopedSearchService::new_with_project_root(
+            store,
+            materialize.structural().clone(),
+            Some(project.path().to_path_buf()),
+        );
+        let response = service
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Structural,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(response.triggered_lazy);
+        assert_eq!(response.total, 1);
+        assert_eq!(response.results[0].symbol.name, "Widget");
+        assert_eq!(response.results[0].symbol.kind, SymbolKind::Struct);
     }
 }

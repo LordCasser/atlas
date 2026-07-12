@@ -4,6 +4,7 @@ use rusqlite::params;
 use types::*;
 
 use super::Store;
+use super::files::{normalize_scope, scope_child_bounds};
 use crate::store_rows::{
     REFERENCE_SELECT_NO_WHERE, REFERENCE_SELECT_WHERE, row_to_callsite, row_to_edge,
     row_to_reference,
@@ -677,21 +678,40 @@ impl Store {
         }
     }
 
-    /// Find references by name and kind.
+    /// Find references by name and kind within a project-relative scope.
     ///
-    /// Used by the MCP search layer to resolve decorator queries (e.g. searching
-    /// for "@Component" finds Decoration references with name "Component").
-    /// Leverages the `idx_references_name` index for an indexed lookup.
-    pub fn find_references_by_name_and_kind(
+    /// Empty scope searches the whole project. Non-empty directory and file
+    /// scopes use the same exact-or-descendant bounds as symbol search.
+    pub fn find_references_by_name_and_kind_in_scope(
         &self,
         name: &str,
         kind: ReferenceKind,
+        scope: &str,
     ) -> anyhow::Result<Vec<ReferenceUse>> {
+        let scope = normalize_scope(scope);
         let conn = self.lock_read();
-        let mut stmt = conn.prepare(&format!(
-            "{REFERENCE_SELECT_NO_WHERE} WHERE name = ?1 AND kind = ?2"
-        ))?;
-        let rows = stmt.query_map(params![name, kind.as_str()], row_to_reference)?;
+        let sql = if scope.is_empty() {
+            format!("{REFERENCE_SELECT_NO_WHERE} WHERE name = ?1 AND kind = ?2")
+        } else {
+            format!(
+                "{REFERENCE_SELECT_NO_WHERE}
+                 WHERE name = ?1 AND kind = ?2
+                   AND file_id IN (
+                       SELECT file_id FROM files
+                       WHERE path = ?3 OR (path >= ?4 AND path < ?5)
+                   )"
+            )
+        };
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if scope.is_empty() {
+            stmt.query_map(params![name, kind.as_str()], row_to_reference)?
+        } else {
+            let (lower, upper) = scope_child_bounds(&scope);
+            stmt.query_map(
+                params![name, kind.as_str(), scope, lower, upper],
+                row_to_reference,
+            )?
+        };
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 

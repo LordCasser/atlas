@@ -2,18 +2,15 @@
   "symbols": [
     {
       "name": "ComplexWidget",
-      "kind": "struct",
-      "signature": "@Component"
+      "kind": "struct"
     },
     {
       "name": "title",
-      "kind": "field",
-      "signature": "@Prop : string"
+      "kind": "field"
     },
     {
       "name": "count",
-      "kind": "field",
-      "signature": "@State : number"
+      "kind": "field"
     },
     {
       "name": "build",

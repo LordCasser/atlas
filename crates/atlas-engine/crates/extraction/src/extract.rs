@@ -246,7 +246,7 @@ pub fn extract_file_with_mode(
     //     the query to miss them. Scan the source for @Identifier and
     //     @Identifier(...) patterns not already captured.
     if mode.produces_references() && language == Language::ArkTS {
-        crate::languages::arkts::arkts_decorator_fallback(source, file_id, &mut references);
+        crate::languages::arkts::arkts_decorator_fallback(source, root, file_id, &mut references);
     }
 
     // CP3: Check cancellation after reference extraction.
@@ -328,7 +328,7 @@ pub fn extract_file_with_mode(
             }
         }
     }
-    extend_decorated_symbol_ranges(&mut symbols, &references, source, language);
+    extend_decorated_symbol_ranges(&mut symbols, &references, source);
 
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
@@ -810,14 +810,12 @@ fn extend_decorated_symbol_ranges(
     symbols: &mut [SymbolDef],
     references: &[ReferenceUse],
     source: &str,
-    language: Language,
 ) {
     use std::collections::BTreeMap;
 
-    // First pass: for each decorator, find the closest following decoratable
-    // symbol (same matching semantics as the original range-extension logic).
-    // Group decorators by their target symbol index so we can apply both the
-    // range extension and the signature-prefix update in a single second pass.
+    // Associate each decorator with the closest following declaration when
+    // the intervening source contains only decorators and declaration-prefix
+    // tokens. Group by target so stacked decorators extend the range once.
     //
     // Map: symbol index -> Vec of decorator references
     let mut symbol_decorators: BTreeMap<usize, Vec<&ReferenceUse>> = BTreeMap::new();
@@ -839,7 +837,7 @@ fn extend_decorated_symbol_ranges(
                         | SymbolKind::Field
                         | SymbolKind::Property
                 ) && symbol.name_range.start_byte >= decorator.range.end_byte
-                    && symbol.name_range.start_line <= decorator.range.end_line.saturating_add(1)
+                    && decorator_reaches_declaration(decorator, symbol, references, source)
             })
             .min_by_key(|(_, symbol)| symbol.name_range.start_byte)
             .map(|(idx, _)| idx);
@@ -849,15 +847,10 @@ fn extend_decorated_symbol_ranges(
         }
     }
 
-    // Second pass: extend each symbol's range to include the leftmost decorator
-    // (existing behavior for ALL languages with Decoration references) and
-    // prepend the decorator names to its signature (ArkTS ONLY — Python and
-    // other languages that produce Decoration references must not have their
-    // signatures altered by ArkTS-specific enrichment).
-    let enrich_signature = language == Language::ArkTS;
-
+    // Extend each symbol's full declaration range to include its decorators.
+    // `name_range` remains the stable declaration-name location.
     for (idx, mut decorators) in symbol_decorators {
-        // Sort by byte position (leftmost first) for a stable rendered prefix.
+        // Sort by byte position so the leftmost decorator defines range start.
         decorators.sort_by_key(|d| d.range.start_byte);
 
         let symbol = &mut symbols[idx];
@@ -870,30 +863,80 @@ fn extend_decorated_symbol_ranges(
                 symbol.range.start_column = first.range.start_column;
             }
         }
+    }
+}
 
-        // Prepend decorator names to signature (ArkTS only).
-        if !enrich_signature {
+fn decorator_reaches_declaration(
+    decorator: &ReferenceUse,
+    symbol: &SymbolDef,
+    references: &[ReferenceUse],
+    source: &str,
+) -> bool {
+    if symbol.range.start_byte <= decorator.range.start_byte
+        && symbol.range.end_byte >= decorator.range.end_byte
+    {
+        return true;
+    }
+
+    let bytes = source.as_bytes();
+    let mut offset = decorator.range.end_byte as usize;
+    let end = symbol.name_range.start_byte as usize;
+    while offset < end {
+        while offset < end && bytes[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        if offset >= end {
+            return true;
+        }
+
+        if let Some(next) = references.iter().find(|reference| {
+            reference.kind == ReferenceKind::Decoration
+                && reference.range.start_byte as usize == offset
+                && reference.range.end_byte as usize <= end
+        }) {
+            offset = next.range.end_byte as usize;
             continue;
         }
 
-        // Build the decorator prefix. Reference `text` includes decorator
-        // arguments (e.g. "Extend(Button)") so the prefix renders the full
-        // decorator. `name` would only show the bare identifier.
-        let prefix: String = decorators
-            .iter()
-            .map(|d| format!("@{}", d.text))
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        match &symbol.signature {
-            Some(existing) => {
-                symbol.signature = Some(format!("{} {}", prefix, existing));
-            }
-            None => {
-                symbol.signature = Some(prefix);
-            }
+        let token_start = offset;
+        while offset < end
+            && (bytes[offset].is_ascii_alphanumeric() || matches!(bytes[offset], b'_' | b'$'))
+        {
+            offset += 1;
+        }
+        if token_start == offset {
+            return false;
+        }
+        let token = &source[token_start..offset];
+        if !matches!(
+            token,
+            "export"
+                | "default"
+                | "declare"
+                | "abstract"
+                | "async"
+                | "public"
+                | "protected"
+                | "private"
+                | "static"
+                | "readonly"
+                | "override"
+                | "class"
+                | "struct"
+                | "function"
+                | "def"
+                | "interface"
+                | "enum"
+                | "const"
+                | "let"
+                | "var"
+                | "get"
+                | "set"
+        ) {
+            return false;
         }
     }
+    true
 }
 
 fn retain_manifest_top_level_symbols(symbols: &mut Vec<SymbolDef>, root: tree_sitter::Node<'_>) {

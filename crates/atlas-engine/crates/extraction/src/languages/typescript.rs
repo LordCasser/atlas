@@ -612,20 +612,6 @@ fn ts_extract_signature(
 
             compact_signature(&signature)
         }
-        // Fields carry their type annotation as the signature (e.g. `: number`
-        // for `@State count: number = 0`). Decorator prefixes are attached
-        // later by extend_decorated_symbol_ranges in extract.rs.
-        "definition.field" => {
-            let declaration = node.parent()?;
-            // The tree-sitter-typescript grammar names the field `type`
-            // (node kind is `type_annotation`).
-            if let Some(type_ann) = declaration.child_by_field_name("type") {
-                let sig = node_text(type_ann, source)?;
-                compact_signature(&sig)
-            } else {
-                None
-            }
-        }
         _ => None,
     }
 }

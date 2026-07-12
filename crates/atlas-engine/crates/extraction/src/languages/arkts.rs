@@ -71,18 +71,6 @@ fn normalize_arkts_definition(
         Language::ArkTS,
     )?;
 
-    // ArkTS-only: surface the `async` modifier in the signature string so
-    // that `async aboutToAppear()` renders as `async (): Promise<void>`.
-    // The shared `ts_extract_signature` does NOT include this prefix because
-    // TS/JS share that function and must not be affected by ArkTS changes.
-    // The `async_` boolean field is already set by `normalize_ts_definition`.
-    if symbol.async_ {
-        match &symbol.signature {
-            Some(existing) => symbol.signature = Some(format!("async {}", existing)),
-            None => symbol.signature = Some("async".to_string()),
-        }
-    }
-
     if symbol.kind == SymbolKind::Class && is_arkts_struct(node, source) {
         symbol.kind = SymbolKind::Struct;
         symbol.id = SymbolId::generate(
@@ -107,9 +95,8 @@ fn normalize_arkts_reference(
         let name = node_text(node, source)?;
         let decorator = std::iter::successors(Some(node), |current| current.parent())
             .find(|current| current.kind() == "decorator")?;
-        // `text` includes decorator arguments (e.g. "Extend(Button)" for
-        // `@Extend(Button)`) so the signature prefix renders the full decorator.
-        // `name` is the bare identifier (e.g. "Extend") for search matching.
+        // `text` preserves decorator arguments (e.g. "Extend(Button)"), while
+        // `name` is the bare identifier used for exact decorator lookup.
         let decorator_text = node_text(decorator, source)?;
         let text = decorator_text.strip_prefix('@').unwrap_or(&decorator_text);
         return Some(make_reference_use(
@@ -151,10 +138,11 @@ fn normalize_arkts_reference(
 /// This function scans the raw source for `@Identifier` and
 /// `@Identifier(...)` patterns and adds decoration references for any that
 /// are not already present in `references` (deduplicated by byte range).
-/// A simple state machine skips `@` characters inside strings and comments
-/// to avoid false positives.
+/// Parser-recognized strings, templates, regexes, and comments are excluded
+/// from the scan and from parameter-list delimiter matching.
 pub(crate) fn arkts_decorator_fallback(
     source: &str,
+    root: tree_sitter::Node<'_>,
     file_id: FileId,
     references: &mut Vec<ReferenceUse>,
 ) {
@@ -169,95 +157,23 @@ pub(crate) fn arkts_decorator_fallback(
         .map(|r| (r.range.start_byte, r.range.end_byte))
         .collect();
 
-    // Simple state machine to track string and comment contexts.
-    #[derive(Clone, Copy, PartialEq)]
-    enum Ctx {
-        Normal,
-        SingleString,
-        DoubleString,
-        TemplateString,
-        LineComment,
-        BlockComment,
-    }
-
-    let mut ctx = Ctx::Normal;
+    let ignored = non_code_ranges(root);
+    let mut ignored_index = 0;
     let mut i = 0;
 
     while i < bytes.len() {
-        let b = bytes[i];
+        while ignored.get(ignored_index).is_some_and(|(_, end)| *end <= i) {
+            ignored_index += 1;
+        }
+        if let Some((start, end)) = ignored.get(ignored_index).copied() {
+            if i >= start && i < end {
+                i = end;
+                ignored_index += 1;
+                continue;
+            }
+        }
 
-        // Update context state.
-        ctx = match ctx {
-            Ctx::LineComment => {
-                if b == b'\n' {
-                    Ctx::Normal
-                } else {
-                    Ctx::LineComment
-                }
-            }
-            Ctx::BlockComment => {
-                if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                    i += 1; // consume the '/'
-                    Ctx::Normal
-                } else {
-                    Ctx::BlockComment
-                }
-            }
-            Ctx::SingleString => {
-                if b == b'\\' {
-                    i += 1; // skip escaped char
-                    Ctx::SingleString
-                } else if b == b'\'' {
-                    Ctx::Normal
-                } else {
-                    Ctx::SingleString
-                }
-            }
-            Ctx::DoubleString => {
-                if b == b'\\' {
-                    i += 1; // skip escaped char
-                    Ctx::DoubleString
-                } else if b == b'"' {
-                    Ctx::Normal
-                } else {
-                    Ctx::DoubleString
-                }
-            }
-            Ctx::TemplateString => {
-                if b == b'\\' {
-                    i += 1; // skip escaped char
-                    Ctx::TemplateString
-                } else if b == b'`' {
-                    Ctx::Normal
-                } else {
-                    Ctx::TemplateString
-                }
-            }
-            Ctx::Normal => {
-                if b == b'/' && i + 1 < bytes.len() {
-                    if bytes[i + 1] == b'/' {
-                        i += 1;
-                        Ctx::LineComment
-                    } else if bytes[i + 1] == b'*' {
-                        i += 1;
-                        Ctx::BlockComment
-                    } else {
-                        Ctx::Normal
-                    }
-                } else if b == b'\'' {
-                    Ctx::SingleString
-                } else if b == b'"' {
-                    Ctx::DoubleString
-                } else if b == b'`' {
-                    Ctx::TemplateString
-                } else {
-                    Ctx::Normal
-                }
-            }
-        };
-
-        // Only check for decorator `@` in Normal context.
-        if ctx == Ctx::Normal && b == b'@' {
+        if bytes[i] == b'@' {
             // The character after `@` must be an identifier start.
             if i + 1 >= bytes.len() || !bytes[i + 1].is_ascii_alphabetic() {
                 i += 1;
@@ -296,7 +212,15 @@ pub(crate) fn arkts_decorator_fallback(
                 // Parameterized decorator: find matching closing paren.
                 let mut depth = 1i32;
                 let mut p = scan + 1;
+                let mut argument_ignored_index = ignored.partition_point(|(_, end)| *end <= p);
                 while p < bytes.len() && depth > 0 {
+                    if let Some((start, end)) = ignored.get(argument_ignored_index).copied() {
+                        if p >= start {
+                            p = end.max(p + 1);
+                            argument_ignored_index += 1;
+                            continue;
+                        }
+                    }
                     match bytes[p] {
                         b'(' => depth += 1,
                         b')' => depth -= 1,
@@ -437,20 +361,7 @@ fn matching_brace_end(
         root = parent;
     }
 
-    let mut ignored = Vec::new();
-    let mut pending = vec![root];
-    while let Some(node) = pending.pop() {
-        if matches!(
-            node.kind(),
-            "comment" | "string" | "template_string" | "regex"
-        ) {
-            ignored.push((node.start_byte(), node.end_byte()));
-            continue;
-        }
-        let mut cursor = node.walk();
-        pending.extend(node.children(&mut cursor));
-    }
-    ignored.sort_unstable();
+    let ignored = non_code_ranges(root);
 
     let bytes = source.as_bytes();
     if bytes.get(open) != Some(&b'{') {
@@ -480,6 +391,24 @@ fn matching_brace_end(
         offset += 1;
     }
     None
+}
+
+fn non_code_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if matches!(
+            node.kind(),
+            "comment" | "string" | "template_string" | "regex"
+        ) {
+            ranges.push((node.start_byte(), node.end_byte()));
+            continue;
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.children(&mut cursor));
+    }
+    ranges.sort_unstable();
+    ranges
 }
 
 fn is_nested_arkts_method_definition(node: tree_sitter::Node<'_>) -> bool {
@@ -1215,6 +1144,48 @@ function cardButtonStyle(color: ResourceColor) {
     }
 
     #[test]
+    fn declaration_recovery_preserves_mixed_class_struct_and_following_function() {
+        let source = r#"class Helper {
+  ready(): boolean { return true; }
+}
+
+@Component
+struct MixedPage {
+  build() {
+    Column() {
+      Text('ready')
+    }
+    .width('100%')
+  }
+}
+
+@Styles
+function pageStyle() {
+  .height('100%')
+}
+"#;
+        let facts = extract_single(source, "MixedPage.ets");
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "Helper" && symbol.kind == SymbolKind::Class)
+        );
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "MixedPage" && symbol.kind == SymbolKind::Struct)
+        );
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "pageStyle" && symbol.kind == SymbolKind::Function)
+        );
+    }
+
+    #[test]
     fn test_arkts_def_query_parses() {
         let spec = ArkTsAdapter;
         let lang = spec.tree_sitter_language();
@@ -1254,7 +1225,7 @@ function cardButtonStyle(color: ResourceColor) {
         );
     }
 
-    // ── Decorator / field / async signature tests ──────────────────────────
+    // ── Decorator and signature contract tests ─────────────────────────────
 
     fn extract_single(source: &str, path: &str) -> crate::languages::FileFacts {
         let frontend = arkts_frontend();
@@ -1271,7 +1242,7 @@ function cardButtonStyle(color: ResourceColor) {
     }
 
     #[test]
-    fn decorated_struct_has_decorator_signature() {
+    fn decorated_struct_keeps_decorator_out_of_signature() {
         let source = "@Component\nstruct Foo {\n  build() {}\n}\n";
         let facts = extract_single(source, "Foo.ets");
         let foo = facts
@@ -1279,34 +1250,39 @@ function cardButtonStyle(color: ResourceColor) {
             .iter()
             .find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct)
             .unwrap();
-        assert_eq!(
-            foo.signature.as_deref(),
-            Some("@Component"),
-            "struct with a single decorator should have the decorator name as its signature"
-        );
+        assert_eq!(foo.signature, None);
+        let decoration = facts
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "Component")
+            .unwrap();
+        assert!(foo.range.start_byte <= decoration.range.start_byte);
+        assert!(foo.range.end_byte >= decoration.range.end_byte);
     }
 
     #[test]
-    fn decorated_struct_with_multiple_decorators_has_ordered_signature() {
-        // Both decorators on the same line as the struct keyword - the
-        // decorator matching logic requires the symbol name to be within
-        // 1 line of the decorator.
-        let source = "@Component @Entry\nstruct Bar {\n  build() {}\n}\n";
-        let facts = extract_single(source, "Bar.ets");
-        let bar = facts
+    fn stacked_decorators_all_extend_the_struct_range() {
+        let source = "@Entry\n@Component\nstruct Foo {\n  build() {}\n}\n";
+        let facts = extract_single(source, "Foo.ets");
+        let foo = facts
             .symbols
             .iter()
-            .find(|s| s.name == "Bar" && s.kind == SymbolKind::Struct)
+            .find(|symbol| symbol.name == "Foo" && symbol.kind == SymbolKind::Struct)
             .unwrap();
-        assert_eq!(
-            bar.signature.as_deref(),
-            Some("@Component @Entry"),
-            "decorators should be ordered leftmost-first, separated by spaces"
-        );
+        let decorations = facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == ReferenceKind::Decoration)
+            .collect::<Vec<_>>();
+        assert_eq!(decorations.len(), 2);
+        assert!(decorations.iter().all(|decoration| {
+            foo.range.start_byte <= decoration.range.start_byte
+                && foo.range.end_byte >= decoration.range.end_byte
+        }));
     }
 
     #[test]
-    fn decorated_field_has_decorator_plus_type_signature() {
+    fn field_type_and_decorator_stay_out_of_callable_signature() {
         let source = "@Component\nstruct Widget {\n  @State count: number = 0;\n  build() {}\n}\n";
         let facts = extract_single(source, "Widget.ets");
         let count = facts
@@ -1314,31 +1290,18 @@ function cardButtonStyle(color: ResourceColor) {
             .iter()
             .find(|s| s.name == "count" && s.kind == SymbolKind::Field)
             .unwrap();
-        assert_eq!(
-            count.signature.as_deref(),
-            Some("@State : number"),
-            "decorated field signature should be decorator prefix + type annotation"
-        );
-    }
-
-    #[test]
-    fn undecorated_field_has_type_annotation_signature() {
-        let source = "struct Plain {\n  title: string;\n  count: number = 1;\n}\n";
-        let facts = extract_single(source, "Plain.ets");
-        let title = facts
-            .symbols
+        assert_eq!(count.signature, None);
+        let decoration = facts
+            .references
             .iter()
-            .find(|s| s.name == "title" && s.kind == SymbolKind::Field)
+            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "State")
             .unwrap();
-        assert_eq!(
-            title.signature.as_deref(),
-            Some(": string"),
-            "undecorated field should have just the type annotation as signature"
-        );
+        assert!(count.range.start_byte <= decoration.range.start_byte);
+        assert!(count.range.end_byte >= decoration.range.end_byte);
     }
 
     #[test]
-    fn async_function_signature_has_async_prefix() {
+    fn async_function_uses_async_flag_only() {
         let source = "async function load(): Promise<void> {}\n";
         let facts = extract_single(source, "load.ets");
         let load = facts
@@ -1348,14 +1311,14 @@ function cardButtonStyle(color: ResourceColor) {
             .unwrap();
         assert_eq!(
             load.signature.as_deref(),
-            Some("async (): Promise<void>"),
-            "async function signature should be prefixed with 'async '"
+            Some("(): Promise<void>"),
+            "async is orthogonal metadata and must not be duplicated in signature"
         );
         assert!(load.async_, "async_ boolean flag must still be set");
     }
 
     #[test]
-    fn async_method_signature_has_async_prefix() {
+    fn async_method_uses_async_flag_only() {
         let source = "class Service {\n  async fetch(url: string): Promise<string> {\n    return '';\n  }\n}\n";
         let facts = extract_single(source, "Service.ets");
         let fetch = facts
@@ -1365,14 +1328,14 @@ function cardButtonStyle(color: ResourceColor) {
             .unwrap();
         assert_eq!(
             fetch.signature.as_deref(),
-            Some("async (url: string): Promise<string>"),
-            "async method signature should be prefixed with 'async '"
+            Some("(url: string): Promise<string>"),
+            "async is orthogonal metadata and must not be duplicated in signature"
         );
         assert!(fetch.async_);
     }
 
     #[test]
-    fn decorated_method_signature_combines_decorator_and_params() {
+    fn decorated_method_signature_contains_only_callable_shape() {
         let source = "@Component\nstruct Card {\n  @Builder buildCard(label: string) {}\n}\n";
         let facts = extract_single(source, "Card.ets");
         let build_card = facts
@@ -1382,46 +1345,56 @@ function cardButtonStyle(color: ResourceColor) {
             .unwrap();
         assert_eq!(
             build_card.signature.as_deref(),
-            Some("@Builder (label: string)"),
-            "decorated method signature should be decorator prefix + parameter list"
+            Some("(label: string)"),
+            "decorator metadata must not be duplicated in the callable signature"
+        );
+    }
+
+    fn fallback_references(source: &str) -> Vec<ReferenceUse> {
+        let language: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut references = Vec::new();
+        arkts_decorator_fallback(
+            source,
+            tree.root_node(),
+            FileId::generate("fallback.ets"),
+            &mut references,
+        );
+        references
+    }
+
+    #[test]
+    fn decorator_fallback_skips_regex_literals() {
+        let references = fallback_references("const pattern = /@Component/;\nclass Real {}\n");
+        assert!(references.is_empty());
+    }
+
+    #[test]
+    fn decorator_fallback_balances_arguments_around_string_parens() {
+        let source = "@Extend(Button, { label: \")\" })\nfunction style() {}\n";
+        let references = fallback_references(source);
+        let decoration = references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "Extend")
+            .unwrap();
+        assert_eq!(decoration.text, "Extend(Button, { label: \")\" })");
+        assert_eq!(
+            &source[decoration.range.start_byte as usize..decoration.range.end_byte as usize],
+            "@Extend(Button, { label: \")\" })"
         );
     }
 
     #[test]
-    fn extend_decorator_captured_via_fallback_in_complex_file() {
-        // This test uses the real SampleCard.ets file which has a massive
-        // call_expression spanning the struct body and the @Extend function.
-        // The tree-sitter query cannot capture @Extend inside this error
-        // context, so the source-scan fallback must handle it.
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../examples/arkts_example/features/devpractices/src/main/ets/component/SampleCard.ets");
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read SampleCard.ets: {e} at {path:?}"));
-        let facts = extract_single(&source, "SampleCard.ets");
-
-        // The @Extend decorator reference must be captured via fallback
-        let extend_ref = facts
-            .references
-            .iter()
-            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "Extend");
-        assert!(
-            extend_ref.is_some(),
-            "@Extend decoration reference must be captured (via source-scan fallback) even when the primary tree swallows it into a call_expression"
-        );
-
-        // The function symbol must have @Extend in its signature
-        let func = facts
-            .symbols
-            .iter()
-            .find(|s| s.name == "cardButtonStyle" && s.kind == SymbolKind::Function)
-            .expect("cardButtonStyle function must be captured");
-        assert!(
-            func.signature
-                .as_deref()
-                .map(|s| s.starts_with("@Extend"))
-                .unwrap_or(false),
-            "cardButtonStyle signature must start with @Extend, got: {:?}",
-            func.signature
+    fn decorator_fallback_does_not_skip_adjacent_decorator_after_arguments() {
+        let references = fallback_references("@One(\")\")@Two\nclass Target {}\n");
+        assert_eq!(
+            references
+                .iter()
+                .map(|reference| reference.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["One", "Two"]
         );
     }
 }
