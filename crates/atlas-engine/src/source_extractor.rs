@@ -199,6 +199,8 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
             "function_expression",
             "arrow_function",
             "method_definition",
+            "method_signature",
+            "abstract_method_signature",
         ],
         (Function | Method | Constructor, Java) => {
             &["method_declaration", "constructor_declaration"]
@@ -217,7 +219,11 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Class, Cangjie) => &["classDefinition"],
         (Class, Cpp) => &["class_specifier"],
         (Class, Python) => &["class_definition"],
-        (Class, TypeScript | JavaScript | ArkTS) => &["class_declaration", "class_expression"],
+        (Class, TypeScript | JavaScript | ArkTS) => &[
+            "class_declaration",
+            "abstract_class_declaration",
+            "class_expression",
+        ],
         (Class, Java) => &["class_declaration"],
         (Class, CSharp) => &["class_declaration"],
         (Class, Php) => &["class_declaration"],
@@ -250,6 +256,13 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         (Enum, Rust) => &["enum_item"],
         (Enum, C | Cpp) => &["enum_specifier"],
         (Enum, Kotlin) => &["enum_class"],
+
+        // ── Members ──
+        (Field, TypeScript | JavaScript | ArkTS) => &["public_field_definition"],
+        (Property, TypeScript | JavaScript | ArkTS) => &["property_signature"],
+        (EnumMember, TypeScript | JavaScript | ArkTS) => {
+            &["enum_assignment", "property_identifier"]
+        }
 
         // ── Type aliases ──
         (TypeAlias, TypeScript | JavaScript | ArkTS) => &["type_alias_declaration"],
@@ -372,5 +385,75 @@ struct MainPage {
         );
         assert!(extracted.contains("NavDestination"), "source={extracted:?}");
         assert!(extracted.ends_with("  }\n}"), "source={extracted:?}");
+    }
+
+    #[test]
+    fn arkts_field_source_includes_decorators_type_and_initializer() {
+        let temp = tempfile::tempdir().unwrap();
+        let relative_path = Path::new("Counter.ets");
+        let source = "@Component\nstruct Counter {\n  @State count: number = 1;\n}\n";
+        std::fs::write(temp.path().join(relative_path), source).unwrap();
+
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_id = FileId::generate("Counter.ets");
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative_path,
+            source,
+            "field-source-test",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let field_id = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "count")
+            .expect("count field")
+            .id;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+        let extracted = SourceExtractor::new(store, temp.path().to_path_buf())
+            .extract_source(&field_id)
+            .expect("complete field source");
+        assert_eq!(extracted, "@State count: number = 1");
+    }
+
+    #[test]
+    fn arkts_function_source_includes_leading_decorator() {
+        let temp = tempfile::tempdir().unwrap();
+        let relative_path = Path::new("LoadingMore.ets");
+        let source = "@Builder\nexport function LoadingMore() {\n  Text('loading')\n}\n";
+        std::fs::write(temp.path().join(relative_path), source).unwrap();
+
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_id = FileId::generate("LoadingMore.ets");
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative_path,
+            source,
+            "function-source-test",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let function_id = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "LoadingMore")
+            .expect("LoadingMore function")
+            .id;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+        let extracted = SourceExtractor::new(store, temp.path().to_path_buf())
+            .extract_source(&function_id)
+            .expect("decorated function source");
+        assert_eq!(extracted, source.trim_end());
     }
 }

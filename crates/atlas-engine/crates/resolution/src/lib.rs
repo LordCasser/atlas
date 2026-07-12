@@ -99,9 +99,13 @@ fn resolve_one_core(
     proximity_file_id: Option<FileId>,
     file_scope_cache: &std::sync::Mutex<HashMap<FileId, HashSet<FileId>>>,
 ) -> Option<ResolvedTarget> {
-    // Strategies 1-5: shared implementation
+    if is_builtin_reference(reference, ctx.file.language) {
+        return None;
+    }
+
+    // Contextual strategies 2-5: shared implementation.
     if let Some(result) =
-        resolve_strategies_1_through_5(reference, ctx, import_resolver, name_matcher)
+        resolve_contextual_strategies(reference, ctx, import_resolver, name_matcher)
     {
         return Some(result);
     }
@@ -171,24 +175,25 @@ fn resolve_one_core(
     None
 }
 
-/// Run Strategies 1–5: builtin filter, scope-local, container-local, same-file
-/// exact, import resolution.  Returns `Some(ResolvedTarget)` on first match,
-/// or `None` to fall through to Strategy 6.
-pub(crate) fn resolve_strategies_1_through_5(
+fn is_builtin_reference(reference: &ReferenceUse, language: Language) -> bool {
+    let _timer = StrategyTimer::new(&S1_TIME_NS);
+    let builtin = (language == Language::ArkTS && reference.kind == ReferenceKind::Decoration)
+        || BuiltinFilter::is_builtin(&reference.name, language);
+    if builtin {
+        S1_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+    builtin
+}
+
+/// Run contextual Strategies 2–5: scope-local, container-local, same-file
+/// exact, and import resolution. Builtins are terminal and must be rejected by
+/// the caller before this function. Returns `None` to fall through to Strategy 6.
+pub(crate) fn resolve_contextual_strategies(
     reference: &ReferenceUse,
     ctx: &ResolutionContext,
     import_resolver: &ImportResolver,
     name_matcher: &NameMatcher,
 ) -> Option<ResolvedTarget> {
-    // Strategy 1: Built-in / external filter
-    {
-        let _timer = StrategyTimer::new(&S1_TIME_NS);
-        if BuiltinFilter::is_builtin(&reference.name, ctx.file.language) {
-            S1_COUNT.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
-    }
-
     // Strategy 2: Scope-local exact match
     {
         let _timer = StrategyTimer::new(&S2_TIME_NS);
@@ -532,7 +537,7 @@ impl ResolutionSession {
         file_language: Language,
     ) -> Option<ResolvedTarget> {
         // Strategy 1: Built-in / external filter
-        if BuiltinFilter::is_builtin(&reference.name, file_language) {
+        if is_builtin_reference(reference, file_language) {
             return None;
         }
 
@@ -1410,13 +1415,14 @@ impl ReferenceResolver {
         candidate_cache: &mut HashMap<String, Vec<SymbolDef>>,
         file_path_cache: &mut HashMap<FileId, String>,
     ) -> Option<ResolvedTarget> {
-        // Strategies 1-5: shared with resolve_one_core, no visibility filter needed
-        if let Some(result) = resolve_strategies_1_through_5(
-            reference,
-            ctx,
-            &self.import_resolver,
-            &self.name_matcher,
-        ) {
+        if is_builtin_reference(reference, ctx.file.language) {
+            return None;
+        }
+
+        // Contextual strategies 2-5 are shared with resolve_one_core.
+        if let Some(result) =
+            resolve_contextual_strategies(reference, ctx, &self.import_resolver, &self.name_matcher)
+        {
             return Some(result);
         }
 
@@ -1937,6 +1943,51 @@ main();
             "expected cross-file Calls edges, got {} edges",
             build_stats.edges_built
         );
+    }
+
+    #[test]
+    fn arkts_framework_references_are_terminal_before_global_resolution() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+
+        let js = create_frontend(Language::JavaScript).unwrap();
+        let js_facts = extract_full(
+            &js,
+            FileId::generate("dist/common.js"),
+            &PathBuf::from("dist/common.js"),
+            "export function $r(value) { return value; }\nexport function Component(value) { return value; }",
+            "js",
+        )
+        .unwrap();
+        store.insert_file_facts(&js_facts).unwrap();
+
+        let arkts = create_frontend(Language::ArkTS).unwrap();
+        let arkts_facts = extract_full(
+            &arkts,
+            FileId::generate("Main.ets"),
+            &PathBuf::from("Main.ets"),
+            "@Component\nstruct View { build() {} }\nexport function render() { return $r('sys.color.background'); }",
+            "arkts",
+        )
+        .unwrap();
+        assert!(
+            arkts_facts.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Call && reference.name == "$r"
+            })
+        );
+        assert!(arkts_facts.references.iter().any(|reference| {
+            reference.kind == ReferenceKind::Decoration && reference.name == "Component"
+        }));
+        store.insert_file_facts(&arkts_facts).unwrap();
+
+        let mut resolver = ReferenceResolver::new(store.clone());
+        let (resolved, _) = resolver
+            .resolve_all_parallel(store, None, None)
+            .expect("resolution");
+        assert!(!resolved.iter().any(|(reference, _)| {
+            reference.file_id == arkts_facts.file.file_id
+                && matches!(reference.name.as_str(), "$r" | "Component")
+        }));
     }
 
     #[test]

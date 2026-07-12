@@ -6,11 +6,6 @@
       "signature": "(): void"
     },
     {
-      "name": "main",
-      "kind": "function",
-      "signature": "(): void"
-    },
-    {
       "name": "r",
       "kind": "variable"
     }
@@ -124,60 +119,9 @@
     },
     {
       "kind": "exit"
-    },
-    {
-      "kind": "entry"
-    },
-    {
-      "kind": "statement"
-    },
-    {
-      "kind": "statement"
-    },
-    {
-      "kind": "statement"
-    },
-    {
-      "kind": "statement"
-    },
-    {
-      "kind": "statement"
-    },
-    {
-      "kind": "exit"
     }
   ],
   "cfg_edges": [
-    {
-      "source_kind": "entry",
-      "target_kind": "statement",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "statement",
-      "target_kind": "statement",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "statement",
-      "target_kind": "statement",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "statement",
-      "target_kind": "statement",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "statement",
-      "target_kind": "statement",
-      "kind": "normal"
-    },
-    {
-      "source_kind": "statement",
-      "target_kind": "exit",
-      "kind": "normal"
-    },
     {
       "source_kind": "entry",
       "target_kind": "statement",

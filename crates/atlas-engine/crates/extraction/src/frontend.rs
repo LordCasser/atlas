@@ -80,6 +80,20 @@ pub trait ParserSpec: Send + Sync {
     fn parser_source<'a>(&self, source: &'a str) -> Cow<'a, str> {
         Cow::Borrowed(source)
     }
+    /// Optionally provide a byte-stable recovery source for declaration and
+    /// scope extraction after the primary parse has completed.
+    ///
+    /// References, callsites, lexical uses, dataflow, and CFG always consume
+    /// the primary tree. This hook exists for fallback grammars whose error
+    /// recovery can lose declaration boundaries while still preserving useful
+    /// expression facts in the primary tree.
+    fn declaration_recovery_source(
+        &self,
+        _parser_source: &str,
+        _primary_root: tree_sitter::Node<'_>,
+    ) -> Option<String> {
+        None
+    }
     /// Feature support for parsing.
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported()

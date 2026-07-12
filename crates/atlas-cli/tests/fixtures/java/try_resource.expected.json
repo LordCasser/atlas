@@ -44,10 +44,6 @@
     {
       "module": "java.io",
       "imported_name": "io"
-    },
-    {
-      "module": "java.io",
-      "imported_name": "io"
     }
   ],
   "scopes": [

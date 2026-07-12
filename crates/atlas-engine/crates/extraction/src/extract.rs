@@ -18,7 +18,8 @@ use types::dataflow::{DataFlowEdge, DataNode};
 use types::ids::{BindingUseId, CallsiteId, FileId, ScopeId};
 use types::{
     ArgumentFact, Callsite, DataNodeKind, DiagnosticLevel, ExtractDiagnostic, FileFacts, FileInfo,
-    ParseStatus, ReferenceKind, ScopeDef, ScopeKind, SymbolDef, SymbolKind, TextRange,
+    ParseStatus, ReferenceKind, ReferenceUse, ScopeDef, ScopeKind, SymbolDef, SymbolKind,
+    TextRange,
 };
 
 use super::callsite_spec::CallsiteParts;
@@ -115,6 +116,23 @@ pub fn extract_file_with_mode(
     let tree = tl_parse(&ts_lang, parser_source.as_bytes(), file_path, language)?;
     let root = tree.root_node();
 
+    let declaration_source = frontend
+        .parser
+        .declaration_recovery_source(parser_source.as_ref(), root);
+    if let Some(source) = declaration_source.as_ref() {
+        anyhow::ensure!(
+            source.len() == parser_source.len(),
+            "declaration recovery must preserve byte offsets"
+        );
+    }
+    let declaration_tree = declaration_source
+        .as_ref()
+        .map(|source| tl_parse(&ts_lang, source.as_bytes(), file_path, language))
+        .transpose()?;
+    let declaration_root = declaration_tree
+        .as_ref()
+        .map_or(root, tree_sitter::Tree::root_node);
+
     if root.has_error() {
         diagnostics.push(ExtractDiagnostic {
             level: DiagnosticLevel::Warning,
@@ -132,6 +150,14 @@ pub fn extract_file_with_mode(
         file_path,
         language,
     };
+    let declaration_ectx = ExtractionCtx {
+        ts_lang: &ts_lang,
+        root: declaration_root,
+        source,
+        file_id,
+        file_path,
+        language,
+    };
 
     // 2. Extract and normalize definitions
     // Use manifest_query() for Manifest mode (top-level only), definition_query() otherwise.
@@ -141,14 +167,13 @@ pub fn extract_file_with_mode(
         frontend.symbols.definition_query()
     };
     let mut symbols = extract_and_normalize(
-        &ectx,
+        &declaration_ectx,
         definition_src,
         &mut diagnostics,
         "symbols",
         |ctx, capture| frontend.symbols.normalize(ctx, capture),
         Some(token),
     )?;
-
     // CP2: Check cancellation after symbol extraction.
     if token.is_cancelled() {
         return Err(cancelled_error(file_path, language));
@@ -156,7 +181,7 @@ pub fn extract_file_with_mode(
 
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
-        retain_manifest_top_level_symbols(&mut symbols, root);
+        retain_manifest_top_level_symbols(&mut symbols, declaration_root);
         set_symbol_layers(&mut symbols, "manifest");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         let mut facts = FileFacts {
@@ -226,7 +251,7 @@ pub fn extract_file_with_mode(
 
     // 5. Extract and normalize scopes
     let mut scopes = extract_and_normalize(
-        &ectx,
+        &declaration_ectx,
         frontend.scopes.scope_query(),
         &mut diagnostics,
         "scopes",
@@ -288,6 +313,7 @@ pub fn extract_file_with_mode(
             }
         }
     }
+    extend_decorated_symbol_ranges(&mut symbols, &references, source);
 
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
@@ -762,6 +788,40 @@ pub fn extract_file_with_mode(
 fn set_symbol_layers(symbols: &mut [SymbolDef], layer: &str) {
     for symbol in symbols {
         symbol.layer = layer.to_string();
+    }
+}
+
+fn extend_decorated_symbol_ranges(
+    symbols: &mut [SymbolDef],
+    references: &[ReferenceUse],
+    source: &str,
+) {
+    for decorator in references.iter().filter(|reference| {
+        reference.kind == ReferenceKind::Decoration
+            && source.as_bytes().get(reference.range.start_byte as usize) == Some(&b'@')
+    }) {
+        let target = symbols
+            .iter_mut()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Function
+                        | SymbolKind::Method
+                        | SymbolKind::Field
+                        | SymbolKind::Property
+                ) && symbol.name_range.start_byte >= decorator.range.end_byte
+                    && symbol.name_range.start_line <= decorator.range.end_line.saturating_add(1)
+            })
+            .min_by_key(|symbol| symbol.name_range.start_byte);
+        if let Some(symbol) = target {
+            if decorator.range.start_byte < symbol.range.start_byte {
+                symbol.range.start_byte = decorator.range.start_byte;
+                symbol.range.start_line = decorator.range.start_line;
+                symbol.range.start_column = decorator.range.start_column;
+            }
+        }
     }
 }
 

@@ -15,6 +15,10 @@
     name: (type_identifier) @definition.class))
 
 (program
+  (abstract_class_declaration
+    name: (type_identifier) @definition.class))
+
+(program
   (interface_declaration
     name: (type_identifier) @definition.interface))
 
@@ -34,6 +38,11 @@
 (program
   (export_statement
     (class_declaration
+      name: (type_identifier) @definition.class)))
+
+(program
+  (export_statement
+    (abstract_class_declaration
       name: (type_identifier) @definition.class)))
 
 ;; Top-level variable declarations (const/let/var at module scope)

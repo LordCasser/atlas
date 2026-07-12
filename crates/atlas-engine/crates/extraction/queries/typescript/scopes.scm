@@ -14,6 +14,7 @@
 
 ; Class/interface/enum scopes
 (class_declaration) @scope.class
+(abstract_class_declaration) @scope.class
 (class_heritage) @scope.class
 (interface_declaration) @scope.interface
 (enum_declaration) @scope.enum

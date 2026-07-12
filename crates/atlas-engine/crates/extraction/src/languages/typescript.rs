@@ -153,12 +153,12 @@ pub(crate) fn normalize_ts_definition(
     let exported = is_exported_in_tree(node);
     let signature = ts_extract_signature(capture_name, node, source);
 
-    Some(
-        SymbolDefBuilder::new(file_id, language, kind, name, qualified_name, range)
-            .exported(exported)
-            .signature(signature)
-            .build(),
-    )
+    let mut symbol = SymbolDefBuilder::new(file_id, language, kind, name, qualified_name, range)
+        .exported(exported)
+        .signature(signature)
+        .build();
+    symbol.async_ = is_async_definition(node);
+    Some(symbol)
 }
 
 pub(crate) fn normalize_ts_reference(
@@ -275,9 +275,13 @@ fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
         "variable_declarator"
         | "function_declaration"
         | "class_declaration"
+        | "abstract_class_declaration"
         | "method_definition"
+        | "method_signature"
+        | "abstract_method_signature"
         | "interface_declaration"
         | "enum_declaration"
+        | "enum_assignment"
         | "type_alias_declaration"
         | "module"
         | "import_specifier"
@@ -285,6 +289,7 @@ fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
         | "namespace_import"
         | "catch_clause"
         | "public_field_definition"
+        | "property_signature"
         | "required_parameter"
         | "optional_parameter" => {
             // Check if this node is the "name" field of the parent
@@ -605,7 +610,11 @@ fn qualified_name_from_node(
     // Walk up parent scopes to build qualified name
     while let Some(parent) = current.parent() {
         match parent.kind() {
-            "class_declaration" | "class" => {
+            "class_declaration"
+            | "abstract_class_declaration"
+            | "class"
+            | "interface_declaration"
+            | "enum_declaration" => {
                 if let Some(child) = parent.child_by_field_name("name") {
                     if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
                         parts.push(class_name.to_string());
@@ -633,6 +642,16 @@ fn qualified_name_from_node(
     }
 }
 
+fn is_async_definition(node: tree_sitter::Node<'_>) -> bool {
+    let Some(declaration) = node.parent() else {
+        return false;
+    };
+    let mut cursor = declaration.walk();
+    declaration
+        .children(&mut cursor)
+        .any(|child| child.kind() == "async")
+}
+
 /// Check whether a TS/JS node is inside an `export` statement.
 fn is_exported_in_tree(node: tree_sitter::Node) -> bool {
     let mut current = node;
@@ -656,9 +675,11 @@ fn ts_definition_kind(capture: &str) -> Option<SymbolKind> {
         "definition.function" => Some(SymbolKind::Function),
         "definition.method" => Some(SymbolKind::Method),
         "definition.field" => Some(SymbolKind::Field),
+        "definition.property" => Some(SymbolKind::Property),
         "definition.class" => Some(SymbolKind::Class),
         "definition.interface" => Some(SymbolKind::Interface),
         "definition.enum" => Some(SymbolKind::Enum),
+        "definition.enum_member" => Some(SymbolKind::EnumMember),
         "definition.type_alias" => Some(SymbolKind::TypeAlias),
         "definition.variable" => Some(SymbolKind::Variable),
         _ => None,
@@ -844,6 +865,55 @@ mod tests {
         let lang = spec.tree_sitter_language();
         let query = tree_sitter::Query::new(&lang, spec.definition_query());
         assert!(query.is_ok(), "definition query must compile");
+    }
+
+    #[test]
+    fn declarations_capture_abstract_classes_and_members_without_duplicates() {
+        let source = r#"export abstract class Base<T> {
+  abstract run(value: T): void;
+}
+interface Result<T> { value: T; }
+enum State { Ready = 'ready', Done }
+export async function load(): Promise<void> {}
+"#;
+        let frontend = typescript_frontend();
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("declarations.ts"),
+            std::path::Path::new("declarations.ts"),
+            source,
+            "declarations",
+            crate::ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+
+        for (qualified_name, kind) in [
+            ("Base", SymbolKind::Class),
+            ("Base.run", SymbolKind::Method),
+            ("Result.value", SymbolKind::Property),
+            ("State.Ready", SymbolKind::EnumMember),
+            ("State.Done", SymbolKind::EnumMember),
+        ] {
+            assert_eq!(
+                facts
+                    .symbols
+                    .iter()
+                    .filter(|symbol| {
+                        symbol.qualified_name == qualified_name && symbol.kind == kind
+                    })
+                    .count(),
+                1,
+                "unexpected count for {kind:?} {qualified_name}"
+            );
+        }
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .find(|symbol| symbol.name == "load")
+                .is_some_and(|symbol| symbol.async_)
+        );
     }
 
     #[test]

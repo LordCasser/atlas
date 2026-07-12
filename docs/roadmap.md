@@ -106,6 +106,8 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **ArkTS state-flow status (updated 2026-07)**: `AppStorage.set/setOrCreate` incoming flow is query-time `StateFlow`, with exact `this`-field and literal/expression key-category matching. Full-cache and cold Focus paths are both covered; cold Focus uses `StateChannel` closure discovery plus writer-function dataflow materialization on resume. Reverse `StorageLink`, constant evaluation, timing, and process boundaries remain explicit limitations.
 
+> **ArkTS declaration status (updated 2026-07)**: TS-compatible abstract classes, interface properties/methods, enum members, async flags, and decorator references are extracted through existing IR. ArkUI false methods are rejected by ownership (`method_definition` must be a direct `class_body` member). A byte-stable declaration-only recovery tree restores declarations swallowed after ArkUI blocks, including post-build `@Styles` and top-level `@Extend`; semantic facts remain on the primary tree. Field type/initializer have complete source spans but no dedicated structured IR.
+
 ### 2.2 Index scope / manifest + Focus materialize
 
 - **Scope Index** — `--include` / `--scope` / `--exclude`.

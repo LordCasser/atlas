@@ -7,6 +7,8 @@
 //! tree-sitter 0.25+ bundles its own `StreamingIterator` re-export instead of
 //! requiring the external `streaming_iterator` crate.
 
+use std::collections::HashSet;
+
 use tracing::debug_span;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
@@ -58,16 +60,19 @@ pub(crate) fn collect_captures<'a>(
 
     let mut cursor = QueryCursor::new();
     let mut captures_result = Vec::new();
+    let mut seen = HashSet::new();
 
     let mut captures = cursor.captures(&query, root, source_bytes);
     let mut count = 0usize;
     while let Some((m, capture_index)) = captures.next() {
         if let Some(cap) = m.captures.get(*capture_index) {
-            let name = capture_names
-                .get(cap.index as usize)
-                .cloned()
-                .unwrap_or_else(|| format!("capture_{}", cap.index));
-            captures_result.push((name, cap.node));
+            if seen.insert((cap.index, cap.node.id())) {
+                let name = capture_names
+                    .get(cap.index as usize)
+                    .cloned()
+                    .unwrap_or_else(|| format!("capture_{}", cap.index));
+                captures_result.push((name, cap.node));
+            }
         }
         count += 1;
         if count % 100 == 0 {

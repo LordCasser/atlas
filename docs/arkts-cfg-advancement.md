@@ -1,8 +1,9 @@
 # ArkTS 分析边界审计
 
-> 审计日期：2026-07-11
+> 审计日期：2026-07-12
 > 范围：ArkTS parser fallback、声明式 ArkUI、CFG、dataflow、AppStorage 运行时边
-> 结论：保留有限 CFG 支持；不基于语言规范约束上调分析置信度；当前不继续扩张 ArkUI parser。
+> 结论：保留有限 CFG 支持；增加 declaration-only recovery，不把 recovery tree 用于执行语义；
+> 不基于语言规范约束上调分析置信度。
 
 ## 1. 证据边界
 
@@ -24,13 +25,14 @@ TS -> ArkTS 迁移。因此，`no var`、`no destructuring`、`no function expre
 original .ets source
   -> ArkTS ParserSpec::parser_source
      -> byte-stable `struct` -> `class ` normalization
-  -> tree-sitter TypeScript grammar
-  -> ArkTS normalizers
+  -> primary tree-sitter TypeScript tree
+     -> references / callsites / lexical / dataflow / CFG
+  -> optional byte-stable declaration recovery tree
+     -> definitions / scopes only
      -> class_declaration / fallback class -> Struct
      -> brace-balanced complete Struct range
-     -> reject ArkUI fake methods
-     -> recover UI calls and build() ownership
-  -> lexical/dataflow/CFG consumers
+     -> reject nested ArkUI fake methods by ownership
+     -> recover declarations swallowed after ArkUI blocks
 ```
 
 所有 parser consumer 必须复用 `ParserSpec::parser_source()`，并要求 normalization 后字节长度与
@@ -40,13 +42,24 @@ original .ets source
 ArkTS，否则 `struct` 不会形成可识别 class。若 fallback class AST 的终点早于已存 Struct range，
 AST definition 必须被拒绝并退回完整 stored range。
 
+`declaration_recovery_source` 只把 primary tree 中非 `class_body` 直属的假
+`method_definition` 名称等长替换为控制块 token，再解析声明边界。该变换不会进入 reference、callsite、
+dataflow 或 CFG；否则会把用于恢复声明的语法占位误当执行事实。
+
 ## 3. 已支持能力
 
 ### 3.1 声明式结构事实
 
 - `struct`、字段、真实方法和 scope 可恢复。
+- abstract class、interface property/method、enum member 使用既有 SymbolKind；async 写入
+  `SymbolDef.async_`。
+- Decorator 记录为 `ReferenceKind::Decoration`，不创建虚构 decorator symbol；resolver 将 ArkTS
+  decoration 作为 framework external terminal，不生成 Python-style callback registration。
+- Decorated symbol 的完整 `range` 从第一个相邻 decorator 开始；字段顺序和 AppStorage annotation
+  邻接使用 `name_range`，不复用 full declaration 起点。
 - 参数化 component decorator + trailing chain 形成的 fallback `class` 也可恢复；Struct range
   使用跳过 string/template/regex/comment 的 brace balance 覆盖真实 closing brace。
+- build 后的 `@Styles` 和 struct 后的 `@Extend function` 可由 declaration tree 恢复。
 - `build()` 是真实 Method，不再是全局假调用。
 - `Row`、`Column`、`Web` 等 UI 调用保留 `build()` caller。
 - 成员调用保留 receiver，允许识别 `AppStorage.set/setOrCreate`。
@@ -107,18 +120,21 @@ function CFG。把 callback 的分支直接递归合并进 `build()` CFG 会混�
 - Atlas 不验证 ArkTS 编译合法性，不能因官方禁止某语法而假设输入中不存在该语法。
 - interface/polymorphic dispatch、framework callback 和函数值传递仍可能产生未解析调用。
 - AppStorage 不建模 `@StorageLink` 反向写回、字段默认初始化、常量求值、时序和进程边界。
+- 字段 decorator/type/initializer 可通过完整 declaration source 查看，但尚无专用结构化 IR；
+  Decoration reference 也不等价于“已关联到具体字段”的 annotation 模型。
 
-## 5. 为什么当前不继续扩张 parser
+## 5. 为什么 declaration recovery 不等于扩张语义 parser
 
-当前原始目标是让声明式 UI 的组件、`build()`、UI Sink 和 AppStorage 入向来源可查询；这条主链已有
-端到端测试。剩余缺口集中在“ArkUI block/callback 的完整语义”，正确推进至少需要以下之一：
+Declaration recovery 只恢复可由源码边界证明的命名声明，解决假 Method、`@Styles` 和 `@Extend`
+级联丢失。当前原始目标中的 `build()`、UI Sink 和 AppStorage 入向来源已有端到端测试。剩余缺口
+集中在“ArkUI block/callback 的完整执行语义”，正确推进至少需要以下之一：
 
 1. 可维护的 ArkTS/ArkUI tree-sitter grammar；或
 2. callback 独立 symbol + call edge + function CFG 的通用模型。
 
-两者都属于跨语言架构能力，不应通过更多 ArkTS 字符串 rewrite、伪 method 或把 callback CFG
-并入 owner method 来实现。在出现依赖 UI callback path-sensitive 分析的明确产品需求前，不增加
-grammar fork 或匿名 callback 实体。
+两者都属于跨语言架构能力。Declaration tree 的等长占位不得扩展到 primary tree，也不得把 callback
+CFG 并入 owner method。在出现依赖 UI callback path-sensitive 分析的明确产品需求前，不增加 grammar
+fork 或匿名 callback 实体。
 
 ## 6. 继续推进的触发条件
 

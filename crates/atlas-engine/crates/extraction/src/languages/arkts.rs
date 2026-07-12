@@ -6,15 +6,17 @@
 //! fallback grammar can preserve their members and scopes without shifting ranges.
 //!
 //! ArkUI trailing-block calls such as `Column() { ... }` still produce local ERROR
-//! nodes. The ArkTS queries repair the one systematic artifact produced by the TS
-//! grammar: nested component calls represented as object-literal methods.
+//! nodes. The primary tree keeps expression facts; a byte-stable declaration-only
+//! recovery tree prevents those errors from inventing methods or swallowing later
+//! declarations.
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
-use crate::languages::shared::make_scope_def_auto_name;
+use crate::languages::node_text;
+use crate::languages::shared::{make_reference_use, make_scope_def_auto_name};
 use std::borrow::Cow;
 use std::path::Path;
 use types::capability::FeatureSupport;
@@ -33,7 +35,9 @@ const ARKTS_MANIFEST_QUERY: &str = concat!(
 
 const ARKTS_REFERENCES_QUERY: &str = concat!(
     include_str!("../../queries/typescript/references.scm"),
-    "\n(expression_statement (object (method_definition name: (property_identifier) @reference.call)))\n"
+    "\n(expression_statement (object (method_definition name: (property_identifier) @reference.call)))\n",
+    "\n(decorator (identifier) @reference.decorator)\n",
+    "\n(decorator (call_expression function: (identifier) @reference.decorator))\n"
 );
 
 const ARKTS_SCOPES_QUERY: &str = concat!(
@@ -55,7 +59,7 @@ fn normalize_arkts_definition(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<SymbolDef> {
-    if capture_name == "definition.method" && is_declarative_block_method(node) {
+    if capture_name == "definition.method" && is_nested_arkts_method_definition(node) {
         return None;
     }
 
@@ -86,6 +90,18 @@ fn normalize_arkts_reference(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<ReferenceUse> {
+    if capture_name == "reference.decorator" {
+        let text = node_text(node, source)?;
+        let decorator = std::iter::successors(Some(node), |current| current.parent())
+            .find(|current| current.kind() == "decorator")?;
+        return Some(make_reference_use(
+            file_id,
+            ReferenceKind::Decoration,
+            text.clone(),
+            text,
+            super::node_range(decorator),
+        ));
+    }
     if capture_name == "reference.type"
         && node
             .parent()
@@ -124,7 +140,7 @@ fn normalize_arkts_scope(
     file_id: FileId,
     _file_path: &Path,
 ) -> Option<ScopeDef> {
-    if capture_name == "scope.method" && is_declarative_block_method(node) {
+    if capture_name == "scope.method" && is_nested_arkts_method_definition(node) {
         return None;
     }
     if capture_name == "scope.class" && is_arkts_struct(node, source) {
@@ -236,7 +252,7 @@ fn matching_brace_end(
     None
 }
 
-fn is_declarative_block_method(node: tree_sitter::Node<'_>) -> bool {
+fn is_nested_arkts_method_definition(node: tree_sitter::Node<'_>) -> bool {
     let method = if node.kind() == "method_definition" {
         node
     } else {
@@ -247,9 +263,7 @@ fn is_declarative_block_method(node: tree_sitter::Node<'_>) -> bool {
     };
     method
         .parent()
-        .filter(|parent| parent.kind() == "object")
-        .and_then(|object| object.parent())
-        .is_some_and(|parent| parent.kind() == "expression_statement")
+        .is_none_or(|parent| parent.kind() != "class_body")
 }
 
 fn normalize_struct_keywords(source: &str) -> Cow<'_, str> {
@@ -287,6 +301,65 @@ fn normalize_struct_keywords(source: &str) -> Cow<'_, str> {
     }
 }
 
+fn recover_arkts_declaration_source(
+    parser_source: &str,
+    primary_root: tree_sitter::Node<'_>,
+) -> Option<String> {
+    // TS reads `Component(args) { ... }` as a nested method. In the declaration
+    // view only, an equal-width `if` token preserves its condition/body shape
+    // while allowing the surrounding class and following declarations to close.
+    let mut output = parser_source.as_bytes().to_vec();
+    let mut replacements = nested_method_name_ranges(primary_root);
+    if replacements.is_empty() {
+        return None;
+    }
+
+    let language: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).ok()?;
+
+    loop {
+        for (start, end) in replacements.drain(..) {
+            output[start] = b'i';
+            output[start + 1] = b'f';
+            output[start + 2..end].fill(b' ');
+        }
+
+        let tree = parser.parse(&output, None)?;
+        replacements = nested_method_name_ranges(tree.root_node());
+        if replacements.is_empty() {
+            break;
+        }
+    }
+
+    String::from_utf8(output).ok()
+}
+
+fn nested_method_name_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "method_definition"
+            && node
+                .parent()
+                .is_none_or(|parent| parent.kind() != "class_body")
+        {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .filter(|name| name.kind() == "property_identifier")
+                .filter(|name| name.end_byte() - name.start_byte() >= 2)
+            {
+                ranges.push((name.start_byte(), name.end_byte()));
+            }
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.children(&mut cursor));
+    }
+    ranges.sort_unstable();
+    ranges.dedup();
+    ranges
+}
+
 // ── Slot trait implementations ──────────────────────────────────────────
 
 impl ParserSpec for ArkTsAdapter {
@@ -298,6 +371,13 @@ impl ParserSpec for ArkTsAdapter {
     }
     fn parser_source<'a>(&self, source: &'a str) -> Cow<'a, str> {
         normalize_struct_keywords(source)
+    }
+    fn declaration_recovery_source(
+        &self,
+        parser_source: &str,
+        primary_root: tree_sitter::Node<'_>,
+    ) -> Option<String> {
+        recover_arkts_declaration_source(parser_source, primary_root)
     }
 }
 
@@ -484,9 +564,17 @@ struct MainPage {
             .unwrap();
         assert_eq!(struct_symbol.kind, SymbolKind::Struct);
         assert_eq!(
+            facts
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.name == "MainPage")
+                .count(),
+            1
+        );
+        assert_eq!(
             &source[struct_symbol.range.start_byte as usize..struct_symbol.range.end_byte as usize],
-            &source[source.find("struct MainPage").unwrap()..],
-            "struct range must cover the complete declaration"
+            source,
+            "struct range must include decorators and the complete declaration"
         );
         assert_eq!(
             struct_symbol.range.end_line,
@@ -530,8 +618,92 @@ struct MainPage {
         assert!(!facts.references.iter().any(|reference| {
             reference.kind == ReferenceKind::Call && reference.name == "build"
         }));
+        for decorator in ["Component", "StorageLink"] {
+            assert!(facts.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Decoration && reference.name == decorator
+            }));
+        }
         assert!(facts.callsites.iter().all(|callsite| {
             callsite.caller == build.id || callsite.range.start_byte < build.range.start_byte
+        }));
+    }
+
+    #[test]
+    fn ts_compatible_declarations_fill_existing_arkts_ir() {
+        let source = r#"export abstract class BaseVM<T extends BaseState> {
+  protected state: T;
+  public abstract sendEvent(event: BaseEvent): void;
+}
+
+export interface ResponseData<T> {
+  currentPage: number;
+  refresh(force: boolean): Promise<T>;
+}
+
+export enum LoadingStatus {
+  IDLE = 'idle',
+  OFF,
+}
+
+export async function load(): Promise<void> {}
+"#;
+        let frontend = arkts_frontend();
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("declarations.ets"),
+            Path::new("declarations.ets"),
+            source,
+            "declarations",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(facts.file.status, ParseStatus::Success);
+        for (qualified_name, kind) in [
+            ("BaseVM", SymbolKind::Class),
+            ("BaseVM.state", SymbolKind::Field),
+            ("BaseVM.sendEvent", SymbolKind::Method),
+            ("ResponseData", SymbolKind::Interface),
+            ("ResponseData.currentPage", SymbolKind::Property),
+            ("ResponseData.refresh", SymbolKind::Method),
+            ("LoadingStatus", SymbolKind::Enum),
+            ("LoadingStatus.IDLE", SymbolKind::EnumMember),
+            ("LoadingStatus.OFF", SymbolKind::EnumMember),
+        ] {
+            assert!(
+                facts.symbols.iter().any(|symbol| {
+                    symbol.qualified_name == qualified_name && symbol.kind == kind
+                }),
+                "missing {kind:?} {qualified_name}"
+            );
+        }
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .find(|symbol| symbol.name == "load")
+                .is_some_and(|symbol| symbol.async_)
+        );
+
+        let manifest = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("declarations.ets"),
+            Path::new("declarations.ets"),
+            source,
+            "declarations-manifest",
+            crate::ExtractionMode::Manifest,
+            &(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "BaseVM" && symbol.kind == SymbolKind::Class)
+        );
+        assert!(!manifest.symbols.iter().any(|symbol| {
+            matches!(symbol.kind, SymbolKind::Property | SymbolKind::EnumMember)
         }));
     }
 
@@ -638,6 +810,105 @@ struct MainPage {
                 .symbols
                 .iter()
                 .any(|symbol| { symbol.name == "MainPage" && symbol.kind == SymbolKind::Struct })
+        );
+    }
+
+    #[test]
+    fn declaration_recovery_restores_post_build_styles_and_extend_function() {
+        let source = r#"@Component
+struct Card {
+  build() {
+    if (ready) {
+      Row() {
+        Text('ready')
+      }
+      .height('100%')
+    } else {
+      Column() {
+        Text('idle')
+      }
+      .height('100%')
+    }
+  }
+
+  @Styles
+  pressedStyle() {
+    .backgroundColor(Color.Transparent)
+  }
+}
+
+@Extend(Button)
+function cardButtonStyle(color: ResourceColor) {
+  .fontColor(color)
+  .width('100%')
+}
+"#;
+        let frontend = arkts_frontend();
+        let parser_source = frontend.parser.parser_source(source);
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&frontend.parser.tree_sitter_language())
+            .unwrap();
+        let primary_tree = parser.parse(parser_source.as_bytes(), None).unwrap();
+        assert!(!nested_method_name_ranges(primary_tree.root_node()).is_empty());
+
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("Card.ets"),
+            Path::new("Card.ets"),
+            source,
+            "declaration-recovery",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        let card = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "Card")
+            .unwrap();
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "Card.pressedStyle"
+                && symbol.kind == SymbolKind::Method
+                && symbol.container == Some(card.id)
+        }));
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "cardButtonStyle" && symbol.kind == SymbolKind::Function
+        }));
+        assert!(!facts.symbols.iter().any(|symbol| {
+            symbol.kind == SymbolKind::Method
+                && matches!(symbol.name.as_str(), "Row" | "Column" | "Text")
+        }));
+        for decorator in ["Styles", "Extend"] {
+            assert!(facts.references.iter().any(|reference| {
+                reference.kind == ReferenceKind::Decoration && reference.name == decorator
+            }));
+        }
+
+        let manifest = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("Card.ets"),
+            Path::new("Card.ets"),
+            source,
+            "declaration-recovery-manifest",
+            crate::ExtractionMode::Manifest,
+            &(),
+        )
+        .unwrap();
+        assert!(
+            manifest
+                .symbols
+                .iter()
+                .any(|symbol| { symbol.name == "Card" && symbol.kind == SymbolKind::Struct })
+        );
+        assert!(manifest.symbols.iter().any(|symbol| {
+            symbol.name == "cardButtonStyle" && symbol.kind == SymbolKind::Function
+        }));
+        assert!(
+            !manifest
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "pressedStyle")
         );
     }
 

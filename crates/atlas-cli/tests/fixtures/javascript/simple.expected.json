@@ -5,10 +5,6 @@
       "kind": "class"
     },
     {
-      "name": "Server",
-      "kind": "class"
-    },
-    {
       "name": "constructor",
       "kind": "method",
       "signature": "(port)"

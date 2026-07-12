@@ -30,6 +30,18 @@
   ],
   "references": [
     {
+      "text": "Component",
+      "kind": "decoration"
+    },
+    {
+      "text": "Prop",
+      "kind": "decoration"
+    },
+    {
+      "text": "State",
+      "kind": "decoration"
+    },
+    {
       "text": "Column",
       "kind": "call"
     },

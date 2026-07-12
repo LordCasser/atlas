@@ -72,6 +72,8 @@ const TS_JS_BUILTINS: &[&str] = &[
     "btoa",
 ];
 
+const ARKTS_BUILTINS: &[&str] = &["$r"];
+
 const PYTHON_BUILTINS: &[&str] = &[
     "print",
     "len",
@@ -653,9 +655,8 @@ impl BuiltinFilter {
     /// and should be excluded from resolution.
     pub fn is_builtin(name: &str, lang: Language) -> bool {
         match lang {
-            Language::TypeScript | Language::JavaScript | Language::ArkTS => {
-                TS_JS_BUILTINS.contains(&name)
-            }
+            Language::TypeScript | Language::JavaScript => TS_JS_BUILTINS.contains(&name),
+            Language::ArkTS => TS_JS_BUILTINS.contains(&name) || ARKTS_BUILTINS.contains(&name),
             Language::Python => PYTHON_BUILTINS.contains(&name),
             Language::Java => JAVA_BUILTINS.contains(&name),
             Language::C => C_BUILTINS.contains(&name),
@@ -674,6 +675,8 @@ mod tests {
         assert!(BuiltinFilter::is_builtin("console", Language::TypeScript));
         assert!(BuiltinFilter::is_builtin("Promise", Language::JavaScript));
         assert!(BuiltinFilter::is_builtin("window", Language::ArkTS));
+        assert!(BuiltinFilter::is_builtin("$r", Language::ArkTS));
+        assert!(!BuiltinFilter::is_builtin("$r", Language::TypeScript));
         assert!(!BuiltinFilter::is_builtin(
             "myFunction",
             Language::TypeScript

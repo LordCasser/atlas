@@ -5,6 +5,14 @@
       "kind": "interface"
     },
     {
+      "name": "id",
+      "kind": "property"
+    },
+    {
+      "name": "name",
+      "kind": "property"
+    },
+    {
       "name": "ConstraintDemo",
       "kind": "struct"
     },

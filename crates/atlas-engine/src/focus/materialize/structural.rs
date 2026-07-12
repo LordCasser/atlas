@@ -1544,7 +1544,7 @@ mod tests {
         let store = test_store();
         let root = tempfile::tempdir().unwrap();
         let path = "MainPage.ets";
-        let source = "@Component({ freezeWhenInactive: true })\nstruct MainPage {\n  build() { Text('ready') }\n}\n";
+        let source = "\n@Component({ freezeWhenInactive: true })\nstruct MainPage {\n  build() { Text('ready') }\n}\n";
         std::fs::write(root.path().join(path), source).unwrap();
 
         let fid = FileId::generate(path);

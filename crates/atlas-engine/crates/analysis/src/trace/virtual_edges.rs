@@ -429,14 +429,14 @@ fn arkts_state_for_field(
         return Ok(vec![]);
     };
 
-    let previous_field_start = symbols
+    let previous_field_name_start = symbols
         .iter()
         .filter(|symbol| {
             symbol.kind == SymbolKind::Field
                 && symbol.container == Some(container_id)
-                && symbol.range.start_byte < field.range.start_byte
+                && symbol.name_range.start_byte < field.name_range.start_byte
         })
-        .map(|symbol| symbol.range.start_byte)
+        .map(|symbol| symbol.name_range.start_byte)
         .max()
         .unwrap_or(0);
     let references = store.find_references_by_file(&field_read.file_id)?;
@@ -445,8 +445,8 @@ fn arkts_state_for_field(
         .iter()
         .filter(|callsite| {
             callsite.caller == container_id
-                && callsite.range.start_byte > previous_field_start
-                && callsite.range.end_byte <= field.range.start_byte
+                && callsite.range.start_byte > previous_field_name_start
+                && callsite.range.end_byte <= field.name_range.start_byte
         })
         .filter_map(|callsite| {
             let reference_id = callsite.reference_id?;

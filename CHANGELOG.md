@@ -118,6 +118,19 @@ All notable changes to Atlas will be documented in this file.
   type ranges with inverted line intervals, and
   `SourceExtractor` rejects truncated AST definitions in favor of the complete
   stored range.
+- ArkTS declaration extraction now rejects nested ArkUI recovery methods by
+  ownership instead of a narrow object shape. A byte-stable declaration-only
+  recovery tree restores post-build `@Styles` methods and top-level `@Extend`
+  functions without changing the primary references/dataflow/CFG tree.
+  TypeScript-compatible abstract classes, interface properties/methods, enum
+  members, async flags, and decorator references now populate existing IR;
+  member source extraction includes field decorators, types, and initializers.
+- Builtin resolution is terminal before project-wide matching. ArkTS `$r`
+  therefore remains an external resource API instead of resolving to an
+  unrelated JavaScript symbol; ArkTS decoration references likewise remain
+  framework externals instead of generating Python-style callback edges.
+  Overlapping tree-sitter query captures are
+  deduplicated by capture/node identity before normalization.
 - ArkTS named function/method CFG is enabled through the shared TypeScript
   walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
   edges. ArkUI trailing blocks remain single statements and nested arrow

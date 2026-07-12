@@ -5,8 +5,12 @@
       "kind": "interface"
     },
     {
-      "name": "Server",
-      "kind": "class"
+      "name": "port",
+      "kind": "property"
+    },
+    {
+      "name": "host",
+      "kind": "property"
     },
     {
       "name": "Server",

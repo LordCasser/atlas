@@ -40,15 +40,23 @@ Each language implements a `LanguageFrontend` via slot-based composition:
 
 - **14 languages** with DataflowInterproc capability (all compiled by default)
 - All languages support full structural analysis and DataflowInterproc tracing.
-- Capability profiles currently declare CFG support for 12 languages; ArkTS and PHP are the exceptions.
+- Capability profiles declare named function/method CFG support for 13 languages;
+  PHP remains unsupported and ArkTS is explicitly limited.
 
 For detailed capability profiles, see `types::LanguageCapabilityProfile`.
 
 ArkTS uses the TypeScript grammar with a byte-length-preserving `struct` to
 `class ` parser normalization. This preserves declarative component fields,
 methods, scopes, and UI call ownership against the original source ranges.
+When ArkUI error recovery swallows declarations, an optional byte-stable
+declaration tree recovers symbols and scopes while the primary tree remains the
+only source for references, callsites, lexical facts, dataflow, and CFG.
 ArkUI trailing-block calls remain best-effort grammar input, so a file may
 correctly expose recovered structural facts while retaining `partial` parse status.
+ArkTS/TypeScript abstract classes, interface properties/methods, and enum members
+use the existing symbol kinds. Decorators are usage references rather than
+synthetic definitions. Field source includes decorators, type, and initializer;
+those parts do not yet have dedicated structured IR fields.
 Query-time tracing separately bridges `AppStorage.set`/`setOrCreate` values to
 matching `@StorageProp`/`@StorageLink` field reads. Matching is syntactic; reverse
 links, default initialization, and process boundaries are not modeled.

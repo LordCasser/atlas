@@ -197,7 +197,12 @@ tree-sitter 0.26 parser
   TS grammar 将组件表示为嵌入表达式链的 `class`，而非 `class_declaration`；ArkTS 自有
   definition/manifest/scope query 必须覆盖两者。Struct 的完整终点从真实 opening brace 做配对，
   并跳过 parser 已识别的 string/template/regex/comment 区间；不得信任提前闭合的 fallback AST。
-  ArkTS normalizer 同时必须消除伪 method 并恢复 call ownership。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
+  ArkTS normalizer 同时必须消除伪 method 并恢复 call ownership。若 primary tree 的 ArkUI
+  错误恢复吞并后续声明，`ParserSpec::declaration_recovery_source` 可产生第二棵等长 declaration
+  tree：它只供 definitions/scopes 使用；references/callsites/lexical/dataflow/CFG 必须继续消费
+  primary tree。不得用 declaration rewrite 伪造执行语义。Decorator 是
+  `ReferenceKind::Decoration` 使用事实，不创建 decorator 定义实体；ArkTS framework decoration
+  在 resolver 中是 external terminal，不生成 Python-style `RegistersCallback`。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
   为依据，不把 ArkUI 语法错误归因于 ArkTS 核心语法。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - 所有 14 种语言均默认编译。
@@ -214,7 +219,10 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 不变式：
 - 同一 `FileFacts` 中的 facts 必须属于同一个 file。
+- 同一 query 的同名 capture 对同一 tree-sitter node 只归一化一次；重叠 query pattern 不得制造重复 facts。
 - range 必须包含 byte offset 和 line/column。
+- `SymbolDef.range` 是完整声明范围，可包含 decorator；需要排序、邻接或定位声明名称的消费者必须使用
+  `name_range`，不得假设 `range.start_byte == name_range.start_byte`。
 - references 永不因为 resolved 而删除；unresolved references 必须保留。
 - callsite 必须能回溯到 reference location。
 - dataflow 使用 `DataNodeId → DataNodeId`，6 字段完整 TextRange。
@@ -228,6 +236,7 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 签名格式：
 - 单行字符串，使用 compact whitespace normalization。
 - 不包含符号名，只包含接口形状信息，例如参数列表、泛型参数、返回类型或语言等价形式。
+- `async` 等正交修饰信息写入 `SymbolDef.async_`，不重复编码进 signature。
 - 适用于 `function`、`method`、`constructor` 等可调用符号；类型、变量、字段等天然无调用签名的符号可为 `null`。
 
 `signature: null` 只允许两类情况：
