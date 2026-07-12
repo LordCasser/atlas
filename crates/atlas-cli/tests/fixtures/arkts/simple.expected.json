@@ -72,9 +72,6 @@
       "imported_name": "Router"
     },
     {
-      "module": "@ohos/express"
-    },
-    {
       "module": "",
       "imported_name": "createServer"
     }

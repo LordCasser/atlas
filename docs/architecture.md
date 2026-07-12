@@ -223,6 +223,9 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 - range 必须包含 byte offset 和 line/column。
 - `SymbolDef.range` 是完整声明范围，可包含 decorator；需要排序、邻接或定位声明名称的消费者必须使用
   `name_range`，不得假设 `range.start_byte == name_range.start_byte`。
+- `ImportDef` 对每个 imported binding 产生一条事实；仅 side-effect import、bare require 和 wildcard
+  re-export 使用空 `imported_name` 的 module-only 事实。同一语句不得同时产生冗余 module-only 与 binding
+  事实。`range` 覆盖完整 import/export/require 语句，`local_name` 仅在源码真实重命名时存在。
 - references 永不因为 resolved 而删除；unresolved references 必须保留。
 - callsite 必须能回溯到 reference location。
 - dataflow 使用 `DataNodeId → DataNodeId`，6 字段完整 TextRange。

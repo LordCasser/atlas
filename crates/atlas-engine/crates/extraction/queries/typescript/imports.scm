@@ -1,12 +1,18 @@
 ; TypeScript/JavaScript imports query
 
-; Module source for all import statements
+; Side-effect import: `import './setup'`
 (import_statement
+  "import" .
   source: (string) @import.module)
 
 ; Named imports
 (import_specifier
-  name: (identifier) @import.name)
+  name: (identifier) @import.name
+  !alias)
+
+; Default import: `import Client from './client'`
+(import_clause
+  (identifier) @import.default)
 
 ; Aliased import
 (import_specifier
@@ -20,13 +26,15 @@
 
 ; Wildcard re-export: `export * from './bar'`
 (export_statement
+  "*"
   source: (string) @export.module)
 
 ; Named re-export: `export { foo } from './bar'`
 ; `export_specifier` is nested inside `export_clause` in tree-sitter
 (export_clause
   (export_specifier
-    name: (identifier) @export.name))
+    name: (identifier) @export.name
+    !alias))
 
 ; Aliased re-export: `export { foo as bar } from './bar'`
 (export_clause
@@ -40,7 +48,7 @@
   name: (identifier) @import.require_name
   value: (call_expression
     function: (identifier) @_require_fn
-    arguments: (arguments (string) @import.require_module))
+    arguments: (arguments (string)))
   (#eq? @_require_fn "require"))
 
 ; Bare require('./foo') without assignment (side-effect import)

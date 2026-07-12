@@ -182,7 +182,7 @@ pub(crate) fn normalize_ts_import(
     file_id: FileId,
 ) -> Option<ImportDef> {
     let (kind, module, imported_name) = ts_import_info(capture_name, node, source)?;
-    let range = node_range(node);
+    let range = import_statement_range(node);
 
     // For aliased imports/exports, the captured node is the alias (e.g. `bar` in
     // `import { foo as bar }`), but imported_name should hold the original exported
@@ -196,15 +196,12 @@ pub(crate) fn normalize_ts_import(
                 .and_then(|n| node_text(n, source))
                 .unwrap_or_else(|| imported_name.clone());
             let alias = imported_name.clone(); // this is the alias text from ts_import_info
-            (original, alias)
+            (original, Some(alias))
         } else {
-            let local = imported_name.clone();
-            (imported_name, local)
+            (imported_name, None)
         };
     let is_relative = module.starts_with('.');
-    let is_wildcard = capture_name.contains("wildcard")
-        // `export.module` without an accompanying `export.name` = wildcard re-export
-        || (capture_name == "export.module");
+    let is_wildcard = matches!(capture_name, "import.namespace" | "export.module");
 
     let import_id = ImportId::generate(
         &file_id,
@@ -220,12 +217,32 @@ pub(crate) fn normalize_ts_import(
         kind,
         module,
         imported_name,
-        local_name: Some(local_name),
+        local_name,
         is_wildcard,
         is_relative,
         range,
         alias: None,
     })
+}
+
+/// Return the complete source statement represented by an import capture.
+fn import_statement_range(mut node: tree_sitter::Node<'_>) -> TextRange {
+    loop {
+        if matches!(
+            node.kind(),
+            "import_statement"
+                | "export_statement"
+                | "lexical_declaration"
+                | "variable_declaration"
+                | "expression_statement"
+        ) {
+            return node_range(node);
+        }
+        let Some(parent) = node.parent() else {
+            return node_range(node);
+        };
+        node = parent;
+    }
 }
 
 pub(crate) fn normalize_ts_scope(
@@ -714,7 +731,7 @@ fn ts_import_info(
                 .to_string();
             Some((ImportKind::Import, cleaned, String::new()))
         }
-        "import.name" | "import.alias" => {
+        "import.name" | "import.alias" | "import.default" => {
             let name = node_text(node, source)?;
             // Walk up to the enclosing import_statement to find the module source
             let module = extract_module_from_ancestor(node, source);
@@ -937,6 +954,63 @@ export async function load(): Promise<void> {}
     }
 
     #[test]
+    fn imports_emit_one_fact_per_binding_or_side_effect() {
+        let source = r#"import Client from './client';
+import { foo, bar as baz } from './named';
+import './side-effect';
+import * as ns from './namespace';
+export { greet, add as plus } from './exports';
+export * from './wildcard';
+const helper = require('./helper');
+require('./require-effect');"#;
+        let frontend = typescript_frontend();
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("imports.ts"),
+            std::path::Path::new("imports.ts"),
+            source,
+            "imports",
+            crate::ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(facts.imports.len(), 10, "{:?}", facts.imports);
+
+        for (name, module, local_name, wildcard) in [
+            ("Client", "./client", None, false),
+            ("foo", "./named", None, false),
+            ("bar", "./named", Some("baz"), false),
+            ("", "./side-effect", None, false),
+            ("ns", "./namespace", None, true),
+            ("greet", "./exports", None, false),
+            ("add", "./exports", Some("plus"), false),
+            ("", "./wildcard", None, true),
+            ("helper", "./helper", None, false),
+            ("", "./require-effect", None, false),
+        ] {
+            let import = facts
+                .imports
+                .iter()
+                .find(|import| {
+                    import.imported_name == name
+                        && import.module == module
+                        && import.local_name.as_deref() == local_name
+                })
+                .unwrap_or_else(|| panic!("missing import {name:?} from {module:?}"));
+            assert_eq!(import.is_wildcard, wildcard);
+            let statement =
+                &source[import.range.start_byte as usize..import.range.end_byte as usize];
+            assert!(statement.contains(module));
+            assert!(
+                statement.ends_with(';'),
+                "range was not the full statement: {statement:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_scope_query_parses() {
         let spec = TypeScriptFrontendSpec;
         let lang = spec.tree_sitter_language();
@@ -1143,15 +1217,9 @@ require('./side-effect');
                 }
             }
         }
-        // Module paths: 'fs', "path", './side-effect'
-        assert!(
-            require_modules.iter().any(|m| m.contains("fs")),
-            "should capture require('fs') module path"
-        );
-        assert!(
-            require_modules.iter().any(|m| m.contains("path")),
-            "should capture require(\"path\") module path"
-        );
+        // Assigned require() calls emit their binding fact; only the bare
+        // side-effect require emits a module-only fact.
+        assert_eq!(require_modules.len(), 1);
         assert!(
             require_modules.iter().any(|m| m.contains("side-effect")),
             "should capture bare require('./side-effect') module path"
@@ -1206,28 +1274,13 @@ require('./side-effect');
                 }
             }
         }
-        // Should produce at least one ImportDef for the require
-        assert!(
-            !imports.is_empty(),
-            "should produce ImportDef for require()"
-        );
-        // Find the require_module-derived ImportDef (with module path)
-        let module_import = imports
-            .iter()
-            .find(|i| i.module == "./helper")
-            .expect("should have an import with module './helper'");
-        assert_eq!(module_import.kind, ImportKind::Import);
-        assert!(
-            module_import.is_relative,
-            "require('./helper') should be relative"
-        );
-        // Find the require_name-derived ImportDef (with variable name)
-        let name_import = imports
-            .iter()
-            .find(|i| i.imported_name == "helper")
-            .expect("should have an import with imported_name 'helper'");
+        assert_eq!(imports.len(), 1, "assigned require must emit one fact");
+        let name_import = &imports[0];
         assert_eq!(name_import.kind, ImportKind::Import);
         assert_eq!(name_import.module, "./helper");
+        assert_eq!(name_import.imported_name, "helper");
+        assert!(name_import.is_relative);
+        assert_eq!(name_import.range, node_range(root.named_child(0).unwrap()));
     }
 
     /// Verify that CommonJS `module.exports` and `exports.foo` patterns are

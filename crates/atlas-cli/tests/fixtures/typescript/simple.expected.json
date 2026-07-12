@@ -108,9 +108,6 @@
       "imported_name": "Router"
     },
     {
-      "module": "express"
-    },
-    {
       "module": "",
       "imported_name": "createServer"
     }

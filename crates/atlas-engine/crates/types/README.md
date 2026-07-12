@@ -124,6 +124,10 @@ struct ImportDef {
 }
 ```
 
+Each imported binding is one fact. Module-only facts are reserved for
+side-effect imports, bare requires, and wildcard re-exports. `range` covers the
+complete statement, and `local_name` is present only for an explicit rename.
+
 ### Callsite
 ```rust
 struct Callsite {

@@ -42,9 +42,6 @@
       "imported_name": "Router"
     },
     {
-      "module": "express"
-    },
-    {
       "module": "./lib",
       "imported_name": "greet"
     },
@@ -53,21 +50,12 @@
       "imported_name": "farewell"
     },
     {
-      "module": "./lib"
-    },
-    {
       "module": "./utils/index",
       "imported_name": "format"
     },
     {
-      "module": "./utils/index"
-    },
-    {
       "module": "fs",
       "imported_name": "fs"
-    },
-    {
-      "module": "fs"
     }
   ],
   "scopes": [

@@ -137,6 +137,11 @@ All notable changes to Atlas will be documented in this file.
   callbacks do not receive independent CFGs; official language restrictions
   are not treated as validated invariants because Atlas does not run the ArkTS
   compiler.
+- TypeScript/JavaScript/ArkTS imports now emit one `ImportDef` per binding or
+  side effect instead of redundant module/name/alias rows. Default imports are
+  captured explicitly, aliases preserve source and local names, wildcard facts
+  are marked correctly, and every import range covers its complete statement.
+  Query-only predicate captures no longer leak normalization diagnostics.
 
 ### Release hardening
 

@@ -71,7 +71,11 @@ pub(crate) fn collect_captures<'a>(
                     .get(cap.index as usize)
                     .cloned()
                     .unwrap_or_else(|| format!("capture_{}", cap.index));
-                captures_result.push((name, cap.node));
+                // Captures prefixed with `_` exist only for query predicates.
+                // They are constraints, not facts for language normalizers.
+                if !name.starts_with('_') {
+                    captures_result.push((name, cap.node));
+                }
             }
         }
         count += 1;
