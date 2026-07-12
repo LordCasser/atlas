@@ -241,6 +241,14 @@ pub fn extract_file_with_mode(
         vec![]
     };
 
+    // 3b. ArkTS decorator fallback: in complex ArkUI files, cascading parse
+    //     errors swallow @Decorator nodes into giant call_expressions, causing
+    //     the query to miss them. Scan the source for @Identifier and
+    //     @Identifier(...) patterns not already captured.
+    if mode.produces_references() && language == Language::ArkTS {
+        crate::languages::arkts::arkts_decorator_fallback(source, file_id, &mut references);
+    }
+
     // CP3: Check cancellation after reference extraction.
     if token.is_cancelled() {
         return Err(cancelled_error(file_path, language));
@@ -868,11 +876,12 @@ fn extend_decorated_symbol_ranges(
             continue;
         }
 
-        // Build the decorator prefix. Reference names store the bare decorator
-        // name (e.g. "Component"), so we re-add the leading `@` here.
+        // Build the decorator prefix. Reference `text` includes decorator
+        // arguments (e.g. "Extend(Button)") so the prefix renders the full
+        // decorator. `name` would only show the bare identifier.
         let prefix: String = decorators
             .iter()
-            .map(|d| format!("@{}", d.name))
+            .map(|d| format!("@{}", d.text))
             .collect::<Vec<_>>()
             .join(" ");
 

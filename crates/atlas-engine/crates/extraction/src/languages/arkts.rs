@@ -104,14 +104,19 @@ fn normalize_arkts_reference(
     _file_path: &Path,
 ) -> Option<ReferenceUse> {
     if capture_name == "reference.decorator" {
-        let text = node_text(node, source)?;
+        let name = node_text(node, source)?;
         let decorator = std::iter::successors(Some(node), |current| current.parent())
             .find(|current| current.kind() == "decorator")?;
+        // `text` includes decorator arguments (e.g. "Extend(Button)" for
+        // `@Extend(Button)`) so the signature prefix renders the full decorator.
+        // `name` is the bare identifier (e.g. "Extend") for search matching.
+        let decorator_text = node_text(decorator, source)?;
+        let text = decorator_text.strip_prefix('@').unwrap_or(&decorator_text);
         return Some(make_reference_use(
             file_id,
             ReferenceKind::Decoration,
-            text.clone(),
-            text,
+            text.to_string(),
+            name,
             super::node_range(decorator),
         ));
     }
@@ -134,6 +139,218 @@ fn normalize_arkts_reference(
             .map(str::to_string);
     }
     Some(reference)
+}
+
+/// Source-scan fallback for ArkTS decorator references.
+///
+/// In complex ArkUI files, cascading parse errors cause the tree-sitter
+/// TypeScript grammar to swallow `@Decorator` nodes into giant
+/// `call_expression` error-recovery nodes. The query-based extraction then
+/// misses these decorators entirely.
+///
+/// This function scans the raw source for `@Identifier` and
+/// `@Identifier(...)` patterns and adds decoration references for any that
+/// are not already present in `references` (deduplicated by byte range).
+/// A simple state machine skips `@` characters inside strings and comments
+/// to avoid false positives.
+pub(crate) fn arkts_decorator_fallback(
+    source: &str,
+    file_id: FileId,
+    references: &mut Vec<ReferenceUse>,
+) {
+    use types::TextRange;
+
+    let bytes = source.as_bytes();
+
+    // Collect existing decoration reference ranges for deduplication.
+    let existing_ranges: std::collections::HashSet<(u32, u32)> = references
+        .iter()
+        .filter(|r| r.kind == ReferenceKind::Decoration)
+        .map(|r| (r.range.start_byte, r.range.end_byte))
+        .collect();
+
+    // Simple state machine to track string and comment contexts.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Ctx {
+        Normal,
+        SingleString,
+        DoubleString,
+        TemplateString,
+        LineComment,
+        BlockComment,
+    }
+
+    let mut ctx = Ctx::Normal;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        // Update context state.
+        ctx = match ctx {
+            Ctx::LineComment => {
+                if b == b'\n' {
+                    Ctx::Normal
+                } else {
+                    Ctx::LineComment
+                }
+            }
+            Ctx::BlockComment => {
+                if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                    i += 1; // consume the '/'
+                    Ctx::Normal
+                } else {
+                    Ctx::BlockComment
+                }
+            }
+            Ctx::SingleString => {
+                if b == b'\\' {
+                    i += 1; // skip escaped char
+                    Ctx::SingleString
+                } else if b == b'\'' {
+                    Ctx::Normal
+                } else {
+                    Ctx::SingleString
+                }
+            }
+            Ctx::DoubleString => {
+                if b == b'\\' {
+                    i += 1; // skip escaped char
+                    Ctx::DoubleString
+                } else if b == b'"' {
+                    Ctx::Normal
+                } else {
+                    Ctx::DoubleString
+                }
+            }
+            Ctx::TemplateString => {
+                if b == b'\\' {
+                    i += 1; // skip escaped char
+                    Ctx::TemplateString
+                } else if b == b'`' {
+                    Ctx::Normal
+                } else {
+                    Ctx::TemplateString
+                }
+            }
+            Ctx::Normal => {
+                if b == b'/' && i + 1 < bytes.len() {
+                    if bytes[i + 1] == b'/' {
+                        i += 1;
+                        Ctx::LineComment
+                    } else if bytes[i + 1] == b'*' {
+                        i += 1;
+                        Ctx::BlockComment
+                    } else {
+                        Ctx::Normal
+                    }
+                } else if b == b'\'' {
+                    Ctx::SingleString
+                } else if b == b'"' {
+                    Ctx::DoubleString
+                } else if b == b'`' {
+                    Ctx::TemplateString
+                } else {
+                    Ctx::Normal
+                }
+            }
+        };
+
+        // Only check for decorator `@` in Normal context.
+        if ctx == Ctx::Normal && b == b'@' {
+            // The character after `@` must be an identifier start.
+            if i + 1 >= bytes.len() || !bytes[i + 1].is_ascii_alphabetic() {
+                i += 1;
+                continue;
+            }
+
+            let at_byte = i;
+
+            // Extract the identifier name.
+            let name_start = i + 1;
+            let mut name_end = name_start;
+            while name_end < bytes.len()
+                && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+            {
+                name_end += 1;
+            }
+            let name = &source[name_start..name_end];
+
+            // Skip `$r` builtin (not a decorator).
+            if name == "r" || name.is_empty() {
+                i = name_end;
+                continue;
+            }
+
+            // Determine the full decorator end byte.
+            let mut end_byte = name_end;
+            let mut text = name.to_string();
+
+            // Skip whitespace after the identifier name.
+            let mut scan = name_end;
+            while scan < bytes.len() && bytes[scan].is_ascii_whitespace() {
+                scan += 1;
+            }
+
+            if scan < bytes.len() && bytes[scan] == b'(' {
+                // Parameterized decorator: find matching closing paren.
+                let mut depth = 1i32;
+                let mut p = scan + 1;
+                while p < bytes.len() && depth > 0 {
+                    match bytes[p] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    p += 1;
+                }
+                if depth == 0 {
+                    end_byte = p;
+                    text = source[name_start..end_byte].to_string();
+                } else {
+                    // Unbalanced; skip.
+                    i = name_end;
+                    continue;
+                }
+            }
+
+            // Check for deduplication.
+            let range_key = (at_byte as u32, end_byte as u32);
+            if existing_ranges.contains(&range_key) {
+                i = end_byte;
+                continue;
+            }
+
+            // Build the range for this decorator reference.
+            let start_line = source[..at_byte].matches('\n').count() as u32;
+            let last_newline = source[..at_byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let start_column = (at_byte - last_newline) as u32;
+
+            let end_line = source[..end_byte].matches('\n').count() as u32;
+            let last_newline_end = source[..end_byte].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let end_column = (end_byte - last_newline_end) as u32;
+
+            references.push(make_reference_use(
+                file_id,
+                ReferenceKind::Decoration,
+                text,
+                name.to_string(),
+                TextRange {
+                    start_byte: at_byte as u32,
+                    end_byte: end_byte as u32,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                },
+            ));
+
+            i = end_byte;
+            continue;
+        }
+
+        i += 1;
+    }
 }
 
 fn normalize_arkts_import(
@@ -1167,6 +1384,44 @@ function cardButtonStyle(color: ResourceColor) {
             build_card.signature.as_deref(),
             Some("@Builder (label: string)"),
             "decorated method signature should be decorator prefix + parameter list"
+        );
+    }
+
+    #[test]
+    fn extend_decorator_captured_via_fallback_in_complex_file() {
+        // This test uses the real SampleCard.ets file which has a massive
+        // call_expression spanning the struct body and the @Extend function.
+        // The tree-sitter query cannot capture @Extend inside this error
+        // context, so the source-scan fallback must handle it.
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../examples/arkts_example/features/devpractices/src/main/ets/component/SampleCard.ets");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read SampleCard.ets: {e} at {path:?}"));
+        let facts = extract_single(&source, "SampleCard.ets");
+
+        // The @Extend decorator reference must be captured via fallback
+        let extend_ref = facts
+            .references
+            .iter()
+            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "Extend");
+        assert!(
+            extend_ref.is_some(),
+            "@Extend decoration reference must be captured (via source-scan fallback) even when the primary tree swallows it into a call_expression"
+        );
+
+        // The function symbol must have @Extend in its signature
+        let func = facts
+            .symbols
+            .iter()
+            .find(|s| s.name == "cardButtonStyle" && s.kind == SymbolKind::Function)
+            .expect("cardButtonStyle function must be captured");
+        assert!(
+            func.signature
+                .as_deref()
+                .map(|s| s.starts_with("@Extend"))
+                .unwrap_or(false),
+            "cardButtonStyle signature must start with @Extend, got: {:?}",
+            func.signature
         );
     }
 }
