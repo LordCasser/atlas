@@ -471,10 +471,10 @@ fn recover_arkts_declaration_source(
     primary_root: tree_sitter::Node<'_>,
 ) -> Option<String> {
     // TS reads `Component(args) { ... }` as a nested method. In the declaration
-    // view only, an equal-width `if` token preserves its condition/body shape
-    // while allowing the surrounding class and following declarations to close.
+    // view only, replace the complete fake method header with an equal-width,
+    // valid `if(1)` header so the surrounding class and later declarations close.
     let mut output = parser_source.as_bytes().to_vec();
-    let primary_replacements = nested_method_name_ranges(primary_root);
+    let primary_replacements = nested_method_header_ranges(primary_root);
     if primary_replacements.is_empty() {
         return None;
     }
@@ -489,9 +489,18 @@ fn recover_arkts_declaration_source(
 
     for _ in 0..MAX_DECLARATION_RECOVERY_ITERATIONS {
         for (start, end) in replacements.drain(..) {
-            output[start] = b'i';
-            output[start + 1] = b'f';
-            output[start + 2..end].fill(b' ');
+            if output[start..start + 5]
+                .iter()
+                .any(|byte| matches!(*byte, b'\n' | b'\r'))
+            {
+                continue;
+            }
+            for byte in &mut output[start..end] {
+                if !matches!(*byte, b'\n' | b'\r') {
+                    *byte = b' ';
+                }
+            }
+            output[start..start + 5].copy_from_slice(b"if(1)");
         }
 
         let tree = parser.parse(&output, None)?;
@@ -506,7 +515,7 @@ fn recover_arkts_declaration_source(
             best_output = Some(output.clone());
         }
 
-        replacements = nested_method_name_ranges(root);
+        replacements = nested_method_header_ranges(root);
         if replacements.is_empty() {
             break;
         }
@@ -557,7 +566,7 @@ fn has_class_declaration(root: tree_sitter::Node<'_>) -> bool {
     find_class(root)
 }
 
-fn nested_method_name_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)> {
+fn nested_method_header_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut pending = vec![root];
     while let Some(node) = pending.pop() {
@@ -566,12 +575,16 @@ fn nested_method_name_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize)>
                 .parent()
                 .is_none_or(|parent| parent.kind() != "class_body")
         {
-            if let Some(name) = node
-                .child_by_field_name("name")
-                .filter(|name| name.kind() == "property_identifier")
-                .filter(|name| name.end_byte() - name.start_byte() >= 2)
-            {
-                ranges.push((name.start_byte(), name.end_byte()));
+            if let (Some(name), Some(parameters)) = (
+                node.child_by_field_name("name")
+                    .filter(|name| name.kind() == "property_identifier"),
+                node.child_by_field_name("parameters"),
+            ) {
+                let start = name.start_byte();
+                let end = parameters.end_byte();
+                if end.saturating_sub(start) >= 5 {
+                    ranges.push((start, end));
+                }
             }
         }
         let mut cursor = node.walk();
@@ -1072,7 +1085,7 @@ function cardButtonStyle(color: ResourceColor) {
             .set_language(&frontend.parser.tree_sitter_language())
             .unwrap();
         let primary_tree = parser.parse(parser_source.as_bytes(), None).unwrap();
-        assert!(!nested_method_name_ranges(primary_tree.root_node()).is_empty());
+        assert!(!nested_method_header_ranges(primary_tree.root_node()).is_empty());
 
         let facts = crate::extract_file_with_mode(
             &frontend,
@@ -1183,6 +1196,66 @@ function pageStyle() {
                 .iter()
                 .any(|symbol| symbol.name == "pageStyle" && symbol.kind == SymbolKind::Function)
         );
+    }
+
+    #[test]
+    fn declaration_recovery_preserves_navigation_component_and_following_builder() {
+        let source = r#"@Component
+struct SettingView {
+  pathStack: NavPathStack = new NavPathStack();
+
+  build() {
+    Navigation(this.pathStack) {
+      List() {
+        ListItemGroup() {
+          ListItem() {
+            HmosListItem({
+              title: $r('app.string.about')
+            })
+          }
+        }
+        .padding({ left: $r('sys.float.padding_level2') })
+      }
+      .height('100%')
+    }
+    .hideBackButton(true)
+    .title($r('app.string.setting'))
+  }
+}
+
+@Builder
+export function SettingViewBuilder() {
+  SettingView()
+}
+"#;
+        let facts = extract_single(source, "SettingView.ets");
+        let setting_view = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "SettingView" && symbol.kind == SymbolKind::Struct)
+            .unwrap_or_else(|| {
+                panic!(
+                    "declarative component must survive recovery; symbols={:#?}; diagnostics={:#?}",
+                    facts.symbols, facts.diagnostics
+                )
+            });
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "SettingView.pathStack"
+                && symbol.kind == SymbolKind::Field
+                && symbol.container == Some(setting_view.id)
+        }));
+        assert!(!facts.symbols.iter().any(|symbol| {
+            symbol.name == "pathStack"
+                && (symbol.qualified_name == "pathStack" || symbol.container.is_none())
+        }));
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.qualified_name == "SettingView.build"
+                && symbol.kind == SymbolKind::Method
+                && symbol.container == Some(setting_view.id)
+        }));
+        assert!(facts.symbols.iter().any(|symbol| {
+            symbol.name == "SettingViewBuilder" && symbol.kind == SymbolKind::Function
+        }));
     }
 
     #[test]

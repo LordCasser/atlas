@@ -268,36 +268,26 @@ impl ScopedSearchService {
 
         let mut quality = AnswerQuality::worst();
         let mut capability_mask = FactCoverage::from_layers(&["manifest"]);
+        let mut scope_has_structural_coverage = false;
 
         // If the DB already has full structural data (e.g. after
         // `atlas index --analysis full`), report Exact precision and skip
         // lazy extraction — there is nothing to gain from re-extracting.
         // Run this check regardless of analysis mode so precision is
         // correctly reported even for Manifest-only searches.
+        if !inventory_backed
+            && self
+                .store
+                .scope_has_fresh_complete_structural(&normalized_scope)?
         {
-            let file_ids = if normalized_scope.is_empty() {
-                self.store
-                    .list_files()?
-                    .into_iter()
-                    .take(200)
-                    .map(|f| f.file_id)
-                    .collect()
-            } else {
-                self.store.list_file_ids_in_scope(&normalized_scope, 200)?
-            };
-            if !file_ids.is_empty() {
-                let capability = self.store.derive_capability_for_files(&file_ids);
-                if capability.has(FactCoverage::STRUCTURAL) {
-                    quality = AnswerQuality::best();
-                    capability_mask = FactCoverage::from_layers(&["manifest", "structural"]);
-                    if should_trigger_lazy {
-                        should_trigger_lazy = false;
-                        warnings.push(
-                            "Full structural index already present; skipping lazy extraction"
-                                .to_string(),
-                        );
-                    }
-                }
+            scope_has_structural_coverage = true;
+            quality = AnswerQuality::best();
+            capability_mask = FactCoverage::from_layers(&["manifest", "structural"]);
+            if should_trigger_lazy {
+                should_trigger_lazy = false;
+                warnings.push(
+                    "Full structural index already present; skipping lazy extraction".to_string(),
+                );
             }
         }
 
@@ -340,7 +330,11 @@ impl ScopedSearchService {
         //    candidate set instead of expanding an arbitrary prefix of a large
         //    scope.
         const COLD_SEARCH_MAX_SYNC_LAZY_FILES: usize = 2;
-        if symbols.is_empty() && !term.is_empty() && (should_trigger_lazy || inventory_backed) {
+        let decorator_needs_refinement = decorator_name.is_some() && !scope_has_structural_coverage;
+        if (symbols.is_empty() || decorator_needs_refinement)
+            && !term.is_empty()
+            && (should_trigger_lazy || inventory_backed)
+        {
             if inventory_backed && !should_trigger_lazy {
                 let ensured = self
                     .structural
@@ -461,6 +455,12 @@ impl ScopedSearchService {
         } else if lazy_truncated_for_latency || (inventory_backed && !lazy_covered_scope) {
             SearchCoverage::Partial {
                 reason: "Focus inventory is available, but only a bounded subset has structural facts for this query".to_string(),
+            }
+        } else if decorator_name.is_some() && !scope_has_structural_coverage && !lazy_covered_scope
+        {
+            SearchCoverage::Partial {
+                reason: "Decorator search requires structural facts for every file in scope"
+                    .to_string(),
             }
         } else {
             SearchCoverage::Full
@@ -1365,12 +1365,13 @@ mod tests {
         let store = Arc::new(Store::open_in_memory().unwrap());
         store.init_schema().unwrap();
         let file_id = types::FileId::generate("src/Widget.ets");
+        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         store
             .upsert_file(&FileInfo {
                 file_id,
                 path: "src/Widget.ets".to_string(),
                 language: Language::ArkTS,
-                content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+                content_hash: content_hash.clone(),
                 status: ParseStatus::Partial,
             })
             .unwrap();
@@ -1378,7 +1379,7 @@ mod tests {
             .upsert_file_extraction_state(
                 &file_id,
                 "manifest",
-                &blake3::hash(source.as_bytes()).to_hex().to_string(),
+                &content_hash,
                 "complete",
                 FactCoverage::from_layers(&["manifest"]),
             )
@@ -1405,5 +1406,70 @@ mod tests {
         assert_eq!(response.total, 1);
         assert_eq!(response.results[0].symbol.name, "Widget");
         assert_eq!(response.results[0].symbol.kind, SymbolKind::Struct);
+    }
+
+    #[test]
+    fn execute_decorator_query_refines_mixed_manifest_and_structural_scope() {
+        let project = tempfile::tempdir().unwrap();
+        let source_dir = project.path().join("src");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let first_source = "@Component\nstruct First {\n  build() {}\n}\n";
+        let second_source = "@Component\nstruct Second {\n  build() {}\n}\n";
+        std::fs::write(source_dir.join("First.ets"), first_source).unwrap();
+        std::fs::write(source_dir.join("Second.ets"), second_source).unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        seed_decorated_struct(&store, "src/First.ets", "First", "Component");
+
+        let second_id = types::FileId::generate("src/Second.ets");
+        let second_hash = blake3::hash(second_source.as_bytes()).to_hex().to_string();
+        store
+            .upsert_file(&FileInfo {
+                file_id: second_id,
+                path: "src/Second.ets".to_string(),
+                language: Language::ArkTS,
+                content_hash: second_hash.clone(),
+                status: ParseStatus::Partial,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &second_id,
+                "manifest",
+                &second_hash,
+                "complete",
+                FactCoverage::from_layers(&["manifest"]),
+            )
+            .unwrap();
+
+        let materialize =
+            FocusMaterialize::open(Arc::clone(&store), Some(project.path().to_path_buf()));
+        let service = ScopedSearchService::new_with_project_root(
+            store,
+            materialize.structural().clone(),
+            Some(project.path().to_path_buf()),
+        );
+        let response = service
+            .execute(ScopedSearchRequest {
+                query: "@Component".into(),
+                scope: Some("src".into()),
+                analysis: SearchAnalysis::Structural,
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(response.triggered_lazy);
+        assert_eq!(response.total, 2);
+        assert_eq!(
+            response
+                .results
+                .iter()
+                .map(|result| result.symbol.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["First", "Second"]
+        );
+        assert!(matches!(response.coverage, SearchCoverage::Full));
     }
 }

@@ -4,6 +4,91 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.5.4] - 2026-07-13
+
+### ArkTS analysis boundary
+
+- ArkTS declarative components now preserve `struct` members, `build()` scope,
+  UI call ownership, and member-call receivers through byte-stable parser
+  normalization. ArkUI trailing blocks may still report `partial`, but their
+  usable structural facts no longer collapse to global calls. Query-time trace
+  adds `StateFlow` from ArkTS `AppStorage.set/setOrCreate` values to matching
+  `@StorageProp`/`@StorageLink` field reads and UI call arguments. Matching is
+  syntactic but preserves literal-vs-expression identity and requires an exact
+  `this.<field>` read. Cold Focus traces add a state-channel closure, materialize
+  cross-directory writer dataflow, and converge through `resume_query`.
+  Reverse links, default initialization, timing, and process boundaries remain
+  explicitly unmodeled.
+- ArkTS parameterized component decorators plus trailing ArkUI chains can make
+  the TypeScript grammar emit a fallback `class` expression instead of
+  `class_declaration`. ArkTS-owned definition/manifest/scope queries now cover
+  both forms; struct scope range recovery balances braces while excluding
+  parsed strings, templates, regexes, and comments. Focus rejects persisted
+  type ranges with inverted line intervals, and `SourceExtractor` rejects
+  truncated AST definitions in favor of the complete stored range.
+- ArkTS declaration extraction now rejects nested ArkUI recovery methods by
+  ownership instead of a narrow object shape. A byte-stable declaration-only
+  recovery tree restores post-build `@Styles` methods and top-level `@Extend`
+  functions without changing the primary references/dataflow/CFG tree.
+  TypeScript-compatible abstract classes, interface properties/methods, enum
+  members, async flags, and decorator references now populate existing IR;
+  member source extraction includes field decorators, types, and initializers.
+- Declaration recovery rewrites complete fake ArkUI method headers to valid,
+  byte-stable control headers. Deep `Navigation`/`List` component trees no
+  longer erase their owning struct, `build()` method, fields, or following
+  `@Builder` functions.
+- ArkTS keeps callable signatures limited to interface shape: decorators remain
+  `Decoration` references, field types remain in complete member source ranges,
+  and `async` remains in `SymbolDef.async_`. `ScopedSearchService` owns exact
+  `@Decorator` search, including scope-wide structural coverage, lazy
+  refinement, kind/language filters, limits, and total counts. Mixed
+  manifest/structural scopes no longer report incomplete decorator totals as
+  complete. Decorator source recovery skips parser-recognized strings,
+  templates, regexes, and comments while balancing parameter lists.
+- Decorated declaration ranges now cover stacked decorators across languages;
+  Python decoration references preserve the full decorator range while keeping
+  a bare resolution name. Full and file-scoped graph builds both materialize
+  callback and Python decorator registration edges from that ownership fact.
+- Builtin resolution is terminal before project-wide matching. ArkTS `$r`
+  remains an external resource API instead of resolving to an unrelated
+  JavaScript symbol; ArkTS decoration references likewise remain framework
+  externals instead of generating Python-style callback edges. Overlapping
+  tree-sitter query captures are deduplicated by capture/node identity before
+  normalization.
+- ArkTS named function/method CFG is enabled through the shared TypeScript
+  walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
+  edges. ArkUI trailing blocks remain single statements and nested arrow
+  callbacks do not receive independent CFGs; official language restrictions
+  are not treated as validated invariants because Atlas does not run the ArkTS
+  compiler.
+
+### TypeScript module facts
+
+- TypeScript/JavaScript/ArkTS imports now emit one `ImportDef` per binding or
+  side effect instead of redundant module/name/alias rows. Default imports are
+  captured explicitly, aliases preserve source and local names, wildcard facts
+  are marked correctly, and every import range covers its complete statement.
+  Query-only predicate captures no longer leak normalization diagnostics.
+- Default imports and exports preserve their source-to-visible-name mapping.
+  Re-export resolution starts from actual module files and follows named
+  aliases, wildcard barrels, and default chains deterministically. Explicit
+  bindings remain unresolved when the target module does not export them,
+  including private same-name declarations; wildcard re-exports do not leak
+  `default`. `ReferenceKind::Instantiation` now produces `Instantiates` edges.
+
+### Release hardening
+
+- Upgrade note: extraction and module-resolution facts changed without a schema
+  version change. Existing projects must remove `.atlas/atlas.db` and run
+  `atlas index --project <path> --analysis <mode>` to materialize 1.5.4 facts;
+  `doctor` cannot distinguish pre-1.5.4 facts with unchanged source hashes.
+- Workspace packages and release metadata advance to 1.5.4. Manual release
+  dispatches check out the requested tag, verify it matches the workspace
+  version, and gate platform builds on formatting, all-feature check, and
+  all-feature workspace tests.
+
+---
+
 ## [1.5.3] - 2026-07-10
 
 ### Focus materialize (query-time stack)
@@ -99,69 +184,6 @@ All notable changes to Atlas will be documented in this file.
   (re-index required for existing projects). PHP normalizer mirrors C++ for
   full `text`/`receiver`; nested C++ `A::B::C` keeps outermost span; extraction
   + resolution tests lock `CertUtils::GetDev` / `\Foo\bar` and Calls edges.
-- ArkTS declarative components now preserve `struct` members, `build()` scope,
-  UI call ownership, and member-call receivers through byte-stable parser
-  normalization. ArkUI trailing blocks may still report `partial`, but their
-  usable structural facts no longer collapse to global calls. Query-time trace
-  adds `StateFlow` from ArkTS `AppStorage.set/setOrCreate` values to matching
-  `@StorageProp`/`@StorageLink` field reads and UI call arguments. Matching is
-  syntactic but preserves literal-vs-expression identity and requires an exact
-  `this.<field>` read. Cold Focus traces add a state-channel closure, materialize
-  cross-directory writer dataflow, and converge through `resume_query`.
-  Reverse links, default initialization, timing, and process boundaries remain
-  explicitly unmodeled.
-- ArkTS parameterized component decorators plus trailing ArkUI chains can make
-  the TypeScript grammar emit a fallback `class` expression instead of
-  `class_declaration`. ArkTS-owned definition/manifest/scope queries now cover
-  both forms; struct scope range recovery balances braces while excluding
-  parsed strings, templates, regexes, and comments. Focus rejects persisted
-  type ranges with inverted line intervals, and
-  `SourceExtractor` rejects truncated AST definitions in favor of the complete
-  stored range.
-- ArkTS declaration extraction now rejects nested ArkUI recovery methods by
-  ownership instead of a narrow object shape. A byte-stable declaration-only
-  recovery tree restores post-build `@Styles` methods and top-level `@Extend`
-  functions without changing the primary references/dataflow/CFG tree.
-  TypeScript-compatible abstract classes, interface properties/methods, enum
-  members, async flags, and decorator references now populate existing IR;
-  member source extraction includes field decorators, types, and initializers.
-- ArkTS keeps callable signatures limited to interface shape: decorators remain
-  `Decoration` references, field types remain in complete member source ranges,
-  and `async` remains in `SymbolDef.async_`. `ScopedSearchService` now owns exact
-  `@Decorator` search, including lazy refinement, scope boundaries, kind and
-  language filters, limits, and total counts. Decorator
-  source recovery skips parser-recognized strings, templates, regexes, and
-  comments while balancing parameter lists across those regions.
-- Decorated declaration ranges now cover stacked decorators across languages;
-  Python decoration references preserve the full decorator range while keeping
-  a bare resolution name. Full and file-scoped graph builds both materialize
-  callback and Python decorator registration edges from that ownership fact.
-- Builtin resolution is terminal before project-wide matching. ArkTS `$r`
-  therefore remains an external resource API instead of resolving to an
-  unrelated JavaScript symbol; ArkTS decoration references likewise remain
-  framework externals instead of generating Python-style callback edges.
-  Overlapping tree-sitter query captures are
-  deduplicated by capture/node identity before normalization.
-- ArkTS named function/method CFG is enabled through the shared TypeScript
-  walker at confidence 0.55. Branch/loop fixtures assert concrete nodes and
-  edges. ArkUI trailing blocks remain single statements and nested arrow
-  callbacks do not receive independent CFGs; official language restrictions
-  are not treated as validated invariants because Atlas does not run the ArkTS
-  compiler.
-- TypeScript/JavaScript/ArkTS imports now emit one `ImportDef` per binding or
-  side effect instead of redundant module/name/alias rows. Default imports are
-  captured explicitly, aliases preserve source and local names, wildcard facts
-  are marked correctly, and every import range covers its complete statement.
-  Query-only predicate captures no longer leak normalization diagnostics.
-- TypeScript/JavaScript/ArkTS default imports and exports now preserve their
-  source-to-visible-name mapping. Re-export resolution starts from the actual
-  module files and follows named aliases, wildcard barrels, and default chains
-  deterministically instead of relying on a global same-name fallback.
-  Explicit bindings remain unresolved when the target module does not export
-  them, and wildcard re-exports no longer leak `default`.
-  `ReferenceKind::Instantiation` now produces `Instantiates` edges rather than
-  degrading every explicit `new` expression to a generic `References` edge.
-
 ### Release hardening
 
 - `atlas doctor` now reports Atlas version, Schema V2 state, canonical index

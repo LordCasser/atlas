@@ -1344,6 +1344,7 @@ fn ts_barrel_aliases_resolve_outward_names_to_source_names() {
         (
             "lib/service.ts",
             r#"export function internalRun(): void {}
+function privateRun(): void {}
 export default class Service {}
 "#,
         ),
@@ -1379,6 +1380,15 @@ function invalidDefault(): void {
 }
 "#,
         ),
+        (
+            "src/invalid-named.ts",
+            r#"import { privateRun } from '../lib/service';
+
+function invalidNamed(): void {
+    privateRun();
+}
+"#,
+        ),
     ];
 
     let (store, _) = index_files(files);
@@ -1391,6 +1401,10 @@ function invalidDefault(): void {
     let service = source_symbols
         .iter()
         .find(|symbol| symbol.name == "Service")
+        .unwrap();
+    let private_run = source_symbols
+        .iter()
+        .find(|symbol| symbol.name == "privateRun")
         .unwrap();
     let edges = store.get_all_edges().unwrap();
 
@@ -1407,6 +1421,10 @@ function invalidDefault(): void {
             .count(),
         2,
         "direct and named barrel default imports resolve, but `export *` must not leak default; edges: {edges:#?}"
+    );
+    assert!(
+        edges.iter().all(|edge| edge.target != private_run.id),
+        "an explicit named import must not resolve to a non-exported symbol in the target module"
     );
 }
 

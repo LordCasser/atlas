@@ -4,6 +4,7 @@
 //! extraction state queries, plus lazy dataflow persistence helpers.
 
 use super::Store;
+use super::files::{normalize_scope, scope_child_bounds};
 use rusqlite::{OptionalExtension, params};
 use tracing::debug_span;
 use types::*;
@@ -170,6 +171,65 @@ impl Store {
         }
 
         Ok(FactCoverage::from_bits(bits).has_all(required.bits()))
+    }
+
+    /// Return true when every indexed file in a project-relative scope has a
+    /// fresh, complete structural extraction record.
+    ///
+    /// This is a scope-wide predicate, not a union of per-file capability
+    /// masks: one structurally extracted file must not make a mixed
+    /// manifest/structural scope appear complete.
+    pub fn scope_has_fresh_complete_structural(&self, scope: &str) -> anyhow::Result<bool> {
+        let scope = normalize_scope(scope);
+        let conn = self.lock_read();
+        let structural_bit = FactCoverage::STRUCTURAL as i64;
+        let (has_files, all_covered): (bool, bool) = if scope.is_empty() {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM files),
+                        NOT EXISTS(
+                            SELECT 1
+                            FROM files f
+                            WHERE NOT EXISTS(
+                            SELECT 1
+                            FROM extraction_state l
+                            WHERE l.file_id = f.file_id
+                              AND l.unit_id IS NULL
+                              AND l.content_hash = f.content_hash
+                              AND l.status = 'complete'
+                              AND (l.layer = 'structural'
+                                   OR (l.capability_mask & ?1) != 0)
+                            )
+                        )",
+                params![structural_bit],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        } else {
+            let (lower, upper) = scope_child_bounds(&scope);
+            conn.query_row(
+                "SELECT EXISTS(
+                            SELECT 1 FROM files
+                            WHERE path = ?2 OR (path >= ?3 AND path < ?4)
+                        ),
+                        NOT EXISTS(
+                            SELECT 1
+                            FROM files f
+                            WHERE (f.path = ?2 OR (f.path >= ?3 AND f.path < ?4))
+                              AND NOT EXISTS(
+                            SELECT 1
+                            FROM extraction_state l
+                            WHERE l.file_id = f.file_id
+                              AND l.unit_id IS NULL
+                              AND l.content_hash = f.content_hash
+                              AND l.status = 'complete'
+                              AND (l.layer = 'structural'
+                                   OR (l.capability_mask & ?1) != 0)
+                            )
+                        )",
+                params![structural_bit, scope, lower, upper],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        };
+        Ok(has_files && all_covered)
     }
 
     /// Detect stale structural facts where call references are owned by

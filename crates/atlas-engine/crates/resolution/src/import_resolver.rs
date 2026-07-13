@@ -226,7 +226,9 @@ impl ImportResolver {
             visited.insert(file_id);
             if target_name != "default"
                 && let Ok(symbols) = self.store.find_symbols_by_file(&file_id)
-                && let Some(symbol) = symbols.iter().find(|symbol| symbol.name == target_name)
+                && let Some(symbol) = symbols
+                    .iter()
+                    .find(|symbol| symbol.name == target_name && symbol.exported)
             {
                 resolved.push(symbol.clone());
                 continue;
@@ -318,7 +320,10 @@ impl ImportResolver {
 
                 // Search for the symbol in the target file
                 let symbols = self.store.find_symbols_by_file(&tf.file_id).ok()?;
-                if let Some(sym) = symbols.iter().find(|s| s.name == source_name) {
+                if let Some(sym) = symbols
+                    .iter()
+                    .find(|symbol| symbol.name == source_name && symbol.exported)
+                {
                     return Some(sym.clone());
                 }
 
