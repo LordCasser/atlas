@@ -212,6 +212,11 @@ cargo test --workspace --all-features
 - 未受影响路径及理由。
 - 所有失败测试、跳过测试和 residual risk。
 
+Release-gate policy:
+- `cargo clippy` passes with pre-existing warnings; `-D warnings` is not a release gate.
+- Local verification is macOS arm64 only; Linux and Windows coverage is via the gated release matrix (actionlint is not available locally).
+- When schema is unchanged but extraction semantics change (e.g., ArkUI recovery rewrite), existing `.atlas` DBs must be removed and re-indexed — `doctor` cannot detect this via source hashes alone.
+
 ### 2.9 管线等价性测试
 
 同一项目通过不同入口（CLI index、sync、shared `IndexPipeline`）索引后必须产生相同 DB 状态。
@@ -263,6 +268,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 | Focus⊆Index 邻域 | §2.6.2 N5 + `focus_equivalence_vs_full_index` | Focus 冷路径与 Full 基线多维可比 |
 | Cross-fn Phase2 | `focus_mode_phase2_arg_to_param_without_summary` | **无 summary** 时 `RuntimeEdgeProvider` 仍产出 `ArgToParam`（防误删 Phase2） |
 | ArkTS AppStorage | `arkts_app_storage_bridges_writer_value_to_web_bound_field` + `cold_arkts_trace_materializes_cross_directory_appstorage_writer` | `set/setOrCreate` value 通过精确 key 匹配到 `StorageProp/StorageLink` 字段与 UI `CallArg`；literal/expression 与 receiver 不得误合并；冷 Focus 跨目录 writer 经 resume materialize 后必须出现 `StateFlow` |
+| ArkTS declaration/search | `declaration_recovery_preserves_navigation_component_and_following_builder` + `execute_decorator_query_refines_mixed_manifest_and_structural_scope` | 深层 ArkUI DSL 不得吞 owning struct/build/后续 Builder；混合 manifest/structural scope 的 exact decorator search 必须补齐 structural facts 后再声明 complete/total |
 | FileLock 互斥 | `reject_if_held_by_foreign_live_pid` 等 | 其他 live PID → `cli_index_lock_held`；同 PID 豁免 |
 | 短名 / 限定名解析 | `resolve_by_name_short_name_*`（atlas-engine） | 短名 `GetDev` 命中 `CertUtils::GetDev`；多短名 → Ambiguous + 全 qname `symbol_ref`；精确 qname 仍 UniqueQname |
 | C++ 限定调用抽取 | `test_cpp_qualified_call_ref_simple_name_and_full_text`（extraction） | ref.name=`GetDev`、text=`CertUtils::GetDev`、receiver=`CertUtils`；嵌套 `A::B::method` 全文/前缀正确 |

@@ -199,11 +199,16 @@ tree-sitter 0.26 parser
   并跳过 parser 已识别的 string/template/regex/comment 区间；不得信任提前闭合的 fallback AST。
   ArkTS normalizer 同时必须消除伪 method 并恢复 call ownership。若 primary tree 的 ArkUI
   错误恢复吞并后续声明，`ParserSpec::declaration_recovery_source` 可产生第二棵等长 declaration
-  tree：它只供 definitions/scopes 使用；references/callsites/lexical/dataflow/CFG 必须继续消费
-  primary tree。不得用 declaration rewrite 伪造执行语义。Decorator 是
+  tree；假 component method 的完整 header 必须重写为合法且等长的控制 header，不能留下
+  `if ()` 这类继续破坏 class 边界的占位。它只供 definitions/scopes 使用；references/callsites/lexical/dataflow/CFG 必须继续消费
+  primary tree。不得用 declaration rewrite 伪造执行语义。ArkUI trailing-block
+  的内部控制流不可由 CFG walker 证明：walker 只能看到外层 Statement，不能区分条件渲染分支。
+  嵌套箭头回调没有独立 Symbol，因此没有独立 function CFG；禁止将回调分支合并进 build()
+  的 CFG，这会混淆执行时机与函数边界。Decorator 是
   `ReferenceKind::Decoration` 使用事实，不创建 decorator 定义实体；ArkTS framework decoration
   在 resolver 中是 external terminal，不生成 Python-style `RegistersCallback`。语言边界以华为官方 [TypeScript 到 ArkTS 迁移规则](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/typescript-to-arkts-migration-guide)
-  为依据，不把 ArkUI 语法错误归因于 ArkTS 核心语法。
+  为依据，不把 ArkUI 语法错误归因于 ArkTS 核心语法。Atlas 不运行 ArkTS 编译器，不验证
+  TS→ArkTS 迁移完整性；`no var`/`no destructuring` 等语言规则只是边界解释，不是已验证的输入不变量。
 - C/C++ 是 best-effort，不承诺完整 preprocessing、模板、重载。
 - 所有 14 种语言均默认编译。
 
@@ -951,7 +956,9 @@ discover files
 
 - `ScopedSearchService`：scope 感知搜索 + 定向 lazy structural；精确 `@Decorator`
   查询由 service 基于 `Decoration` reference 与声明完整 range 统一解释，入口不得直接查询
-  Store 或重新推断 decoration ownership。
+  Store 或重新推断 decoration ownership。Decorator facts 属于 structural 层，因此 exact
+  decorator search 只有在 scope 内每个文件都有 fresh complete structural coverage 时才能声明
+  complete；per-file capability 的并集不能证明 scope-wide coverage。
 - Tracing 经 `Engine` facade；`Engine` 负责触发 lazy dataflow，raw `TraceEngine` 仅消费已有 facts。
 - 约束：入口组合服务；服务组合 `Store`、extraction、graph 等；入口绝不对低层 API 做 ad-hoc 组合。
 

@@ -3,7 +3,7 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current release focus: Atlas 1.5.x
+## 1. Current release focus: Atlas 1.5.4
 
 Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
 
@@ -18,9 +18,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   arm64, Windows x86_64/arm64, Rust 1.85+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
-- Add release notes / changelog entry for the first public version. ✅ Done:
-  `CHANGELOG.md` contains 1.5.x release notes and an Unreleased release-hardening
-  entry.
+- Add release notes / changelog entry for the current public version. ✅ Done:
+  `CHANGELOG.md` contains a dedicated 1.5.4 section for the ArkTS boundary and
+  release hardening work.
 
 ### 1.2 User-facing documentation
 
@@ -76,14 +76,20 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 ### 1.5 Release smoke tests
 
 ```bash
-cargo test
-cargo test -p atlas-cli --features mcp
-cargo check -p atlas-cli --features mcp
+cargo fmt --all -- --check
+cargo check --workspace --all-features
+cargo test --workspace --all-features
+cargo build --release -p atlas-cli --features mcp
 ```
 
-✅ Done: verified on 2026-07-08. `cargo test --quiet`,
-`cargo test -p atlas-cli --features mcp --quiet`, and
-`cargo check -p atlas-cli --features mcp` all completed with exit code 0.
+✅ Done for 1.5.4: verified on 2026-07-13. Formatting, all-feature workspace
+check/tests, and the release MCP binary build completed with exit code 0;
+`target/release/atlas --version` reports 1.5.4 and `atlas doctor` passes for
+both the Atlas checkout and `examples/arkts_example`. Residual risks: the
+checked-in `examples/arkts_example/.atlas` DB predates the final fix and must
+be removed (`.atlas/atlas.db`) and re-indexed, since `doctor` cannot detect
+this via unchanged source hashes; local verification was macOS arm64 only —
+Linux and Windows coverage is via the gated release matrix.
 
 ### 1.6 Completed baseline release gates
 
@@ -106,7 +112,9 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **ArkTS state-flow status (updated 2026-07)**: `AppStorage.set/setOrCreate` incoming flow is query-time `StateFlow`, with exact `this`-field and literal/expression key-category matching. Full-cache and cold Focus paths are both covered; cold Focus uses `StateChannel` closure discovery plus writer-function dataflow materialization on resume. Reverse `StorageLink`, constant evaluation, timing, and process boundaries remain explicit limitations.
 
-> **ArkTS declaration status (updated 2026-07)**: TS-compatible abstract classes, interface properties/methods, enum members, async flags, and decorator references are extracted through existing IR. ArkUI false methods are rejected by ownership (`method_definition` must be a direct `class_body` member). A byte-stable declaration-only recovery tree restores declarations swallowed after ArkUI blocks, including post-build `@Styles` and top-level `@Extend`; semantic facts remain on the primary tree. Field type/initializer have complete source spans but no dedicated structured IR.
+> **ArkTS declaration status (updated 2026-07)**: TS-compatible abstract classes, interface properties/methods, enum members, async flags, and decorator references are extracted through existing IR. ArkUI false methods are rejected by ownership (`method_definition` must be a direct `class_body` member). A byte-stable declaration-only recovery tree rewrites complete fake component headers to valid `if(1)` headers and restores declarations swallowed after deep ArkUI blocks, including owning structs, post-build `@Styles`, following `@Builder`, and top-level `@Extend`; semantic facts remain on the primary tree. Field type/initializer have complete source spans but no dedicated structured IR.
+
+> **ArkTS advancement triggers (updated 2026-07)**: Re-evaluate the ArkTS analysis boundary when any of the following is met: (1) real queries need to distinguish ArkUI conditional render paths; (2) a sink inside a callback has no explainable path via existing facts; (3) callback registration or callback lifecycle/branch analysis is needed; (4) a stable versioned grammar covering ArkUI declarative syntax exists. Before choosing between ArkTS/ArkUI tree-sitter grammar vs callback IR, build a baseline with real ArkTS corpus; capability must not be raised before implementation.
 
 ### 2.2 Index scope / manifest + Focus materialize
 
