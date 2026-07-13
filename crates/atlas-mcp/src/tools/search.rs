@@ -33,6 +33,8 @@ struct SearchHit {
     qualified_name: String,
     kind: String,
     language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
     score: f64,
     file: String,
     line: u32,
@@ -179,6 +181,16 @@ impl ToolRouter {
         }
 
         let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
+        let background_focus = if engine_resp.deferred_file_ids.is_empty() {
+            None
+        } else {
+            self.enqueue_background_file_focus(&engine_resp.deferred_file_ids)
+        };
+        let (background_pending, retry_after_ms) = background_focus
+            .as_ref()
+            .map(|result| result.pending_work_count_and_eta_ms())
+            .unwrap_or((0, 0));
+        let background_search_pending = background_pending > 0;
 
         // Build the MCP JSON response from the engine response.
         let hits: Vec<SearchHit> = engine_resp
@@ -211,7 +223,10 @@ impl ToolRouter {
             let search_has_hits = !hits.is_empty();
             lr = lr
                 .with_analysis_scope("local".into())
-                .with_analysis_summary(if search_has_hits {
+                .with_analysis_summary(if background_search_pending {
+                    "scoped search returned a bounded result; background Focus warming is preparing more candidate files"
+                        .into()
+                } else if search_has_hits {
                     "scoped search returned matches from the current focus scope; full repository coverage is unavailable"
                         .into()
                 } else {
@@ -225,6 +240,12 @@ impl ToolRouter {
                     detail: "Search covered the current scoped facts, but structural coverage is incomplete for part of the scope."
                         .into(),
                 }]);
+            if background_search_pending {
+                lr = lr.with_analysis_retry_after_ms(retry_after_ms);
+            }
+        }
+        if let Some(result) = background_focus {
+            lr = lr.with_focus_result(result);
         }
         if !search_is_partial {
             lr = lr
@@ -430,6 +451,7 @@ impl ToolRouter {
             "name": sym.name, "qualified_name": sym.qualified_name,
             "kind": sym.kind.as_str(), "language": sym.language.as_str(),
             "visibility": sym.visibility.as_ref().map(|v| v.as_str()), "signature": sym.signature,
+            "exported": sym.exported, "async": sym.async_,
             "file": self.project().store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
         });
@@ -468,6 +490,7 @@ impl ToolRouter {
             qualified_name: sym.qualified_name.clone(),
             kind: sym.kind.as_str().to_string(),
             language: sym.language.as_str().to_string(),
+            signature: sym.signature.clone(),
             score: result.score.name_score,
             file: result.file_path.clone().unwrap_or_default(),
             line: sym.range.start_line,
@@ -514,6 +537,88 @@ impl ToolRouter {
             "error": hint,
             "candidates": candidates_json,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use atlas_engine::Store;
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn cold_search_tracks_one_retryable_job_per_candidate_directory_and_converges() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..3 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+        let (body, is_error) = router.handle_search(
+            &ToolCallContext::empty(),
+            &serde_json::json!({"query": "Widget", "scope": "src", "limit": 10}),
+        );
+
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["coverage"]["state"], "partial", "{value}");
+        assert!(
+            value["analysis"]["retry_after_ms"].as_u64().is_some(),
+            "{value}"
+        );
+        assert!(
+            value.get("pending_background_jobs").is_none(),
+            "internal job counts must not leak into the public response: {value}"
+        );
+        assert!(value.get("gaps").is_none(), "{value}");
+
+        let query_id = value["query_id"].as_str().unwrap().to_string();
+        let snapshot = router
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get(&query_id)
+            .cloned()
+            .expect("search query snapshot");
+        let focus = snapshot.focus_result.expect("tracked search focus result");
+        assert_eq!(
+            focus.pending_closure_ids.len(),
+            1,
+            "all deferred candidates are in the same directory"
+        );
+
+        let mut resumed = value;
+        for _ in 0..50 {
+            if resumed["analysis"].get("retry_after_ms").is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let (body, is_error) =
+                router.handle_resume_query(&serde_json::json!({"query_id": query_id}));
+            assert!(!is_error, "{body}");
+            resumed = serde_json::from_str(&body).unwrap();
+        }
+        assert!(
+            resumed["analysis"].get("retry_after_ms").is_none(),
+            "search retry must converge: {resumed}"
+        );
+        assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
+        assert_eq!(resumed["total"], 3, "{resumed}");
+        assert_eq!(resumed["results"].as_array().unwrap().len(), 3, "{resumed}");
     }
 }
 

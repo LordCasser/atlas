@@ -27,7 +27,7 @@ fn register_test_file(store: &Store, path: &str) -> FileId {
 
 // ── Helper: insert a minimal function symbol ────────────────────────
 fn insert_test_symbol(store: &Store, file_id: FileId, name: &str) {
-    insert_test_symbol_with_signature(store, file_id, name, None);
+    insert_test_symbol_with_signature(store, file_id, name, None, false, false);
 }
 
 fn insert_test_symbol_with_signature(
@@ -35,6 +35,8 @@ fn insert_test_symbol_with_signature(
     file_id: FileId,
     name: &str,
     signature: Option<&str>,
+    exported: bool,
+    async_: bool,
 ) {
     let range = atlas_engine::TextRange {
         start_byte: 0,
@@ -56,9 +58,9 @@ fn insert_test_symbol_with_signature(
         name_range: range,
         signature: signature.map(str::to_string),
         visibility: None,
-        exported: false,
+        exported,
         static_: false,
-        async_: false,
+        async_,
         container: None,
         scope_id: None,
         package_name: None,
@@ -393,7 +395,7 @@ fn tasks_query_atlas_jobs_do_not_infer_completion_from_missing_rows() {
 }
 
 #[test]
-fn retryable_symbol_not_found_uses_analysis_retry_only() {
+fn symbol_not_found_without_candidates_is_terminal() {
     let store = test_store();
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
 
@@ -407,18 +409,20 @@ fn retryable_symbol_not_found_uses_analysis_retry_only() {
 
     assert!(
         !is_error,
-        "retryable not-found should not be an error: {resp}"
+        "bounded not-found should not be an error: {resp}"
     );
     let resp: serde_json::Value = serde_json::from_str(&resp).unwrap();
     assert_eq!(resp["status"], "unresolved");
-    assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+    assert!(resp["analysis"].get("retry_after_ms").is_none(), "{resp}");
     assert!(
         resp.get("retry_after_ms").is_none(),
         "retry guidance belongs only under analysis: {resp}"
     );
     assert!(
-        resp.get("gaps").is_none(),
-        "non-terminal retryable response must not expose terminal gaps: {resp}"
+        resp["gaps"].as_array().is_some_and(|gaps| gaps
+            .iter()
+            .any(|gap| gap["reason"] == "symbol_not_materialized")),
+        "terminal unresolved response must expose its gap: {resp}"
     );
     assert!(resp.get("query_id").is_some(), "missing query_id: {resp}");
     assert!(resp.get("partial_result").is_none());
@@ -517,7 +521,14 @@ fn symbol_existing_invalid_include_roots_returns_warning() {
 fn symbol_detail_returns_stored_signature() {
     let store = test_store();
     let file_id = register_test_file(&store, "test.ts");
-    insert_test_symbol_with_signature(&store, file_id, "test_func", Some("(arg: string): void"));
+    insert_test_symbol_with_signature(
+        &store,
+        file_id,
+        "test_func",
+        Some("async (arg: string): void"),
+        true,
+        true,
+    );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
     assert!(
@@ -539,9 +550,11 @@ fn symbol_detail_returns_stored_signature() {
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_eq!(
         resp["signature"].as_str(),
-        Some("(arg: string): void"),
+        Some("async (arg: string): void"),
         "symbol detail must pass through the stored SymbolDef.signature"
     );
+    assert_eq!(resp["exported"], true);
+    assert_eq!(resp["async"], true);
     assert!(resp.get("callers").is_none());
     assert!(resp.get("callees").is_none());
     assert!(
@@ -708,6 +721,83 @@ fn manifest_incoming_returns_correct_deps() {
     assert!(
         !dep_files.is_empty(),
         "Expected at least one dependent, got: {resp_str}"
+    );
+}
+
+#[test]
+fn focus_manifest_incoming_converges_to_importers_without_blocking() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("VideoComponent.ets"),
+        "@Component\nexport struct VideoComponent {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("SampleComponent.ets"),
+        "import { VideoComponent } from './VideoComponent';\n@Component\nstruct SampleComponent {}\n",
+    )
+    .unwrap();
+
+    let store = test_store();
+    for path in ["src/VideoComponent.ets", "src/SampleComponent.ets"] {
+        let file_id = FileId::generate(path);
+        store
+            .upsert_file(&atlas_engine::FileInfo {
+                file_id,
+                path: path.into(),
+                language: atlas_engine::Language::ArkTS,
+                content_hash: "cold".into(),
+                status: atlas_engine::ParseStatus::Success,
+            })
+            .unwrap();
+    }
+    let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+    let args = serde_json::json!({
+        "file_path": "src/VideoComponent.ets",
+        "direction": "incoming",
+        "analysis": "manifest",
+    });
+    let started = std::time::Instant::now();
+    let (body, is_error) = router.handle_file_dependencies(&args);
+    assert!(!is_error, "{body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "dependency query must enqueue refinement instead of waiting for structural closure"
+    );
+
+    let mut response: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let query_id = response["query_id"].as_str().unwrap().to_string();
+    for _ in 0..100 {
+        if response["analysis"].get("retry_after_ms").is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (body, is_error) =
+            router.handle_resume_query(&serde_json::json!({"query_id": query_id}));
+        assert!(!is_error, "{body}");
+        response = serde_json::from_str(&body).unwrap();
+    }
+
+    assert!(
+        response["analysis"].get("retry_after_ms").is_none(),
+        "dependency refinement must converge: {response}"
+    );
+    let importer_id = FileId::generate("src/SampleComponent.ets");
+    let imports = router
+        .project()
+        .store
+        .find_imports_by_file(&importer_id)
+        .unwrap();
+    assert!(!imports.is_empty(), "importer facts were not materialized");
+    let dependents = response["dependents"].as_array().unwrap();
+    assert!(
+        dependents
+            .iter()
+            .any(|dependent| dependent["file"] == "src/SampleComponent.ets"),
+        "incoming dependency must be visible after resume: {response}"
     );
 }
 

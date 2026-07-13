@@ -17,7 +17,7 @@
 //! - All DB writes are serialized through the scheduler's write coordinator.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -42,8 +42,6 @@ use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBud
 /// Maximum time a foreground MCP request should wait for initial file
 /// inventory. Bootstrap continues in the background after this deadline.
 const BOOTSTRAP_MIN_READY_WAIT_MS: u64 = 5_000;
-const HOT_REGION_EXTENSION_FILE_BONUS: usize = 50;
-const HOT_REGION_EXTENSION_DEPTH_CAP: u32 = 3;
 /// Maximum number of independent hot regions kept in memory for
 /// in-memory (non-persistent) stores.  When exceeded, the shallowest
 /// and oldest region is evicted.  Persistent stores keep all regions
@@ -245,6 +243,10 @@ pub struct FocusRuntime {
     /// Foreground jobs are marked done immediately; background
     /// jobs are marked by the scheduler on completion.
     job_tracker: Arc<JobTracker>,
+    /// Active or failed file warming job per source directory. Successful
+    /// entries are replaced only when a later query still has incomplete files
+    /// in that directory; failed entries remain terminal for resume convergence.
+    file_focus_jobs: HashMap<String, String>,
 }
 
 // ── Hot region tracking ────────────────────────────────────────────────────
@@ -317,7 +319,7 @@ impl HotRegionTracker {
         seed_file_id: Option<FileId>,
         built_files: &[FileId],
         pending_closure_ids: &[String],
-        expanded_existing_region: bool,
+        covered_depth: u32,
     ) -> Option<String> {
         if seed_file_id.is_none() && built_files.is_empty() {
             return None;
@@ -338,11 +340,7 @@ impl HotRegionTracker {
             }
         };
 
-        if expanded_existing_region {
-            region.depth = region.depth.saturating_add(1).max(1);
-        } else {
-            region.depth = region.depth.max(1);
-        }
+        region.depth = region.depth.max(covered_depth);
 
         if let Some(file_id) = seed_file_id {
             region.files.insert(file_id);
@@ -387,6 +385,24 @@ impl HotRegionTracker {
         }
 
         Some(region_id)
+    }
+
+    fn reusable_jobs(&self, region_id: &str, tracker: &JobTracker) -> Vec<String> {
+        self.regions
+            .iter()
+            .find(|region| region.id == region_id)
+            .map(|region| {
+                region
+                    .pending_closure_ids
+                    .iter()
+                    .filter(|job_id| {
+                        let ids = std::slice::from_ref(*job_id);
+                        tracker.pending_count(ids) > 0 || !tracker.failures_for(ids).is_empty()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn find_region_index(
@@ -442,6 +458,7 @@ impl FocusRuntime {
                 ..HotRegionTracker::default()
             },
             job_tracker,
+            file_focus_jobs: HashMap::new(),
         }
     }
 
@@ -618,20 +635,27 @@ impl FocusRuntime {
         };
         let mut pending_ids = pending_closure_ids;
         if background_iterations > 0 {
-            let bg_closure_id = self
-                .scheduler
-                .lock()
-                .unwrap()
-                .enqueue(bg_window.clone(), FocusPriority::UserFocus);
-            pending_ids.push(bg_closure_id);
             if let Some(hit) = boundary_hit.as_ref() {
-                let extension_window = hot_region_extension_window(&bg_window, hit);
-                let extension_closure_id = self
+                let reusable = self
+                    .hot_regions
+                    .reusable_jobs(&hit.region_id, &self.job_tracker);
+                if !reusable.is_empty() {
+                    pending_ids.extend(reusable);
+                } else if hit.depth < background_iterations {
+                    let closure_id = self
+                        .scheduler
+                        .lock()
+                        .unwrap()
+                        .enqueue(bg_window, FocusPriority::UserFocus);
+                    pending_ids.push(closure_id);
+                }
+            } else {
+                let closure_id = self
                     .scheduler
                     .lock()
                     .unwrap()
-                    .enqueue(extension_window, FocusPriority::UserFocus);
-                pending_ids.push(extension_closure_id);
+                    .enqueue(bg_window, FocusPriority::UserFocus);
+                pending_ids.push(closure_id);
             }
         }
 
@@ -639,7 +663,7 @@ impl FocusRuntime {
             seed_file_id,
             &built_files,
             &pending_ids,
-            boundary_hit.is_some(),
+            background_iterations,
         );
 
         Ok(FocusResult {
@@ -741,29 +765,51 @@ impl FocusRuntime {
     /// Search uses this after returning a fast partial result: the current
     /// request stays responsive, while the focus scheduler parses the remaining
     /// hot files for a likely follow-up query.
-    pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Vec<String>> {
+    pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Option<FocusResult>> {
         if file_ids.is_empty() || self.detect_access_strategy() == AccessStrategy::FullCache {
-            return Ok(Vec::new());
+            return Ok(None);
         }
 
         self.ensure_closure_engine()?;
         self.ensure_started();
 
-        let mut seen = std::collections::HashSet::new();
-        let mut job_ids = Vec::new();
-        let mut scheduler = self.scheduler.lock().unwrap();
+        let mut groups: HashMap<String, Vec<FileId>> = HashMap::new();
         for file_id in file_ids {
-            if !seen.insert(*file_id) {
-                continue;
+            let key = self.file_focus_group_key(file_id);
+            groups.entry(key).or_default().push(*file_id);
+        }
+
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut job_ids = Vec::with_capacity(groups.len());
+        let mut scheduler = self.scheduler.lock().unwrap();
+        for (group_key, group_files) in groups {
+            if let Some(job_id) = self.file_focus_jobs.get(&group_key).cloned() {
+                let ids = std::slice::from_ref(&job_id);
+                if self.job_tracker.pending_count(ids) > 0
+                    || !self.job_tracker.failures_for(ids).is_empty()
+                {
+                    job_ids.push(job_id);
+                    continue;
+                }
+                let complete = group_files.iter().all(|file_id| {
+                    self.materialize
+                        .structural()
+                        .has_structural_layer(file_id)
+                        .unwrap_or(false)
+                });
+                if complete {
+                    job_ids.push(job_id);
+                    continue;
+                }
+                self.file_focus_jobs.remove(&group_key);
             }
-            let language = self.resolve_language_for_file(file_id).unwrap_or_default();
+            let file_id = group_files[0];
+            let language = self.resolve_language_for_file(&file_id).unwrap_or_default();
             let window = FocusWindow {
-                seed: FocusSeed::File {
-                    file_id: *file_id,
-                    language,
-                },
+                seed: FocusSeed::File { file_id, language },
                 strategies: vec![
-                    ClosureStrategy::ImportNeighborhood { depth: 2 },
+                    ClosureStrategy::ImportNeighborhood { depth: 1 },
                     ClosureStrategy::SameDirectory,
                 ],
                 include_roots: Vec::new(),
@@ -771,9 +817,46 @@ impl FocusRuntime {
                 language,
                 max_iterations: 2,
             };
-            job_ids.push(scheduler.enqueue(window, FocusPriority::UserFocus));
+            let job_id = scheduler.enqueue(window, FocusPriority::UserFocus);
+            self.file_focus_jobs.insert(group_key, job_id.clone());
+            job_ids.push(job_id);
         }
-        Ok(job_ids)
+        drop(scheduler);
+
+        Ok(Some(FocusResult {
+            access: AccessStrategy::Focus,
+            quality: None,
+            gaps: Vec::new(),
+            pending_closure_ids: job_ids,
+            pending_extraction_job_ids: Vec::new(),
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: Vec::new(),
+            coverage_counts: None,
+            job_tracker: Some(Arc::clone(&self.job_tracker)),
+        }))
+    }
+
+    fn file_focus_group_key(&self, file_id: &FileId) -> String {
+        let path = self
+            .store
+            .get_file(file_id)
+            .ok()
+            .flatten()
+            .map(|file| file.path)
+            .or_else(|| {
+                self.store
+                    .find_file_inventory_by_id(file_id)
+                    .ok()
+                    .flatten()
+                    .map(|row| row.path)
+            });
+        path.as_deref()
+            .and_then(|path| Path::new(path).parent())
+            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+            .filter(|parent| !parent.is_empty())
+            .unwrap_or_else(|| file_id.to_hex())
     }
 
     /// Called when a file is structurally ensured — pre-warm its imports
@@ -988,24 +1071,6 @@ fn map_coverage_source_to_tier(source: &str) -> String {
     }
 }
 
-fn hot_region_extension_window(base: &FocusWindow, hit: &BoundaryHit) -> FocusWindow {
-    let mut window = base.clone();
-    let depth_bonus = hit.depth.clamp(1, HOT_REGION_EXTENSION_DEPTH_CAP);
-    window.max_iterations = window.max_iterations.saturating_add(depth_bonus);
-    window.budget.max_iterations = window.budget.max_iterations.saturating_add(1);
-    window.budget.max_files = window
-        .budget
-        .max_files
-        .saturating_add(HOT_REGION_EXTENSION_FILE_BONUS * depth_bonus as usize);
-    tracing::debug!(
-        hot_region_id = %hit.region_id,
-        depth_bonus,
-        max_files = window.budget.max_files,
-        "enqueueing hot-region boundary expansion"
-    );
-    window
-}
-
 impl Drop for FocusRuntime {
     fn drop(&mut self) {
         // Signal the background worker to stop.
@@ -1039,10 +1104,9 @@ mod tests;
 ///    leak across queries on reused focus runtime state.
 #[cfg(test)]
 mod include_roots_integration {
-    use super::{AccessStrategy, BoundaryHit, FocusRuntime, hot_region_extension_window};
+    use super::{AccessStrategy, FocusRuntime};
     use crate::closure_planner::IncludeRoot;
     use crate::focus::query::QueryIntent;
-    use crate::focus::types::{ClosureStrategy, FocusSeed, FocusWindow, WindowBudget};
     use db::Store;
     use std::sync::Arc;
     use types::enums::{Language, ParseStatus};
@@ -1108,40 +1172,6 @@ mod include_roots_integration {
         let mut rt = FocusRuntime::new(store, None, m);
         rt.detect_access_strategy_override = Some(AccessStrategy::Focus);
         rt
-    }
-
-    #[test]
-    fn hot_region_extension_preserves_include_roots() {
-        let file_id = FileId::generate("src/main.c");
-        let base = FocusWindow {
-            seed: FocusSeed::File {
-                file_id,
-                language: Language::C,
-            },
-            strategies: vec![ClosureStrategy::ImportNeighborhood { depth: 2 }],
-            include_roots: vec![IncludeRoot {
-                path: "include".to_string(),
-            }],
-            budget: WindowBudget::background(),
-            language: Language::C,
-            max_iterations: 1,
-        };
-        let hit = BoundaryHit {
-            region_id: "region".to_string(),
-            depth: 2,
-        };
-
-        let extended = hot_region_extension_window(&base, &hit);
-
-        assert_eq!(
-            extended
-                .include_roots
-                .iter()
-                .map(|root| root.path.as_str())
-                .collect::<Vec<_>>(),
-            vec!["include"],
-            "hot-region background extension must keep the request roots from the base window"
-        );
     }
 
     #[test]

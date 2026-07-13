@@ -24,6 +24,8 @@ use types::{Language, SymbolDef, SymbolId, SymbolKind};
 
 use extraction::create_frontend;
 
+const MAX_SOURCE_BYTES: usize = 65_536;
+
 // ─── Thread-local parser (avoids re-allocating per call) ──────────────────
 
 thread_local! {
@@ -126,7 +128,7 @@ impl SourceExtractor {
             let def_node = find_enclosing_definition(node, sym.kind, lang)?;
 
             // Extract the exact source text using the definition node's byte range.
-            let def_start = def_node.start_byte() as usize;
+            let def_start = leading_declaration_start(source, def_node.start_byte() as usize);
             let def_end = def_node.end_byte() as usize;
             if def_start > start_byte || def_end < end_byte {
                 return None;
@@ -134,7 +136,7 @@ impl SourceExtractor {
             if def_start >= source.len() || def_end > source.len() || def_start >= def_end {
                 return None;
             }
-            Some(source[def_start..def_end].to_string())
+            Some(cap_source(source[def_start..def_end].trim()).to_string())
         })();
 
         // Always return parser to thread-local cache.
@@ -147,6 +149,7 @@ impl SourceExtractor {
     fn extract_via_range(&self, sym: &SymbolDef, source: &str) -> Option<String> {
         source
             .get(sym.range.start_byte as usize..sym.range.end_byte as usize)
+            .map(cap_source)
             .map(str::to_string)
     }
 }
@@ -281,6 +284,41 @@ fn enclosing_definition_kinds(kind: SymbolKind, lang: Language) -> &'static [&'s
         // ── No known enclosing node for these kinds ──
         _ => &[],
     }
+}
+
+fn leading_declaration_start(source: &str, anchor: usize) -> usize {
+    let mut start = line_start(source, anchor);
+
+    loop {
+        let Some(prev_end) = start.checked_sub(1) else {
+            return start;
+        };
+        let prev_start = line_start(source, prev_end);
+        let prev_line = source[prev_start..start].trim();
+        if prev_line.is_empty() {
+            return start;
+        }
+        if prev_line.starts_with('@') {
+            start = prev_start;
+            continue;
+        }
+        return start;
+    }
+}
+
+fn line_start(source: &str, offset: usize) -> usize {
+    source[..offset].rfind('\n').map(|idx| idx + 1).unwrap_or(0)
+}
+
+fn cap_source(text: &str) -> &str {
+    if text.len() <= MAX_SOURCE_BYTES {
+        return text;
+    }
+    let mut boundary = MAX_SOURCE_BYTES;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &text[..boundary]
 }
 
 #[cfg(all(test, feature = "arkts"))]
@@ -455,5 +493,43 @@ struct MainPage {
             .extract_source(&function_id)
             .expect("decorated function source");
         assert_eq!(extracted, source.trim_end());
+    }
+
+    #[test]
+    fn source_is_capped_on_the_ast_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let relative_path = Path::new("Huge.ets");
+        let source = format!(
+            "function huge() {{\n  {}\n}}\n",
+            "x".repeat(MAX_SOURCE_BYTES + 1024)
+        );
+        std::fs::write(temp.path().join(relative_path), &source).unwrap();
+
+        let frontend = create_frontend(Language::ArkTS).unwrap();
+        let file_id = FileId::generate("Huge.ets");
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            relative_path,
+            &source,
+            "huge-source-test",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let function_id = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "huge")
+            .expect("huge function")
+            .id;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        store.insert_file_facts(&facts).unwrap();
+        let extracted = SourceExtractor::new(store, temp.path().to_path_buf())
+            .extract_source(&function_id)
+            .expect("capped function source");
+        assert_eq!(extracted.len(), MAX_SOURCE_BYTES);
     }
 }

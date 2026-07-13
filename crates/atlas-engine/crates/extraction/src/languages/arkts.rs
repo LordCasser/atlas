@@ -815,6 +815,10 @@ struct MainPage {
             struct_symbol.range.end_line,
             source.lines().count() as u32 - 1
         );
+        assert_eq!(
+            struct_symbol.signature.as_deref(),
+            Some("@Component({ freezeWhenInactive: true })")
+        );
 
         let field = facts
             .symbols
@@ -822,6 +826,10 @@ struct MainPage {
             .find(|symbol| symbol.name == "webUrl")
             .unwrap();
         assert_eq!(field.kind, SymbolKind::Field);
+        assert_eq!(
+            field.signature.as_deref(),
+            Some("@StorageLink('webUrl') : string")
+        );
         assert_eq!(
             field.container,
             Some(struct_symbol.id),
@@ -1107,9 +1115,18 @@ function cardButtonStyle(color: ResourceColor) {
                 && symbol.kind == SymbolKind::Method
                 && symbol.container == Some(card.id)
         }));
-        assert!(facts.symbols.iter().any(|symbol| {
-            symbol.qualified_name == "cardButtonStyle" && symbol.kind == SymbolKind::Function
-        }));
+        let card_button_style = facts
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.qualified_name == "cardButtonStyle" && symbol.kind == SymbolKind::Function
+            })
+            .expect("cardButtonStyle function");
+        assert_eq!(
+            &source[card_button_style.range.start_byte as usize
+                ..card_button_style.range.end_byte as usize],
+            "@Extend(Button)\nfunction cardButtonStyle(color: ResourceColor) {\n  .fontColor(color)\n  .width('100%')\n}"
+        );
         assert!(!facts.symbols.iter().any(|symbol| {
             symbol.kind == SymbolKind::Method
                 && matches!(symbol.name.as_str(), "Row" | "Column" | "Text")
@@ -1136,9 +1153,16 @@ function cardButtonStyle(color: ResourceColor) {
                 .iter()
                 .any(|symbol| { symbol.name == "Card" && symbol.kind == SymbolKind::Struct })
         );
-        assert!(manifest.symbols.iter().any(|symbol| {
-            symbol.name == "cardButtonStyle" && symbol.kind == SymbolKind::Function
-        }));
+        let manifest_style = manifest
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "cardButtonStyle" && symbol.kind == SymbolKind::Function)
+            .expect("manifest cardButtonStyle function");
+        assert_eq!(
+            &source
+                [manifest_style.range.start_byte as usize..manifest_style.range.end_byte as usize],
+            "@Extend(Button)\nfunction cardButtonStyle(color: ResourceColor) {\n  .fontColor(color)\n  .width('100%')\n}"
+        );
         assert!(
             !manifest
                 .symbols
@@ -1315,7 +1339,7 @@ export function SettingViewBuilder() {
     }
 
     #[test]
-    fn decorated_struct_keeps_decorator_out_of_signature() {
+    fn decorated_struct_preserves_decorator_signature() {
         let source = "@Component\nstruct Foo {\n  build() {}\n}\n";
         let facts = extract_single(source, "Foo.ets");
         let foo = facts
@@ -1323,7 +1347,7 @@ export function SettingViewBuilder() {
             .iter()
             .find(|s| s.name == "Foo" && s.kind == SymbolKind::Struct)
             .unwrap();
-        assert_eq!(foo.signature, None);
+        assert_eq!(foo.signature.as_deref(), Some("@Component"));
         let decoration = facts
             .references
             .iter()
@@ -1342,6 +1366,7 @@ export function SettingViewBuilder() {
             .iter()
             .find(|symbol| symbol.name == "Foo" && symbol.kind == SymbolKind::Struct)
             .unwrap();
+        assert_eq!(foo.signature.as_deref(), Some("@Entry @Component"));
         let decorations = facts
             .references
             .iter()
@@ -1355,26 +1380,58 @@ export function SettingViewBuilder() {
     }
 
     #[test]
-    fn field_type_and_decorator_stay_out_of_callable_signature() {
-        let source = "@Component\nstruct Widget {\n  @State count: number = 0;\n  build() {}\n}\n";
+    fn field_signature_preserves_decorator_and_type() {
+        let source =
+            "@Component\nstruct Widget {\n  @Prop mediaSrc: ResourceStr = '';\n  build() {}\n}\n";
         let facts = extract_single(source, "Widget.ets");
-        let count = facts
+        let media_src = facts
             .symbols
             .iter()
-            .find(|s| s.name == "count" && s.kind == SymbolKind::Field)
+            .find(|s| s.name == "mediaSrc" && s.kind == SymbolKind::Field)
             .unwrap();
-        assert_eq!(count.signature, None);
+        assert_eq!(media_src.signature.as_deref(), Some("@Prop : ResourceStr"));
         let decoration = facts
             .references
             .iter()
-            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "State")
+            .find(|r| r.kind == ReferenceKind::Decoration && r.name == "Prop")
             .unwrap();
-        assert!(count.range.start_byte <= decoration.range.start_byte);
-        assert!(count.range.end_byte >= decoration.range.end_byte);
+        assert!(media_src.range.start_byte <= decoration.range.start_byte);
+        assert!(media_src.range.end_byte >= decoration.range.end_byte);
     }
 
     #[test]
-    fn async_function_uses_async_flag_only() {
+    fn resolution_symbols_preserves_decorator_signatures_without_references() {
+        let source =
+            "@Component\nstruct Widget {\n  @Prop mediaSrc: ResourceStr = '';\n  build() {}\n}\n";
+        let path = "Widget.ets";
+        let facts = crate::extract_file_with_mode(
+            &arkts_frontend(),
+            FileId::generate(path),
+            Path::new(path),
+            source,
+            "sig-test",
+            crate::ExtractionMode::ResolutionSymbols,
+            &(),
+        )
+        .unwrap();
+
+        let widget = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "Widget" && symbol.kind == SymbolKind::Struct)
+            .unwrap();
+        let media_src = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "mediaSrc" && symbol.kind == SymbolKind::Field)
+            .unwrap();
+        assert_eq!(widget.signature.as_deref(), Some("@Component"));
+        assert_eq!(media_src.signature.as_deref(), Some("@Prop : ResourceStr"));
+        assert!(facts.references.is_empty());
+    }
+
+    #[test]
+    fn async_function_preserves_async_in_signature_and_flag() {
         let source = "async function load(): Promise<void> {}\n";
         let facts = extract_single(source, "load.ets");
         let load = facts
@@ -1384,14 +1441,14 @@ export function SettingViewBuilder() {
             .unwrap();
         assert_eq!(
             load.signature.as_deref(),
-            Some("(): Promise<void>"),
-            "async is orthogonal metadata and must not be duplicated in signature"
+            Some("async (): Promise<void>"),
+            "ArkTS detail signatures preserve async in the declaration shape"
         );
         assert!(load.async_, "async_ boolean flag must still be set");
     }
 
     #[test]
-    fn async_method_uses_async_flag_only() {
+    fn async_method_preserves_async_in_signature_and_flag() {
         let source = "class Service {\n  async fetch(url: string): Promise<string> {\n    return '';\n  }\n}\n";
         let facts = extract_single(source, "Service.ets");
         let fetch = facts
@@ -1401,8 +1458,8 @@ export function SettingViewBuilder() {
             .unwrap();
         assert_eq!(
             fetch.signature.as_deref(),
-            Some("(url: string): Promise<string>"),
-            "async is orthogonal metadata and must not be duplicated in signature"
+            Some("async (url: string): Promise<string>"),
+            "ArkTS detail signatures preserve async in the declaration shape"
         );
         assert!(fetch.async_);
     }

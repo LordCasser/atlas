@@ -249,7 +249,7 @@ impl Store {
                     // resolve to `./utils/index.ts` or `./utils.ts`.
                     if kind != "include" {
                         // Try appending extensions
-                        for ext in [".ts", ".tsx", ".js", ".jsx", ".py"] {
+                        for ext in [".ts", ".tsx", ".js", ".jsx", ".ets", ".sts", ".py"] {
                             let with_ext = format!("{resolved_str}{ext}");
                             if with_ext == target_path {
                                 insert(importing_path.clone(), module.clone());
@@ -257,7 +257,14 @@ impl Store {
                             }
                         }
                         // If no extension match, try index variants
-                        for idx_ext in ["index.ts", "index.tsx", "index.js", "index.jsx"] {
+                        for idx_ext in [
+                            "index.ts",
+                            "index.tsx",
+                            "index.js",
+                            "index.jsx",
+                            "index.ets",
+                            "index.sts",
+                        ] {
                             let with_index = resolved.join(idx_ext);
                             if with_index.to_string_lossy() == target_path {
                                 insert(importing_path.clone(), module.clone());
@@ -391,6 +398,31 @@ mod tests {
         assert_eq!(deps.len(), 2, "expected 2 dependents, got {deps:?}");
         assert!(paths.contains(&"src/a.ts"));
         assert!(paths.contains(&"src/subdir/b.ts"));
+    }
+
+    #[test]
+    fn test_find_dependents_arkts_extension_fallback() {
+        let store = test_store();
+        let target_fid = insert_test_file_lang(&store, "src/VideoComponent.ets", Language::ArkTS);
+        let importer_fid =
+            insert_test_file_lang(&store, "src/SampleComponent.ets", Language::ArkTS);
+        store
+            .insert_imports(&[make_import(
+                &importer_fid,
+                ImportKind::Import,
+                "./VideoComponent",
+                true,
+            )])
+            .unwrap();
+
+        let deps = store.find_dependents_by_file(&target_fid).unwrap();
+        assert_eq!(
+            deps,
+            vec![(
+                "src/SampleComponent.ets".to_string(),
+                "./VideoComponent".to_string()
+            )]
+        );
     }
 
     /// Dedup prevents the same (path, module) pair from appearing twice

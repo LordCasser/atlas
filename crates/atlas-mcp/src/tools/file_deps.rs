@@ -46,43 +46,47 @@ impl ToolRouter {
             }
         };
 
-        if is_manifest {
-            return self.handle_file_dependencies_manifest(file_id, direction, args);
-        }
-
-        // ── structural mode ─────────────────────────────────────────────
-        let mut lazy_warnings = Vec::new();
-        let mut built_file_count = 0usize;
-        let mut focus_result = None;
-        let mut _capability_mask = atlas_engine::structs::FactCoverage::default();
-        let mut _coverage = "full";
-        let mut _reason: Option<&str> = None;
-
         let has_full_index = {
             let active = self.project();
             active.query_runtime.has_full_index(&active.store)
         };
-        if !has_full_index {
-            // Construct a Calls intent with the resolved file_id so focus
-            // extraction uses a FocusSeed::File seed.  No QueryIntent variant
-            // accepts multiple file_ids (e.g. edge-dependent candidates), so
-            // we scope extraction to the primary file.  The closure engine
-            // expands via CallGraph + ImportNeighborhood strategies which is
-            // appropriate for structural dependency extraction.  (P1-F6)
-            let intent = Some(atlas_engine::QueryIntent::Calls {
-                symbol_name: String::new(),
-                file_id: Some(file_id),
-                symbol_id: None,
-                direction: None,
-                depth: None,
-            });
-            let (prepared, focus_warnings) = self.prepare_focus_query(intent);
-            lazy_warnings = focus_warnings;
-            built_file_count = prepared.as_ref().map(|r| r.built_files.len()).unwrap_or(0);
-            focus_result = prepared;
+        let focus_result = if has_full_index {
+            None
         } else {
-            _capability_mask = self.project().store.derive_capability_for_files(&[file_id]);
+            let mut candidates = vec![file_id];
+            if matches!(direction, "incoming" | "both") {
+                let stem = Path::new(clean)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or(clean);
+                candidates.extend(self.candidate_file_ids_referencing(stem));
+                let mut seen = HashSet::new();
+                candidates.retain(|candidate| seen.insert(*candidate));
+            }
+            self.enqueue_background_file_focus(&candidates)
+        };
+        let lazy_warnings = Vec::new();
+
+        if is_manifest {
+            let (out, err) = self.handle_file_dependencies_manifest(file_id, direction, args);
+            let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
+            let lr = AnalysisEnvelope::new("file_dependencies", args)
+                .with_lazy_warnings(lazy_warnings)
+                .with_is_error(err);
+            let lr = if let Some(ref result) = focus_result {
+                crate::tools::apply_focus_result_to_lr(lr, result)
+                    .with_analysis_basis(vec!["manifest".into()])
+            } else {
+                lr.with_analysis_scope("local".into())
+                    .with_analysis_summary(
+                        "Manifest file dependency facts are available for this file.".into(),
+                    )
+                    .with_analysis_basis(vec!["manifest".into()])
+            };
+            return lr.build(body, self);
         }
+
+        // ── structural mode ─────────────────────────────────────────────
 
         let file_id_hex = file_id.to_hex();
         let mut mapped = serde_json::Map::new();
@@ -96,11 +100,6 @@ impl ToolRouter {
             "incoming" => {
                 let (out, err) = self.handle_dependents(&mapped_args);
                 let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
-                let summary = if built_file_count > 0 {
-                    format!("Lazy-built {built_file_count} files (structural mode)")
-                } else {
-                    "Full index available".into()
-                };
                 let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
                     .with_is_error(err);
@@ -108,18 +107,13 @@ impl ToolRouter {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
                     lr.with_analysis_scope("structural".into())
-                        .with_analysis_summary(summary)
+                        .with_analysis_summary("Full index available".into())
                 };
                 lr.build(body, self)
             }
             "outgoing" | "" => {
                 let (out, err) = self.handle_dependencies(&mapped_args);
                 let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
-                let summary = if built_file_count > 0 {
-                    format!("Lazy-built {built_file_count} files (structural mode)")
-                } else {
-                    "Full index available".into()
-                };
                 let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
                     .with_is_error(err);
@@ -127,7 +121,7 @@ impl ToolRouter {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
                     lr.with_analysis_scope("structural".into())
-                        .with_analysis_summary(summary)
+                        .with_analysis_summary("Full index available".into())
                 };
                 lr.build(body, self)
             }
@@ -138,11 +132,6 @@ impl ToolRouter {
                     "outgoing": serde_json::from_str::<Value>(&out_str).unwrap_or_default(),
                     "incoming": serde_json::from_str::<Value>(&in_str).unwrap_or_default(),
                 });
-                let summary = if built_file_count > 0 {
-                    format!("Lazy-built {built_file_count} files (structural mode)")
-                } else {
-                    "Full index available".into()
-                };
                 let err = out_err || in_err;
                 let lr = AnalysisEnvelope::new("file_dependencies", args)
                     .with_lazy_warnings(lazy_warnings)
@@ -151,7 +140,7 @@ impl ToolRouter {
                     crate::tools::apply_focus_result_to_lr(lr, result)
                 } else {
                     lr.with_analysis_scope("structural".into())
-                        .with_analysis_summary(summary)
+                        .with_analysis_summary("Full index available".into())
                 };
                 lr.build(body, self)
             }

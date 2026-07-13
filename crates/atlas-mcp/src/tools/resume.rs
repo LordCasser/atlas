@@ -132,6 +132,7 @@ impl ToolRouter {
             "search" => {
                 replay_router.handle_search(&super::ToolCallContext::empty(), &snapshot.tool_args)
             }
+            "file_dependencies" => replay_router.handle_file_dependencies(&snapshot.tool_args),
             "path" => replay_router.handle_path(&snapshot.tool_args),
             "explore" => replay_router.handle_explore(&snapshot.tool_args),
             "impact" => replay_router.handle_impact(&snapshot.tool_args),

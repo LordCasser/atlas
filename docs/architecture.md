@@ -235,7 +235,8 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 - references 永不因为 resolved 而删除；unresolved references 必须保留。
 - callsite 必须能回溯到 reference location。
 - dataflow 使用 `DataNodeId → DataNodeId`，6 字段完整 TextRange。
-- CFG 节点必须属于同一 function，函数 CFG 应有 Entry/Exit。
+- CFG 节点必须属于同一 concrete function，函数 CFG 应有 Entry/Exit；top-level analysis unit
+  可以拥有 data nodes 与 bindings，但不得拥有或按 file_id 清理 CFG。
 
 ### 5.1 Symbol Signature Contract
 
@@ -244,15 +245,16 @@ cfg_nodes/cfg_edges, structural facts, diagnostics
 
 签名格式：
 - 单行字符串，使用 compact whitespace normalization。
-- 不包含符号名，只包含接口形状信息，例如参数列表、泛型参数、返回类型或语言等价形式。
-- `async` 等正交修饰信息写入 `SymbolDef.async_`，不重复编码进 signature。
-- 适用于 `function`、`method`、`constructor` 等可调用符号；类型、变量、字段等天然无调用签名的符号可为 `null`。
+- Atlas 将符号身份拆成 `name`/`qualified_name` 与 `signature` 两部分；`signature` 字段不重复存储符号名，只存储声明形态中有辨识度的部分，例如参数、泛型、返回类型、类型标注、decorator、关键修饰符或语言等价形式。
+- `async` 等参与声明形态的修饰符可保留在 callable signature 中，但同时必须写入独立结构化字段；共享语法族必须在公共 adapter 中统一该规则，不得由单一语言做展示后处理。
+- callable 使用参数与返回形态；type/struct 可使用 decorator、泛型或继承形态；field/property 可使用 decorator、修饰符与类型标注。例如 ArkTS 分别为 `async (url: string): Promise<string>`、`@Component`、`@Prop : ResourceStr`。
+- MCP detail 与 search hit 同时透传 signature；detail 继续透传 `exported`、`async` 等独立结构化事实。消费者组合这些字段即可得到紧凑符号身份，不需要解析 source。
 
 `signature: null` 只允许两类情况：
-- 符号类型天然无签名。
+- 该声明没有可独立于 name/kind 表达的紧凑形态。
 - 该语言/语法构造当前明确 unsupported，并通过 golden 或集成测试体现。
 
-新增或修改语言 adapter 时必须通过 extraction golden 覆盖至少一个 function/method signature，确保 full index 后 MCP
+新增或修改语言 adapter 时必须通过 extraction golden 覆盖该语言有结构信息的 callable、type 与 field/property signature，确保 full index 后 MCP
 `symbol(view="detail")` 能从 DB 返回签名，而不是在 MCP 层补丁式生成。
 
 ## 6. Persistence 约束
@@ -785,7 +787,9 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 
 响应信封采用三态终局模型（见 §10.1.10），Agent 通过 `analysis.retry_after_ms` 和顶层 `gaps` 即可判断结果状态。Tool 响应的 coverage/missing 语义通过 `analysis.basis` 和 `gaps[].reason` 承载，可提升空间通过 `retry_after_ms` 表达。废弃的 `analysis_contract` 结构体已移除。
 
-`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，创建后 TTL 为 5 分钟；快照保存原 tool 参数及本次 `FocusResult` 的 live `JobTracker`。`resume_query(query_id)` 复用该 focus 状态重放查询，不重新调度 closure，返回完整增强结果而不是 diff。MCP server 重启后 query snapshot 丢失。
+`query_id` 是 MCP 层概念，不复用 extraction job id。查询快照保存在 MCP session 内存中，创建后 TTL 为 5 分钟；快照保存原 tool 参数及本次 `FocusResult` 的 live `JobTracker`。`resume_query(query_id)` 复用该 focus 状态重放查询，返回完整增强结果而不是 diff。重放不得重复入队仍在运行或已经满足覆盖要求的 closure；上一窗口完成后若同一候选组仍缺事实，只允许运行时按既有 budget 排入一个后续窗口。MCP server 重启后 query snapshot 丢失。
+
+同一 hot region 的后台工作按覆盖深度复用：进行中的 closure 复用原 job id；已完成且覆盖深度满足请求时不得重新入队；只有更深请求才创建一个新的扩展 closure。文件依赖查询只返回当前持久化事实并异步预热候选 importer/dependency，禁止在 MCP 请求内同步等待 structural closure。
 
 语义图查询重放前必须把快照中的前台 `built_files` 和 `JobTracker` 记录的后台
 materialized files 一并加入增量 graph refresh queue。后台 focus 可能在初始响应后替换
@@ -893,12 +897,14 @@ else:
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。
 - `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。
 - Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 full-index / shared pipeline 更新。
+- 查询可见性由 Store 统一：canonical `references.resolved_*` 优先；canonical target 为空时读取该 reference 最新的 visible closure resolution。usages/call evidence 等消费者不得直接假设只有其中一张表。
 - 内部质量用 `AnswerQuality`；不进 public MCP contract。
 - Closure expansion：策略顺序去重；import/include 可见性查询先依赖后 call graph；超预算按容量截断并 `budget_exhausted` gap，不得整批拒绝成 seed-only。
 - 仅 `FocusResult.pending_closure_ids` 中可追踪的后台 closure 可排入；前台已建文件不得再隐藏 Recent prewarm。
 - `closure_coverage` / `reference_resolutions` / `symbol_edge_candidates` 为临时 control-plane facts；新 session 清表；同 session 成功物化后只保留最近 16 个 committed closure。
 - 已有 inventory 或源码事实时 bootstrap 只标 ready，不全仓后台扫；resolver fallback 用 `symbols.name`，不建 project-wide `GlobalSymbolIndex`。
 - `JobTracker` 记录 closure 终态与耗时；失败必退出 pending 并映射 `background_refinement_failed` gap。经 `FocusResult.job_tracker` 交给 MCP 判 retry/终态。
+- Explore 的 file context 只表达当前文件的 lexical imports，不把 incoming dependents 混入 imports；exports 从现有 `SymbolDef.exported`、本地 export facts 与 `export ... from` facts 聚合，不得用“未实现”的空数组冒充确定为空。
 - `EnsureStructuralResult` 只把实际 built/cached 文件计入 closure。抽取失败记录
   `extraction_failed` gap；取消或预算截断记录 budget gap；`AlreadyBuilding`
   记录为 retryable pending extraction job，并通过 `analysis.retry_after_ms`

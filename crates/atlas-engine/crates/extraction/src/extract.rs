@@ -189,6 +189,16 @@ pub fn extract_file_with_mode(
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
         retain_manifest_top_level_symbols(&mut symbols, declaration_root);
+        if language == Language::ArkTS {
+            let mut decorations = Vec::new();
+            crate::languages::arkts::arkts_decorator_fallback(
+                source,
+                root,
+                file_id,
+                &mut decorations,
+            );
+            extend_decorated_symbol_ranges(&mut symbols, &decorations, source);
+        }
         set_symbol_layers(&mut symbols, "manifest");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         let mut facts = FileFacts {
@@ -314,8 +324,8 @@ pub fn extract_file_with_mode(
                 .iter()
                 .filter(|s| {
                     expected_scope.contains(&s.kind)
-                        && s.range.start_byte <= sym.range.end_byte
-                        && s.range.end_byte >= sym.range.start_byte
+                        && s.range.start_byte <= sym.name_range.start_byte
+                        && s.range.end_byte >= sym.name_range.end_byte
                 })
                 .min_by_key(|s| s.range.end_byte - s.range.start_byte); // tightest scope
             if let Some(scope) = containing {
@@ -328,7 +338,13 @@ pub fn extract_file_with_mode(
             }
         }
     }
-    extend_decorated_symbol_ranges(&mut symbols, &references, source);
+    if matches!(mode, ExtractionMode::ResolutionSymbols) && language == Language::ArkTS {
+        let mut decorations = Vec::new();
+        crate::languages::arkts::arkts_decorator_fallback(source, root, file_id, &mut decorations);
+        extend_decorated_symbol_ranges(&mut symbols, &decorations, source);
+    } else {
+        extend_decorated_symbol_ranges(&mut symbols, &references, source);
+    }
 
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
@@ -847,7 +863,8 @@ fn extend_decorated_symbol_ranges(
         }
     }
 
-    // Extend each symbol's full declaration range to include its decorators.
+    // Extend each symbol's full declaration range and declaration signature
+    // from the same decorator-to-symbol association.
     // `name_range` remains the stable declaration-name location.
     for (idx, mut decorators) in symbol_decorators {
         // Sort by byte position so the leftmost decorator defines range start.
@@ -861,6 +878,34 @@ fn extend_decorated_symbol_ranges(
                 symbol.range.start_byte = first.range.start_byte;
                 symbol.range.start_line = first.range.start_line;
                 symbol.range.start_column = first.range.start_column;
+            }
+        }
+
+        if matches!(
+            symbol.kind,
+            SymbolKind::Class | SymbolKind::Struct | SymbolKind::Field | SymbolKind::Property
+        ) {
+            let decorator_shape = decorators
+                .iter()
+                .filter_map(|decorator| {
+                    source
+                        .get(decorator.range.start_byte as usize..decorator.range.end_byte as usize)
+                        .map(str::trim)
+                })
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !decorator_shape.is_empty() {
+                symbol.signature = Some(match symbol.signature.take() {
+                    Some(shape)
+                        if shape == decorator_shape
+                            || shape.starts_with(&format!("{decorator_shape} ")) =>
+                    {
+                        shape
+                    }
+                    Some(shape) => format!("{decorator_shape} {shape}"),
+                    None => decorator_shape,
+                });
             }
         }
     }
@@ -1781,6 +1826,38 @@ int tcp_v4_rcv(void) {
         assert_eq!(
             &source[symbol.range.start_byte as usize..symbol.range.end_byte as usize],
             "pub struct JobManager {\n    current: usize,\n}"
+        );
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn typescript_function_range_uses_its_named_scope_with_nested_arrows() {
+        let source = "function Timer() {\n  useEffect(() => setInterval(() => {}, 1000));\n}\n";
+        let file_id = FileId::generate("nested_arrows.ts");
+        let frontend = create_frontend(Language::TypeScript).unwrap();
+        let facts = extract_file_with_mode(
+            &frontend,
+            file_id,
+            &PathBuf::from("nested_arrows.ts"),
+            source,
+            "nested-arrows",
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        let timer = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "Timer")
+            .expect("Timer function");
+
+        assert_eq!(
+            &source[timer.name_range.start_byte as usize..timer.name_range.end_byte as usize],
+            "Timer"
+        );
+        assert_eq!(
+            &source[timer.range.start_byte as usize..timer.range.end_byte as usize],
+            source.trim_end()
         );
     }
 

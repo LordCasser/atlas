@@ -779,6 +779,54 @@ fn explore_unique_symbol_returns_dossier() {
 }
 
 #[test]
+fn explore_file_context_reads_persisted_imports_and_exports() {
+    let store = test_store();
+    let symbol_id = insert_test_symbol(&store, "src/component.ts", "VideoComponent");
+    let mut symbol = store
+        .find_symbol_by_id(&symbol_id)
+        .unwrap()
+        .expect("component symbol");
+    symbol.exported = true;
+    store.insert_symbols(&[symbol.clone()]).unwrap();
+    store
+        .insert_imports(&[atlas_engine::ImportDef {
+            id: atlas_engine::ImportId::generate(
+                &symbol.file_id,
+                "import",
+                "./model",
+                Some("Model"),
+                0,
+            ),
+            file_id: symbol.file_id,
+            kind: atlas_engine::ImportKind::Import,
+            module: "./model".into(),
+            imported_name: "Model".into(),
+            local_name: None,
+            is_wildcard: false,
+            is_relative: true,
+            range: atlas_engine::TextRange::default(),
+            alias: None,
+        }])
+        .unwrap();
+
+    let router = test_router(store);
+    router.ensure_graph_initialized().unwrap();
+    let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "VideoComponent"}));
+    assert!(!is_error, "expected success, got error: {resp_str}");
+    let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+
+    assert_eq!(resp["fileContext"]["imports"][0]["module"], "./model");
+    assert_eq!(
+        resp["fileContext"]["exports"][0]["exportedName"],
+        "VideoComponent"
+    );
+    assert_eq!(
+        resp["fileContext"]["exports"][0]["localSymbolId"],
+        symbol_id.to_hex()
+    );
+}
+
+#[test]
 fn explore_ambiguous_symbol_returns_list() {
     let store = test_store();
     insert_test_symbol(&store, "a.ts", "shared_func");
@@ -850,25 +898,27 @@ fn explore_invalid_include_roots_returns_warning() {
 }
 
 #[test]
-fn explore_not_found_returns_retryable_unresolved_response() {
+fn explore_not_found_without_candidates_returns_terminal_gap() {
     let store = test_store();
     let router = test_router(store);
     let (resp_str, is_error) = router.handle_explore(&json!({"symbol": "missing_func"}));
     assert!(
         !is_error,
-        "missing cold symbol should be a retryable unresolved response: {resp_str}"
+        "missing cold symbol should be a bounded unresolved response: {resp_str}"
     );
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_eq!(resp["status"], json!("unresolved"));
-    assert_eq!(resp["analysis"]["retry_after_ms"], json!(2000));
+    assert!(resp["analysis"].get("retry_after_ms").is_none(), "{resp}");
     assert!(resp.get("query_id").is_some(), "missing query_id: {resp}");
     assert!(
         resp.get("retry_after_ms").is_none(),
         "retry guidance belongs only under analysis: {resp}"
     );
     assert!(
-        resp.get("gaps").is_none(),
-        "non-terminal retryable response must not expose terminal gaps: {resp}"
+        resp["gaps"].as_array().is_some_and(|gaps| gaps
+            .iter()
+            .any(|gap| gap["reason"] == "symbol_not_materialized")),
+        "terminal unresolved response must expose its gap: {resp}"
     );
     assert!(resp.get("partial_result").is_none());
     assert!(resp.get("background_refinement").is_none());

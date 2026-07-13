@@ -331,7 +331,7 @@ impl LazyStructuralService {
         scope: Option<&str>,
         max_files: usize,
     ) -> Result<EnsureStructuralResult> {
-        let mut candidates = self.candidates_for_symbol_in_scope(name, scope)?;
+        let candidates = self.candidates_for_symbol_in_scope(name, scope)?;
         if candidates.is_empty() || max_files == 0 {
             return Ok(EnsureStructuralResult {
                 files_built: 0,
@@ -347,14 +347,27 @@ impl LazyStructuralService {
             });
         }
 
-        let truncated = candidates.len() > max_files;
-        let deferred_file_ids = if truncated {
-            candidates[max_files..].to_vec()
-        } else {
-            Vec::new()
-        };
-        candidates.truncate(max_files);
-        let mut result = self.ensure_structural_for_files(&candidates, None)?;
+        let mut cached_file_ids = Vec::new();
+        let mut sync_file_ids = Vec::new();
+        let mut deferred_file_ids = Vec::new();
+        for candidate in candidates {
+            if self.has_structural_layer(&candidate).unwrap_or(false) {
+                cached_file_ids.push(candidate);
+            } else if sync_file_ids.len() < max_files {
+                sync_file_ids.push(candidate);
+            } else {
+                deferred_file_ids.push(candidate);
+            }
+        }
+
+        let truncated = !deferred_file_ids.is_empty();
+        let mut result = self.ensure_structural_for_files(&sync_file_ids, None)?;
+        for file_id in cached_file_ids {
+            if !result.cached_file_ids.contains(&file_id) {
+                result.files_cached += 1;
+                result.cached_file_ids.push(file_id);
+            }
+        }
         result.budget_exceeded |= truncated;
         result.deferred_file_ids = deferred_file_ids;
         result.quality = crate::precision::structural_precision(

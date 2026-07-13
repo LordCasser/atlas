@@ -482,17 +482,20 @@ impl ToolRouter {
     /// This is the non-blocking companion to [`prepare_focus_query`]. It is
     /// used by latency-sensitive tools that have already returned a bounded
     /// result and want later calls/resume_query to see richer local facts.
-    pub(crate) fn enqueue_background_file_focus(&self, file_ids: &[FileId]) -> Vec<String> {
+    pub(crate) fn enqueue_background_file_focus(
+        &self,
+        file_ids: &[FileId],
+    ) -> Option<atlas_engine::focus::runtime::FocusResult> {
         if file_ids.is_empty() {
-            return Vec::new();
+            return None;
         }
 
         let project = self.project();
         match project.query_runtime.enqueue_file_focus_warm(file_ids) {
-            Ok(job_ids) => job_ids,
+            Ok(result) => result,
             Err(err) => {
                 tracing::warn!("background focus warming enqueue failed: {err:#}");
-                Vec::new()
+                None
             }
         }
     }
@@ -507,6 +510,23 @@ impl ToolRouter {
         let mut seen = HashSet::new();
         provider
             .candidates_for_symbol(symbol)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|file_id| seen.insert(*file_id))
+            .take(RETRYABLE_CANDIDATE_LIMIT)
+            .collect()
+    }
+
+    /// Find files that may reference a symbol or module name. Dependency
+    /// queries use this to warm likely importers without synchronously building
+    /// a project-wide closure.
+    pub(crate) fn candidate_file_ids_referencing(&self, name: &str) -> Vec<FileId> {
+        let project = self.project();
+        let provider =
+            DefaultCandidateProvider::new(project.store.clone(), Some(project.root.clone()));
+        let mut seen = HashSet::new();
+        provider
+            .candidates_for_references(name)
             .unwrap_or_default()
             .into_iter()
             .filter(|file_id| seen.insert(*file_id))
@@ -553,12 +573,16 @@ impl ToolRouter {
     ) -> (String, bool) {
         let file_ids = self.candidate_file_ids_for_symbol(symbol);
         let candidate_files = self.candidate_file_paths(&file_ids);
-        let background_jobs = self.enqueue_background_file_focus(&file_ids);
+        let background_focus = self.enqueue_background_file_focus(&file_ids);
+        let (pending_count, retry_after_ms) = background_focus
+            .as_ref()
+            .map(|result| result.pending_work_count_and_eta_ms())
+            .unwrap_or((0, 0));
 
-        let message = if background_jobs.is_empty() {
-            "The symbol is not available in the current local focus closure yet. Retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
-        } else {
+        let message = if pending_count > 0 {
             "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
+        } else {
+            "The symbol is not available in the current local focus closure, and no candidate refinement remains pending. Pass a SymbolSelector with file_path/scope to constrain a different local region."
         };
 
         let mut resp = json!({
@@ -574,16 +598,32 @@ impl ToolRouter {
             resp["detail"] = json!(detail);
         }
 
-        AnalysisEnvelope::new(tool_name, args)
+        let mut lr = AnalysisEnvelope::new(tool_name, args)
             .with_is_error(false)
             .with_analysis_scope("local".into())
             .with_analysis_summary(
-                "bounded unresolved result; background scoped analysis is preparing local symbol facts"
-                    .into(),
+                if pending_count > 0 {
+                    "bounded unresolved result; background scoped analysis is preparing local symbol facts"
+                } else {
+                    "bounded unresolved result; no further background refinement is pending"
+                }
+                .into(),
             )
-            .with_analysis_basis(vec!["manifest".into(), "structural".into()])
-            .with_analysis_retry_after_ms(8000)
-            .build(resp, self)
+            .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+        if pending_count > 0 {
+            lr = lr.with_analysis_retry_after_ms(retry_after_ms);
+        } else {
+            lr = lr.with_gap_records(vec![analysis_envelope::GapRecord {
+                scope: symbol.to_string(),
+                reason: "symbol_not_materialized".into(),
+                detail: "No matching symbol was found in the available local structural facts, and no candidate refinement remains pending."
+                    .into(),
+            }]);
+        }
+        if let Some(result) = background_focus {
+            lr = lr.with_focus_result(result);
+        }
+        lr.build(resp, self)
     }
 
     /// Rebuild the graph snapshot from the store if the index signature changed.

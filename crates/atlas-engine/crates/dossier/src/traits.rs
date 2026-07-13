@@ -39,10 +39,9 @@ pub trait SymbolRepository {
     /// May return multiple results for ambiguous queries (Decision #4).
     fn resolve(&self, query: &str) -> Result<Vec<types::SymbolDef>>;
 
-    /// Get the function/method signature for a symbol.
+    /// Get the compact declaration signature for a symbol.
     ///
-    /// Returns `None` if the symbol is not a function/method or the signature
-    /// is unavailable.
+    /// Returns `None` when the language adapter cannot derive a useful shape.
     fn get_signature(&self, symbol_id: &types::SymbolId) -> Result<Option<String>>;
 
     /// Get symbol definition by ID.

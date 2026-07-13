@@ -4,20 +4,13 @@
 //! [`crate::traits`], providing file-level facts (imports, exports, and
 //! peer symbols) by delegating to the persistence layer.
 //!
-//! # Decision #1 — Exports
-//!
-//! `ExportFact` + `ExportSource` are the official extractor contract, but
-//! most languages do not have an `ExportDef` extractor yet. Per Decision #1,
-//! `get_exports` returns an empty `Vec` when export data is unavailable
-//! (no visibility fallback). The caller is responsible for adding a
-//! coverage warning.
-
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
 
 use crate::traits::FileFactsRepository;
-use crate::types::ExportFact;
+use crate::types::{ExportFact, ExportKind, ExportSource};
 
 pub struct FileFactsRepo {
     store: Arc<db::Store>,
@@ -34,12 +27,117 @@ impl FileFactsRepository for FileFactsRepo {
         self.store.find_imports_by_file(file_id)
     }
 
-    /// v1: Export extraction is not yet implemented by language extractors.
-    /// Returns empty vec until ExportDef extraction is added per Decision #1.
-    /// The caller (ExploreDossierBuilder) will add a coverage warning when
-    /// exports are empty.
-    fn get_exports(&self, _file_id: &types::FileId) -> Result<Vec<ExportFact>> {
-        Ok(Vec::new())
+    fn get_exports(&self, file_id: &types::FileId) -> Result<Vec<ExportFact>> {
+        let symbols = self.store.find_symbols_by_file(file_id)?;
+        let imports = self.store.find_imports_by_file(file_id)?;
+        let mut facts = Vec::new();
+        let mut seen = HashSet::new();
+        let mut explicitly_mapped_symbols = HashSet::new();
+
+        // Local export clauses and default exports are persisted as
+        // ImportKind::ExportFrom with an empty module. Reuse that fact to map
+        // the outward name back to the existing local SymbolDef.
+        for export in imports.iter().filter(|import| {
+            import.kind == types::ImportKind::ExportFrom && import.module.is_empty()
+        }) {
+            let Some(symbol) = symbols
+                .iter()
+                .find(|symbol| symbol.name == export.imported_name)
+            else {
+                continue;
+            };
+            let is_default = export.local_name.as_deref() == Some("default");
+            let exported_name = if is_default {
+                "default".to_string()
+            } else {
+                export
+                    .local_name
+                    .clone()
+                    .unwrap_or_else(|| export.imported_name.clone())
+            };
+            explicitly_mapped_symbols.insert(symbol.id);
+            if seen.insert((exported_name.clone(), None, Some(symbol.id))) {
+                facts.push(ExportFact {
+                    exported_name,
+                    local_symbol_id: Some(symbol.id.to_hex()),
+                    module: None,
+                    export_kind: if is_default {
+                        ExportKind::Default_
+                    } else {
+                        ExportKind::Named
+                    },
+                    source: ExportSource::ExplicitSyntax,
+                    line: export.range.start_line + 1,
+                });
+            }
+        }
+
+        // Standalone declarations such as `export struct Foo` are represented
+        // directly by SymbolDef.exported. A default/local export fact above is
+        // more specific and suppresses the generic named form.
+        for symbol in symbols
+            .iter()
+            .filter(|symbol| symbol.exported && !explicitly_mapped_symbols.contains(&symbol.id))
+        {
+            if seen.insert((symbol.name.clone(), None, Some(symbol.id))) {
+                facts.push(ExportFact {
+                    exported_name: symbol.name.clone(),
+                    local_symbol_id: Some(symbol.id.to_hex()),
+                    module: None,
+                    export_kind: ExportKind::Named,
+                    source: ExportSource::ExplicitSyntax,
+                    line: symbol.range.start_line + 1,
+                });
+            }
+        }
+
+        // Re-exports already exist as ImportDef::ExportFrom. They have no
+        // local SymbolId, so preserve the outward name and source module.
+        for export in imports.iter().filter(|import| {
+            import.kind == types::ImportKind::ExportFrom && !import.module.is_empty()
+        }) {
+            // The TypeScript query emits `export.module` as a statement-level
+            // carrier for both wildcard and named re-exports. It is a wildcard
+            // only when that same statement has no named export captures.
+            let wildcard = export.is_wildcard
+                && !imports.iter().any(|candidate| {
+                    candidate.kind == types::ImportKind::ExportFrom
+                        && candidate.module == export.module
+                        && candidate.range == export.range
+                        && !candidate.imported_name.is_empty()
+                });
+            if export.imported_name.is_empty() && !wildcard {
+                continue;
+            }
+            let exported_name = if wildcard {
+                "*".to_string()
+            } else {
+                export
+                    .local_name
+                    .clone()
+                    .unwrap_or_else(|| export.imported_name.clone())
+            };
+            let export_kind = if wildcard {
+                ExportKind::Wildcard
+            } else if exported_name == "default" {
+                ExportKind::Default_
+            } else {
+                ExportKind::Named
+            };
+            if seen.insert((exported_name.clone(), Some(export.module.clone()), None)) {
+                facts.push(ExportFact {
+                    exported_name,
+                    local_symbol_id: None,
+                    module: Some(export.module.clone()),
+                    export_kind,
+                    source: ExportSource::ExplicitSyntax,
+                    line: export.range.start_line + 1,
+                });
+            }
+        }
+
+        facts.sort_by_key(|fact| (fact.line, fact.exported_name.clone()));
+        Ok(facts)
     }
 
     fn get_peers(
@@ -160,14 +258,98 @@ mod tests {
     }
 
     #[test]
-    fn get_exports_returns_empty_per_decision_1() {
+    fn get_exports_returns_exported_symbols() {
         let store = make_store();
         let file_id = FileId::generate("src/foo.ts");
         seed_file(&store, file_id, "src/foo.ts");
 
+        let mut symbol = make_symbol(file_id, "src/foo.ts", "Foo", "Foo");
+        symbol.exported = true;
+        store.insert_symbols(&[symbol.clone()]).unwrap();
+
         let repo = FileFactsRepo::new(store);
         let exports = repo.get_exports(&file_id).unwrap();
-        assert!(exports.is_empty());
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].exported_name, "Foo");
+        assert_eq!(exports[0].local_symbol_id, Some(symbol.id.to_hex()));
+        assert_eq!(exports[0].module, None);
+        assert_eq!(exports[0].export_kind, ExportKind::Named);
+        assert_eq!(exports[0].source, ExportSource::ExplicitSyntax);
+    }
+
+    #[test]
+    fn get_exports_preserves_named_and_wildcard_reexports() {
+        let store = make_store();
+        let file_id = FileId::generate("src/index.ts");
+        seed_file(&store, file_id, "src/index.ts");
+
+        let named_range = TextRange {
+            start_byte: 0,
+            end_byte: 44,
+            start_line: 0,
+            end_line: 0,
+            ..Default::default()
+        };
+        let wildcard_range = TextRange {
+            start_byte: 45,
+            end_byte: 71,
+            start_line: 1,
+            end_line: 1,
+            ..Default::default()
+        };
+        let imports = vec![
+            ImportDef {
+                id: ImportId::generate(&file_id, "export_from", "./model", Some(""), 0),
+                file_id,
+                kind: ImportKind::ExportFrom,
+                module: "./model".to_string(),
+                imported_name: String::new(),
+                local_name: None,
+                is_wildcard: true,
+                is_relative: true,
+                range: named_range,
+                alias: None,
+            },
+            ImportDef {
+                id: ImportId::generate(&file_id, "export_from", "./model", Some("Model"), 0),
+                file_id,
+                kind: ImportKind::ExportFrom,
+                module: "./model".to_string(),
+                imported_name: "Model".to_string(),
+                local_name: Some("PublicModel".to_string()),
+                is_wildcard: false,
+                is_relative: true,
+                range: named_range,
+                alias: None,
+            },
+            ImportDef {
+                id: ImportId::generate(&file_id, "export_from", "./helpers", Some(""), 45),
+                file_id,
+                kind: ImportKind::ExportFrom,
+                module: "./helpers".to_string(),
+                imported_name: String::new(),
+                local_name: None,
+                is_wildcard: true,
+                is_relative: true,
+                range: wildcard_range,
+                alias: None,
+            },
+        ];
+        store.insert_imports(&imports).unwrap();
+
+        let exports = FileFactsRepo::new(store).get_exports(&file_id).unwrap();
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[0].exported_name, "PublicModel");
+        assert_eq!(exports[0].module.as_deref(), Some("./model"));
+        assert_eq!(exports[0].export_kind, ExportKind::Named);
+        assert_eq!(exports[1].exported_name, "*");
+        assert_eq!(exports[1].module.as_deref(), Some("./helpers"));
+        assert_eq!(exports[1].export_kind, ExportKind::Wildcard);
+        assert!(
+            exports
+                .iter()
+                .all(|export| export.local_symbol_id.is_none())
+        );
     }
 
     #[test]

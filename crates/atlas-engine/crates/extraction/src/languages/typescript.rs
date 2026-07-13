@@ -147,17 +147,26 @@ pub(crate) fn normalize_ts_definition(
 
     let kind = ts_definition_kind(capture_name)?;
     let name = node_text(node, source)?;
-    let range = node_range(node);
+    let name_range = node_range(node);
+    let range = ts_declaration_range(capture_name, node).unwrap_or(name_range);
 
     let qualified_name = qualified_name_from_node("", &name, node, source);
     let exported = is_exported_in_tree(node);
-    let signature = ts_extract_signature(capture_name, node, source);
+    let async_ = is_async_definition(node);
+    let signature = ts_extract_signature(capture_name, node, source).map(|signature| {
+        if async_ {
+            format!("async {signature}")
+        } else {
+            signature
+        }
+    });
 
     let mut symbol = SymbolDefBuilder::new(file_id, language, kind, name, qualified_name, range)
         .exported(exported)
         .signature(signature)
         .build();
-    symbol.async_ = is_async_definition(node);
+    symbol.name_range = name_range;
+    symbol.async_ = async_;
     Some(symbol)
 }
 
@@ -612,8 +621,79 @@ fn ts_extract_signature(
 
             compact_signature(&signature)
         }
+        "definition.class" => compact_signature(&ts_leading_decorators(node, source).join(" ")),
+        "definition.field" | "definition.property" => {
+            let declaration = node.parent()?;
+            let mut signature = ts_leading_decorators(node, source).join(" ");
+            if let Some(type_node) = declaration.child_by_field_name("type") {
+                if !signature.is_empty() {
+                    signature.push(' ');
+                }
+                signature.push_str(&node_text(type_node, source)?);
+            }
+            compact_signature(&signature)
+        }
         _ => None,
     }
+}
+
+fn ts_leading_decorators(node: tree_sitter::Node<'_>, source: &str) -> Vec<String> {
+    let Some(mut declaration) = node.parent() else {
+        return Vec::new();
+    };
+    if let Some(parent) = declaration.parent()
+        && parent.kind() == "export_statement"
+    {
+        declaration = parent;
+    }
+
+    let mut decorators = Vec::new();
+    let mut previous = declaration.prev_named_sibling();
+    while let Some(decorator) = previous.filter(|candidate| candidate.kind() == "decorator") {
+        if let Some(text) = node_text(decorator, source) {
+            decorators.push(text);
+        }
+        previous = decorator.prev_named_sibling();
+    }
+    decorators.reverse();
+    decorators
+}
+
+fn ts_declaration_node<'tree>(
+    capture_name: &str,
+    node: tree_sitter::Node<'tree>,
+) -> Option<tree_sitter::Node<'tree>> {
+    let mut declaration = node.parent()?;
+    if capture_name == "definition.variable"
+        && declaration.kind() == "variable_declarator"
+        && let Some(parent) = declaration.parent()
+        && matches!(
+            parent.kind(),
+            "lexical_declaration" | "variable_declaration"
+        )
+    {
+        declaration = parent;
+    }
+    if let Some(parent) = declaration.parent()
+        && parent.kind() == "export_statement"
+    {
+        declaration = parent;
+    }
+    Some(declaration)
+}
+
+fn ts_declaration_range(capture_name: &str, node: tree_sitter::Node<'_>) -> Option<TextRange> {
+    let declaration = ts_declaration_node(capture_name, node)?;
+    let mut range = node_range(declaration);
+    let mut previous = declaration.prev_named_sibling();
+    while let Some(decorator) = previous.filter(|node| node.kind() == "decorator") {
+        let decorator_range = node_range(decorator);
+        range.start_byte = decorator_range.start_byte;
+        range.start_line = decorator_range.start_line;
+        range.start_column = decorator_range.start_column;
+        previous = decorator.prev_named_sibling();
+    }
+    Some(range)
 }
 
 /// Infer a qualified name from node's parent hierarchy.
@@ -931,13 +1011,13 @@ export async function load(): Promise<void> {}
                 "unexpected count for {kind:?} {qualified_name}"
             );
         }
-        assert!(
-            facts
-                .symbols
-                .iter()
-                .find(|symbol| symbol.name == "load")
-                .is_some_and(|symbol| symbol.async_)
-        );
+        let load = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "load")
+            .expect("async load function");
+        assert!(load.async_);
+        assert_eq!(load.signature.as_deref(), Some("async (): Promise<void>"));
     }
 
     #[test]

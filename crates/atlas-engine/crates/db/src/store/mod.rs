@@ -1328,6 +1328,76 @@ mod tests {
     }
 
     #[test]
+    fn find_references_by_symbol_reads_visible_focus_resolution() {
+        let store = test_store();
+        let file = test_file();
+        store.upsert_file(&file).unwrap();
+
+        let source = test_symbol(file.file_id, "caller", SymbolKind::Function);
+        let target = test_symbol(file.file_id, "target", SymbolKind::Function);
+        store
+            .insert_symbols(&[source.clone(), target.clone()])
+            .unwrap();
+
+        let range = TextRange {
+            start_byte: 50,
+            end_byte: 56,
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 11,
+        };
+        let reference = ReferenceUse {
+            id: ReferenceId::generate(
+                &file.file_id,
+                Some(&source.id),
+                range.start_byte,
+                range.end_byte,
+                "target",
+                ReferenceKind::Call,
+            ),
+            file_id: file.file_id,
+            source_symbol: Some(source.id),
+            scope_id: None,
+            kind: ReferenceKind::Call,
+            text: "target".into(),
+            name: "target".into(),
+            receiver: None,
+            arity: Some(0),
+            range,
+            binding_id: None,
+            resolved: None,
+        };
+        store.insert_references(&[reference.clone()]).unwrap();
+        store.insert_closure_generation("cl_usages").unwrap();
+        store
+            .insert_reference_resolution(
+                reference.id.as_bytes(),
+                "cl_usages",
+                1,
+                "closure_reachable",
+                Some(target.id.as_bytes()),
+                "closure_complete",
+                "high",
+                "closure_reachable",
+                None,
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .find_references_by_symbol(&target.id)
+                .unwrap()
+                .is_empty()
+        );
+        store.make_resolutions_visible("cl_usages", 1).unwrap();
+
+        let usages = store.find_references_by_symbol(&target.id).unwrap();
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].id, reference.id);
+    }
+
+    #[test]
     fn test_find_references_by_name_and_kind_in_scope() {
         let store = test_store();
         let file = test_file();
@@ -2101,6 +2171,34 @@ mod tests {
         let bindings = store.find_bindings_by_file(&file_id).unwrap();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].name, "x");
+    }
+
+    #[test]
+    fn replace_top_level_dataflow_does_not_query_function_cfg() {
+        let store = test_store();
+        let file_id = FileId::generate("src/top_level.ts");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 20,
+            start_line: 0,
+            start_column: 0,
+            end_line: 1,
+            end_column: 0,
+        };
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/top_level.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "abc".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+
+        let unit = types::lazy::AnalysisUnit::from_top_level(file_id, range);
+        store
+            .replace_dataflow_for_unit(&unit, &[], &[], &[], &[], &[], &[])
+            .unwrap();
     }
 
     // ── C #include dependents tests ─────────────────────────────────────

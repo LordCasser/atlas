@@ -715,14 +715,35 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Find all references that resolve to a given symbol (usages).
+    /// Find all references that currently resolve to a given symbol.
+    ///
+    /// A full index stores the canonical target on `references`. Focus keeps
+    /// closure-local targets in `reference_resolutions`; when no canonical
+    /// target exists, the newest visible Focus target is the current answer.
     pub fn find_references_by_symbol(
         &self,
         symbol_id: &SymbolId,
     ) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(&format!(
-            "{REFERENCE_SELECT_NO_WHERE} WHERE resolved_symbol_id = ?1"
+            "{REFERENCE_SELECT_NO_WHERE}
+             WHERE resolved_symbol_id = ?1
+                OR (
+                    resolved_symbol_id IS NULL
+                    AND EXISTS (
+                        SELECT 1
+                        FROM reference_resolutions current
+                        WHERE current.reference_id = \"references\".reference_id
+                          AND current.is_visible = 1
+                          AND current.target_symbol_id = ?1
+                          AND current.id = (
+                              SELECT MAX(latest.id)
+                              FROM reference_resolutions latest
+                              WHERE latest.reference_id = \"references\".reference_id
+                                AND latest.is_visible = 1
+                          )
+                    )
+                )"
         ))?;
         let rows = stmt.query_map(params![symbol_id], row_to_reference)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

@@ -73,6 +73,44 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// List indexed files under a scope with filtering and limiting in SQLite.
+    pub fn list_files_in_scope(
+        &self,
+        scope: &str,
+        language: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<FileInfo>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let normalized = normalize_scope(scope);
+        let language = language.unwrap_or_default();
+        let conn = self.lock_read();
+        if normalized.is_empty() {
+            let mut stmt = conn.prepare(
+                "SELECT file_id, path, language, content_hash, status
+                 FROM files
+                 WHERE ?1 = '' OR language = ?1
+                 ORDER BY path LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![language, limit as i64], row_to_file_info)?;
+            return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
+        }
+        let (lower, upper) = scope_child_bounds(&normalized);
+        let mut stmt = conn.prepare(
+            "SELECT file_id, path, language, content_hash, status
+             FROM files
+             WHERE (path = ?1 OR (path >= ?2 AND path < ?3))
+               AND (?4 = '' OR language = ?4)
+             ORDER BY path LIMIT ?5",
+        )?;
+        let rows = stmt.query_map(
+            params![normalized, lower, upper, language, limit as i64],
+            row_to_file_info,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Return the dominant indexed language for the whole project.
     ///
     /// Ties return `None`; callers should not apply an arbitrary language boost

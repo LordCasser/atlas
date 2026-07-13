@@ -330,7 +330,12 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
     );
     assert!(resp.get("background_refinement").is_none());
     assert!(resp.get("retry_after_ms").is_none());
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(
+        resp["analysis"]["retry_after_ms"]
+            .as_u64()
+            .is_some_and(|delay| delay >= 5_000),
+        "scoped candidate warming should expose the tracked ETA: {resp:.500}"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -370,7 +375,12 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
     );
     assert!(resp.get("background_refinement").is_none());
     assert!(resp.get("retry_after_ms").is_none());
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(
+        resp["analysis"]["retry_after_ms"]
+            .as_u64()
+            .is_some_and(|delay| delay >= 5_000),
+        "candidate warming should expose the tracked ETA: {resp:.500}"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -471,7 +481,7 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
 }
 
 #[test]
-fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
+fn handler_symbol_analysis_tools_return_terminal_gap_without_candidates() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_retryable_cold_symbol_tools");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -503,13 +513,11 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return a retryable unresolved response for cold symbols: {resp:.500}"
+            "{tool} should return a bounded unresolved response for cold symbols: {resp:.500}"
         );
         assert_eq!(resp["status"], "unresolved", "{tool}: {resp:.500}");
-        assert_eq!(
-            resp["analysis"]["retry_after_ms"], 8000,
-            "{tool}: {resp:.500}"
-        );
+        assert!(resp["analysis"].get("retry_after_ms").is_none());
+        assert_eq!(resp["gaps"][0]["reason"], "symbol_not_materialized");
         assert!(
             resp.get("retry_after_ms").is_none(),
             "{tool} should not expose flat retry_after_ms: {resp:.500}"
@@ -520,7 +528,7 @@ fn handler_symbol_analysis_tools_return_retryable_partial_for_cold_symbol() {
 }
 
 #[test]
-fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
+fn handler_graph_tools_return_terminal_gap_for_missing_symbol() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_retryable_graph_missing_symbol");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -552,13 +560,11 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return a retryable unresolved response for missing symbols: {resp:.500}"
+            "{tool} should return a bounded unresolved response for missing symbols: {resp:.500}"
         );
         assert_eq!(resp["status"], "unresolved", "{tool}: {resp:.500}");
-        assert_eq!(
-            resp["analysis"]["retry_after_ms"], 8000,
-            "{tool}: {resp:.500}"
-        );
+        assert!(resp["analysis"].get("retry_after_ms").is_none());
+        assert_eq!(resp["gaps"][0]["reason"], "symbol_not_materialized");
         assert!(
             resp.get("retry_after_ms").is_none(),
             "{tool} should not expose flat retry_after_ms: {resp:.500}"
@@ -573,7 +579,7 @@ fn handler_graph_tools_return_retryable_partial_for_missing_symbol() {
 // =========================================================================
 
 #[test]
-fn handler_analysis_tools_missing_symbols_are_retryable() {
+fn handler_analysis_tools_missing_symbols_are_terminal_without_candidates() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
     let dir = tempfile::tempdir().expect("tempdir");
@@ -587,7 +593,8 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
     );
     assert_eq!(resp["status"], "unresolved", "lifecycle: {resp:.300}");
     assert!(resp.get("retry_after_ms").is_none());
-    assert_eq!(resp["analysis"]["retry_after_ms"], 8000);
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp["gaps"][0]["reason"], "symbol_not_materialized");
 
     // ── branch_diff with non-existent symbol ─────────────────────────
     let (resp2, _err2) = call_tool(
@@ -597,7 +604,8 @@ fn handler_analysis_tools_missing_symbols_are_retryable() {
     );
     assert_eq!(resp2["status"], "unresolved", "branch_diff: {resp2:.300}");
     assert!(resp2.get("retry_after_ms").is_none());
-    assert_eq!(resp2["analysis"]["retry_after_ms"], 8000);
+    assert!(resp2["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp2["gaps"][0]["reason"], "symbol_not_materialized");
 }
 
 // =========================================================================
@@ -780,7 +788,7 @@ fn handler_open_project_uses_persistent_store_without_storage_mode() {
 }
 
 #[test]
-fn handler_search_reports_terminal_gap_for_cold_scope() {
+fn handler_search_cold_scope_tracks_background_work_and_converges() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_search_retry_cold_scope");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -810,9 +818,24 @@ fn handler_search_reports_terminal_gap_for_cold_scope() {
         resp.get("background_refinement").is_none(),
         "cold bounded search should not expose legacy background_refinement: {resp:.300}"
     );
-    assert!(resp["analysis"].get("retry_after_ms").is_none());
-    assert_eq!(resp["gaps"][0]["reason"], "closure_boundary");
+    assert!(resp["analysis"]["retry_after_ms"].as_u64().is_some());
+    assert!(resp.get("gaps").is_none());
     assert!(resp.get("precision").is_none());
+
+    let query_id = resp["query_id"].as_str().expect("search query id");
+    let mut resumed = resp.clone();
+    for _ in 0..50 {
+        if resumed["analysis"].get("retry_after_ms").is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (next, next_err) =
+            call_tool(&mut router, "resume_query", &json!({"query_id": query_id}));
+        assert!(!next_err, "resume search: {next:.300}");
+        resumed = next;
+    }
+    assert_eq!(resumed["coverage"]["state"], "complete", "{resumed:.500}");
+    assert_eq!(resumed["total"], 4, "{resumed:.500}");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -1036,8 +1059,8 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
     let router = ToolRouter::new_empty(store, dir.path().to_path_buf());
     let ctx = ToolCallContext::empty();
 
-    // These should return bounded retryable responses because the symbol does
-    // not exist in the current focus closure — and must NOT panic.
+    // These should return bounded terminal responses because no candidate work
+    // exists for the symbol, and must not panic.
     for (tool, args) in [
         ("calls", json!({"symbol": "nonexistent"})),
         (
@@ -1051,17 +1074,22 @@ fn graph_tools_on_empty_store_return_bounded_responses() {
         let resp: Value = serde_json::from_str(text).expect("graph tool should return JSON");
         assert_eq!(result.is_error, Some(false), "{tool}: {text}");
         assert_eq!(resp["status"], "unresolved", "{tool}: {text}");
-        assert_eq!(resp["analysis"]["retry_after_ms"], 8000, "{tool}: {text}");
+        assert!(
+            resp["analysis"].get("retry_after_ms").is_none(),
+            "{tool}: {text}"
+        );
+        assert_eq!(resp["gaps"][0]["reason"], "symbol_not_materialized");
         assert!(resp.get("retry_after_ms").is_none(), "{tool}: {text}");
     }
 
-    // explore uses its own shorter retry delay.
+    // Explore follows the same terminal contract when no candidate exists.
     let result = router.call_tool(&ctx, "explore", &json!({"symbol": "nonexistent"}));
     let text = extract_text(&result);
     let resp: Value = serde_json::from_str(text).expect("explore should return JSON");
     assert_eq!(result.is_error, Some(false));
     assert_eq!(resp["status"], "unresolved");
-    assert_eq!(resp["analysis"]["retry_after_ms"], 2000);
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert_eq!(resp["gaps"][0]["reason"], "symbol_not_materialized");
     assert!(resp.get("retry_after_ms").is_none());
 }
 

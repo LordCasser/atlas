@@ -2,6 +2,7 @@
 //! resolution fallback, source-mode control, and relation/evidence limiting.
 
 use super::*;
+use crate::tools::analysis_envelope;
 
 /// Parse the `source_mode` parameter from explore tool arguments.
 fn parse_source_mode(args: &serde_json::Value) -> atlas_engine::dossier::types::SourceMode {
@@ -234,7 +235,7 @@ impl ToolRouter {
                 if let Some(scope) = scope {
                     resp["scope"] = json!(scope);
                 }
-                let (background_jobs, candidate_files) = if let Some(scope) = scope {
+                let (background_focus, candidate_files) = if let Some(scope) = scope {
                     let file_ids = self
                         .project()
                         .store
@@ -248,19 +249,40 @@ impl ToolRouter {
                 };
                 if !candidate_files.is_empty() {
                     resp["candidate_files"] = json!(candidate_files);
-                };
-                let summary = if background_jobs.is_empty() {
-                    "explore returned a bounded unresolved result; retry after focus bootstrap has warmed more inventory"
+                }
+                let (pending_count, retry_after_ms) = background_focus
+                    .as_ref()
+                    .map(|result| result.pending_work_count_and_eta_ms())
+                    .unwrap_or((0, 0));
+                resp["message"] = json!(if pending_count > 0 {
+                    "The symbol is not available in the current local focus closure yet. Background scoped analysis has been started; retry this explore request after the suggested delay, or pass a SymbolSelector with file_path/scope to constrain the local region."
                 } else {
+                    "The symbol is not available in the current local focus closure, and no candidate refinement remains pending. Pass a SymbolSelector with file_path/scope to constrain a different local region."
+                });
+                let summary = if pending_count > 0 {
                     "explore returned a bounded unresolved result; background scoped analysis is preparing local symbol facts"
+                } else {
+                    "explore returned a bounded unresolved result; no further background refinement is pending"
                 };
-                return lr
+                let mut lr = lr
                     .with_is_error(false)
                     .with_analysis_scope("local".into())
                     .with_analysis_summary(summary.into())
-                    .with_analysis_basis(vec!["manifest".into(), "structural".into()])
-                    .with_analysis_retry_after_ms(2000)
-                    .build(resp, self);
+                    .with_analysis_basis(vec!["manifest".into(), "structural".into()]);
+                if pending_count > 0 {
+                    lr = lr.with_analysis_retry_after_ms(retry_after_ms);
+                } else {
+                    lr = lr.with_gap_records(vec![analysis_envelope::GapRecord {
+                        scope: scope.unwrap_or(qname).to_string(),
+                        reason: "symbol_not_materialized".into(),
+                        detail: "No matching symbol was found in the available local structural facts, and no candidate refinement remains pending."
+                            .into(),
+                    }]);
+                }
+                if let Some(result) = background_focus {
+                    lr = lr.with_focus_result(result);
+                }
+                return lr.build(resp, self);
             }
         };
 

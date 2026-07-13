@@ -7,8 +7,11 @@
 //! Both paths filter by language support and optional `.atlasignore` patterns.
 
 use crate::detector::is_supported_source_path;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 /// Configuration for file discovery.
 #[derive(Debug, Clone, Default)]
@@ -36,21 +39,39 @@ pub fn discover_files(root: &Path, config: &DiscoveryConfig) -> anyhow::Result<V
         discover_via_walk(root)?
     };
 
-    // Load .atlasignore patterns
     let atlasignore_patterns = load_atlasignore(root);
 
-    // Filter by language support + .atlasignore + include/exclude config
     let filtered: Vec<PathBuf> = raw_files
         .into_iter()
-        .filter(|p| is_supported_source_path(p))
-        .filter(|p| !matches_any_glob(p, &atlasignore_patterns))
-        .filter(|p| !matches_any_glob(p, &config.exclude_patterns))
-        .filter(|p| {
-            config.include_patterns.is_empty() || matches_any_glob(p, &config.include_patterns)
-        })
+        .filter(|p| should_include(p, config, &atlasignore_patterns))
         .collect();
 
     Ok(filtered)
+}
+
+/// Discover source files without allowing a request path to scan indefinitely.
+///
+/// The boolean is `true` only when discovery reached the end of the selected
+/// scope. A `false` result is a usable partial snapshot, never proof that the
+/// returned paths are the complete project inventory.
+pub fn discover_files_bounded(
+    root: &Path,
+    config: &DiscoveryConfig,
+    max_files: usize,
+    timeout: Duration,
+) -> anyhow::Result<(Vec<PathBuf>, bool)> {
+    let deadline = Instant::now() + timeout;
+    let atlasignore_patterns = load_atlasignore(root);
+
+    if let Some((files, complete, raw_count)) =
+        discover_via_git_bounded(root, config, &atlasignore_patterns, max_files, deadline)?
+    {
+        if raw_count > 0 || !complete {
+            return Ok((files, complete));
+        }
+    }
+
+    discover_via_walk_bounded(root, config, &atlasignore_patterns, max_files, deadline)
 }
 
 // ── git-based discovery ────────────────────────────────────────────────
@@ -102,6 +123,96 @@ fn discover_via_git(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn discover_via_git_bounded(
+    root: &Path,
+    config: &DiscoveryConfig,
+    atlasignore_patterns: &[String],
+    max_files: usize,
+    deadline: Instant,
+) -> anyhow::Result<Option<(Vec<PathBuf>, bool, usize)>> {
+    let mut child = match Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Ok(None),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    };
+    let (sender, receiver) = mpsc::sync_channel(256);
+    let reader = std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        let mut bytes = Vec::new();
+        loop {
+            bytes.clear();
+            match stdout.read_until(0, &mut bytes) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if bytes.last() == Some(&0) {
+                        bytes.pop();
+                    }
+                    let Ok(path) = std::str::from_utf8(&bytes) else {
+                        continue;
+                    };
+                    if sender.send(PathBuf::from(path)).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let mut files = Vec::new();
+    let mut raw_count = 0usize;
+    loop {
+        if files.len() >= max_files || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            drop(receiver);
+            let _ = reader.join();
+            return Ok(Some((files, false, raw_count)));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(remaining) {
+            Ok(path) => {
+                raw_count += 1;
+                if should_include(&path, config, atlasignore_patterns) {
+                    files.push(path);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                drop(receiver);
+                let _ = reader.join();
+                return Ok(Some((files, false, raw_count)));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let status = child.wait()?;
+                let _ = reader.join();
+                return if status.success() {
+                    Ok(Some((files, true, raw_count)))
+                } else {
+                    Ok(None)
+                };
+            }
+        }
+    }
+}
+
 // ── filesystem walk (fallback) ─────────────────────────────────────────
 
 const ALWAYS_EXCLUDE_DIRS: &[&str] = &[
@@ -130,6 +241,91 @@ fn discover_via_walk(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     walk_dir(root, root, &mut files)?;
     Ok(files)
+}
+
+fn discover_via_walk_bounded(
+    root: &Path,
+    config: &DiscoveryConfig,
+    atlasignore_patterns: &[String],
+    max_files: usize,
+    deadline: Instant,
+) -> anyhow::Result<(Vec<PathBuf>, bool)> {
+    let mut files = Vec::new();
+    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let complete = walk_dir_bounded(
+        root,
+        root,
+        &root_canonical,
+        config,
+        atlasignore_patterns,
+        max_files,
+        deadline,
+        &mut files,
+    )?;
+    Ok((files, complete))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_dir_bounded(
+    dir: &Path,
+    root: &Path,
+    root_canonical: &Path,
+    config: &DiscoveryConfig,
+    atlasignore_patterns: &[String],
+    max_files: usize,
+    deadline: Instant,
+    files: &mut Vec<PathBuf>,
+) -> anyhow::Result<bool> {
+    if files.len() >= max_files || Instant::now() >= deadline {
+        return Ok(false);
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(true),
+    };
+    for entry in entries.flatten() {
+        if files.len() >= max_files || Instant::now() >= deadline {
+            return Ok(false);
+        }
+        let path = entry.path();
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if name.starts_with('.') || ALWAYS_EXCLUDE_DIRS.contains(&name) {
+                continue;
+            }
+            let canonical = match path.canonicalize() {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            if !canonical.starts_with(root_canonical)
+                || !walk_dir_bounded(
+                    &path,
+                    root,
+                    root_canonical,
+                    config,
+                    atlasignore_patterns,
+                    max_files,
+                    deadline,
+                    files,
+                )?
+            {
+                return Ok(false);
+            }
+        } else if meta.is_file()
+            && let Ok(relative) = path.strip_prefix(root)
+            && should_include(relative, config, atlasignore_patterns)
+        {
+            files.push(relative.to_path_buf());
+        }
+    }
+    Ok(true)
 }
 
 fn walk_dir(dir: &Path, root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -197,6 +393,13 @@ fn matches_any_glob(path: &Path, patterns: &[String]) -> bool {
     }
     let path_str = path.to_string_lossy();
     patterns.iter().any(|pat| glob_match(&path_str, pat))
+}
+
+fn should_include(path: &Path, config: &DiscoveryConfig, atlasignore: &[String]) -> bool {
+    is_supported_source_path(path)
+        && !matches_any_glob(path, atlasignore)
+        && !matches_any_glob(path, &config.exclude_patterns)
+        && (config.include_patterns.is_empty() || matches_any_glob(path, &config.include_patterns))
 }
 
 fn glob_match(path: &str, pattern: &str) -> bool {
@@ -304,5 +507,33 @@ mod tests {
         assert!(glob_match("foo", "foo*"));
         assert!(glob_match("foo.ts", "foo*"));
         assert!(!glob_match("bar", "foo*"));
+    }
+
+    #[test]
+    fn bounded_discovery_reports_limit_as_partial() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        for index in 0..4 {
+            std::fs::write(
+                root.path().join(format!("src/file_{index}.ts")),
+                "export const value = 1;\n",
+            )
+            .unwrap();
+        }
+
+        let (files, complete) = discover_files_bounded(
+            root.path(),
+            &DiscoveryConfig {
+                include_patterns: vec!["src/**".into()],
+                exclude_patterns: Vec::new(),
+            },
+            2,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(files.len(), 2);
+        assert!(!complete);
+        assert!(files.iter().all(|path| path.starts_with("src")));
     }
 }

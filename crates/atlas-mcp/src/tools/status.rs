@@ -1,6 +1,8 @@
 //! Status tools: project overview and file listing.
 
-use atlas_engine::{Language, LanguageCapabilityProfile};
+use std::collections::HashSet;
+
+use atlas_engine::{Language, LanguageCapabilityProfile, seed_file_inventory_from_scope};
 
 use super::ToolRouter;
 
@@ -188,30 +190,118 @@ impl ToolRouter {
         let limit = super::get_u64(args, "limit").map(|v| v as usize);
         let language = super::get_str(args, "language");
         let path_prefix = super::get_str(args, "path_prefix");
-        match self.project().store.list_files() {
+        let scope = path_prefix
+            .trim()
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string();
+        let indexed_count = self
+            .project()
+            .store
+            .count_files_in_scope(&scope)
+            .unwrap_or_default();
+        let inventory_count = self
+            .project()
+            .store
+            .count_file_inventory_in_scope(&scope)
+            .unwrap_or_default();
+        let full_index = self
+            .project()
+            .query_runtime
+            .has_full_index(&self.project().store);
+        if !full_index {
+            self.project().query_runtime.ensure_focus_started();
+        }
+        let mut scoped_discovery_complete = None;
+        if indexed_count == 0 && inventory_count == 0 {
+            match seed_file_inventory_from_scope(
+                &self.project().store,
+                &self.project().root,
+                &scope,
+            ) {
+                Ok(complete) => scoped_discovery_complete = Some(complete),
+                Err(err) => return (format!("Error discovering project files: {err:#}"), true),
+            }
+        }
+
+        let row_limit = limit.unwrap_or(usize::MAX / 2);
+        let language_filter = (!language.is_empty()).then_some(language);
+        match self
+            .project()
+            .store
+            .list_files_in_scope(&scope, language_filter, row_limit)
+        {
             Ok(files) => {
-                let mut filtered: Vec<_> = files
+                let mut seen_paths = HashSet::new();
+                let indexed_rows_present = !files.is_empty();
+                let mut rows: Vec<_> = files
                     .iter()
-                    .filter(|f| {
-                        if !path_prefix.is_empty() && !f.path.starts_with(path_prefix) {
-                            return false;
-                        }
-                        if !language.is_empty() && f.language.as_str() != language {
-                            return false;
-                        }
-                        true
-                    })
-                    .collect();
-                if let Some(n) = limit {
-                    filtered.truncate(n);
-                }
-                (
-                    serde_json::to_string_pretty(&json!({
-                        "files": filtered.iter().map(|f| json!({
+                    .map(|f| {
+                        seen_paths.insert(f.path.clone());
+                        json!({
                             "path": f.path,
                             "language": f.language.as_str(),
                             "status": f.status.as_str(),
-                        })).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+
+                let inventory_rows = self
+                    .project()
+                    .store
+                    .list_file_inventory_rows_in_scope(&scope, language_filter, row_limit)
+                    .unwrap_or_default();
+                let mut inventory_rows_present = false;
+                for row in inventory_rows {
+                    if seen_paths.contains(&row.path) {
+                        continue;
+                    }
+                    inventory_rows_present = true;
+                    rows.push(json!({
+                        "path": row.path,
+                        "language": row.language,
+                        "status": "inventory",
+                    }));
+                }
+                rows.sort_by(|left, right| {
+                    left["path"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(right["path"].as_str().unwrap_or_default())
+                });
+                if let Some(n) = limit {
+                    rows.truncate(n);
+                }
+                let source = match (indexed_rows_present, inventory_rows_present) {
+                    (true, true) => "mixed",
+                    (true, false) => "indexed",
+                    (false, true) => "inventory",
+                    (false, false) if indexed_count > 0 => "indexed",
+                    (false, false) => "inventory",
+                };
+                let inventory_count = self
+                    .project()
+                    .store
+                    .count_file_inventory_in_scope(&scope)
+                    .unwrap_or_default();
+                let inventory_complete = full_index
+                    || scoped_discovery_complete == Some(true)
+                    || self.project().query_runtime.is_tier0_complete();
+                let coverage = if inventory_complete {
+                    json!({"state": "complete"})
+                } else {
+                    json!({
+                        "state": "partial",
+                        "reason": "Background Focus inventory is still discovering project files"
+                    })
+                };
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "files": rows,
+                        "source": source,
+                        "coverage": coverage,
+                        "inventory_file_count": inventory_count,
                     }))
                     .unwrap_or_else(|e| e.to_string()),
                     false,
@@ -296,5 +386,60 @@ mod tests {
         assert!(value["index"].get("next_action").is_none(), "{value}");
         assert!(value.get("hint").is_none(), "{value}");
         assert!(value["index"].get("hint").is_none(), "{value}");
+    }
+
+    #[test]
+    fn project_files_uses_inventory_on_cold_store() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/app.ts"), "export function app() {}\n").unwrap();
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+        let (body, is_error) = router.handle_files(&serde_json::json!({"path_prefix": "src"}));
+
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["source"], "inventory");
+        let files = value["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{value}");
+        assert_eq!(files[0]["path"], "src/app.ts");
+        assert_eq!(files[0]["status"], "inventory");
+    }
+
+    #[test]
+    fn project_files_applies_language_and_limit_in_the_catalog_query() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        for (path, language) in [
+            ("src/app.ts", atlas_engine::Language::TypeScript),
+            ("src/lib.rs", atlas_engine::Language::Rust),
+        ] {
+            store
+                .upsert_file(&atlas_engine::FileInfo {
+                    file_id: atlas_engine::FileId::generate(path),
+                    path: path.into(),
+                    language,
+                    content_hash: "hash".into(),
+                    status: atlas_engine::ParseStatus::Success,
+                })
+                .unwrap();
+        }
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+        let (body, is_error) = router.handle_files(&serde_json::json!({
+            "path_prefix": "src",
+            "language": "rust",
+            "limit": 1
+        }));
+
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["files"].as_array().unwrap().len(), 1, "{value}");
+        assert_eq!(value["files"][0]["path"], "src/lib.rs");
+        assert_eq!(value["source"], "indexed");
     }
 }

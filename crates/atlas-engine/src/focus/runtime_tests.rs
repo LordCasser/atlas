@@ -441,7 +441,7 @@ fn semantic_function_prepare_does_not_enqueue_graph_expansion() {
 }
 
 #[test]
-fn test_prepare_boundary_hit_expands_existing_hot_region() {
+fn test_prepare_reuses_existing_hot_region_work() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/main.c");
     let mut rt = test_runtime_focus_mode(store);
@@ -468,18 +468,26 @@ fn test_prepare_boundary_hit_expands_existing_hot_region() {
 
     let second = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(
-        second.pending_closure_ids.len(),
-        2,
-        "boundary hit should add background expansion plus region-extension closure (no foreground)"
+        second.pending_closure_ids, first.pending_closure_ids,
+        "same-depth query should reuse the active background closure"
     );
     assert_eq!(
         rt.hot_regions.regions.len(),
         1,
         "boundary hit should expand the existing region instead of creating a new one"
     );
+    assert_eq!(
+        rt.hot_regions.regions[0].depth, first_depth,
+        "reusing work must not pretend the region expanded"
+    );
+
+    for job_id in &first.pending_closure_ids {
+        rt.job_tracker.mark_done(job_id);
+    }
+    let third = rt.prepare(&intent, Vec::new()).unwrap();
     assert!(
-        rt.hot_regions.regions[0].depth > first_depth,
-        "existing hot region depth should grow after boundary expansion"
+        third.pending_closure_ids.is_empty(),
+        "a completed region with sufficient depth must not enqueue replacement work"
     );
 }
 

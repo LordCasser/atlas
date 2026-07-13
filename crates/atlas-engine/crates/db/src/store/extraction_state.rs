@@ -608,7 +608,9 @@ impl Store {
     /// 7. INSERT new rows
     ///
     /// For function units, the unit is identified by `function_id`.
-    /// For top-level units, identified by `file_id + function_id IS NULL`.
+    /// For top-level units, data nodes and bindings are identified by
+    /// `file_id + function_id IS NULL`. CFG is function-scoped and therefore
+    /// has no top-level replacement slice.
     #[allow(clippy::too_many_arguments)]
     pub fn replace_dataflow_for_unit(
         &self,
@@ -684,16 +686,12 @@ impl Store {
                 }
             }
 
-            // Clean up cfg_edges → cfg_nodes
-            {
-                let mut stmt = if unit.symbol_id.is_some() {
-                    tx.prepare("SELECT cfg_node_id FROM cfg_nodes WHERE function_id = ?1")?
-                } else {
-                    tx.prepare(
-                        "SELECT cfg_node_id FROM cfg_nodes WHERE file_id = ?1 AND function_id IS NULL",
-                    )?
-                };
-                let cn_ids: Vec<CfgNodeId> = if let Some(ref func_id) = unit.symbol_id {
+            // CFG ownership is always a concrete function. Top-level units
+            // can own data nodes/bindings, but never cfg_nodes.
+            if let Some(ref func_id) = unit.symbol_id {
+                let mut stmt =
+                    tx.prepare("SELECT cfg_node_id FROM cfg_nodes WHERE function_id = ?1")?;
+                let cn_ids: Vec<CfgNodeId> =
                     stmt.query_map(params![func_id], |row| row.get::<_, CfgNodeId>(0))?
                         .filter_map(|r| match r {
                             Ok(v) => Some(v),
@@ -702,18 +700,7 @@ impl Store {
                                 None
                             }
                         })
-                        .collect()
-                } else {
-                    stmt.query_map(params![unit.file_id], |row| row.get::<_, CfgNodeId>(0))?
-                        .filter_map(|r| match r {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                tracing::warn!(?e, "CfgNode ID decode error (by file), skipping");
-                                None
-                            }
-                        })
-                        .collect()
-                };
+                        .collect();
 
                 for cn_id in &cn_ids {
                     tx.execute(
@@ -722,14 +709,10 @@ impl Store {
                     )?;
                 }
 
-                if let Some(ref func_id) = unit.symbol_id {
-                    tx.execute(
-                        "DELETE FROM cfg_nodes WHERE function_id = ?1",
-                        params![func_id],
-                    )?;
-                } else {
-                    tx.execute("DELETE FROM cfg_nodes WHERE file_id = ?1 AND function_id IS NULL", params![unit.file_id])?;
-                }
+                tx.execute(
+                    "DELETE FROM cfg_nodes WHERE function_id = ?1",
+                    params![func_id],
+                )?;
             }
 
             // Clean up bindings + binding_uses for this unit.
@@ -793,6 +776,11 @@ impl Store {
             //   schema ON DELETE SET NULL and Focus re-extract scope ids)
             // Mirrors insert_file_facts_impl guards, but against DB rather
             // than a pure in-memory batch.
+            let (cfg_nodes, cfg_edges) = if unit.symbol_id.is_some() {
+                (cfg_nodes, cfg_edges)
+            } else {
+                (&[][..], &[][..])
+            };
             let validated = super::fk_guards::validate_dataflow_payload_db(
                 tx,
                 data_nodes,

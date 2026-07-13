@@ -99,6 +99,7 @@ pub use search::{SearchEngine, SearchOptions, SearchResult};
 /// Scoped search: shared orchestration for MCP/TUI search with lazy structural fallback.
 pub use scoped_search::{
     ScopedSearchRequest, ScopedSearchResponse, ScopedSearchService, SearchAnalysis, SearchCoverage,
+    seed_file_inventory_from_scope,
 };
 
 /// Focus materialize: on-demand structural + dataflow under the Focus solution.

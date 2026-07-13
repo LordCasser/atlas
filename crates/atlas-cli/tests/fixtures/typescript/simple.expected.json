@@ -6,11 +6,13 @@
     },
     {
       "name": "port",
-      "kind": "property"
+      "kind": "property",
+      "signature": ": number"
     },
     {
       "name": "host",
-      "kind": "property"
+      "kind": "property",
+      "signature": ": string"
     },
     {
       "name": "Server",

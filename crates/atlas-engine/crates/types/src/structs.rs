@@ -81,7 +81,7 @@ pub struct SymbolDef {
     /// Range of just the symbol name (for go-to-definition highlighting).
     pub name_range: TextRange,
 
-    /// Function/method signature, e.g. "run(foo: string): void".
+    /// Compact declaration shape, e.g. "@Prop : string" or "async (foo: string): void".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 

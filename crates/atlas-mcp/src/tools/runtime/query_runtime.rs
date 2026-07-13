@@ -118,11 +118,24 @@ impl QueryRuntime {
     ///
     /// Thin delegate over [`FocusRuntime::enqueue_file_focus_warm`] so handler
     /// source never takes `focus_runtime.lock()` directly (DEBT-8 purity).
-    pub fn enqueue_file_focus_warm(&self, file_ids: &[FileId]) -> anyhow::Result<Vec<String>> {
+    pub fn enqueue_file_focus_warm(
+        &self,
+        file_ids: &[FileId],
+    ) -> anyhow::Result<Option<FocusResult>> {
         self.focus_runtime
             .lock()
             .unwrap()
             .enqueue_file_focus_warm(file_ids)
+    }
+
+    /// Start Focus bootstrap without waiting for project-wide discovery.
+    pub fn ensure_focus_started(&self) {
+        self.focus_runtime.lock().unwrap().ensure_started();
+    }
+
+    /// Whether background Tier 0 has discovered the complete project inventory.
+    pub fn is_tier0_complete(&self) -> bool {
+        self.focus_runtime.lock().unwrap().is_tier0_complete()
     }
 
     /// Whether the Focus runtime's materialize has a structural rebuilder.

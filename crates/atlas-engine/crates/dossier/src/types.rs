@@ -26,7 +26,7 @@ pub struct SubjectInfo {
     pub name: String,
     /// Fully qualified name.
     pub qualified_name: String,
-    /// Function/method signature, if available.
+    /// Compact declaration signature, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// Programming language as string, e.g. "typescript".
@@ -143,7 +143,7 @@ pub struct PeerSymbol {
     pub file: String,
     /// 1-based line number of the symbol definition.
     pub line: u32,
-    /// Function/method signature.
+    /// Compact declaration signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
 }
@@ -267,8 +267,13 @@ pub struct ImportFact {
 pub struct ExportFact {
     /// The name under which the symbol is exported.
     pub exported_name: String,
-    /// The local symbol ID being exported (hex string).
-    pub local_symbol_id: String,
+    /// The local symbol ID being exported (hex string). Absent for re-exports
+    /// that do not bind a local symbol.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_symbol_id: Option<String>,
+    /// Source module for `export ... from` declarations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
     /// Type of export.
     pub export_kind: ExportKind,
     /// Provenance source of the export fact.
@@ -326,7 +331,7 @@ pub struct AmbiguousResponse {
 pub struct SymbolCandidate {
     /// Fully qualified name.
     pub qualified_name: String,
-    /// Function/method signature.
+    /// Compact declaration signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// Project-relative file path.

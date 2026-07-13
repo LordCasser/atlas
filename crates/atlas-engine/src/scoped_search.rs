@@ -45,9 +45,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use db::Store;
+use filesync::discovery::{DiscoveryConfig, discover_files_bounded};
 use search::query_parser::parse_query;
 use search::scoring::{ScoreWeights, language_preference_bonus};
 use types::structs::AnswerQuality;
@@ -216,13 +217,15 @@ impl ScopedSearchService {
             self.store.count_files_in_scope(&normalized_scope)?
         };
         let mut inventory_backed = false;
+        let mut inventory_discovery_complete = true;
         let mut inventory_scope_count = self
             .store
             .count_file_inventory_in_scope(&normalized_scope)
             .unwrap_or(0);
         if scope_file_count == 0 && inventory_scope_count == 0 {
             if let Some(root) = &self.project_root {
-                seed_inventory_from_scope(&self.store, root, &normalized_scope)?;
+                inventory_discovery_complete =
+                    seed_file_inventory_from_scope(&self.store, root, &normalized_scope)?;
                 inventory_scope_count = self
                     .store
                     .count_file_inventory_in_scope(&normalized_scope)
@@ -331,7 +334,10 @@ impl ScopedSearchService {
         //    scope.
         const COLD_SEARCH_MAX_SYNC_LAZY_FILES: usize = 2;
         let decorator_needs_refinement = decorator_name.is_some() && !scope_has_structural_coverage;
-        if (symbols.is_empty() || decorator_needs_refinement)
+        if (symbols.is_empty()
+            || decorator_needs_refinement
+            || inventory_backed
+            || !scope_has_structural_coverage)
             && !term.is_empty()
             && (should_trigger_lazy || inventory_backed)
         {
@@ -359,7 +365,11 @@ impl ScopedSearchService {
                 deferred_file_ids.extend(ensured.deferred_file_ids.iter().copied());
                 symbols = run_search()?;
             } else {
-                let mut file_ids = if normalized_scope.is_empty() {
+                let mut file_ids = if inventory_backed {
+                    self.store
+                        .list_file_inventory_ids_in_scope(&normalized_scope, 100)
+                        .unwrap_or_default()
+                } else if normalized_scope.is_empty() {
                     self.store
                         .list_files()?
                         .into_iter()
@@ -452,7 +462,9 @@ impl ScopedSearchService {
             SearchCoverage::Partial {
                 reason: "No indexed files".to_string(),
             }
-        } else if lazy_truncated_for_latency || (inventory_backed && !lazy_covered_scope) {
+        } else if lazy_truncated_for_latency
+            || (inventory_backed && (!inventory_discovery_complete || !lazy_covered_scope))
+        {
             SearchCoverage::Partial {
                 reason: "Focus inventory is available, but only a bounded subset has structural facts for this query".to_string(),
             }
@@ -461,6 +473,13 @@ impl ScopedSearchService {
             SearchCoverage::Partial {
                 reason: "Decorator search requires structural facts for every file in scope"
                     .to_string(),
+            }
+        } else if !matches!(req.analysis, SearchAnalysis::Manifest)
+            && !scope_has_structural_coverage
+            && !lazy_covered_scope
+        {
+            SearchCoverage::Partial {
+                reason: "Structural facts are incomplete for part of the search scope".to_string(),
             }
         } else {
             SearchCoverage::Full
@@ -708,108 +727,80 @@ fn ranked_simple_score(query: &str, sym: &SymbolDef, preferred_language: Option<
         + language_preference_bonus(preferred_language == Some(sym.language)) * weights.language
 }
 
-const COLD_SCOPE_INVENTORY_LIMIT: usize = 100;
-const COLD_SCOPE_INVENTORY_TIMEOUT_MS: u64 = 500;
+const COLD_SCOPE_INVENTORY_LIMIT: usize = 2_000;
+const COLD_SCOPE_INVENTORY_TIMEOUT_MS: u64 = 1_500;
 
-fn seed_inventory_from_scope(
+/// Populate Tier-0 file inventory for a project-relative scope.
+///
+/// This performs cheap discovery only: no parsing, no graph writes, and no
+/// `files` table upsert. `files` remains the materialized-facts catalog, while
+/// `file_inventory` is the cold-start manifest for Focus entry points.
+pub fn seed_file_inventory_from_scope(
     store: &Store,
     project_root: &Path,
     scope: &str,
-) -> anyhow::Result<()> {
-    let start_dir = if scope.is_empty() {
-        project_root.to_path_buf()
+) -> anyhow::Result<bool> {
+    let normalized_scope = scope
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .trim_end_matches('/');
+    let include_patterns = if normalized_scope.is_empty() || normalized_scope == "." {
+        Vec::new()
     } else {
-        project_root.join(scope)
+        vec![
+            normalized_scope.to_string(),
+            format!("{normalized_scope}/**"),
+        ]
     };
-    if !start_dir.exists() {
-        return Ok(());
-    }
+    let config = DiscoveryConfig {
+        include_patterns,
+        exclude_patterns: Vec::new(),
+    };
+    let (files, complete) = discover_files_bounded(
+        project_root,
+        &config,
+        COLD_SCOPE_INVENTORY_LIMIT,
+        Duration::from_millis(COLD_SCOPE_INVENTORY_TIMEOUT_MS),
+    )?;
 
-    let canonical_root = project_root.canonicalize()?;
-    let mut stack = vec![start_dir];
-    let deadline = Instant::now() + Duration::from_millis(COLD_SCOPE_INVENTORY_TIMEOUT_MS);
-    let mut inserted = 0usize;
-
-    while let Some(dir) = stack.pop() {
-        if inserted >= COLD_SCOPE_INVENTORY_LIMIT || Instant::now() >= deadline {
-            break;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(_) => continue,
+    for rel in files {
+        let Some(language) = Language::from_path(&rel) else {
+            continue;
         };
-        for entry in entries.flatten() {
-            if inserted >= COLD_SCOPE_INVENTORY_LIMIT || Instant::now() >= deadline {
-                break;
-            }
-            let path = entry.path();
-            let metadata = match std::fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if metadata.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with('.')
-                    || matches!(
-                        name,
-                        "target"
-                            | "node_modules"
-                            | "build"
-                            | "dist"
-                            | ".cache"
-                            | "__pycache__"
-                            | "venv"
-                            | ".venv"
-                    )
-                {
-                    continue;
-                }
-                if let Ok(canonical) = path.canonicalize() {
-                    if canonical.starts_with(&canonical_root) {
-                        stack.push(path);
-                    }
-                }
-                continue;
-            }
-            if !metadata.is_file() {
-                continue;
-            }
-            let Ok(rel) = path.strip_prefix(project_root) else {
-                continue;
-            };
-            let Some(language) = Language::from_path(rel) else {
-                continue;
-            };
-            let rel_path = rel.to_string_lossy().replace('\\', "/");
-            let file_id = types::ids::FileId::generate(&rel_path);
-            let mtime = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or_default();
+        let abs_path = project_root.join(&rel);
+        let metadata = match std::fs::symlink_metadata(&abs_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => continue,
+        };
+        let rel_path = rel.to_string_lossy().replace('\\', "/");
+        let file_id = types::ids::FileId::generate(&rel_path);
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or_default();
 
-            #[cfg(unix)]
-            let (inode, dev) = {
-                use std::os::unix::fs::MetadataExt;
-                (metadata.ino() as i64, metadata.dev() as i64)
-            };
-            #[cfg(not(unix))]
-            let (inode, dev) = (0i64, 0i64);
+        #[cfg(unix)]
+        let (inode, dev) = {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.ino() as i64, metadata.dev() as i64)
+        };
+        #[cfg(not(unix))]
+        let (inode, dev) = (0i64, 0i64);
 
-            store.insert_file_inventory(
-                &file_id,
-                &rel_path,
-                language.as_str(),
-                mtime,
-                metadata.len() as i64,
-                inode,
-                dev,
-            )?;
-            inserted += 1;
-        }
+        store.insert_file_inventory(
+            &file_id,
+            &rel_path,
+            language.as_str(),
+            mtime,
+            metadata.len() as i64,
+            inode,
+            dev,
+        )?;
     }
-    Ok(())
+    Ok(complete)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

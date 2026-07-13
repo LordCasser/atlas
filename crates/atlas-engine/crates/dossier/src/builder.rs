@@ -206,12 +206,7 @@ fn build_source_excerpt(
             request.max_source_bytes,
             text.len(),
         ));
-        // Truncate at a UTF-8 character boundary.
-        let mut boundary = request.max_source_bytes;
-        while boundary > 0 && !text.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        text[..boundary].to_string()
+        truncate_utf8(&text, request.max_source_bytes).to_string()
     } else {
         text
     };
@@ -223,6 +218,14 @@ fn build_source_excerpt(
         truncated,
         text,
     })
+}
+
+fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
+    let mut boundary = max_bytes.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &text[..boundary]
 }
 
 /// Build call evidence (incoming + outgoing) with call-site snippets.
@@ -1187,6 +1190,29 @@ mod tests {
         // Full mode reads all lines in the symbol range (0-based: 0..10, 1-based: 1..10)
         assert_eq!(excerpt.start_line, 1);
         assert_eq!(excerpt.end_line, 10);
+    }
+
+    #[test]
+    fn source_excerpt_does_not_cross_into_the_next_declaration() {
+        let file = fid("src/functions.ts");
+        let source = "function first() {\n  return 1;\n}\nfunction second() {\n  return 2;\n}\n";
+        let first_end = source.find("function second").unwrap() as u32;
+        let mut sym = make_symbol("first", "first", sid(&file, "first", "function"), file);
+        sym.range = tr(0, first_end, 0, 2);
+        let name_start = source.find("first").unwrap() as u32;
+        sym.name_range = tr(name_start, name_start + 5, 0, 0);
+
+        let src_repo = MockSourceRepo::new();
+        src_repo.add_file(file, source);
+        let mut req = default_request();
+        req.source_mode = SourceMode::Full;
+        let mut warnings = Vec::new();
+
+        let excerpt = build_source_excerpt(&sym, &src_repo, &req, &mut warnings).unwrap();
+
+        assert_eq!(excerpt.text, "function first() {\n  return 1;\n}");
+        assert!(!excerpt.truncated);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
