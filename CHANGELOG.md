@@ -82,10 +82,7 @@ All notable changes to Atlas will be documented in this file.
   version change. Existing projects must remove `.atlas/atlas.db` and run
   `atlas index --project <path> --analysis <mode>` to materialize 1.5.4 facts;
   `doctor` cannot distinguish pre-1.5.4 facts with unchanged source hashes.
-- Workspace packages and release metadata advance to 1.5.4. Manual release
-  dispatches check out the requested tag, verify it matches the workspace
-  version, and gate platform builds on formatting, all-feature check, and
-  all-feature workspace tests.
+- Workspace packages and release metadata advance to 1.5.4.
 
 ---
 

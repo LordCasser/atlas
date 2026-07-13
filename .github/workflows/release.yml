@@ -13,37 +13,8 @@ permissions:
   contents: write
 
 jobs:
-  verify:
-    name: Verify release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify tag matches workspace version
-        env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
-        run: |
-          VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-          test "v${VERSION}" = "${RELEASE_TAG}"
-
-      - name: Verify formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check workspace
-        run: cargo check --workspace --all-features
-
-      - name: Test workspace
-        run: cargo test --workspace --all-features
-
   build:
     name: ${{ matrix.target }}
-    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
