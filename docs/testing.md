@@ -44,7 +44,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - `LazyDataflowService::ensure_for_position` 和 `ensure_for_function` 必须分别覆盖 fresh build、unit cache hit、full-index prebuilt cache hit、pending/already-building、budget partial。
 - unit 写库 FK：`filter_data_nodes` — 无效 `binding_id` 必须 **SET NULL 保留节点**；无效 `function_id` 才丢弃（`db::fk_guards` 单测）。
 - unit `CALL_EDGES` capability 只有在 structural fresh 且目标 unit 存在真实 callsite 时置位；无调用函数必须保持 unset。
-- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 materialize 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，终态必须移除 retry 并保留必要 gaps。
+- MCP `trace(kind="variable")` 必须覆盖有 path 和无 path 两种结果；只要 materialize 产生可恢复工作，两者都必须有 `query_id` 和 `analysis.retry_after_ms`，且非终态 JSON 不得包含 trace/result/partial_result 数据；终态必须移除 retry 并保留必要 gaps。
 - MCP `branch_diff` / `lifecycle` 必须覆盖按需 CFG build 后成功分析的路径，断言 public analysis view 不会同时声明 CFG 缺失；编排必须经 `AnalysisRuntime::run_*`（见 §2.11）。
 - CLI `--analysis` 必须覆盖合法值和非法值；非法值必须返回错误，不能静默 fallback。
 - MCP 单栈：`ActiveProject` / Engine / FocusRuntime / AnalysisRuntime `same_stack_as`（或等价指针相等）。
@@ -108,6 +108,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 输出必须断言 bounded 行为、confidence/provenance 暴露和结构化 JSON。
 - trace/query/context 工具必须断言顶层 `capability` 对象存在。
 - 触发 lazy extraction 的 MCP 工具必须断言 `analysis.retry_after_ms`、`query_id`、`gaps` 和 `resume_query` 的终态收敛语义；不得重新引入 `precision`、`work`、`lazy_diagnostics` 或 `analysis_contract`。
+- 18 秒门限测试必须覆盖两支：期限内 tracked job 完成时自动重放并只返回终态结果；期限到达时只返回票据，禁止保留 handler 的临时数组、路径、caller 或 trace body。
 - 如果工具返回错误但已经触发可恢复 refinement，必须保留可操作的 `query_id` 和 retry 状态；不可恢复错误不得伪造 retry。
 
 ### 2.6 TUI 测试

@@ -238,6 +238,9 @@ Level 5: lightweight interprocedural summaries
 - `partial_result`
 
 非 trace MCP 外层不复用 `partial_result`；它通过 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 和终态 `gaps` 表达覆盖与缺口。
+tracked Focus work 未完成时，MCP 统一等待最多 18 秒；超时只返回 query ticket、
+`pending.reason`、`pending.required_analysis` 与 `retry_after_ms`，禁止发布任何工具临时结果。
+trace 的冻结内层 `partial_result` 也不得绕过这条规则；它只用于终态能力/预算限制。
 
 当查询能力超出当前语言边界时，Atlas 必须返回结构化 diagnostics，例如 `unsupported_feature`、`best_effort_only`、`missing_fact`、`low_confidence_resolution`。用户交互中禁止只返回空路径而不解释原因。
 
@@ -263,6 +266,8 @@ MCP 入口必须先 `project(action="open")` 同步激活项目；open 不做全
 - `analysis`：说明 scope、basis、summary；仅在 live tracker 仍有工作时提供 `retry_after_ms`。
 - `gaps`：终态已知缺口，稳定映射为 `{scope, reason, detail}`。
 - `query_id` + `tasks` + `resume_query`：让可恢复 refinement 可观测并最终收敛。
+- `QueryNeed`（manifest / structural / call_graph / dataflow）必须同时驱动 tool contract、
+  Focus 热区和 pending reason；禁止三处各自维护不同分类。
 - 空结果或错误不得吞掉仍可恢复的 query 状态；不可恢复错误不得伪造 retry。
 - CFG/semantic 工具已经基于 CFG 产出结果时，不得同时声明 CFG 不可用。
 - `lifecycle` 必须在查询时从目标函数 CFG + dataflow 组合 semantic effects；不能因持久化

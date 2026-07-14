@@ -14,7 +14,7 @@ use types::ids::{FileId, SymbolId};
 use types::lazy::{AnalysisUnit, LazyWindow, VariableFocus};
 use types::structs::{ReferenceUse, ScopeDef, SymbolDef, TextRange};
 
-use crate::constants::{LAZY_DATAFLOW_MAX_DEPTH, LAZY_DATAFLOW_MAX_UNITS};
+use crate::constants::LAZY_DATAFLOW_MAX_UNITS;
 
 /// Entry point for all lazy-window planning.
 pub(crate) struct LazyDataflowPlanner;
@@ -25,13 +25,14 @@ impl LazyDataflowPlanner {
     /// Steps:
     /// 1. Locate the innermost reference → resolved symbol
     /// 2. Find enclosing scope → enclosing function symbol → seed_unit
-    /// 3. Expand callers/callees up to [`LAZY_DATAFLOW_MAX_DEPTH`]
+    /// 3. Expand callers/callees up to the requested depth
     /// 4. Truncate if unit count exceeds [`LAZY_DATAFLOW_MAX_UNITS`]
-    pub fn plan_for_position(
+    pub fn plan_for_position_with_depth(
         store: &Store,
         file_id: &FileId,
         line: u32,
         column: u32,
+        max_depth: usize,
     ) -> Result<LazyWindow> {
         let line0 = line.saturating_sub(1);
         let col0 = column.saturating_sub(1);
@@ -90,7 +91,7 @@ impl LazyDataflowPlanner {
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
-        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier);
+        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier, max_depth);
 
         let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
         if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
@@ -112,7 +113,11 @@ impl LazyDataflowPlanner {
     }
 
     /// Plan a window for a `trace_function` query starting at a known symbol.
-    pub fn plan_for_function(store: &Store, symbol_id: &SymbolId) -> Result<LazyWindow> {
+    pub fn plan_for_function_with_depth(
+        store: &Store,
+        symbol_id: &SymbolId,
+        max_depth: usize,
+    ) -> Result<LazyWindow> {
         let sym = match store.find_symbol_by_id(symbol_id)? {
             Some(s) => s,
             None => anyhow::bail!("symbol not found: {symbol_id:?}"),
@@ -123,7 +128,7 @@ impl LazyDataflowPlanner {
         let mut seen: HashSet<[u8; 16]> = HashSet::new();
         seen.insert(seed_unit.unit_id);
         let mut frontier: Vec<AnalysisUnit> = vec![seed_unit.clone()];
-        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier);
+        let broke_on_cap = expand_frontier(store, &mut units, &mut seen, &mut frontier, max_depth);
 
         let truncated = units.len() > LAZY_DATAFLOW_MAX_UNITS || broke_on_cap;
         if truncated && units.len() > LAZY_DATAFLOW_MAX_UNITS {
@@ -260,7 +265,7 @@ fn add_if_new_by_id(
     }
 }
 
-/// BFS expansion: iterates the frontier up to [`LAZY_DATAFLOW_MAX_DEPTH`],
+/// BFS expansion: iterates the frontier up to the requested depth,
 /// discovering callers and callees, adding new units, and truncating at
 /// [`LAZY_DATAFLOW_MAX_UNITS`].
 ///
@@ -270,8 +275,9 @@ fn expand_frontier(
     units: &mut Vec<AnalysisUnit>,
     seen: &mut HashSet<[u8; 16]>,
     frontier: &mut Vec<AnalysisUnit>,
+    max_depth: usize,
 ) -> bool {
-    for _depth in 1..=LAZY_DATAFLOW_MAX_DEPTH {
+    for _depth in 1..=max_depth {
         if frontier.is_empty() {
             break;
         }

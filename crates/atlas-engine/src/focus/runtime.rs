@@ -35,7 +35,7 @@ use crate::focus::materialize::{CandidateProvider, DefaultCandidateProvider, Foc
 use super::bootstrap::BootstrapManager;
 use super::engine::ClosureEngine;
 use super::job_tracker::JobTracker;
-use super::query::QueryIntent;
+use super::query::{QueryIntent, QueryNeed};
 use super::scheduler::{self, FocusPriority, FocusScheduler};
 use super::types::{ClosureStrategy, Direction, FocusSeed, FocusWindow, WindowBudget};
 
@@ -67,6 +67,7 @@ fn strategies_for(
     let type_depth = if background { 2 } else { 1 };
     match intent {
         QueryIntent::SemanticFunction { .. } => Vec::new(),
+        QueryIntent::SymbolDetail { .. } => vec![import, ClosureStrategy::SameDirectory],
         QueryIntent::Calls { direction, .. } => vec![
             ClosureStrategy::CallGraph {
                 direction: call_direction(direction.as_deref()),
@@ -111,11 +112,28 @@ fn strategies_for(
         QueryIntent::Search { .. } => vec![import, ClosureStrategy::SameDirectory],
         QueryIntent::TracePoint { .. } => vec![import, ClosureStrategy::SameDirectory],
         QueryIntent::TraceVariable { .. } if language == Language::ArkTS => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            ClosureStrategy::TypeGraph {
+                max_depth: type_depth,
+            },
             import,
             ClosureStrategy::SameDirectory,
             ClosureStrategy::StateChannel,
         ],
-        QueryIntent::TraceVariable { .. } => vec![import, ClosureStrategy::SameDirectory],
+        QueryIntent::TraceVariable { .. } => vec![
+            ClosureStrategy::CallGraph {
+                direction: Direction::Both,
+                depth: 1,
+            },
+            ClosureStrategy::TypeGraph {
+                max_depth: type_depth,
+            },
+            import,
+            ClosureStrategy::SameDirectory,
+        ],
     }
 }
 
@@ -129,9 +147,10 @@ fn iterations_for(intent: &QueryIntent, background: bool) -> u32 {
         QueryIntent::Path { max_depth, .. } => max_depth.unwrap_or(5).clamp(1, 10) as u32,
         QueryIntent::Impact { depth, .. } => depth.unwrap_or(3).clamp(1, 5) as u32,
         QueryIntent::Explore { .. } | QueryIntent::Context { .. } => 2,
+        QueryIntent::TraceVariable { max_depth, .. } => (*max_depth).clamp(2, 5) as u32,
         QueryIntent::Search { .. }
-        | QueryIntent::TracePoint { .. }
-        | QueryIntent::TraceVariable { .. } => 1,
+        | QueryIntent::SymbolDetail { .. }
+        | QueryIntent::TracePoint { .. } => 1,
     }
 }
 
@@ -634,27 +653,36 @@ impl FocusRuntime {
             max_iterations: background_iterations,
         };
         let mut pending_ids = pending_closure_ids;
-        if background_iterations > 0 {
-            if let Some(hit) = boundary_hit.as_ref() {
+        let needs_dataflow = intent.required_analysis() == QueryNeed::Dataflow
+            && !matches!(
+                intent,
+                QueryIntent::SemanticFunction { .. }
+                    if !matches!(language, Language::C | Language::Cpp)
+            );
+        if background_iterations > 0 || needs_dataflow {
+            let priority = if needs_dataflow {
+                FocusPriority::Sync
+            } else {
+                FocusPriority::UserFocus
+            };
+            // A structural hot-region job cannot satisfy a dataflow query.
+            // Dataflow intents therefore enqueue their own Sync-grade closure;
+            // resume reuses that exact tracked job through the query snapshot.
+            if needs_dataflow {
+                let closure_id = self.scheduler.lock().unwrap().enqueue(bg_window, priority);
+                pending_ids.push(closure_id);
+            } else if let Some(hit) = boundary_hit.as_ref() {
                 let reusable = self
                     .hot_regions
                     .reusable_jobs(&hit.region_id, &self.job_tracker);
                 if !reusable.is_empty() {
                     pending_ids.extend(reusable);
                 } else if hit.depth < background_iterations {
-                    let closure_id = self
-                        .scheduler
-                        .lock()
-                        .unwrap()
-                        .enqueue(bg_window, FocusPriority::UserFocus);
+                    let closure_id = self.scheduler.lock().unwrap().enqueue(bg_window, priority);
                     pending_ids.push(closure_id);
                 }
             } else {
-                let closure_id = self
-                    .scheduler
-                    .lock()
-                    .unwrap()
-                    .enqueue(bg_window, FocusPriority::UserFocus);
+                let closure_id = self.scheduler.lock().unwrap().enqueue(bg_window, priority);
                 pending_ids.push(closure_id);
             }
         }
@@ -762,9 +790,9 @@ impl FocusRuntime {
 
     /// Enqueue file-focused background warming without building a foreground closure.
     ///
-    /// Search uses this after returning a fast partial result: the current
-    /// request stays responsive, while the focus scheduler parses the remaining
-    /// hot files for a likely follow-up query.
+    /// Search uses this after its first bounded pass. MCP's outer 18-second gate
+    /// withholds that provisional body while the tracked scheduler work runs,
+    /// then either replays a complete response or returns a ticket.
     pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Option<FocusResult>> {
         if file_ids.is_empty() || self.detect_access_strategy() == AccessStrategy::FullCache {
             return Ok(None);
@@ -899,6 +927,11 @@ impl FocusRuntime {
                 file_id,
                 symbol_id,
             } => self.locate_calls_seed(symbol_name, file_id, symbol_id),
+            QueryIntent::SymbolDetail {
+                symbol_name,
+                file_id,
+                symbol_id,
+            } => self.locate_calls_seed(symbol_name, file_id, symbol_id),
             QueryIntent::Calls {
                 symbol_name,
                 file_id,
@@ -962,6 +995,7 @@ impl FocusRuntime {
                 file_id,
                 line,
                 column,
+                ..
             } => {
                 // TraceVariable uses same position-based seed as TracePoint
                 let language = self.resolve_language_for_file(file_id).unwrap_or_default();

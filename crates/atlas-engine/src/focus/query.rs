@@ -13,6 +13,33 @@
 
 use types::ids::{FileId, SymbolId};
 
+/// Strongest fact layer a query requires before its result is usable.
+///
+/// This is shared by the Focus control plane and MCP tool contracts so tool
+/// routing, hot-region planning, and public pending reasons cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueryNeed {
+    /// Symbol names and basic metadata are sufficient.
+    Manifest,
+    /// Complete source structure for the seed file/region is required.
+    Structural,
+    /// Resolved cross-file call topology is required.
+    CallGraph,
+    /// Function dataflow/CFG over the query dependency region is required.
+    Dataflow,
+}
+
+impl QueryNeed {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manifest => "manifest",
+            Self::Structural => "structural",
+            Self::CallGraph => "call_graph",
+            Self::Dataflow => "dataflow",
+        }
+    }
+}
+
 /// What the MCP tool is asking for.
 #[derive(Debug, Clone)]
 pub enum QueryIntent {
@@ -50,6 +77,8 @@ pub enum QueryIntent {
         symbol_name: String,
         /// Optional traversal depth (BFS radius).
         depth: Option<usize>,
+        /// Whether impacted functions also require CFG/dataflow semantics.
+        semantic: bool,
     },
     /// `atlas_trace point`
     TracePoint {
@@ -84,6 +113,12 @@ pub enum QueryIntent {
         /// Optional project-relative directory or file scope.
         scope: Option<String>,
     },
+    /// `atlas_symbol detail` — complete declaration metadata/source for one symbol.
+    SymbolDetail {
+        symbol_name: String,
+        file_id: Option<FileId>,
+        symbol_id: Option<SymbolId>,
+    },
     /// `atlas_symbol context` — structured callers, callees, file peers, imports.
     Context {
         /// The symbol name to look up.
@@ -101,7 +136,31 @@ pub enum QueryIntent {
         line: u32,
         /// 1-based column number.
         column: u32,
+        /// Requested trace depth. Focus clamps this to its bounded hot-region
+        /// depth while retaining the user's value for result traversal.
+        max_depth: usize,
     },
+}
+
+impl QueryIntent {
+    /// Return the strongest fact layer required by this query.
+    pub fn required_analysis(&self) -> QueryNeed {
+        match self {
+            Self::Search { .. } | Self::SymbolDetail { .. } | Self::TracePoint { .. } => {
+                QueryNeed::Structural
+            }
+            Self::Calls { .. }
+            | Self::Path { .. }
+            | Self::Explore { .. }
+            | Self::Context { .. } => QueryNeed::CallGraph,
+            Self::Impact { semantic: true, .. }
+            | Self::SemanticFunction { .. }
+            | Self::TraceVariable { .. } => QueryNeed::Dataflow,
+            Self::Impact {
+                semantic: false, ..
+            } => QueryNeed::CallGraph,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -203,11 +262,17 @@ mod tests {
         let intent = QueryIntent::Impact {
             symbol_name: "main".to_string(),
             depth: Some(3),
+            semantic: false,
         };
         match intent {
-            QueryIntent::Impact { symbol_name, depth } => {
+            QueryIntent::Impact {
+                symbol_name,
+                depth,
+                semantic,
+            } => {
                 assert_eq!(symbol_name, "main");
                 assert_eq!(depth, Some(3));
+                assert!(!semantic);
             }
             _ => panic!("Expected Impact variant"),
         }
@@ -218,6 +283,7 @@ mod tests {
         let intent = QueryIntent::Impact {
             symbol_name: "main".to_string(),
             depth: None,
+            semantic: true,
         };
         let debug_str = format!("{intent:?}");
         assert!(
@@ -290,19 +356,72 @@ mod tests {
             file_id: fid,
             line: 42,
             column: 10,
+            max_depth: 30,
         };
         match intent {
             QueryIntent::TraceVariable {
                 file_id,
                 line,
                 column,
+                max_depth,
             } => {
                 assert_eq!(file_id, fid);
                 assert_eq!(line, 42);
                 assert_eq!(column, 10);
+                assert_eq!(max_depth, 30);
             }
             _ => panic!("Expected TraceVariable variant"),
         }
+    }
+
+    #[test]
+    fn required_analysis_distinguishes_local_and_cross_file_trace() {
+        let fid = FileId::generate("test.rs");
+        assert_eq!(
+            QueryIntent::Search {
+                query: "target".into(),
+                scope: Some("src".into()),
+            }
+            .required_analysis(),
+            QueryNeed::Structural
+        );
+        assert_eq!(
+            QueryIntent::SymbolDetail {
+                symbol_name: "target".into(),
+                file_id: Some(fid),
+                symbol_id: None,
+            }
+            .required_analysis(),
+            QueryNeed::Structural
+        );
+        assert_eq!(
+            QueryIntent::TracePoint {
+                file_id: fid,
+                line: 1,
+                column: 1,
+            }
+            .required_analysis(),
+            QueryNeed::Structural
+        );
+        assert_eq!(
+            QueryIntent::TraceVariable {
+                file_id: fid,
+                line: 1,
+                column: 1,
+                max_depth: 30,
+            }
+            .required_analysis(),
+            QueryNeed::Dataflow
+        );
+        assert_eq!(
+            QueryIntent::Impact {
+                symbol_name: "root".into(),
+                depth: Some(3),
+                semantic: true,
+            }
+            .required_analysis(),
+            QueryNeed::Dataflow
+        );
     }
 
     #[test]

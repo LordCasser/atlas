@@ -323,8 +323,9 @@ impl LazyStructuralService {
     /// This is used by latency-sensitive frontends such as MCP search. Candidate
     /// discovery is already bounded, but parsing every cold candidate on the
     /// first query can still exceed an AI client's tool timeout. Limiting the
-    /// synchronous parse count lets the first response return partial results
-    /// quickly while still warming the most likely files.
+    /// synchronous parse count lets the handler yield to tracked background
+    /// warming quickly. MCP withholds the provisional handler body while that
+    /// work is pending.
     pub fn ensure_structural_for_symbol_in_scope_limited(
         &self,
         name: &str,

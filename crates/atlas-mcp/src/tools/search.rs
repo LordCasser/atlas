@@ -328,7 +328,7 @@ impl ToolRouter {
                             .is_none();
                     if source_missing {
                         let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
-                            Some(atlas_engine::QueryIntent::Context {
+                            Some(atlas_engine::QueryIntent::SymbolDetail {
                                 symbol_name: qname.to_string(),
                                 file_id: Some(s.file_id),
                                 symbol_id: None,
@@ -392,7 +392,7 @@ impl ToolRouter {
                 let mut selector_file_id = self.resolve_selector_file_id(&symbol_input);
                 if selector_file_id.is_none() && has_file_hint {
                     let _ = self.prepare_focus_query_with_roots(
-                        Some(atlas_engine::QueryIntent::Context {
+                        Some(atlas_engine::QueryIntent::SymbolDetail {
                             symbol_name: qname.to_string(),
                             file_id: None,
                             symbol_id: None,
@@ -402,7 +402,7 @@ impl ToolRouter {
                     selector_file_id = self.resolve_selector_file_id(&symbol_input);
                 }
                 let (focus_result, focus_warnings) = self.prepare_focus_query_with_roots(
-                    Some(atlas_engine::QueryIntent::Context {
+                    Some(atlas_engine::QueryIntent::SymbolDetail {
                         symbol_name: qname.to_string(),
                         file_id: selector_file_id,
                         symbol_id: None,

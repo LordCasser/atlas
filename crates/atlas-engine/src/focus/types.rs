@@ -21,6 +21,12 @@ use types::ids::{FileId, SymbolId};
 use types::structs::AnswerQuality;
 use types::structs::KnownGap;
 
+/// Unified user-facing Focus wait threshold.
+///
+/// MCP may wait for tracked refinement until this deadline. Work that cannot
+/// finish within it continues in the scheduler and is resumed by query ticket.
+pub const INTERACTIVE_QUERY_BUDGET_MS: u64 = 18_000;
+
 // ---------------------------------------------------------------------------
 // Direction — expansion direction for graph-based strategies
 // ---------------------------------------------------------------------------
@@ -104,7 +110,7 @@ impl Default for WindowBudget {
     fn default() -> Self {
         WindowBudget {
             max_files: 30,
-            max_time_ms: 18_000,
+            max_time_ms: INTERACTIVE_QUERY_BUDGET_MS,
             max_fanout_per_name: 20,
             max_iterations: 0,
         }

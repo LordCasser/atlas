@@ -477,6 +477,11 @@ fn trace_variable_invalid_include_roots_returns_diagnostics() {
 
     let (resp_str, _) = router.handle_trace_variable(&args);
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+    if resp["status"] == "in_progress" {
+        assert!(resp.get("diagnostics").is_none());
+        assert!(resp.get("query_id").is_some());
+        return;
+    }
     let diags = resp["diagnostics"].as_array();
     assert!(diags.is_some(), "Expected diagnostics");
     let codes: Vec<&str> = diags
@@ -1353,12 +1358,18 @@ fn trace_variable_has_analysis_or_query_id() {
     let (resp_str, _is_error) = router.handle_trace_variable(&args);
 
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-    // The response must include kind
-    assert_eq!(
-        resp["kind"].as_str(),
-        Some("trace_variable"),
-        "Expected kind=trace_variable, got: {resp_str}"
-    );
+    if resp["status"] == "in_progress" {
+        assert!(
+            resp.get("kind").is_none(),
+            "pending must not leak a trace body"
+        );
+    } else {
+        assert_eq!(
+            resp["kind"].as_str(),
+            Some("trace_variable"),
+            "Expected kind=trace_variable, got: {resp_str}"
+        );
+    }
     // Check for the analysis block as evidence the
     // envelope injected its metadata
     let has_analysis = resp.get("analysis").is_some();
@@ -2479,7 +2490,7 @@ fn resume_query_converges_without_creating_another_snapshot() {
             job_tracker: Some(tracker),
         }),
         created_at: std::time::Instant::now(),
-        status: QueryStatus::Retryable,
+        status: crate::tools::query_snapshot::QueryStatus::Retryable,
     });
 
     let (response, is_error) =
@@ -2501,7 +2512,7 @@ fn resume_query_converges_without_creating_another_snapshot() {
 /// Verify that each tool name routes to the correct contract via `contract_for`.
 #[test]
 fn contract_based_dispatch_routes_to_correct_handler() {
-    use crate::tools::tool_contract::{AnalysisNeeds, OverlayKind, QueryNeeds};
+    use crate::tools::tool_contract::{AnalysisNeeds, OverlayKind, QueryNeed};
     use serde_json::json;
 
     // Project lifecycle
@@ -2520,39 +2531,39 @@ fn contract_based_dispatch_routes_to_correct_handler() {
     // Semantic graph queries
     assert_eq!(
         contract_for("calls", &json!({"symbol": "foo"})),
-        ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
+        ToolContract::SemanticGraphQuery(QueryNeed::CallGraph)
     );
     assert_eq!(
         contract_for("explore", &json!({"symbol": "foo"})),
-        ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
+        ToolContract::SemanticGraphQuery(QueryNeed::CallGraph)
     );
     assert_eq!(
         contract_for("path", &json!({"from": "a", "to": "b"})),
-        ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
+        ToolContract::SemanticGraphQuery(QueryNeed::CallGraph)
     );
     assert_eq!(
         contract_for("impact", &json!({"symbol": "foo"})),
-        ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
+        ToolContract::SemanticGraphQuery(QueryNeed::CallGraph)
     );
     assert_eq!(
         contract_for(
             "trace",
             &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1})
         ),
-        ToolContract::TraceQuery(QueryNeeds::Full)
+        ToolContract::TraceQuery(QueryNeed::Structural)
     );
     // Store fact queries
     assert_eq!(
         contract_for("symbol", &json!({"symbol": "foo"})),
-        ToolContract::StoreFactQuery(QueryNeeds::Manifest)
+        ToolContract::StoreFactQuery(QueryNeed::Structural)
     );
     assert_eq!(
         contract_for("search", &json!({"query": "foo"})),
-        ToolContract::StoreFactQuery(QueryNeeds::Manifest)
+        ToolContract::StoreFactQuery(QueryNeed::Structural)
     );
     assert_eq!(
         contract_for("file_dependencies", &json!({"file_path": "src/main.rs"})),
-        ToolContract::StoreFactQuery(QueryNeeds::Structural)
+        ToolContract::StoreFactQuery(QueryNeed::Manifest)
     );
     // Semantic analysis
     assert_eq!(
@@ -2592,6 +2603,133 @@ fn contract_based_dispatch_routes_to_correct_handler() {
         contract_for("resume_query", &json!({"query_id": "abc"})),
         ToolContract::TaskControl
     );
+}
+
+#[test]
+fn strict_pending_ticket_never_leaks_provisional_result_data() {
+    let router = ToolRouter::new_empty(test_store(), PathBuf::from("/tmp"));
+    let ticket = router.strict_pending_ticket(
+        "trace",
+        "q_pending",
+        "local",
+        "two cross-file dataflow units are still building",
+        atlas_engine::QueryNeed::Dataflow,
+    );
+    let value: serde_json::Value = serde_json::from_str(&ticket).unwrap();
+
+    assert_eq!(value["status"], "in_progress");
+    assert_eq!(value["query_id"], "q_pending");
+    assert_eq!(value["pending"]["required_analysis"], "dataflow");
+    assert_eq!(value["pending"]["reason"], "focus_dataflow_not_ready");
+    assert!(value.get("result").is_none());
+    assert!(value.get("results").is_none());
+    assert!(value.get("partial_result").is_none());
+    assert!(value.get("gaps").is_none());
+}
+
+#[test]
+fn failed_focus_work_never_leaks_provisional_result_data() {
+    let router = ToolRouter::new_empty(test_store(), PathBuf::from("/tmp"));
+    let tracker = Arc::new(atlas_engine::focus::JobTracker::new());
+    tracker.mark_failed("bg_failed", "dataflow extraction failed");
+    router.project().job_runtime.store_snapshot(QuerySnapshot {
+        query_id: "q_failed".into(),
+        tool_name: "trace".into(),
+        tool_args: json!({"kind": "variable"}),
+        focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
+            gaps: Vec::new(),
+            pending_closure_ids: vec!["bg_failed".into()],
+            pending_extraction_job_ids: Vec::new(),
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: Vec::new(),
+            coverage_counts: None,
+            job_tracker: Some(tracker),
+        }),
+        created_at: std::time::Instant::now(),
+        status: crate::tools::query_snapshot::QueryStatus::Ready,
+    });
+
+    let provisional = json!({
+        "query_id": "q_failed",
+        "kind": "trace_variable",
+        "paths": [{"partial": true}],
+    })
+    .to_string();
+    let (settled, is_error) = router.settle_focus_response(
+        &contract_for("trace", &json!({"kind": "variable"})),
+        "trace",
+        provisional,
+        false,
+        std::time::Instant::now(),
+    );
+    let settled: Value = serde_json::from_str(&settled).unwrap();
+
+    assert!(is_error);
+    assert_eq!(settled["status"], "failed");
+    assert_eq!(settled["pending"]["reason"], "focus_dataflow_failed");
+    assert!(settled.get("kind").is_none());
+    assert!(settled.get("paths").is_none());
+}
+
+#[test]
+fn interactive_gate_replays_existing_snapshot_when_focus_finishes() {
+    let store = test_store();
+    let file_id = register_test_file(&store, "src/main.ts");
+    insert_test_symbol(&store, file_id, "target");
+    let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+    let args = serde_json::json!({"symbol": "target.target", "view": "detail"});
+
+    let tracker = Arc::new(atlas_engine::focus::JobTracker::new());
+    tracker.mark_done("bg_ready");
+    router.project().job_runtime.store_snapshot(QuerySnapshot {
+        query_id: "q_original".into(),
+        tool_name: "symbol".into(),
+        tool_args: args.clone(),
+        focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
+            gaps: Vec::new(),
+            pending_closure_ids: vec!["bg_ready".into()],
+            pending_extraction_job_ids: Vec::new(),
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: Some(file_id),
+            built_files: vec![file_id],
+            coverage_counts: None,
+            job_tracker: Some(tracker),
+        }),
+        created_at: std::time::Instant::now(),
+        status: crate::tools::query_snapshot::QueryStatus::Retryable,
+    });
+
+    let provisional = serde_json::json!({
+        "query_id": "q_original",
+        "analysis": {
+            "scope": "local",
+            "summary": "Focus is still expanding.",
+            "retry_after_ms": 5000
+        },
+        "provisional": "must disappear"
+    })
+    .to_string();
+    let (settled, is_error) = router.settle_focus_response(
+        &contract_for("symbol", &args),
+        "symbol",
+        provisional,
+        false,
+        std::time::Instant::now(),
+    );
+    let settled: serde_json::Value = serde_json::from_str(&settled).unwrap();
+
+    assert!(!is_error, "settled response: {settled}");
+    assert_eq!(settled["query_id"], "q_original");
+    assert_eq!(settled["qualified_name"], "target.target");
+    assert!(settled.get("provisional").is_none());
+    assert!(settled["analysis"].get("retry_after_ms").is_none());
 }
 
 /// Calling an unknown tool name must return is_error=true.
@@ -2767,7 +2905,7 @@ fn e2e_store_query_contract_routes_correctly() {
     let _ = router.ensure_graph_initialized(); // "symbol" requires graph
     let ctx = ToolCallContext::empty();
 
-    // search → StoreFactQuery(Manifest)
+    // search → StoreFactQuery(Structural)
     let args = serde_json::json!({"query": "test"});
     let result = router.call_tool(&ctx, "search", &args);
     let text = extract_text(&result);
@@ -2776,7 +2914,7 @@ fn e2e_store_query_contract_routes_correctly() {
         "search should route to StoreFactQuery, got: {text}"
     );
 
-    // symbol with default view → StoreFactQuery(Manifest)
+    // symbol with default view → StoreFactQuery(Structural)
     let args2 = serde_json::json!({"symbol": "test"});
     let result2 = router.call_tool(&ctx, "symbol", &args2);
     let text2 = extract_text(&result2);

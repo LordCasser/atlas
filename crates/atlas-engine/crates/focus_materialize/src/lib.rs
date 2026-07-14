@@ -112,8 +112,31 @@ impl LazyDataflowService {
         column: u32,
         trigger_query: Option<&str>,
     ) -> Result<LazyWindow> {
-        let window =
-            planner::LazyDataflowPlanner::plan_for_position(&self.store, file_id, line, column)?;
+        self.ensure_for_position_with_depth(
+            file_id,
+            line,
+            column,
+            crate::constants::LAZY_DATAFLOW_MAX_DEPTH,
+            trigger_query,
+        )
+    }
+
+    /// Plan and ensure a position-centered window at a caller-provided Focus depth.
+    pub fn ensure_for_position_with_depth(
+        &self,
+        file_id: &FileId,
+        line: u32,
+        column: u32,
+        max_depth: usize,
+        trigger_query: Option<&str>,
+    ) -> Result<LazyWindow> {
+        let window = planner::LazyDataflowPlanner::plan_for_position_with_depth(
+            &self.store,
+            file_id,
+            line,
+            column,
+            max_depth,
+        )?;
         self.ensure_window(window, trigger_query)
     }
 
@@ -123,7 +146,25 @@ impl LazyDataflowService {
         symbol_id: &SymbolId,
         trigger_query: Option<&str>,
     ) -> Result<LazyWindow> {
-        let window = planner::LazyDataflowPlanner::plan_for_function(&self.store, symbol_id)?;
+        self.ensure_for_function_with_depth(
+            symbol_id,
+            crate::constants::LAZY_DATAFLOW_MAX_DEPTH,
+            trigger_query,
+        )
+    }
+
+    /// Plan and ensure a callable-centered window at a caller-provided Focus depth.
+    pub fn ensure_for_function_with_depth(
+        &self,
+        symbol_id: &SymbolId,
+        max_depth: usize,
+        trigger_query: Option<&str>,
+    ) -> Result<LazyWindow> {
+        let window = planner::LazyDataflowPlanner::plan_for_function_with_depth(
+            &self.store,
+            symbol_id,
+            max_depth,
+        )?;
         self.ensure_window(window, trigger_query)
     }
 

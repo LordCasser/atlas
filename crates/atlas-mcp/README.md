@@ -31,29 +31,44 @@ you want a reusable full-project cache.
 
 ## Tools
 
-| Tool | Purpose |
-|------|---------|
-| `project` | Open a project, inspect active status, or list known files. |
-| `search` | Search symbols inside a required project-relative `scope`; the scope is also the focus seed. |
-| `symbol` | Return symbol detail, context, or usages. |
-| `calls` | Incoming/outgoing call exploration. Outgoing results also expose unresolved call tokens such as external helpers/macros. |
-| `explore` | Symbol dossier with source, call evidence, and related context. |
-| `path` | Find graph paths between resolved local symbols. |
-| `impact` | Traverse impacted symbols/files from a resolved local symbol. |
-| `file_dependencies` | Store-backed file dependency facts. |
-| `trace` | `point`, `variable`, `forward`, and `callers` tracing. |
-| `lifecycle` | CFG/dataflow lifecycle analysis. |
-| `branch_diff` | CFG/dataflow comparison across branch-like variants. |
-| `fp_dispatches` | Add/list/delete manual function-pointer dispatch annotations. |
-| `domain_rules` | Add/list/delete domain rules or learn candidate rules. |
-| `tasks` | Inspect current focus/lazy extraction activity. |
-| `resume_query` | Rehydrate a recent query snapshot after lazy focus work has progressed. |
+| Tool | Actual function | Required facts / Focus behavior |
+|------|-----------------|---------------------------------|
+| `project` | Open, status, or known-file inventory. | No query Focus; `open` never scans the repository. |
+| `search` | Name search inside mandatory `scope`. | Structural candidate region; manifest is only the cold-start candidate layer. |
+| `symbol` | Detail, usages, or structured context. | Detail/source=structural; usages/context=call graph. |
+| `calls` | Fixed one-hop incoming/outgoing or bounded multi-hop `both`. | Cross-file call-graph hot region in the requested direction/depth. |
+| `explore` | Symbol dossier: source, call evidence, relations, file context. | Call graph plus import neighborhood. |
+| `path` | Ranked graph paths between two resolved symbols. | Cross-file call-graph region grown toward both endpoints. |
+| `impact` | Bounded affected-symbol/file traversal; optional semantic overlay. | Call graph; `semantic=true` upgrades to dataflow/CFG. |
+| `file_dependencies` | Incoming/outgoing imports/includes for one file. | Manifest by default; `analysis=structural` upgrades the file neighborhood. |
+| `trace` | Point lookup, variable provenance, forward chain, or caller chain. | Point=structural; forward/callers=call graph; variable=dataflow over a widened cross-file dependency region. |
+| `lifecycle` | C/C++ field allocate/use/free state analysis. | Function CFG, dataflow effects, and domain rules via tracked Sync Focus work. |
+| `branch_diff` | Compare sibling branch side effects/asymmetries. | Function CFG/dataflow effects via tracked Sync Focus work. |
+| `fp_dispatches` | Manage user-supplied function-pointer targets. | Overlay read/write; no Focus parsing. |
+| `domain_rules` | Manage or learn ownership/allocation rules. | Overlay read/write; no Focus parsing. |
+| `tasks` | Observe current Focus/lazy activity. | Observation only; does not create another task model. |
+| `resume_query` | Replay the original query snapshot. | Reuses the original tool's required fact level and tracked jobs. |
 
 Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
 `resume_task`. Removed MCP parameters: `project.background`,
 `project.scan_files`, `project.force_memory`, and `search.background`.
 
 ## Query Semantics
+
+- Every Focus-backed query has one 18-second interactive deadline. If tracked
+  work reaches the tool's required fact level before the deadline, MCP
+  transparently replays the existing `QuerySnapshot` and returns the complete
+  result.
+- If the deadline expires, MCP returns only `status=in_progress`, `query_id`,
+  `pending.reason`, `pending.required_analysis`, and
+  `analysis.retry_after_ms`. It never publishes provisional result arrays,
+  paths, callers, or trace payloads. Background work continues and the caller
+  resumes with `resume_query`.
+- If tracked materialization fails, MCP returns a result-free `status=failed`
+  ticket with the original `query_id` and failure reason. Re-run the original
+  tool call to retry; failed work is never exposed as a limited result.
+- `QueryNeed` is shared by MCP contracts and the Focus control plane:
+  `manifest`, `structural`, `call_graph`, or `dataflow`.
 
 - `search.scope` is mandatory even when a rich index exists. It bounds the
   answer and seeds focus coverage. Non-terminal work is exposed through
@@ -68,6 +83,26 @@ Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
   `trace(kind="point")` at the callsite.
 - `fp_dispatches` and `domain_rules` remain MCP mutation tools because they
   model user-supplied analysis facts, not indexing.
+
+Pending response shape:
+
+```json
+{
+  "status": "in_progress",
+  "tool": "trace",
+  "query_id": "q_...",
+  "pending": {
+    "reason": "focus_dataflow_not_ready",
+    "required_analysis": "dataflow",
+    "detail": "Focus analysis still expanding: 1 pending job(s) remaining."
+  },
+  "analysis": {
+    "scope": "local",
+    "summary": "Focus is still building the dataflow facts required for this query; no partial result is published.",
+    "retry_after_ms": 5000
+  }
+}
+```
 
 ## Request-Scoped Include Roots
 

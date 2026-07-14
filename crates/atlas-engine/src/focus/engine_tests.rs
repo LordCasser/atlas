@@ -3105,23 +3105,46 @@ fn test_visibility_filter_public_visible() {
 use std::collections::HashSet;
 
 #[test]
-fn test_build_dataflow_empty_closure() {
+fn test_build_dataflow_empty_file_seed() {
     let store = test_store();
     let engine = test_engine(store);
 
     let files: HashSet<types::ids::FileId> = HashSet::new();
     let built = engine
-        .build_dataflow_for_closure("test-empty", &files)
-        .expect("build_dataflow_for_closure should succeed");
-    assert_eq!(built, 0, "empty files set must return 0");
+        .build_dataflow_for_closure(
+            "test-empty",
+            &FocusSeed::File {
+                file_id: FileId::default(),
+                language: Language::C,
+            },
+            0,
+            &files,
+        )
+        .expect("an empty file seed has no dataflow units");
+    assert_eq!(built, 0);
 }
 
 #[test]
 fn test_build_dataflow_for_function() {
     let store = test_store();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    let source = "void do_work(void) {}\n";
+    std::fs::write(root.path().join("src/test_df.c"), source).unwrap();
 
-    // Insert a file with structural extraction marked complete
-    let file_id = insert_file_structural_complete(&store, "src/test_df.c");
+    // Dataflow is real tracked work: the test must provide the source instead
+    // of relying on the former best-effort path to swallow read failures.
+    let file_id = insert_cold_file(&store, "src/test_df.c", source);
+    let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    store
+        .upsert_file_extraction_state(
+            &file_id,
+            layer::STRUCTURAL,
+            &hash,
+            status::COMPLETE,
+            FactCoverage::default(),
+        )
+        .unwrap();
 
     // Insert a function symbol for that file
     let symbol_id = types::ids::SymbolId::generate(&file_id, "c", "do_work", "function", None);
@@ -3148,15 +3171,23 @@ fn test_build_dataflow_for_function() {
     };
     store.insert_symbols(&[symbol_def]).unwrap();
 
-    let engine = test_engine(store);
+    let engine = test_engine_with_root(store, root.path());
 
     let mut files = HashSet::new();
     files.insert(file_id);
 
     let built = engine
-        .build_dataflow_for_closure("test-df-func", &files)
+        .build_dataflow_for_closure(
+            "test-df-func",
+            &FocusSeed::Symbol {
+                name: "do_work".into(),
+                kind: Some(types::SymbolKind::Function),
+                language: Language::C,
+                file_id: Some(file_id),
+            },
+            0,
+            &files,
+        )
         .expect("build_dataflow_for_closure should succeed");
-    // In a test environment with no real source, dataflow may not be
-    // successfully built (built may be 0).  The method must not crash.
-    assert!(built <= 1, "unexpected built count");
+    assert_eq!(built, 1);
 }

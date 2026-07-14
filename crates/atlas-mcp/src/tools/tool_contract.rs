@@ -7,6 +7,7 @@
 //!
 //! This replaces the flat `match` dispatch in v5.0 ToolRouter::call_tool().
 
+pub use atlas_engine::QueryNeed;
 use serde_json::Value;
 
 /// The contract for a tool call — determines which runtime handles it
@@ -21,15 +22,15 @@ pub enum ToolContract {
 
     /// Graph-backed queries that need the call graph.
     /// calls, explore, path, impact, symbol(view=context)
-    SemanticGraphQuery(QueryNeeds),
+    SemanticGraphQuery(QueryNeed),
 
     /// Source-level trace operations (point, variable, forward, callers).
     /// Uses atlas_engine::Engine directly — does NOT require GraphSnapshot.
-    TraceQuery(QueryNeeds),
+    TraceQuery(QueryNeed),
 
     /// Store-fact queries that read symbol/file data directly.
     /// symbol(detail/usages), file_dependencies, search
-    StoreFactQuery(QueryNeeds),
+    StoreFactQuery(QueryNeed),
 
     /// Semantic analysis requiring CFG/dataflow facts.
     /// branch_diff, lifecycle
@@ -46,19 +47,6 @@ pub enum ToolContract {
     /// Query refinement/job observability.
     /// tasks, resume_query
     TaskControl,
-}
-
-/// What level of data the query needs before it can produce a useful result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QueryNeeds {
-    /// Only symbol names and basic metadata.
-    Manifest,
-    /// Imports, references, symbol relationships.
-    Structural,
-    /// Resolved call edges + full graph topology.
-    CallGraph,
-    /// Everything including dataflow.
-    Full,
 }
 
 /// What CFG/dataflow preparations an analysis tool needs.
@@ -82,6 +70,19 @@ pub enum OverlayKind {
     DomainRules,
 }
 
+impl ToolContract {
+    /// Strongest fact layer required before the tool may publish result data.
+    pub fn query_need(&self) -> Option<QueryNeed> {
+        match self {
+            Self::SemanticGraphQuery(need)
+            | Self::TraceQuery(need)
+            | Self::StoreFactQuery(need) => Some(*need),
+            Self::SemanticAnalysis(_) => Some(QueryNeed::Dataflow),
+            _ => None,
+        }
+    }
+}
+
 /// Map a tool name and its arguments to a ToolContract.
 ///
 /// This is the single source of truth for v6.0 routing.
@@ -96,21 +97,49 @@ pub fn contract_for(tool_name: &str, args: &Value) -> ToolContract {
         "project" => ToolContract::StatusRead,
 
         // ── Graph-backed semantic queries ──
-        "calls" => ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
-        "explore" => ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
-        "path" => ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
-        "impact" => ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+        "calls" => ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
+        "explore" => ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
+        "path" => ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
+        "impact" => ToolContract::SemanticGraphQuery(
+            if args
+                .get("semantic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                QueryNeed::Dataflow
+            } else {
+                QueryNeed::CallGraph
+            },
+        ),
         "symbol" if args.get("view").and_then(|v| v.as_str()) == Some("context") => {
-            ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph)
+            ToolContract::SemanticGraphQuery(QueryNeed::CallGraph)
         }
-        "symbol" => ToolContract::StoreFactQuery(QueryNeeds::Manifest),
+        "symbol" if args.get("view").and_then(Value::as_str) == Some("usages") => {
+            ToolContract::StoreFactQuery(QueryNeed::CallGraph)
+        }
+        "symbol" if args.get("includeCode").and_then(Value::as_bool) == Some(true) => {
+            ToolContract::StoreFactQuery(QueryNeed::Structural)
+        }
+        "symbol" => ToolContract::StoreFactQuery(QueryNeed::Structural),
 
         // ── Store-fact queries ──
-        "search" => ToolContract::StoreFactQuery(QueryNeeds::Manifest),
-        "file_dependencies" => ToolContract::StoreFactQuery(QueryNeeds::Structural),
+        "search" => ToolContract::StoreFactQuery(QueryNeed::Structural),
+        "file_dependencies" => ToolContract::StoreFactQuery(
+            if args.get("analysis").and_then(Value::as_str) == Some("structural") {
+                QueryNeed::Structural
+            } else {
+                QueryNeed::Manifest
+            },
+        ),
 
         // ── Trace (Engine-driven, no GraphSnapshot needed) ──
-        "trace" => ToolContract::TraceQuery(QueryNeeds::Full),
+        "trace" => ToolContract::TraceQuery(
+            match args.get("kind").and_then(Value::as_str).unwrap_or("point") {
+                "variable" => QueryNeed::Dataflow,
+                "forward" | "callers" => QueryNeed::CallGraph,
+                _ => QueryNeed::Structural,
+            },
+        ),
 
         // ── Semantic analysis ──
         "branch_diff" => ToolContract::SemanticAnalysis(AnalysisNeeds::CfgDataflowEffects),
@@ -174,64 +203,94 @@ mod tests {
     #[test]
     fn test_calls_is_semantic_graph() {
         let c = contract_for("calls", &json!({"symbol": "foo"}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph));
+        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeed::CallGraph));
     }
 
     #[test]
     fn test_explore_is_semantic_graph() {
         let c = contract_for("explore", &json!({"symbol": "foo"}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph));
+        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeed::CallGraph));
     }
 
     #[test]
     fn test_path_is_semantic_graph() {
         let c = contract_for("path", &json!({"from": "a", "to": "b"}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph));
+        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeed::CallGraph));
     }
 
     #[test]
     fn test_impact_is_semantic_graph() {
         let c = contract_for("impact", &json!({"symbol": "foo"}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph));
+        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeed::CallGraph));
+
+        let semantic = contract_for("impact", &json!({"symbol": "foo", "semantic": true}));
+        assert_eq!(
+            semantic,
+            ToolContract::SemanticGraphQuery(QueryNeed::Dataflow)
+        );
     }
 
     #[test]
     fn test_symbol_context_is_semantic_graph() {
         let c = contract_for("symbol", &json!({"symbol": "foo", "view": "context"}));
-        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph));
+        assert_eq!(c, ToolContract::SemanticGraphQuery(QueryNeed::CallGraph));
     }
 
     #[test]
     fn test_symbol_detail_is_store_fact() {
         let c = contract_for("symbol", &json!({"symbol": "foo"}));
-        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeeds::Manifest));
+        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::Structural));
+
+        let with_source = contract_for("symbol", &json!({"symbol": "foo", "includeCode": true}));
+        assert_eq!(
+            with_source,
+            ToolContract::StoreFactQuery(QueryNeed::Structural)
+        );
     }
 
     #[test]
     fn test_symbol_usages_is_store_fact() {
         let c = contract_for("symbol", &json!({"symbol": "foo", "view": "usages"}));
-        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeeds::Manifest));
+        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::CallGraph));
     }
 
     #[test]
     fn test_search_is_store_fact() {
         let c = contract_for("search", &json!({"query": "foo"}));
-        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeeds::Manifest));
+        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::Structural));
     }
 
     #[test]
     fn test_file_dependencies_is_store_fact_structural() {
-        let c = contract_for("file_dependencies", &json!({"file_path": "src/main.rs"}));
-        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeeds::Structural));
+        let manifest = contract_for("file_dependencies", &json!({"file_path": "src/main.rs"}));
+        assert_eq!(manifest, ToolContract::StoreFactQuery(QueryNeed::Manifest));
+
+        let c = contract_for(
+            "file_dependencies",
+            &json!({"file_path": "src/main.rs", "analysis": "structural"}),
+        );
+        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::Structural));
     }
 
     #[test]
     fn test_trace_is_trace_query() {
-        let c = contract_for(
+        let point = contract_for(
             "trace",
             &json!({"kind": "point", "file_path": "x.rs", "line": 1, "column": 1}),
         );
-        assert_eq!(c, ToolContract::TraceQuery(QueryNeeds::Full));
+        assert_eq!(point, ToolContract::TraceQuery(QueryNeed::Structural));
+        assert_eq!(
+            contract_for("trace", &json!({"kind": "variable"})),
+            ToolContract::TraceQuery(QueryNeed::Dataflow)
+        );
+        assert_eq!(
+            contract_for("trace", &json!({"kind": "forward"})),
+            ToolContract::TraceQuery(QueryNeed::CallGraph)
+        );
+        assert_eq!(
+            contract_for("trace", &json!({"kind": "callers"})),
+            ToolContract::TraceQuery(QueryNeed::CallGraph)
+        );
     }
 
     #[test]
@@ -346,47 +405,47 @@ mod tests {
             (
                 "calls",
                 json!({"symbol": "f"}),
-                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+                ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
             ),
             (
                 "explore",
                 json!({"symbol": "f"}),
-                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+                ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
             ),
             (
                 "path",
                 json!({"from": "a", "to": "b"}),
-                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+                ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
             ),
             (
                 "impact",
                 json!({"symbol": "f"}),
-                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+                ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
             ),
             (
                 "symbol",
                 json!({"symbol": "f", "view": "context"}),
-                ToolContract::SemanticGraphQuery(QueryNeeds::CallGraph),
+                ToolContract::SemanticGraphQuery(QueryNeed::CallGraph),
             ),
             (
                 "symbol",
                 json!({"symbol": "f"}),
-                ToolContract::StoreFactQuery(QueryNeeds::Manifest),
+                ToolContract::StoreFactQuery(QueryNeed::Structural),
             ),
             (
                 "search",
                 json!({"query": "x"}),
-                ToolContract::StoreFactQuery(QueryNeeds::Manifest),
+                ToolContract::StoreFactQuery(QueryNeed::Structural),
             ),
             (
                 "file_dependencies",
                 json!({"file_path": "a.rs"}),
-                ToolContract::StoreFactQuery(QueryNeeds::Structural),
+                ToolContract::StoreFactQuery(QueryNeed::Manifest),
             ),
             (
                 "trace",
                 json!({"kind": "point", "file_path": "a.rs", "line": 1, "column": 1}),
-                ToolContract::TraceQuery(QueryNeeds::Full),
+                ToolContract::TraceQuery(QueryNeed::Structural),
             ),
             (
                 "branch_diff",

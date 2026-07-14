@@ -436,21 +436,11 @@ fn test_handle_impact_response_has_direction() {
     router.ensure_graph_initialized().unwrap();
     let (resp_str, is_error) = router.handle_impact(&json!({
         "symbol": "f",
-        "direction": "both",
-        "semantic": true
+        "direction": "both"
     }));
     assert!(!is_error, "expected success, got: {resp_str}");
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_eq!(resp["direction"], "both");
-    assert_eq!(resp["semantic_impact"]["invariants_affected"], json!([]));
-    assert_eq!(
-        resp["semantic_impact"]["lifecycle_paths_affected"],
-        json!([])
-    );
-    assert_eq!(
-        resp["semantic_impact"]["domain_rules_applied"], false,
-        "no persisted C/C++ rule was in scope"
-    );
 }
 
 #[test]

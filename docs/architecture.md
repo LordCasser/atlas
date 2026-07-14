@@ -18,6 +18,7 @@
 9. **内部状态不透出**：引擎层专有概念（`AnswerQuality`、closure ID、调度器优先级）不进入 MCP 公共响应。
 10. **事实，非指令**：响应字段提供事实（缺了什么），不提供 Agent 无法执行的指令（如"去索引这个"）。
 11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封；progress token 只增加观测通知，不改变终态、重试或恢复语义。
+12. **非终态无结果**：统一 18 秒窗口内未满足 `QueryNeed` 时，只返回可恢复票据和当前未完成原因；禁止发布任何临时查询数据。
 12. **精度术语分层（强制）**：见 §1.1。禁止无限定的 `mode` / `full` / `index_mode` 单独出现在 API、日志与文档标题；禁止两个不同语义的类型共用 `IndexMode` 一名。
 
 ### 1.1 精度与能力术语分层
@@ -456,7 +457,7 @@ Source files
 
 ### 7.1 Focus materialize（内部按需物化，非产品线）
 
-在 **Focus** 查询时路径（及高层 `Engine::trace_*` 薄封装）中，analysis **按需** 加载 dataflow facts（而非全量预加载），通过机制类型 `LazyWindow` 控制分析范围。结构性按需提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)。
+在 **Focus** 查询时路径（及高层 `Engine::trace_*` 薄封装）中，analysis **按需** 加载 dataflow facts（而非全量预加载），通过机制类型 `LazyWindow` 控制分析范围。结构性按需提取 budget-capped (18s/30 files)；后台 preparse 使用更宽预算 (60s/100 files)，跨文件 trace 的 dataflow window 上限与热区对齐为 100 units。Sync dataflow 必须以查询 seed 为中心：position 走 `ensure_for_position_with_depth`，callable 走 `ensure_for_function_with_depth`，禁止对 closure 内所有函数无差别展开。深度只复用 `FocusWindow.max_iterations`：lifecycle/branch 为函数内 depth 0，semantic impact 使用请求 depth（1–5），variable trace 使用请求 depth 并限制为 2–5。
 
 **栈与构造（硬约束）**
 
@@ -726,7 +727,7 @@ Job tracking 表结构：参见 `db::schema::SCHEMA_DDL` 中的 `extraction_jobs
 - `CoverageTier`：`RepoComplete`、`ClosureComplete`、`Boundary`、`Partial`、`Manifest`。
 - `SemanticConfidence`：`Low`、`Medium`、`High`、`Certain`。
 
-`AnswerQuality` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 只消费 `analysis.basis`、可选 `analysis.retry_after_ms`、可选 `coverage_counts` 与终态 `gaps`。读路径控制面使用 `AccessStrategy`（`FullCache` | `Focus`）。
+`AnswerQuality` 只参与 Focus/closure 的调度、终态和 gap 推导，不进入 MCP 公共响应。Agent 在非终态只消费 query ticket、pending reason 与 `analysis.retry_after_ms`；终态才消费 `analysis.basis`、可选 `coverage_counts` 与 `gaps`。读路径控制面使用 `AccessStrategy`（`FullCache` | `Focus`）。
 
 #### 10.1.4 In-flight 一致性
 
@@ -800,17 +801,24 @@ materialized files 一并加入增量 graph refresh queue。后台 focus 可能�
 
 #### 10.1.10 统一对外分析认知界面
 
-MCP 分析响应采用**三态终局模型**，Agent 通过 `analysis.retry_after_ms` 和顶层 `gaps`
-两个信号即可判断结果状态。模型保证终态必然可达——不存在永久 `building` / `wait` 状态。
+MCP 分析响应采用**三态结果模型 + 无结果失败票据**。Agent 通过 `status`、
+`analysis.retry_after_ms` 和顶层 `gaps` 判断状态。模型保证终态必然可达——不存在永久
+`building` / `wait` 状态。
 
 ```
 状态 1 — 非终态（后台仍在运行）
 {
-  "result": {...},
+  "status": "in_progress",
+  "tool": "trace",
+  "query_id": "q_...",
+  "pending": {
+    "reason": "focus_dataflow_not_ready",
+    "required_analysis": "dataflow",
+    "detail": "Focus analysis still expanding: 2 pending job(s) remaining."
+  },
   "analysis": {
     "scope": "local",
-    "summary": "Focus analysis still expanding: 2 pending job(s) remaining.",
-    "basis": ["manifest", "structural"],
+    "summary": "Focus is still building required facts; no partial result is published.",
     "retry_after_ms": 10000
   }
 }
@@ -841,8 +849,10 @@ Agent: use_with_caution(result) 或尝试其他查询策略
 Agent 消费伪代码（唯一入口）：
 
 ```
-if resp.analysis?.retry_after_ms:
-    schedule_poll(query_id, retry_after_ms)   # 非终态：等待后重试
+if resp.status == "failed":
+    rerun_original_query(resp.pending.detail) # 无可消费结果
+elif resp.analysis?.retry_after_ms:
+    schedule_poll(query_id, retry_after_ms)   # 非终态：只有票据，没有可消费结果
 elif resp.gaps:
     use_with_caution(resp.result)              # 终态有缺口：谨慎使用
 else:
@@ -855,6 +865,22 @@ else:
 - `detail`：人类可读补充说明
 
 `gaps` 仅在终态响应中出现。非终态不暴露瞬时缺口，避免 Agent 误判为终态而早停。
+
+**18s 门限与禁止部分数据**：MCP 从 tool call 进入时启动唯一的 18 秒交互窗口。
+handler 首次执行后若 `QuerySnapshot` 对应的 tracked Focus work 已完成，则在窗口内自动
+调用既有 `resume_query` 重放路径；若窗口到期仍未满足工具的 `QueryNeed`，入口层将
+handler 的临时 body 丢弃，只发布上述票据。后台 closure/dataflow job 不取消，继续由
+原 `FocusScheduler` 执行。这里不引入第二套 task runtime。
+
+若 tracked Focus job 终止于失败，入口层同样丢弃 handler body，返回
+`status=failed`、原 `query_id`、`pending.reason=focus_<need>_failed` 与失败原因；不允许把
+失败前写入的临时 facts 包装成有限结果。调用者需重发原查询以创建新的物化尝试。
+
+`QueryNeed` 是 MCP contract 与 Focus intent 共用的唯一解析强度枚举：
+`Manifest`、`Structural`、`CallGraph`、`Dataflow`。同一工具可按参数升级：
+`search`、`symbol(detail)` 需要 Structural；`symbol(usages/context)`、
+`trace(forward/callers)` 需要 CallGraph；`trace(variable)`、
+`impact(semantic=true)`、`lifecycle`、`branch_diff` 需要 Dataflow。
 
 **内部状态 → 公开信号的映射**：
 
@@ -871,7 +897,7 @@ else:
 **约束**：
 
 - 引擎层概念（`AnswerQuality`、`AccessStrategy` 原始枚举、closure ID、调度器优先级）不进入 MCP 公共响应。
-- 非 trace 工具的公共信封用 `retry_after_ms` + `gaps` 表达进行中/缺口；trace 内层 frozen contract 可含自有 `partial_result`。
+- 非 trace 工具的公共信封用 `retry_after_ms` + `gaps` 表达进行中/缺口；trace 内层 frozen contract 可含自有 `partial_result`，但 tracked Focus work 未完成时整个 trace body 被票据替代，内层部分结果不会发布。
 - 不暴露 `background_refinement` 公共字段。
 
 #### 10.1.11 Focus 与 materialize；对照 Index
@@ -1026,7 +1052,8 @@ router project 会让原生 search/context session 与 tool session 分裂。`se
 - MCP 的 `project(action="open")` 只同步激活项目，不扫描全树、不索引。
 - MCP scoped 查询触发 focus/lazy materialization；响应通过
   `analysis.retry_after_ms`、`gaps` 和 coverage 字段表达当前结果
-  是否完整可用。
+  是否完整可用。前 18 秒内入口层自动等待并重放；超时的非终态响应只含票据，
+  不含当前结果或 coverage 分布。
 - `tasks` 仅用于观测当前 session 的 focus/lazy 活动；`resume_query`
   通过 `query_id` 重放最近查询，不能等待任意后台 task。
 
@@ -1045,14 +1072,14 @@ analysis response
     retry_after_ms       可选；存在表示非终态，Agent 应在此毫秒后轮询 resume_query
   gaps                   [{scope, reason, detail}]；可选，仅终态响应出现
   query_id               MCP 层查询标识符，用于 resume_query 重放
-  coverage_counts        optional；公开 coverage label 的数量分布（非终态 + 终态均可）
+  coverage_counts        optional；仅终态结果可发布
 ```
 
 **三态终局规则**：
 
 | 响应状态 | `analysis.retry_after_ms` | 顶层 `gaps` | Agent 动作 |
 |---------|--------------------------|-------------|-----------|
-| 非终态（后台运行中） | 存在（`eta_ms` 计算值） | 不存在 | `schedule_poll(query_id, retry_after_ms)` |
+| 非终态（后台运行中） | 存在（`eta_ms` 计算值） | 不存在 | 只消费票据；`schedule_poll(query_id, retry_after_ms)` |
 | 终态—完整 | 不存在 | 不存在 | `use_with_confidence(result)` |
 | 终态—永久缺口 | 不存在 | 存在 | `use_with_caution(result)` |
 
@@ -1136,10 +1163,10 @@ pub fn resolve_symbol_input(
 ### 10.7 客户端介入差异
 
 TUI / MCP+progress / MCP-no-progress 使用**完全相同的响应信封**（见 §10.4 三态终局）。
-非终态只由查询层的 Focus/lazy 状态决定：handler 在当前 bounded window 内产出
-`query_id`、当前可用结果和可选 `analysis.retry_after_ms`；客户端随后用
-`resume_query(query_id)` 重放查询。MCP service 层不再提供第二套 waitable task、
-`task_id` 或按请求超时派生的 polling contract。
+非终态只由查询层的 Focus/lazy 状态决定：handler 产出 `QuerySnapshot` 和 tracked
+work，入口层在统一 18s 窗口内自动重放；窗口到期则只返回 `query_id` 票据，客户端
+随后用 `resume_query(query_id)` 重放查询。MCP service 层不再提供第二套 waitable
+task 或 `task_id`。
 
 Progress token 只影响观测通道，不改变终态策略：
 
@@ -1241,6 +1268,7 @@ Atlas 不包含污点分析（taint analysis）。产品主线为变量来源追
 - `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, `result`。
 - 详见 [`trace-contract.md`](./trace-contract.md)。
 - 注：`partial_result` 是 trace 工具特有字段（frozen 合约），与外层 MCP 响应信封的三态终局模型（`retry_after_ms` + `gaps`）独立。非 trace 工具的 `partial_result` 已不再使用。
+- tracked Focus structural/dataflow 尚未完成时，MCP 不发布 `TraceQueryResponse`，因此 frozen 内层 `partial_result` 不能成为 Focus pending 时的临时结果通道。
 
 Trace/MCP lazy contract：
 - MCP trace 入口必须优先通过 high-level `Engine`，由 engine 触发必要的 lazy dataflow；raw analysis consumer 不负责触发 lazy。

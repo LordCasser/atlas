@@ -118,8 +118,24 @@ impl ToolRouter {
         let intent = Some(atlas_engine::QueryIntent::Impact {
             symbol_name: qname.to_string(),
             depth: Some(depth),
+            semantic,
         });
         let (focus_result, focus_warnings) = self.prepare_focus_query(intent);
+        if semantic
+            && focus_result
+                .as_ref()
+                .is_some_and(|result| result.pending_work_count_and_eta_ms().0 > 0)
+        {
+            let lr = if let Some(ref result) = focus_result {
+                crate::tools::apply_focus_result_to_lr(lr, result)
+            } else {
+                lr
+            };
+            return lr
+                .with_lazy_warnings(focus_warnings)
+                .with_is_error(false)
+                .build(json!({"status": "in_progress"}), self);
+        }
 
         let project = self.project();
         let graph = match project.graph_runtime.provider().graph_snapshot() {

@@ -6,10 +6,24 @@ Focus mode is not a stateless per-query parser. The runtime owns a background
 control plane that keeps hot regions around the user's current investigation and
 uses those regions to decide what should be analyzed next.
 
-Foreground tool calls must build only a bounded minimal closure and return
-partial precision when necessary. They should also enqueue background work so a
-follow-up call can see better local coverage without forcing the first call to
-wait for a project-wide scan.
+Foreground preparation builds a bounded minimal closure and enqueues tracked
+refinement. MCP gives that tracked work one 18-second interactive window. If the
+required fact layer is still unavailable at the deadline, the public response
+contains only a resumable query ticket and the pending reason; provisional
+query data is never published. The same background job continues after the
+response and `resume_query` replays the original query snapshot.
+
+Query strength is a control-plane input, represented once by `QueryNeed`:
+
+- `Manifest`: symbol inventory and basic metadata.
+- `Structural`: exact source/file structure.
+- `CallGraph`: resolved cross-file topology.
+- `Dataflow`: CFG/dataflow for the query dependency region.
+
+`TraceVariable`, semantic impact, lifecycle, and branch diff use the existing
+Sync-priority Focus closure so the job remains pending through dataflow
+materialization. Point trace remains structural; caller/forward trace use the
+cross-file call-graph profile.
 
 Hot regions are hierarchical:
 
@@ -18,6 +32,22 @@ Hot regions are hierarchical:
 - Boundary level: files reached by the local closure and likely to be touched by
   the next query.
 - Expanded level: background work grown from a boundary hit.
+
+The expanded region is derived from the query dependency shape, not merely the
+seed directory. Cross-file trace adds bidirectional call and type frontiers plus
+imports/siblings, uses up to five closure iterations, and retains the existing
+100-file background cap. Dataflow windows use the same 100-unit ceiling so the
+semantic materialization radius does not collapse below the structural hot
+region.
+
+Sync dataflow stays centered on the query seed: position seeds use
+`ensure_for_position_with_depth`, callable seeds use
+`ensure_for_function_with_depth`, and their LazyWindow expansion follows
+cross-file caller/callee dependencies. The existing `FocusWindow.max_iterations`
+is the single radius input: lifecycle/branch analysis stays function-local
+(depth 0), semantic impact follows its requested depth (1–5), and variable trace
+uses its requested depth clamped to 2–5. It does not blindly materialize every
+function in every closure file.
 
 When a new query lands on the boundary of an existing hot region, the runtime
 should expand that region instead of treating it as an unrelated cold request.

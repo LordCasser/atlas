@@ -66,11 +66,12 @@ so consumers parse one shape regardless of which query was made.
 3. `ok=false` → **system error**; only possible result is `diagnostics[0].level = "error"`.
 4. `capability` is present even in partial/error cases (may be `null` for errors).
 
-MCP wrappers may add the shared public analysis fields `query_id`, `analysis`,
-`coverage_counts`, and `gaps`. If a trace request triggered recoverable lazy
-work, `analysis.retry_after_ms` and `query_id` must remain available even when
-`result` is empty or no path is found. Internal precision and capability-mask
-state must not leak through a second wrapper contract.
+MCP wrappers add the shared public analysis fields `query_id`, `analysis`,
+`coverage_counts`, and `gaps` only for terminal trace responses. If a trace
+request still has recoverable Focus work after the 18-second interactive
+window, MCP withholds the entire six-field trace body and returns only the
+shared in-progress ticket. Internal precision and capability-mask state must
+not leak through a second wrapper contract.
 
 ---
 
@@ -245,10 +246,10 @@ Each language has a `LanguageCapabilityProfile` with `FeatureMatrix` for fine-gr
 - `trace(kind="forward")`: gated on `call_graph.is_supported()`.
 - `trace(kind="point")`: **always available**, regardless of capability.
 
-Capability gating is not a substitute for refinement state. A supported query
-can still return partial/no-result because lazy extraction was budget-limited,
-pending, or unable to build the needed facts; trace-specific limitations use
-`diagnostics`, while MCP refinement uses the shared `analysis` and `gaps` fields.
+Capability gating is not a substitute for refinement state. Pending lazy work
+uses the MCP ticket and publishes no trace body. After tracked work terminates,
+budget/capability limits may still produce a terminal trace `partial_result`
+with diagnostics or a top-level terminal gap.
 
 ---
 
@@ -351,7 +352,8 @@ file (`file_path` or `file_id`) plus `line` and `column`; `callers` requires
 
 ```
 1. Parse JSON
-2. If !ok: read diagnostics, handle error
-3. If partial_result: read diagnostics, treat result as best-effort
-4. Otherwise: result is complete
+2. If analysis.retry_after_ms: consume only query_id/pending; resume later
+3. If !ok: read diagnostics, handle error
+4. If partial_result: read terminal diagnostics, treat result as best-effort
+5. Otherwise: result is complete
 ```

@@ -420,7 +420,7 @@ fn test_prepare_focus_enqueues_background() {
 }
 
 #[test]
-fn semantic_function_prepare_does_not_enqueue_graph_expansion() {
+fn semantic_function_prepare_enqueues_dataflow_without_graph_expansion() {
     let store = test_store();
     let file_id = insert_file_structural_complete(&store, "src/semantic.c");
     let mut rt = test_runtime_focus_mode(store);
@@ -435,8 +435,8 @@ fn semantic_function_prepare_does_not_enqueue_graph_expansion() {
         )
         .unwrap();
 
-    assert!(result.pending_closure_ids.is_empty());
-    assert!(!rt.has_pending_jobs());
+    assert_eq!(result.pending_closure_ids.len(), 1);
+    assert!(rt.has_pending_jobs());
     assert_eq!(result.built_files, vec![file_id]);
 }
 
@@ -870,6 +870,7 @@ fn test_prepare_trace_variable_intent() {
         file_id,
         line: 10,
         column: 5,
+        max_depth: 30,
     };
     let result = rt.prepare(&intent, Vec::new()).unwrap();
     assert_eq!(result.access, AccessStrategy::Focus);
@@ -932,6 +933,7 @@ fn test_prepare_full_index_all_intents() {
         QueryIntent::Impact {
             symbol_name: "test".into(),
             depth: None,
+            semantic: false,
         },
         QueryIntent::Explore {
             symbol_name: "test".into(),
@@ -956,6 +958,7 @@ fn test_prepare_full_index_all_intents() {
             file_id,
             line: 1,
             column: 1,
+            max_depth: 30,
         },
     ];
 
@@ -1098,6 +1101,7 @@ fn impact_focus_plan_expands_the_call_graph() {
     let intent = QueryIntent::Impact {
         symbol_name: "root".into(),
         depth: Some(4),
+        semantic: false,
     };
     let strategies = super::strategies_for(&intent, true, Language::C);
 
@@ -1153,6 +1157,7 @@ fn arkts_variable_trace_expands_framework_state_channels() {
         file_id,
         line: 10,
         column: 5,
+        max_depth: 30,
     };
 
     let strategies = super::strategies_for(&intent, true, Language::ArkTS);
@@ -1166,4 +1171,23 @@ fn arkts_variable_trace_expands_framework_state_channels() {
             .iter()
             .any(|strategy| matches!(strategy, crate::focus::types::ClosureStrategy::StateChannel))
     );
+}
+
+#[test]
+fn variable_trace_hot_region_follows_cross_file_dependencies() {
+    let intent = QueryIntent::TraceVariable {
+        file_id: FileId::generate("src/main.rs"),
+        line: 10,
+        column: 5,
+        max_depth: 30,
+    };
+    let strategies = super::strategies_for(&intent, true, Language::Rust);
+    assert!(strategies.iter().any(|strategy| matches!(
+        strategy,
+        crate::focus::types::ClosureStrategy::CallGraph {
+            direction: crate::focus::types::Direction::Both,
+            ..
+        }
+    )));
+    assert_eq!(super::iterations_for(&intent, true), 5);
 }

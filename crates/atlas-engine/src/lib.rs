@@ -121,13 +121,16 @@ pub use investigation::{Investigation, InvestigationFocus};
 /// Focus-driven incremental analysis: closure engine.
 pub use focus::engine::ClosureEngine;
 /// Focus-driven incremental analysis: query intent (MCP tool request).
-pub use focus::query::QueryIntent;
+pub use focus::query::{QueryIntent, QueryNeed};
 /// Focus-driven incremental analysis: runtime entry point.
 pub use focus::runtime::{AccessStrategy, FocusResult, FocusRuntime};
 /// Focus-driven incremental analysis: priority scheduler.
 pub use focus::scheduler::{FocusPriority, FocusScheduler};
 /// Focus-driven incremental analysis: core types.
-pub use focus::types::{ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, WindowBudget};
+pub use focus::types::{
+    ClosureStrategy, FocusClosure, FocusSeed, FocusWindow, INTERACTIVE_QUERY_BUDGET_MS,
+    WindowBudget,
+};
 /// Focus-driven incremental analysis: visibility filter registry.
 pub use focus::visibility_filter::VisibilityFilterRegistry;
 
@@ -397,7 +400,7 @@ impl Engine {
         match self
             .materialize
             .dataflow()
-            .ensure_for_position(file_id, line, column, None)
+            .ensure_for_position_with_depth(file_id, line, column, max_depth, None)
         {
             Ok(window) => {
                 lazy_summary = Some(LazySummary {
@@ -459,11 +462,11 @@ impl Engine {
                     let mut state_window_truncated = false;
                     let mut state_window_pending = false;
                     for function_id in writer_functions {
-                        match self
-                            .materialize
-                            .dataflow()
-                            .ensure_for_function(&function_id, None)
-                        {
+                        match self.materialize.dataflow().ensure_for_function_with_depth(
+                            &function_id,
+                            max_depth,
+                            None,
+                        ) {
                             Ok(window) => {
                                 state_window_truncated |= window.truncated;
                                 if window.units_pending > 0 {

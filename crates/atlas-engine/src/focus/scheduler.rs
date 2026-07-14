@@ -244,7 +244,19 @@ impl FocusScheduler {
             let (closure_id, closure) =
                 Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
             processed += 1;
-            Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+            if let Err(error) = Self::build_dataflow_for_sync(
+                engine,
+                &closure_id,
+                &job.window.seed,
+                job.window.max_iterations as usize,
+                &closure.files,
+            ) {
+                if let Some(ref tracker) = self.job_tracker {
+                    tracker.mark_failed(&job.id, format!("{error:#}"));
+                }
+                self.coordinator.reset_cancellation();
+                return Err(error);
+            }
             if let Some(ref tracker) = self.job_tracker {
                 tracker.mark_done(&job.id);
             }
@@ -275,7 +287,19 @@ impl FocusScheduler {
                 let (closure_id, closure) =
                     Self::build_tracked_closure(engine, &mut job, self.job_tracker.as_deref())?;
                 processed += 1;
-                Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+                if let Err(error) = Self::build_dataflow_for_sync(
+                    engine,
+                    &closure_id,
+                    &job.window.seed,
+                    job.window.max_iterations as usize,
+                    &closure.files,
+                ) {
+                    if let Some(ref tracker) = self.job_tracker {
+                        tracker.mark_failed(&job.id, format!("{error:#}"));
+                    }
+                    self.coordinator.reset_cancellation();
+                    return Err(error);
+                }
                 if let Some(ref tracker) = self.job_tracker {
                     tracker.mark_done(&job.id);
                 }
@@ -379,7 +403,20 @@ impl FocusScheduler {
             tracker.record_built_files(&job.id, closure.files.iter().copied());
         }
         if job.priority == FocusPriority::Sync {
-            Self::build_dataflow_for_sync(engine, &closure_id, &closure.files);
+            if let Err(error) = Self::build_dataflow_for_sync(
+                engine,
+                &closure_id,
+                &job.window.seed,
+                job.window.max_iterations as usize,
+                &closure.files,
+            ) {
+                if let Some(tracker) = job_tracker {
+                    tracker.record_elapsed(start.elapsed().as_millis() as u64);
+                    tracker.mark_failed(&job.id, format!("{error:#}"));
+                }
+                coordinator.reset_cancellation();
+                return Err(error);
+            }
             coordinator.reset_cancellation();
         } else if job.priority == FocusPriority::UserFocus {
             coordinator.reset_cancellation();
@@ -417,12 +454,15 @@ impl FocusScheduler {
     fn build_dataflow_for_sync(
         engine: &ClosureEngine,
         closure_id: &str,
+        seed: &super::types::FocusSeed,
+        max_depth: usize,
         files: &std::collections::HashSet<FileId>,
-    ) {
+    ) -> anyhow::Result<()> {
         // Dataflow extraction can take tens of seconds on large C files.
         // Keep it out of background focus/prewarm queues; tools that need
         // dataflow request it explicitly through their own lazy path.
-        let _ = engine.build_dataflow_for_closure(closure_id, files);
+        engine.build_dataflow_for_closure(closure_id, seed, max_depth, files)?;
+        Ok(())
     }
 
     /// Signal the background worker to stop.

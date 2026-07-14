@@ -17,6 +17,7 @@ use atlas_engine::TraceDiagnostic;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use super::protocol::{CallToolResult, ContentBlock, ListToolsResult, Tool, ToolInputSchema};
 
@@ -379,6 +380,243 @@ impl ToolRouter {
         }
         let extraction_eta = 5000 * extraction_pending as u64;
         (pending, (closure_eta + extraction_eta).clamp(5000, 60000))
+    }
+
+    fn query_pending_count_and_eta_ms(&self, query_id: &str) -> Option<(usize, u64)> {
+        let snapshot = self
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(query_id)
+            .cloned()?;
+        snapshot
+            .focus_result
+            .as_ref()
+            .map(|result| self.focus_pending_count_and_eta_ms(result))
+    }
+
+    fn response_retry_state(response: &str) -> Option<(String, String, String)> {
+        let value: Value = serde_json::from_str(response).ok()?;
+        value.get("analysis")?.get("retry_after_ms")?.as_u64()?;
+        let query_id = value.get("query_id")?.as_str()?.to_string();
+        let scope = value
+            .get("analysis")
+            .and_then(|analysis| analysis.get("scope"))
+            .and_then(Value::as_str)
+            .unwrap_or("local")
+            .to_string();
+        let detail = value
+            .get("analysis")
+            .and_then(|analysis| analysis.get("summary"))
+            .and_then(Value::as_str)
+            .unwrap_or("Focus is still materializing facts required by this query.")
+            .to_string();
+        Some((query_id, scope, detail))
+    }
+
+    fn response_query_id(response: &str) -> Option<String> {
+        serde_json::from_str::<Value>(response)
+            .ok()?
+            .get("query_id")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    fn query_focus_failure(&self, query_id: &str) -> Option<String> {
+        let snapshot = self
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(query_id)
+            .cloned()?;
+        let result = snapshot.focus_result.as_ref()?;
+        let failures = result
+            .job_tracker
+            .as_ref()?
+            .failures_for(&result.pending_closure_ids);
+        if failures.is_empty() {
+            return None;
+        }
+        Some(
+            failures
+                .into_iter()
+                .map(|(job_id, reason)| format!("{job_id}: {reason}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+
+    fn query_need_for_response(
+        &self,
+        contract: &ToolContract,
+        query_id: &str,
+    ) -> Option<atlas_engine::QueryNeed> {
+        contract.query_need().or_else(|| {
+            let snapshot = self
+                .project()
+                .job_runtime
+                .query_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(query_id)
+                .cloned()?;
+            contract_for(&snapshot.tool_name, &snapshot.tool_args).query_need()
+        })
+    }
+
+    fn original_tool_name(&self, query_id: &str, fallback: &str) -> String {
+        self.project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(query_id)
+            .map(|snapshot| snapshot.tool_name.clone())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn strict_pending_ticket(
+        &self,
+        tool_name: &str,
+        query_id: &str,
+        scope: &str,
+        detail: &str,
+        need: atlas_engine::QueryNeed,
+    ) -> String {
+        let retry_after_ms = self
+            .query_pending_count_and_eta_ms(query_id)
+            .map(|(_, eta)| eta)
+            .filter(|eta| *eta > 0)
+            .unwrap_or(500);
+        serde_json::to_string_pretty(&json!({
+            "status": "in_progress",
+            "tool": tool_name,
+            "query_id": query_id,
+            "pending": {
+                "reason": format!("focus_{}_not_ready", need.as_str()),
+                "required_analysis": need.as_str(),
+                "detail": detail,
+            },
+            "analysis": {
+                "scope": scope,
+                "summary": format!(
+                    "Focus is still building the {} facts required for this query; no partial result is published.",
+                    need.as_str()
+                ),
+                "retry_after_ms": retry_after_ms,
+            }
+        }))
+        .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
+    }
+
+    fn strict_failed_ticket(
+        &self,
+        tool_name: &str,
+        query_id: &str,
+        need: atlas_engine::QueryNeed,
+        detail: &str,
+    ) -> String {
+        serde_json::to_string_pretty(&json!({
+            "status": "failed",
+            "tool": tool_name,
+            "query_id": query_id,
+            "pending": {
+                "reason": format!("focus_{}_failed", need.as_str()),
+                "required_analysis": need.as_str(),
+                "detail": detail,
+            },
+            "analysis": {
+                "scope": "local",
+                "summary": format!(
+                    "Focus could not finish the {} facts required for this query; no partial result is published. Re-run the original query to retry materialization.",
+                    need.as_str()
+                ),
+            }
+        }))
+        .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
+    }
+
+    /// Wait within the single interactive deadline and replay the existing
+    /// query snapshot when tracked Focus work finishes. If the deadline wins,
+    /// publish only a resumable ticket—never the handler's provisional data.
+    fn settle_focus_response(
+        &self,
+        contract: &ToolContract,
+        tool_name: &str,
+        mut response: String,
+        mut is_error: bool,
+        started_at: Instant,
+    ) -> (String, bool) {
+        let deadline = started_at
+            .checked_add(Duration::from_millis(
+                atlas_engine::INTERACTIVE_QUERY_BUDGET_MS,
+            ))
+            .unwrap_or(started_at);
+
+        loop {
+            let Some((query_id, scope, detail)) = Self::response_retry_state(&response) else {
+                let Some(query_id) = Self::response_query_id(&response) else {
+                    return (response, is_error);
+                };
+                let Some(failure) = self.query_focus_failure(&query_id) else {
+                    return (response, is_error);
+                };
+                let Some(need) = self.query_need_for_response(contract, &query_id) else {
+                    return (response, is_error);
+                };
+                let original_tool_name = self.original_tool_name(&query_id, tool_name);
+                return (
+                    self.strict_failed_ticket(&original_tool_name, &query_id, need, &failure),
+                    true,
+                );
+            };
+            let Some(need) = self.query_need_for_response(contract, &query_id) else {
+                return (response, is_error);
+            };
+            let original_tool_name = self.original_tool_name(&query_id, tool_name);
+
+            let now = Instant::now();
+            if now >= deadline {
+                return (
+                    self.strict_pending_ticket(
+                        &original_tool_name,
+                        &query_id,
+                        &scope,
+                        &detail,
+                        need,
+                    ),
+                    false,
+                );
+            }
+
+            match self.query_pending_count_and_eta_ms(&query_id) {
+                Some((0, _)) => {
+                    let resumed = self.handle_resume_query(&json!({"query_id": query_id}));
+                    response = resumed.0;
+                    is_error = resumed.1;
+                }
+                Some(_) => {
+                    let remaining = deadline.saturating_duration_since(now);
+                    std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                }
+                None => {
+                    return (
+                        self.strict_pending_ticket(
+                            &original_tool_name,
+                            &query_id,
+                            &scope,
+                            &detail,
+                            need,
+                        ),
+                        false,
+                    );
+                }
+            }
+        }
     }
 
     /// Return whether a tool needs the in-memory graph/search/context snapshot.
@@ -825,6 +1063,8 @@ impl ToolRouter {
         name: &str,
         arguments: &Value,
     ) -> CallToolResult {
+        let started_at = Instant::now();
+
         // Each handler returns (result_text, is_error).
         // is_error=true only for genuine failures (lookup errors, I/O errors, unknown tool).
         let contract = contract_for(name, arguments);
@@ -868,7 +1108,7 @@ impl ToolRouter {
             }
         }
 
-        let (result, is_error) = match contract {
+        let (result, is_error) = match &contract {
             ToolContract::ProjectLifecycle => self.handle_project(arguments),
             ToolContract::StatusRead => self.dispatch_status_read(ctx, name, arguments),
             ToolContract::SemanticGraphQuery(_) => self.dispatch_graph_query(ctx, name, arguments),
@@ -880,6 +1120,8 @@ impl ToolRouter {
             }
             ToolContract::TaskControl => self.dispatch_task_control(ctx, name, arguments),
         };
+        let (result, is_error) =
+            self.settle_focus_response(&contract, name, result, is_error, started_at);
 
         // Wrap long results with truncation warning
         let text = truncate(&result, 25000);

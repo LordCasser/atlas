@@ -385,39 +385,150 @@ impl ClosureEngine {
         Ok(closure)
     }
 
-    /// Trigger dataflow extraction for all functions in closure files.
+    /// Trigger dataflow extraction from the query's exact Focus seed.
     ///
     /// Called after [`build_closure`] completes graph building at the
-    /// structural level.  Walks every file in the closure, finds
-    /// Function/Method symbols, and invokes
-    /// [`LazyDataflowService::ensure_for_function`] for each.  Errors are
-    /// logged at debug level and do not propagate — dataflow building is
-    /// opportunistic background work.
+    /// structural level. Position seeds use
+    /// [`LazyDataflowService::ensure_for_position_with_depth`]; symbol seeds
+    /// resolve the matching callable(s) inside the closure and use
+    /// [`LazyDataflowService::ensure_for_function_with_depth`]. Both existing
+    /// ensure paths expand their own caller/callee dependency window, so
+    /// dataflow breadth is query-driven rather than "every function in every
+    /// hot file".
     ///
     /// Returns the number of functions for which dataflow was successfully
     /// planned and ensured.
     pub fn build_dataflow_for_closure(
         &self,
         closure_id: &str,
+        seed: &FocusSeed,
+        max_depth: usize,
         files: &HashSet<FileId>,
     ) -> Result<usize> {
-        let mut built = 0;
-        for file_id in files {
-            let symbols = self.store.find_symbols_by_file(file_id)?;
-            for sym in &symbols {
-                if matches!(sym.kind, SymbolKind::Function | SymbolKind::Method) {
-                    match self
-                        .materialize
-                        .dataflow()
-                        .ensure_for_function(&sym.id, Some(closure_id))
-                    {
-                        Ok(_) => built += 1,
-                        Err(e) => tracing::debug!(%e, symbol=%sym.name, "dataflow build failed"),
-                    }
+        match seed {
+            FocusSeed::Position {
+                file_id,
+                line,
+                column,
+            } => {
+                if !files.contains(file_id) {
+                    anyhow::bail!("dataflow position seed is outside the completed Focus closure");
                 }
+                let label = format!("{}:{line}:{column}", file_id.to_hex());
+                Self::wait_for_dataflow(&label, || {
+                    self.materialize.dataflow().ensure_for_position_with_depth(
+                        file_id,
+                        *line,
+                        *column,
+                        max_depth,
+                        Some(closure_id),
+                    )
+                })?;
+                Ok(1)
+            }
+            FocusSeed::Symbol { name, file_id, .. } => {
+                let mut region_symbols = Vec::new();
+                for candidate_file in files {
+                    if file_id.is_some_and(|seed_file| seed_file != *candidate_file) {
+                        continue;
+                    }
+                    region_symbols.extend(self.store.find_symbols_by_file(candidate_file)?);
+                }
+                let matched_seed = region_symbols
+                    .iter()
+                    .any(|symbol| symbol.name == *name || symbol.qualified_name == *name);
+                let mut candidates: Vec<_> = region_symbols
+                    .iter()
+                    .filter(|symbol| {
+                        matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+                            && (symbol.name == *name || symbol.qualified_name == *name)
+                    })
+                    .cloned()
+                    .collect();
+                if candidates.is_empty() && matched_seed {
+                    // Semantic impact may start from a type or field. Its
+                    // callable dataflow region is still bounded by the
+                    // query-driven structural closure.
+                    candidates.extend(region_symbols.into_iter().filter(|symbol| {
+                        matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+                    }));
+                }
+                candidates.sort_by_key(|symbol| symbol.id.to_hex());
+                candidates.dedup_by_key(|symbol| symbol.id);
+                if candidates.is_empty() {
+                    if matched_seed {
+                        return Ok(0);
+                    }
+                    anyhow::bail!(
+                        "no callable matching Focus seed '{name}' was available for dataflow"
+                    );
+                }
+
+                for symbol in &candidates {
+                    Self::wait_for_dataflow(&symbol.qualified_name, || {
+                        self.materialize.dataflow().ensure_for_function_with_depth(
+                            &symbol.id,
+                            max_depth,
+                            Some(closure_id),
+                        )
+                    })?;
+                }
+                Ok(candidates.len())
+            }
+            FocusSeed::File { file_id, .. } => {
+                if !files.contains(file_id) {
+                    return Ok(0);
+                }
+                let mut candidates: Vec<_> = self
+                    .store
+                    .find_symbols_by_file(file_id)?
+                    .into_iter()
+                    .filter(|symbol| {
+                        matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+                    })
+                    .collect();
+                candidates.sort_by_key(|symbol| symbol.id.to_hex());
+                for symbol in &candidates {
+                    Self::wait_for_dataflow(&symbol.qualified_name, || {
+                        self.materialize.dataflow().ensure_for_function_with_depth(
+                            &symbol.id,
+                            max_depth,
+                            Some(closure_id),
+                        )
+                    })?;
+                }
+                Ok(candidates.len())
+            }
+            FocusSeed::Field { .. } => {
+                anyhow::bail!("Sync dataflow requires a callable, position, or file Focus seed")
             }
         }
-        Ok(built)
+    }
+
+    fn wait_for_dataflow(
+        label: &str,
+        mut ensure: impl FnMut() -> Result<types::lazy::LazyWindow>,
+    ) -> Result<()> {
+        let wait_started = Instant::now();
+        loop {
+            let window = ensure().with_context(|| format!("dataflow build failed for {label}"))?;
+            let complete = window
+                .quality
+                .as_ref()
+                .is_some_and(|quality| quality.is_exact());
+            if window.units_pending == 0 && complete {
+                return Ok(());
+            }
+            if wait_started.elapsed() >= Duration::from_secs(60) {
+                anyhow::bail!(
+                    "dataflow for {label} remained incomplete for 60s ({} pending job(s), {}/{} units ready)",
+                    window.units_pending,
+                    window.units_built + window.units_cached,
+                    window.units.len(),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

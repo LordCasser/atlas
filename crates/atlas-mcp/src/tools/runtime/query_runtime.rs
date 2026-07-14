@@ -114,7 +114,8 @@ impl QueryRuntime {
     }
 
     /// Enqueue background file-focused warming without building a foreground
-    /// closure (search uses this after returning a fast partial result).
+    /// closure (search uses this after a bounded provisional pass; the MCP
+    /// response gate does not publish that pass while work is pending).
     ///
     /// Thin delegate over [`FocusRuntime::enqueue_file_focus_warm`] so handler
     /// source never takes `focus_runtime.lock()` directly (DEBT-8 purity).

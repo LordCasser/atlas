@@ -14,7 +14,7 @@
 pub(crate) const LAZY_DATAFLOW_MAX_DEPTH: usize = 2;
 
 /// Hard cap on the total number of AnalysisUnits in a single LazyWindow.
-pub(crate) const LAZY_DATAFLOW_MAX_UNITS: usize = 32;
+pub(crate) const LAZY_DATAFLOW_MAX_UNITS: usize = 100;
 
 /// Wall-clock time budget for a single lazy-load operation (milliseconds).
 pub(crate) const LAZY_DATAFLOW_BUDGET_MS: u64 = 20_000;

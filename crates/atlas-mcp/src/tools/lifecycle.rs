@@ -55,6 +55,14 @@ impl ToolRouter {
         if !focus_warnings.is_empty() {
             lr = lr.with_lazy_warnings(focus_warnings);
         }
+        if focus_result
+            .as_ref()
+            .is_some_and(|result| result.pending_work_count_and_eta_ms().0 > 0)
+        {
+            return lr
+                .with_is_error(false)
+                .build(json!({"status": "in_progress"}), self);
+        }
 
         // Resolve symbol to SymbolId
         let sid = match self.resolve_symbol_input(&input, SymbolResolutionPolicy::BestEffortSingle)

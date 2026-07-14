@@ -12,7 +12,7 @@ compatibility: >-
   Requires Atlas MCP (`atlas mcp` / built `atlas` with `--features mcp`) and a
   local source checkout. Queries need no network. Agent path is MCP-only.
 metadata:
-  version: "1.5.2"
+  version: "1.5.4"
   repository: https://github.com/lordcasser/atlas
 ---
 
@@ -90,13 +90,19 @@ Without a pre-existing full CLI cache, tools use **Focus** only (not a separate
 - **Dataflow/CFG** is built on demand for units in trace/lifecycle-style work
   (Focus internal materialize).
 - Background refinement may continue after the first response.
+- MCP uses one 18-second interactive window. If required facts finish in time,
+  it transparently returns the complete replayed result; otherwise it returns
+  only an in-progress ticket and withholds provisional query data.
 
 **Every query:**
 
 1. Call the narrowest MCP tool.
 2. Read **`query_id`** and outer **`analysis`**:
+   - **`status=failed`** → no result is usable; inspect `pending.detail` and
+     re-run the original tool call to retry materialization.
    - **`analysis.retry_after_ms` set** → **not terminal**. Wait (or `tasks`), then
-     **`resume_query(query_id=...)`**. Repeat until retry is gone.
+     **`resume_query(query_id=...)`**. This response is a ticket, not usable
+     analysis data. Repeat until retry is gone.
    - No retry + **`gaps`** → terminal with limits; report them.
    - No retry + no gaps → complete **for that Focus/local scope**.
 3. **Never** treat empty Focus `callers` / thin `callees` as “no callers in the repo.”
@@ -124,10 +130,13 @@ Without a pre-existing full CLI cache, tools use **Focus** only (not a separate
 
 **Non-trace tools:** outer `query_id`, `analysis` (`scope`, `summary`, `basis`,
 optional `retry_after_ms`), optional terminal `gaps`, `warnings` / `note`.  
-Outer `partial_result` is not the primary non-trace signal.
+When retry is present, only the ticket and pending reason are published; no
+result collection is usable yet.
 
-**Trace tools:** inner `ok`, `kind`, `capability`, **`partial_result`**, `diagnostics`,
-optional `lazy_summary` (mechanism field name), `result` — plus outer `query_id` / `analysis` when Focus ran.
+**Trace tools:** terminal responses contain inner `ok`, `kind`, `capability`,
+**`partial_result`**, `diagnostics`, optional `lazy_summary` (mechanism field
+name), and `result`. While tracked Focus work is pending, the whole inner trace
+body is withheld and only the outer ticket is returned.
 
 ### 5. After code edits (still MCP-first)
 
@@ -157,6 +166,12 @@ Native short names (hosts may prefix `atlas_`). Install/config:
 | `fp_dispatches` | — | FP annotations |
 | `tasks` | — | optional `query_id` |
 | `resume_query` | `query_id` | **primary refinement path** |
+
+Required Focus fact levels are parameter-sensitive: scoped `search` and
+`symbol(detail)` need structural facts; `symbol(usages|context)` and
+`trace(forward|callers)` need the cross-file call graph; `trace(variable)`,
+semantic impact, lifecycle, and branch diff need tracked dataflow/CFG
+materialization.
 
 ### Trace kinds
 

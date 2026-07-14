@@ -157,12 +157,21 @@ impl ToolRouter {
 
         if let Some(generated_query_id) = generated_query_id {
             if generated_query_id != original_query_id {
-                self.project()
+                let project = self.project();
+                let mut snapshots = project
                     .job_runtime
                     .query_snapshots
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&generated_query_id);
+                    .unwrap_or_else(|e| e.into_inner());
+                let replay_focus_result = snapshots
+                    .get(&generated_query_id)
+                    .and_then(|snapshot| snapshot.focus_result.clone());
+                if let (Some(original), Some(replay_focus_result)) =
+                    (snapshots.get_mut(&original_query_id), replay_focus_result)
+                {
+                    original.focus_result = Some(replay_focus_result);
+                }
+                snapshots.remove(&generated_query_id);
             }
         }
 

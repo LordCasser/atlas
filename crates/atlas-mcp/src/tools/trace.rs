@@ -223,11 +223,20 @@ impl ToolRouter {
                 file_id,
                 line,
                 column,
+                max_depth,
             }),
             include_roots,
         );
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
+        }
+        if focus_result
+            .as_ref()
+            .is_some_and(|result| result.pending_work_count_and_eta_ms().0 > 0)
+        {
+            return lr
+                .with_is_error(false)
+                .build(json!({"status": "in_progress"}), self);
         }
         // Engine::trace_variable handles lazy dataflow orchestration + trace
         // in a single call.  The response already carries lazy_summary,
@@ -576,19 +585,11 @@ impl ToolRouter {
         self.update_investigation(InvestigationFocus::Symbol(from_id));
 
         // Ensure structural for endpoint files via focus query
-        let intent = self
-            .project()
-            .store
-            .find_symbol_by_id(&from_id)
-            .ok()
-            .flatten()
-            .map(|sym| atlas_engine::QueryIntent::Calls {
-                symbol_name: sym.name.clone(),
-                file_id: Some(sym.file_id),
-                symbol_id: None,
-                direction: None,
-                depth: None,
-            });
+        let intent = Some(atlas_engine::QueryIntent::Path {
+            from_name: from_name.to_string(),
+            to_name: to_name.to_string(),
+            max_depth: Some(max_depth),
+        });
         let (focus_result, lazy_warnings) =
             self.prepare_focus_query_with_roots(intent, include_roots);
         if let Some(ref result) = focus_result {

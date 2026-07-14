@@ -95,16 +95,23 @@ Use **resume**, not full index, when the first answer is thin.
 
 ## Cold Focus checklist
 
-1. First hit may be seed-only / partial closure.  
-2. If `retry_after_ms` → wait → `resume_query`.  
-3. Sparse callers ≠ zero callers in the repo.  
-4. Need more signal → narrower scope, better selector, `include_roots`, resume.  
+1. First hit may need a larger closure; MCP waits up to 18 seconds.
+2. If `retry_after_ms` → the response is ticket-only; wait → `resume_query`.
+3. Sparse callers ≠ zero callers in the repo.
+4. Need more signal → narrower scope, better selector, `include_roots`, resume.
 5. **Do not** `atlas index` the monorepo from the agent.
 
 ## Response fields
 
 **Most tools:** `query_id`, `analysis` (`scope`, `summary`, `basis`, optional `retry_after_ms`),
 optional `gaps`, `warnings`, `note`, `coverage_counts`.
+
+Non-terminal responses contain only `status=in_progress`, the query ticket,
+required analysis level, pending reason, and retry timing. Do not consume or
+expect provisional result fields.
+
+`status=failed` is also result-free. Read `pending.detail` and re-run the
+original tool call; do not interpret absence of `retry_after_ms` as success.
 
 **Trace:** also `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, optional
 `lazy_summary`, `result`.
@@ -119,7 +126,7 @@ no retry with `gaps` → terminal limited result.
 | No active project | `project(action="open", ...)` |
 | No / few hits | Broader `search` **within scope**; fix path; `resume_query` |
 | Thin callers | `resume_query`; tighten symbol; do **not** full-index |
-| Trace partial | Read `capability` / `lazy_summary` / diagnostics; resume if retry set |
+| Trace partial | With retry: consume only the ticket and resume. Without retry: read terminal capability/diagnostics. |
 | Corrupt DB | Tell user to delete `project/.atlas/` and re-open MCP (human may reindex offline) |
 | Huge output | Lower `limit` / `depth` |
 

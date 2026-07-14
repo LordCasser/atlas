@@ -265,13 +265,10 @@ impl LazyDataflowLoader {
             let cfg_supported = profile.features.cfg.is_supported();
 
             for (unit, job_id) in &claimed {
-                // Interleaved budget guard: exit early if over budget
-                // mid-group, so remaining units in this file group are
-                // skipped without waiting for the next file-group check.
-                if start.elapsed().as_millis() > LAZY_DATAFLOW_BUDGET_MS as u128 {
-                    result.budget_exceeded = true;
-                    break;
-                }
+                // Once a unit job is claimed it must reach a terminal state.
+                // The wall budget gates the next file group; abandoning a
+                // claimed unit here would leave a permanent `building` row and
+                // make resume_query unable to converge.
 
                 let mut unit_payload = partition_payload_for_unit(&payload, unit);
 
@@ -358,7 +355,10 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             .get_file(&unit.file_id)?
             .map(|f| f.content_hash)
             .unwrap_or_default();
-        if unit_state.content_hash == current_hash {
+        if unit_state.content_hash == current_hash
+            && unit_state.status == STATUS_COMPLETE
+            && !unit_state.budget_exceeded
+        {
             let mut payload = DataflowPayload::empty();
             payload.budget_exceeded = unit_state.budget_exceeded;
             payload.has_cfg = unit_state.capability_mask.has(FactCoverage::CFG);
