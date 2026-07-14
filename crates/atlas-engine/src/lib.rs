@@ -16,9 +16,10 @@
 //! use atlas_engine::Engine;
 //!
 //! let engine = Engine::open_in_memory()?;
+//! let source = atlas_engine::decode_source(b"function f() {}");
 //! engine.extract_file_with_mode(
 //!     std::path::Path::new("test.ts"),
-//!     "function f() {}",
+//!     &source,
 //!     atlas_engine::Language::TypeScript,
 //!     atlas_engine::ExtractionMode::Full,
 //! )?;
@@ -141,7 +142,7 @@ pub use closure_planner::IncludeRoot;
 pub use index_precision::{guard_against_precision_downgrade, is_rich_catalog_tier};
 
 /// Workspace abstractions.
-pub use workspace::{ProjectRoot, SourcePath, Workspace};
+pub use workspace::{ProjectRoot, SourcePath, SourceText, Workspace, decode_source, read_source};
 
 /// Progress protocol (for CLI TUI integration).
 pub use types::progress;
@@ -289,24 +290,26 @@ impl Engine {
 
     // ── Extraction ─────────────────────────────────────────────────────
 
-    /// Extract facts from a single source file with explicit mode control.
+    /// Extract facts from a decoded source file with explicit mode control.
+    ///
+    /// [`SourceText::file_hash`] preserves the raw file identity while
+    /// [`SourceText::text`] provides the decoded UTF-8 parser input.
     pub fn extract_file_with_mode(
         &self,
         path: &Path,
-        source: &str,
+        source: &SourceText,
         language: Language,
         mode: extraction::ExtractionMode,
     ) -> anyhow::Result<FileFacts> {
         let frontend = extraction::create_frontend(language)
             .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {language:?}"))?;
         let file_id = FileId::generate(path.to_string_lossy().as_ref());
-        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let facts = extraction::extract_file_with_mode(
             &frontend,
             file_id,
             path,
-            source,
-            &content_hash,
+            &source.text,
+            &source.file_hash,
             mode,
             &(),
         )?;
@@ -639,13 +642,15 @@ mod tests {
     #[cfg(feature = "typescript")]
     fn engine_extract_and_insert_typescript_smoke() {
         let engine = Engine::open_in_memory().expect("should create in-memory engine");
-        let source = "function add(a: number, b: number) {\n  return a + b;\n}\nadd(1, 2);\n";
+        let source = decode_source(
+            b"function add(a: number, b: number) {\n  return a + b;\n}\nadd(1, 2);\n",
+        );
         let file_path = Path::new("test.ts");
 
         let facts = engine
             .extract_file_with_mode(
                 file_path,
-                source,
+                &source,
                 Language::TypeScript,
                 extraction::ExtractionMode::Full,
             )
@@ -661,6 +666,25 @@ mod tests {
         assert_eq!(stats.total_files, 1);
         assert!(stats.total_symbols > 0);
         assert!(stats.total_references > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn engine_extract_preserves_raw_hash_for_non_utf8_source() {
+        let engine = Engine::open_in_memory().expect("should create in-memory engine");
+        let source = decode_source(b"function f() {}\n// \x80\n");
+        assert_ne!(source.file_hash, source.text_hash());
+
+        let facts = engine
+            .extract_file_with_mode(
+                Path::new("legacy.ts"),
+                &source,
+                Language::TypeScript,
+                extraction::ExtractionMode::Structural,
+            )
+            .expect("should extract decoded legacy source");
+
+        assert_eq!(facts.file.content_hash, source.file_hash);
     }
 
     #[test]

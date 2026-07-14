@@ -1,6 +1,6 @@
 //! Index + dirty hash regression for non-UTF-8 sources.
 //!
-//! Spec: `docs/source-encoding.md` §6.2 items 2–3, `docs/testing.md` §2.3.
+//! Contract: `docs/testing.md` §2.1.1 and §2.3.
 //!
 //! - Index a GBK Python file through the shared pipeline.
 //! - DB `files.content_hash` equals raw on-disk blake3 (not decoded UTF-8 hash).

@@ -69,6 +69,16 @@ feature works everywhere (e.g. CFG unsupported for PHP/ArkTS). Check:
 - `project(action="status")` (verbose if needed)
 - Trace response `capability` / diagnostics
 
+### Source encoding and positions
+
+- Atlas decodes project sources internally before extraction. UTF-8 is direct;
+  legacy GBK/GB18030 and windows-1252 sources are supported on a best-effort basis.
+- Pass project paths and source positions normally; do not transcode or rewrite files
+  before querying Atlas.
+- Returned source and ranges refer to the decoded UTF-8 view. For a legacy-encoded
+  file, byte offsets and columns are not raw-file edit coordinates; Atlas does not
+  provide a decoded-to-raw edit mapping.
+
 ## Workflow (MCP only)
 
 ### 1. Open and status

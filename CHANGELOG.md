@@ -43,12 +43,17 @@ in-tree work). 1.5.4 remains sealed at that tag.
   files are never rewritten.
 - **File identity hash** (`files.content_hash`, dirty, fingerprint, stale) is
   `blake3(raw bytes)`. Partial content digests use `blake3(decoded UTF-8)`.
+- Public `Engine::extract_file_with_mode` accepts `SourceText`, so direct engine
+  consumers preserve the raw-byte file hash while parsing decoded UTF-8 text.
 - Index, Focus structural/dataflow, bootstrap, source extractors, context,
   dossier, and trace snippets all use the unified entry.
-- Spec: `docs/source-encoding.md`. Required tests (testing.md §2.1.1):
+- Contracts: `docs/architecture.md` §3.2 and `docs/requirements.md`; required tests
+  (`docs/testing.md` §2.1.1):
   `cargo test -p workspace --lib source_text`,
   `cargo test -p extraction --test source_encoding_extract`,
   `cargo test -p filesync --test source_encoding_index`.
+- Atlas Skill documents that legacy-source ranges address the decoded UTF-8 view,
+  not raw-file edit coordinates.
 
 ### Version
 

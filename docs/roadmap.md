@@ -95,6 +95,12 @@ be removed (`.atlas/atlas.db`) and re-indexed, since `doctor` cannot detect
 this via unchanged source hashes; local verification was macOS arm64 only —
 Linux and Windows coverage is via the gated release matrix.
 
+✅ Done for 1.5.5: verified on 2026-07-14. Formatting, all-feature workspace
+check/tests, and the release MCP binary build completed with exit code 0;
+`target/release/atlas --version` reports 1.5.5 and `atlas doctor` passes for the
+Atlas checkout. Local verification was macOS arm64; Linux and Windows coverage
+remains the responsibility of the gated release matrix.
+
 ### 1.6 Completed baseline release gates
 
 The original baseline implementation blockers are closed and covered by the release test matrix:

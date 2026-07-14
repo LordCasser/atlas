@@ -75,14 +75,14 @@ Atlas 不做：
 
 ### 源文件编码与读取
 
-权威细则见 [`source-encoding.md`](./source-encoding.md)。摘要：
-
-- **统一入口**：产品路径读项目源码必须经 `workspace::read_source` / `decode_source`；禁止对源文件各自 `read_to_string`。
-- **不改原文件**：仅在内存将非 UTF-8 转为 UTF-8 再解析/展示。
-- **编码范围（当前）**：合法 UTF-8 热路径；非 UTF-8 经 chardetng + encoding_rs 解码，**优先覆盖中文 GBK/GB18030**；西欧 8-bit 为 **windows-1252**（覆盖 ISO-8859-1 使用场景）。
-- **文件 hash**：`files.content_hash` / dirty / fingerprint / stale = `blake3(原始磁盘字节)`（`SourceText.file_hash`）。
-- **部分内容 hash**：对解码后 UTF-8 全文或片段使用 `workspace::text_content_hash`，不得与文件 hash 混用。
-- **坐标**：`TextRange` 相对解码后 UTF-8 文本；再读源码须同一入口。
+- 合法 UTF-8 源码直接解析；非 UTF-8 源码仅在内存解码，优先覆盖中文
+  GBK/GB18030 与西欧 windows-1252（ISO-8859-1 类输入）。
+- Atlas 不因检测或转码改写原文件；文件身份始终基于原始磁盘字节，转码不应造成
+  永久 dirty 或 stale。
+- Index 与 Focus 必须产生相同的解码文本、符号事实和源码片段；所有持久化 range
+  都相对解码后的 UTF-8 文本。实现边界与 hash 不变量见 `architecture.md` §3.2。
+- 编码检测是 best-effort：不支持单文件混合编码；极短的 legacy 文件可能误检；
+  encoding 当前不持久化进 schema。
 
 ### 抽取
 

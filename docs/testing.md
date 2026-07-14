@@ -57,7 +57,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - ID 生成、enum roundtrip、range 工具函数。
 - query parser、name matcher、scoring。
 - 单个 builder 的局部行为。
-- **源文件编码解码**（`workspace::source_text`）：见 §2.1.1 与 [`source-encoding.md`](./source-encoding.md) §6。
+- **源文件编码解码**（`workspace::source_text`）：见 §2.1.1。
 
 要求：
 - 可以使用内存数据和最小 fixture。
@@ -65,7 +65,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 
 #### 2.1.1 源编码与统一读入口（强制）
 
-任何改动 `workspace::read_source` / `decode_source`、hash 语义或源码读盘路径的 PR，必须通过（见 [`source-encoding.md`](./source-encoding.md) §6）：
+任何改动 `workspace::read_source` / `decode_source`、hash 语义或源码读盘路径的 PR，必须通过：
 
 ```bash
 cargo test -p workspace --lib source_text
@@ -91,7 +91,16 @@ cargo test -p filesync --test source_encoding_index
 | 解析联调 | GBK Python 经 extract 后符号名含正确中文；`FileFacts.content_hash` 为 raw |
 | index/dirty | DB `content_hash` 与 raw 重算一致；二次 index 不改为 text_hash |
 
-产品路径回归：新增「读项目源文件」代码不得使用 `std::fs::read_to_string`；审查用 `rg 'read_to_string' crates/atlas-engine`（允许项见 source-encoding.md §5.2）。
+产品路径回归：新增「读项目源文件」代码不得使用 `std::fs::read_to_string`，也不得
+自行实现编码检测。审查命令：
+
+```bash
+rg 'read_to_string' crates/atlas-engine crates/atlas-mcp --glob '*.rs'
+```
+
+允许项仅限 `.atlasignore` / path-alias 等 UTF-8 配置、测试 fixture、MCP handler
+自检；dirty / fingerprint 只计算文件身份时可直接读 raw bytes，但必须保持
+`file_content_hash` 语义。
 
 ### 2.2 抽取 Golden 测试
 

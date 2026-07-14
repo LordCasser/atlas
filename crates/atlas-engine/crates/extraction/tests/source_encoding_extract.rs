@@ -1,6 +1,6 @@
 //! Integration: non-UTF-8 source → `workspace::read_source` → tree-sitter extract.
 //!
-//! Spec: `docs/source-encoding.md` §6.2 item 1, `docs/testing.md` §2.1.1 / §2.3.
+//! Contract: `docs/testing.md` §2.1.1 and §2.3.
 //!
 //! Asserts that Chinese identifiers in a **GBK** on-disk file survive decode and
 //! appear as symbol names in `FileFacts` (not mojibake), and that extraction is
@@ -56,13 +56,15 @@ fn gbk_python_extract_preserves_chinese_symbol_names() {
     // Product path: unified reader only (never read_to_string on non-UTF-8).
     let src = read_source(&path).expect("read_source GBK python");
     assert!(
-        src.encoding.eq_ignore_ascii_case("GBK")
-            || src.encoding.eq_ignore_ascii_case("GB18030"),
+        src.encoding.eq_ignore_ascii_case("GBK") || src.encoding.eq_ignore_ascii_case("GB18030"),
         "encoding={}",
         src.encoding
     );
     assert!(src.text.contains("计算总和"));
-    assert_eq!(src.file_hash, file_content_hash(&std::fs::read(&path).unwrap()));
+    assert_eq!(
+        src.file_hash,
+        file_content_hash(&std::fs::read(&path).unwrap())
+    );
     assert_ne!(src.file_hash, src.text_hash());
 
     let frontend = create_frontend(Language::Python).expect("python frontend");

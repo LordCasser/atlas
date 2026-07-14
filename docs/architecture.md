@@ -177,13 +177,28 @@ CfgNodeId    = blake3(function_id + kind + start_byte)
 `SymbolSelector` 的字段按计分优先级排序（qualified_name > file_path > line > kind > language），
 错误字段不会阻塞正确匹配——只影响候选排序。详见第 10.6 节。
 
-## 3.1 源文件读取与编码
+### 3.2 源文件读取与编码
 
-- **唯一产品入口**：`workspace::read_source` / `decode_source`（见 [`source-encoding.md`](./source-encoding.md)）。
-- 磁盘原件只读；非 UTF-8（GBK 优先、ISO-8859-1/1252）在内存转为 UTF-8 再进入 tree-sitter。
-- **`files.content_hash` / dirty / fingerprint / stale** = `blake3(raw)`（`SourceText.file_hash`）。
-- 片段/内容 digest = `blake3(解码后 UTF-8)`（`text_content_hash`），禁止与 file hash 混用。
-- `TextRange` 相对解码后文本；再读源码必须同一入口。
+`workspace::source_text` 是项目源码编码判断的唯一边界：产品路径使用
+`read_source` 读盘，已持有原始字节时使用 `decode_source`。合法 UTF-8 走直通路径；
+其他输入由 `chardetng` 检测并经 `encoding_rs` 在内存解码，重点覆盖 GBK/GB18030
+与 windows-1252。磁盘原件只读，调用方不得自行检测编码或用 `read_to_string`
+读取项目源码。
+
+源码在该边界后分成两种不可混用的数据：
+
+| 语义 | 数据与 API | 消费方 |
+|------|------------|--------|
+| 文件身份 | `blake3(raw)`，即 `SourceText.file_hash` / `file_content_hash` | `files.content_hash`、dirty、fingerprint、stale |
+| 解析文本 | 解码后的 UTF-8 `SourceText.text`；内容 digest 使用 `text_content_hash` | tree-sitter、snippet、符号源码与上下文 |
+
+Index/sync、Focus structural/dataflow、bootstrap 以及 source/context/dossier/trace
+源码展示都必须复用该边界。仅计算 raw hash、读取 `.atlasignore` / path-alias 等
+UTF-8 配置、测试 fixture 和 MCP 自检源码扫描不属于项目源码解码路径。
+
+`TextRange` 的 byte offset 相对解码后的 UTF-8 文本；按 range 再取源码时必须重新走
+同一读取边界，禁止用该 range 切片原始磁盘字节。对合法 UTF-8 全文，file hash 与
+text hash 相同；对 GBK 等转码输入，两者不同。
 
 ## 4. 抽取约束
 

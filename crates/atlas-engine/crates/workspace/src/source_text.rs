@@ -10,7 +10,7 @@
 //! All Atlas source-reading paths must go through [`read_source`] /
 //! [`decode_source`]. Do not call `std::fs::read_to_string` on source files.
 //!
-//! Required tests: `docs/source-encoding.md` §6, `docs/testing.md` §2.1.1.
+//! Architecture: `docs/architecture.md` §3.2. Required tests: `docs/testing.md` §2.1.1.
 
 use std::path::Path;
 
@@ -90,8 +90,8 @@ fn decode_bytes_to_utf8(bytes: &[u8]) -> (String, &'static str, bool) {
 
 #[cfg(test)]
 mod tests {
-    //! Normative unit matrix for `docs/source-encoding.md` §6.1 and
-    //! `docs/testing.md` §2.1.1. Do not weaken assertions without updating both docs.
+    //! Normative unit matrix for `docs/testing.md` §2.1.1. Do not weaken
+    //! assertions without updating that contract.
 
     use super::*;
     use encoding_rs::{GBK, WINDOWS_1252};
@@ -155,9 +155,8 @@ fn parse_resume() {}\n\
     }
 
     fn assert_western_8bit(encoding: &str) {
-        let ok = encoding == "windows-1252"
-            || encoding == "ISO-8859-1"
-            || encoding == "ISO-8859-15";
+        let ok =
+            encoding == "windows-1252" || encoding == "ISO-8859-1" || encoding == "ISO-8859-15";
         assert!(ok, "expected western 8-bit encoding, got {encoding}");
     }
 

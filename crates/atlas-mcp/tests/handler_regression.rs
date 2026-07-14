@@ -67,6 +67,25 @@ fn call_tool(router: &mut ToolRouter, name: &str, args: &Value) -> (Value, bool)
     (parsed, is_error)
 }
 
+/// Consume a resumable MCP ticket until the query reaches a terminal response.
+/// Fast Focus work may already be terminal on the first call.
+fn resume_until_terminal(router: &mut ToolRouter, mut response: Value) -> Value {
+    for _ in 0..50 {
+        if response["analysis"]["retry_after_ms"].as_u64().is_none() {
+            return response;
+        }
+        let query_id = response["query_id"]
+            .as_str()
+            .expect("retryable response must carry query_id")
+            .to_string();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let (next, is_error) = call_tool(router, "resume_query", &json!({"query_id": query_id}));
+        assert!(!is_error, "resume_query should converge: {next:.500}");
+        response = next;
+    }
+    panic!("query did not converge after resume: {response:.500}");
+}
+
 #[test]
 fn public_guidance_uses_error_or_message_without_hint_field() {
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
@@ -240,7 +259,7 @@ fn handler_graph_tools_return_expected_structure() {
 }
 
 #[test]
-fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
+fn handler_calls_cold_symbol_converges_instead_of_not_found() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_calls_cold_symbol");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -257,6 +276,7 @@ fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
         !err,
         "cold calls query should not fail as NotFound: {resp:.500}"
     );
+    let resp = resume_until_terminal(&mut router, resp);
     assert_eq!(resp["symbol"], "foo");
     assert!(
         resp.get("total_callees").is_some() || resp.get("callees").is_some(),
@@ -264,10 +284,8 @@ fn handler_calls_cold_symbol_triggers_focus_retry_instead_of_not_found() {
     );
     assert_eq!(resp["analysis"]["scope"], "local");
     assert!(
-        resp["analysis"]["retry_after_ms"]
-            .as_u64()
-            .is_some_and(|ms| ms > 0 && ms <= 60_000),
-        "cold calls query should expose a bounded focus ETA: {resp:.500}"
+        resp["analysis"].get("retry_after_ms").is_none(),
+        "terminal calls response must not retain retry guidance: {resp:.500}"
     );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -320,8 +338,9 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
 
     assert!(
         !err,
-        "scoped explore miss should be a retryable unresolved response: {resp:.500}"
+        "scoped explore miss should be a terminal unresolved response: {resp:.500}"
     );
+    let resp = resume_until_terminal(&mut router, resp);
     assert_eq!(resp["status"], "unresolved");
     assert_eq!(resp["scope"], "a");
     assert!(
@@ -331,17 +350,16 @@ fn handler_explore_scope_miss_does_not_fallback_outside_scope() {
     assert!(resp.get("background_refinement").is_none());
     assert!(resp.get("retry_after_ms").is_none());
     assert!(
-        resp["analysis"]["retry_after_ms"]
-            .as_u64()
-            .is_some_and(|delay| delay >= 5_000),
-        "scoped candidate warming should expose the tracked ETA: {resp:.500}"
+        resp["analysis"].get("retry_after_ms").is_none(),
+        "terminal scope miss must not retain retry guidance: {resp:.500}"
     );
+    assert!(resp["gaps"].as_array().is_some_and(|gaps| !gaps.is_empty()));
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
-fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier() {
+fn handler_explore_unscoped_cold_symbol_converges_to_dossier() {
     let temp_dir = std::env::temp_dir().join("atlas_hdlr_explore_unscoped_candidate");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -358,35 +376,24 @@ fn handler_explore_unscoped_cold_symbol_queues_candidate_focus_without_dossier()
         &json!({"symbol": "unscoped_target"}),
     );
 
+    assert!(!err, "unscoped cold explore should not fail: {resp:.500}");
+    let resp = resume_until_terminal(&mut router, resp);
     assert!(
-        !err,
-        "unscoped cold explore should be a retryable unresolved response: {resp:.500}"
-    );
-    assert_eq!(resp["status"], "unresolved");
-    assert!(
-        resp.get("subject").is_none(),
-        "unscoped cold explore should not synchronously return a dossier: {resp:.500}"
-    );
-    assert!(
-        resp["candidate_files"]
-            .as_array()
-            .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
-        "unscoped cold explore should expose bounded candidate files: {resp:.500}",
+        resp.get("subject").is_some() || resp.get("sourceExcerpt").is_some(),
+        "terminal unscoped explore should contain dossier fields: {resp:.500}"
     );
     assert!(resp.get("background_refinement").is_none());
     assert!(resp.get("retry_after_ms").is_none());
     assert!(
-        resp["analysis"]["retry_after_ms"]
-            .as_u64()
-            .is_some_and(|delay| delay >= 5_000),
-        "candidate warming should expose the tracked ETA: {resp:.500}"
+        resp["analysis"].get("retry_after_ms").is_none(),
+        "terminal explore response must not retain retry guidance: {resp:.500}"
     );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
-fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
+fn handler_unscoped_cold_symbol_tools_converge() {
     for (tool, args) in [
         (
             "calls",
@@ -425,56 +432,21 @@ fn handler_unscoped_cold_symbol_tools_enqueue_candidate_focus() {
         let (resp, err) = call_tool(&mut router, tool, &args);
         assert!(
             !err,
-            "{tool} should return retryable unresolved response for unscoped cold symbol: {resp:.500}"
+            "{tool} should not fail for an unscoped cold symbol: {resp:.500}"
         );
-        if resp["status"] == "unresolved" {
-            assert!(
-                resp["candidate_files"]
-                    .as_array()
-                    .is_some_and(|files| files.iter().any(|f| f.as_str() == Some("target.c"))),
-                "{tool} should expose bounded candidate files while unresolved: {resp:.500}",
-            );
-            // Retry guidance lives only in the analysis block; legacy
-            // background_refinement and flat retry_after_ms are not emitted.
-            assert_eq!(
-                resp["analysis"]["retry_after_ms"], 8000,
-                "{tool} should expose analysis retry_after_ms while unresolved: {resp:.500}",
-            );
-            assert!(
-                resp.get("retry_after_ms").is_none(),
-                "{tool} should not expose flat retry_after_ms: {resp:.500}"
-            );
-        } else {
-            assert!(
-                resp["analysis"]["scope"].as_str().is_some(),
-                "{tool} should have analysis scope for local materialized result: {resp:.500}",
-            );
-            if tool == "lifecycle" {
-                assert!(
-                    resp["analysis"].get("retry_after_ms").is_none(),
-                    "function-local lifecycle should be terminal once CFG/dataflow facts are available: {resp:.500}",
-                );
-            } else {
-                assert!(
-                    resp["analysis"]["retry_after_ms"]
-                        .as_u64()
-                        .is_some_and(|ms| ms > 0),
-                    "{tool} should carry retry_after_ms in the analysis block: {resp:.500}",
-                );
-            }
-            assert!(
-                resp.get("background_refinement").is_none(),
-                "{tool} should not expose legacy background_refinement: {resp:.500}",
-            );
-        }
-        if tool != "lifecycle" {
-            assert!(
-                resp["analysis"]["retry_after_ms"]
-                    .as_u64()
-                    .is_some_and(|ms| ms > 0 && ms <= 60_000),
-                "{tool} should expose a bounded focus ETA: {resp:.500}"
-            );
-        }
+        let resp = resume_until_terminal(&mut router, resp);
+        assert!(
+            resp["analysis"]["scope"].as_str().is_some(),
+            "{tool} should retain local analysis scope: {resp:.500}",
+        );
+        assert!(
+            resp["analysis"].get("retry_after_ms").is_none(),
+            "{tool} terminal response must not retain retry guidance: {resp:.500}",
+        );
+        assert!(
+            resp.get("background_refinement").is_none(),
+            "{tool} should not expose legacy background_refinement: {resp:.500}",
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -818,22 +790,9 @@ fn handler_search_cold_scope_tracks_background_work_and_converges() {
         resp.get("background_refinement").is_none(),
         "cold bounded search should not expose legacy background_refinement: {resp:.300}"
     );
-    assert!(resp["analysis"]["retry_after_ms"].as_u64().is_some());
-    assert!(resp.get("gaps").is_none());
-    assert!(resp.get("precision").is_none());
-
-    let query_id = resp["query_id"].as_str().expect("search query id");
-    let mut resumed = resp.clone();
-    for _ in 0..50 {
-        if resumed["analysis"].get("retry_after_ms").is_none() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let (next, next_err) =
-            call_tool(&mut router, "resume_query", &json!({"query_id": query_id}));
-        assert!(!next_err, "resume search: {next:.300}");
-        resumed = next;
-    }
+    let resumed = resume_until_terminal(&mut router, resp);
+    assert!(resumed.get("gaps").is_none());
+    assert!(resumed.get("precision").is_none());
     assert_eq!(resumed["coverage"]["state"], "complete", "{resumed:.500}");
     assert_eq!(resumed["total"], 4, "{resumed:.500}");
 

@@ -14,17 +14,6 @@ This directory keeps the release-facing documentation for the current Atlas 1.5.
 - The TUI must visibly show the current project index mode at the edge/status
   area: `empty`, `manifest`, `structural`, `full`, or `partial`.
 
-## Baseline source-encoding contracts
-
-- Project source files are read only through `workspace::read_source` /
-  `decode_source`. Non-UTF-8 (notably **GBK** Chinese, **ISO-8859-1**/1252)
-  is decoded to UTF-8 **in memory only**; originals on disk are never rewritten.
-- **File identity hash** (`files.content_hash`, dirty, fingerprint, stale) is
-  `blake3(raw on-disk bytes)`. **Partial content digests** use
-  `blake3(decoded UTF-8 bytes)` via `workspace::text_content_hash`.
-- Full rules, call-site constraints, and required tests:
-  [source-encoding.md](./source-encoding.md).
-
 ## Baseline indexing contracts
 
 - Dirty-check for `IndexPipeline` is not hash-only. A discovered file is clean
@@ -58,12 +47,11 @@ This directory keeps the release-facing documentation for the current Atlas 1.5.
 
 1. [Architecture](./architecture.md) — authoritative architecture: constraints, modules, schema, dataflow, capability profiles, design decisions.
 2. [Requirements](./requirements.md) — product scope, default languages, acceptance criteria.
-3. [Source encoding](./source-encoding.md) — unified source reader, charset decode, dual hash policy, read constraints, required tests.
-4. [Roadmap](./roadmap.md) — current and future work.
-5. [Testing](./testing.md) — test layers, phase requirements, feature matrix.
-6. [Performance](./performance.md) — measured baselines and recommendations.
-7. [Trace contract](./trace-contract.md) — frozen V1 trace JSON contract and MCP tool schemas.
-8. [Domain Rules Language Guide](./domain-rules-language-guide.md) — language registry, rule_kind, pattern, status, and extension guidance.
+3. [Roadmap](./roadmap.md) — current and future work.
+4. [Testing](./testing.md) — test layers, phase requirements, feature matrix.
+5. [Performance](./performance.md) — measured baselines and recommendations.
+6. [Trace contract](./trace-contract.md) — frozen V1 trace JSON contract and MCP tool schemas.
+7. [Domain Rules Language Guide](./domain-rules-language-guide.md) — language registry, rule_kind, pattern, status, and extension guidance.
 
 ## Maintenance rules
 
