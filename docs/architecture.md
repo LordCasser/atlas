@@ -3,7 +3,7 @@
 本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
 版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前基线：Atlas `1.5.2`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前基线：Atlas `1.5.5`、SQLite Schema V2、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -176,6 +176,14 @@ CfgNodeId    = blake3(function_id + kind + start_byte)
 
 `SymbolSelector` 的字段按计分优先级排序（qualified_name > file_path > line > kind > language），
 错误字段不会阻塞正确匹配——只影响候选排序。详见第 10.6 节。
+
+## 3.1 源文件读取与编码
+
+- **唯一产品入口**：`workspace::read_source` / `decode_source`（见 [`source-encoding.md`](./source-encoding.md)）。
+- 磁盘原件只读；非 UTF-8（GBK 优先、ISO-8859-1/1252）在内存转为 UTF-8 再进入 tree-sitter。
+- **`files.content_hash` / dirty / fingerprint / stale** = `blake3(raw)`（`SourceText.file_hash`）。
+- 片段/内容 digest = `blake3(解码后 UTF-8)`（`text_content_hash`），禁止与 file hash 混用。
+- `TextRange` 相对解码后文本；再读源码必须同一入口。
 
 ## 4. 抽取约束
 

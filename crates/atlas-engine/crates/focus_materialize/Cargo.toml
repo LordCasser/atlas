@@ -9,8 +9,8 @@ license = "MIT"
 types = { path = "../types" }
 db = { path = "../db" }
 extraction = { path = "../extraction" }
+workspace = { path = "../workspace" }
 anyhow = "1"
-blake3 = "1"
 tracing = "0.1"
 
 [features]

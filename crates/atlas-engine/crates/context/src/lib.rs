@@ -285,7 +285,7 @@ impl ContextBuilder {
         if !canonical.starts_with(&canonical_root) {
             return None;
         }
-        let content = std::fs::read_to_string(&canonical).ok()?;
+        let content = workspace::read_source(&canonical).ok()?.text;
         let line_idx = line_0based as usize;
         content.lines().nth(line_idx).map(|l| l.trim().to_string())
     }
@@ -326,7 +326,7 @@ impl ContextBuilder {
         if !canonical.starts_with(&canonical_root) {
             return None;
         }
-        let content = std::fs::read_to_string(&canonical).ok()?;
+        let content = workspace::read_source(&canonical).ok()?.text;
         let all_lines: Vec<&str> = content.lines().collect();
         let start = sym.range.start_line as usize;
         let end = (sym.range.end_line as usize + 1).min(all_lines.len());

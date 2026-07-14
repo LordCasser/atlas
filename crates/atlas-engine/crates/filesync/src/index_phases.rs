@@ -570,14 +570,14 @@ fn extract_one_index_file(
         .unwrap_or(abs_path)
         .to_path_buf();
 
-    let source = std::fs::read_to_string(abs_path).map_err(|e| {
+    let src = workspace::read_source(abs_path).map_err(|e| {
         (
             rel_path.clone(),
             format!("Read failed for {}: {:#}", abs_path.display(), e),
         )
     })?;
-
-    let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let content_hash = src.file_hash;
+    let source = src.text;
 
     let file_id = source_file_id(&rel_path).map_err(|e| {
         (

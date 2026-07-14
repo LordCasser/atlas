@@ -126,8 +126,8 @@ pub struct TraceEngine {
     /// Cached canonical project root (computed once at construction).
     /// Avoids repeated `canonicalize()` syscalls in `is_file_in_project`.
     canonical_root: Option<PathBuf>,
-    /// Cache of file path → content, keyed by canonical path.
-    /// Avoids repeated `read_to_string` for the same file in
+    /// Cache of file path → decoded UTF-8 content, keyed by canonical path.
+    /// Avoids repeated `workspace::read_source` for the same file in
     /// `extract_snippet` / `extract_context_snippet`.
     file_cache: RefCell<HashMap<PathBuf, String>>,
 }
@@ -803,7 +803,7 @@ impl TraceEngine {
             if let Some(cached) = cache.get(&canonical) {
                 cached.clone()
             } else {
-                let text = std::fs::read_to_string(&canonical).ok()?;
+                let text = workspace::read_source(&canonical).ok()?.text;
                 cache.insert(canonical.clone(), text.clone());
                 text
             }

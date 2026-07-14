@@ -73,6 +73,17 @@ Atlas 不做：
 - 默认排除 `.git`、`.atlas`、`node_modules`、`dist`、`build`、`out`、`target`、`__pycache__`、`.venv`、`venv`、`.gradle`、`.m2`。
 - 单文件失败、超大文件、grammar panic 不得中断整个索引。
 
+### 源文件编码与读取
+
+权威细则见 [`source-encoding.md`](./source-encoding.md)。摘要：
+
+- **统一入口**：产品路径读项目源码必须经 `workspace::read_source` / `decode_source`；禁止对源文件各自 `read_to_string`。
+- **不改原文件**：仅在内存将非 UTF-8 转为 UTF-8 再解析/展示。
+- **编码范围（当前）**：合法 UTF-8 热路径；非 UTF-8 经 chardetng + encoding_rs 解码，**优先覆盖中文 GBK/GB18030**；西欧 8-bit 为 **windows-1252**（覆盖 ISO-8859-1 使用场景）。
+- **文件 hash**：`files.content_hash` / dirty / fingerprint / stale = `blake3(原始磁盘字节)`（`SourceText.file_hash`）。
+- **部分内容 hash**：对解码后 UTF-8 全文或片段使用 `workspace::text_content_hash`，不得与文件 hash 混用。
+- **坐标**：`TextRange` 相对解码后 UTF-8 文本；再读源码须同一入口。
+
 ### 抽取
 
 抽取架构必须是：

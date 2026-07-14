@@ -484,8 +484,9 @@ impl LazyStructuralService {
         {
             return Ok(false);
         }
-        let source = std::fs::read_to_string(project_root.join(relative_path))
-            .with_context(|| format!("failed to validate type ranges for {}", file.path))?;
+        let source = workspace::read_source(&project_root.join(relative_path))
+            .with_context(|| format!("failed to validate type ranges for {}", file.path))?
+            .text;
         let lines: Vec<_> = source.lines().collect();
 
         for symbol in type_symbols {
@@ -633,9 +634,10 @@ impl LazyStructuralService {
                 canonical_root.display()
             );
         }
-        let source = std::fs::read_to_string(&resolved_path)
+        let src = workspace::read_source(&resolved_path)
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
-        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let source = src.text;
+        let content_hash = src.file_hash;
 
         // Post-extract hooks (EXPORT_SYMBOL etc.) run inside extract_file_with_mode.
         // ResolutionSymbols persistence: exported flag on symbols is written;
@@ -803,9 +805,10 @@ impl LazyStructuralService {
                 canonical_root.display()
             );
         }
-        let source = std::fs::read_to_string(&resolved_path)
+        let src = workspace::read_source(&resolved_path)
             .with_context(|| format!("failed to read {}", resolved_path.display()))?;
-        let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let source = src.text;
+        let content_hash = src.file_hash;
 
         // Soft-reject oversized files: lazy structural extraction is designed
         // for typical source files. Files > 2 MB risk OOM or per-file timeout
@@ -1258,9 +1261,11 @@ pub fn rebuild_structural_for_file(
         );
     }
 
-    // 5. Read source
-    let source = std::fs::read_to_string(&resolved_path)
+    // 5. Read source (decode to UTF-8 in memory; file_hash from raw bytes)
+    let src = workspace::read_source(&resolved_path)
         .with_context(|| format!("failed to read {}", resolved_path.display()))?;
+    let source = src.text;
+    let content_hash = src.file_hash;
 
     // Soft-reject oversized files
     if source.len() > LAZY_STRUCTURAL_MAX_FILE_BYTES {
@@ -1271,10 +1276,7 @@ pub fn rebuild_structural_for_file(
         ));
     }
 
-    // 6. Compute hash
-    let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-
-    // 7. Extract structural layer (post-extract hooks run inside extract_file_with_mode)
+    // 6. Extract structural layer (post-extract hooks run inside extract_file_with_mode)
     let facts = extract_file_with_mode(
         &frontend,
         *file_id,
@@ -1285,7 +1287,7 @@ pub fn rebuild_structural_for_file(
         &(),
     )?;
 
-    // 8. Write to store (atomic replacement)
+    // 7. Write to store (atomic replacement)
     store.replace_file_facts_with_invalidation(file_id, &facts)?;
 
     tracing::info!(file=%file_info.path, "self-healing structural rebuild complete");

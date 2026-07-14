@@ -73,7 +73,7 @@ impl SourceRepo {
             ));
         }
 
-        let content = std::fs::read_to_string(&canonical)?;
+        let content = workspace::read_source(&canonical)?.text;
         self.cache.borrow_mut().insert(key, content.clone());
         Ok(content)
     }

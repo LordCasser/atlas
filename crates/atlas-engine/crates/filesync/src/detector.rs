@@ -8,10 +8,10 @@ use types::Language;
 
 use crate::discovery::DiscoveryConfig;
 
-/// Compute the BLAKE3 hex hash of a file's contents.
+/// Compute the BLAKE3 hex hash of a file's **raw** on-disk bytes (file identity).
 fn compute_blake3_hex(path: &Path) -> anyhow::Result<String> {
     let content = std::fs::read(path)?;
-    Ok(blake3::hash(&content).to_hex().to_string())
+    Ok(workspace::file_content_hash(&content))
 }
 
 /// What happened to a file between the last index and now.

@@ -318,7 +318,7 @@ fn bootstrap_tier0_5(store: &Store, root: &std::path::Path, running: &AtomicBool
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let hash = blake3::hash(&content).to_hex().to_string();
+            let hash = workspace::file_content_hash(&content);
             let file_id_arr: [u8; 32] = file_id
                 .as_slice()
                 .try_into()
@@ -393,12 +393,11 @@ fn extract_hints_for_path(
         None => return Ok(Vec::new()),
     };
 
-    // Read source and compute content hash
-    let source = match fs::read_to_string(&abs_path) {
-        Ok(s) => s,
+    // Read source (UTF-8 decode in memory) and file identity hash (raw bytes)
+    let (source, content_hash) = match workspace::read_source(&abs_path) {
+        Ok(src) => (src.text, src.file_hash),
         Err(_) => return Ok(Vec::new()),
     };
-    let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
     // Manifest extraction — top-level symbols only, fast
     let file_id_arr: [u8; 32] = file_id.try_into().expect("file_id must be 32 bytes");
@@ -485,16 +484,14 @@ pub(crate) fn bootstrap_tier2(
                 None => continue,
             };
 
-            // Read source
-            let source = match fs::read_to_string(&abs_path) {
-                Ok(s) => s,
+            // Read source (UTF-8 decode in memory); content_hash = raw file identity
+            let (source, content_hash) = match workspace::read_source(&abs_path) {
+                Ok(src) => (src.text, src.file_hash),
                 Err(e) => {
                     tracing::debug!(?e, path = %rel_path, "Tier2: failed to read file");
                     continue;
                 }
             };
-
-            let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
             let file_id_arr: [u8; 32] = file_id_bytes
                 .as_slice()

@@ -31,6 +31,8 @@ tree-sitter-kotlin = { git = "https://github.com/fwcd/tree-sitter-kotlin", rev =
 
 [dev-dependencies]
 db = { path = "../db" }
+workspace = { path = "../workspace" }
+encoding_rs = "0.8"
 tempfile = "3"
 
 [features]

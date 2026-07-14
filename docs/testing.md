@@ -57,10 +57,41 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - ID 生成、enum roundtrip、range 工具函数。
 - query parser、name matcher、scoring。
 - 单个 builder 的局部行为。
+- **源文件编码解码**（`workspace::source_text`）：见 §2.1.1 与 [`source-encoding.md`](./source-encoding.md) §6。
 
 要求：
 - 可以使用内存数据和最小 fixture。
 - 必须断言稳定 ID、边类型、置信度、错误分类等关键不变式。
+
+#### 2.1.1 源编码与统一读入口（强制）
+
+任何改动 `workspace::read_source` / `decode_source`、hash 语义或源码读盘路径的 PR，必须通过（见 [`source-encoding.md`](./source-encoding.md) §6）：
+
+```bash
+cargo test -p workspace --lib source_text
+cargo test -p extraction --test source_encoding_extract
+cargo test -p filesync --test source_encoding_index
+```
+
+| 层 | 位置 | 覆盖 |
+|----|------|------|
+| 单元 §2.1 | `workspace::source_text` tests | UTF-8 / GBK / windows-1252、双 hash、不写回 |
+| 集成 §2.3 | `extraction/tests/source_encoding_extract.rs` | GBK 盘文件 → decode → tree-sitter 中文符号名 |
+| 集成 §2.3 | `filesync/tests/source_encoding_index.rs` | index `content_hash=raw`、dirty 不永久脏、中文符号入库 |
+
+最低断言（禁止删弱）：
+
+| 场景 | 必须断言 |
+|------|----------|
+| UTF-8 | 中文保留；`file_hash == text_hash`（全文） |
+| GBK 中文 | 非 UTF-8 raw 解码出预期汉字；`file_hash == blake3(raw)`；`file_hash != text_hash` |
+| ISO-8859-1 系 | 西欧 8-bit 非 UTF-8 可解码；encoding 名可为 ISO-8859-1 或 windows-1252 |
+| 不写回 | `read_source` 后磁盘字节与写入时一致 |
+| 部分内容 hash | `text_content_hash(utf8_slice)` 基于解码后字节，不等于 raw file hash（GBK fixture） |
+| 解析联调 | GBK Python 经 extract 后符号名含正确中文；`FileFacts.content_hash` 为 raw |
+| index/dirty | DB `content_hash` 与 raw 重算一致；二次 index 不改为 text_hash |
+
+产品路径回归：新增「读项目源文件」代码不得使用 `std::fs::read_to_string`；审查用 `rg 'read_to_string' crates/atlas-engine`（允许项见 source-encoding.md §5.2）。
 
 ### 2.2 抽取 Golden 测试
 

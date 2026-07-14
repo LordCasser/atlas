@@ -439,10 +439,10 @@ fn build_dataflow_for_file(
     } else {
         std::path::PathBuf::from(&file_info.path)
     };
-    let source = std::fs::read_to_string(&resolved_path)
+    let src = workspace::read_source(&resolved_path)
         .with_context(|| format!("failed to read source: {}", resolved_path.display()))?;
-
-    let content_hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let source = src.text;
+    let content_hash = src.file_hash;
 
     // 3.5. Verify structural index is not stale
     if content_hash != file_info.content_hash {

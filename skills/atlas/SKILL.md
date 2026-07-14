@@ -12,7 +12,7 @@ compatibility: >-
   Requires Atlas MCP (`atlas mcp` / built `atlas` with `--features mcp`) and a
   local source checkout. Queries need no network. Agent path is MCP-only.
 metadata:
-  version: "1.5.4"
+  version: "1.5.5"
   repository: https://github.com/lordcasser/atlas
 ---
 

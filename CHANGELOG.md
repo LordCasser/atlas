@@ -4,6 +4,56 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.5.5] - 2026-07-14
+
+All changes **after tag `v1.5.4`** belong to 1.5.5 (commits since the tag plus
+in-tree work). 1.5.4 remains sealed at that tag.
+
+### Index / Focus query semantics
+
+- Preserve structured signatures and declaration source across extraction and
+  MCP detail/search; align ArkTS/TypeScript golden fixtures.
+- Expose persisted import/export facts through `explore` / dossier file-facts
+  paths; derive catalog tier from finalized index state.
+- Bound cold discovery; Focus query preparation converges without blocking tool
+  calls on full-repo work.
+- Store helpers for file inventory / extraction state / edges support the aligned
+  Focus vs FullCache read path.
+
+### MCP complete results (no provisional payloads)
+
+- Every Focus-backed query uses one **18s interactive window**. If required
+  facts land in time, MCP **replays the snapshot** and returns a complete result.
+- On timeout: only `status=in_progress`, `query_id`, `pending.*`, and
+  `analysis.retry_after_ms` — **never** provisional result arrays, paths,
+  callers, or trace payloads. Resume via `resume_query`.
+- On materialization failure: result-free `status=failed` ticket; re-run the
+  original tool to retry (failed work is not published as a limited result).
+- Shared `QueryNeed` (`manifest` / `structural` / `call_graph` / `dataflow`)
+  between MCP contracts and Focus control plane; tool_contract / resume / status
+  / trace handlers updated accordingly.
+- Docs: architecture non-terminal envelope, `docs/trace-contract.md`,
+  `crates/atlas-mcp/README.md`, skill tool-guide.
+
+### Source encoding (GBK / Western 8-bit)
+
+- Unified source reader `workspace::read_source` / `decode_source` (chardetng +
+  encoding_rs): non-UTF-8 sources (notably **GBK**/GB18030 Chinese, **windows-1252**
+  for ISO-8859-1-class Western text) decode to UTF-8 **in memory only**; disk
+  files are never rewritten.
+- **File identity hash** (`files.content_hash`, dirty, fingerprint, stale) is
+  `blake3(raw bytes)`. Partial content digests use `blake3(decoded UTF-8)`.
+- Index, Focus structural/dataflow, bootstrap, source extractors, context,
+  dossier, and trace snippets all use the unified entry.
+- Spec: `docs/source-encoding.md`. Required tests (testing.md §2.1.1):
+  `cargo test -p workspace --lib source_text`,
+  `cargo test -p extraction --test source_encoding_extract`,
+  `cargo test -p filesync --test source_encoding_index`.
+
+### Version
+
+- Workspace package version and skill metadata: **1.5.5**.
+
 ## [1.5.4] - 2026-07-13
 
 ### ArkTS analysis boundary

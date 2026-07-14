@@ -64,7 +64,7 @@ fn build_dirty_set_with_required_capability(
         .filter_map(|rel_path| {
             let abs_path = root.join(rel_path);
             let content = std::fs::read(&abs_path).ok()?;
-            let hash = blake3::hash(&content).to_hex().to_string();
+            let hash = workspace::file_content_hash(&content);
             let key = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
             Some((key.as_str().to_string(), hash))
         })

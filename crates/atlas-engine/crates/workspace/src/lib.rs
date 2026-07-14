@@ -1,4 +1,5 @@
-//! Workspace abstraction: project root, well-known paths, and runtime context.
+//! Workspace abstraction: project root, well-known paths, runtime context,
+//! and the **unified source-file reader**.
 //!
 //! A [`Workspace`] represents a project on disk with its `.atlas/` metadata directory.
 //! It centralizes path computation that was previously scattered across CLI commands
@@ -7,7 +8,14 @@
 //! # Layering
 //!
 //! This crate is the lowest layer in the Atlas stack. It has **no** dependencies
-//! on `atlas-types`, `atlas-db`, or any other Atlas crate — only `std` and `anyhow`.
+//! on `atlas-types`, `atlas-db`, or any other Atlas crate — only `std`, `anyhow`,
+//! and the charset stack used by [`source_text`].
+
+mod source_text;
+
+pub use source_text::{
+    SourceText, decode_source, file_content_hash, read_source, text_content_hash,
+};
 
 use std::path::{Path, PathBuf};
 

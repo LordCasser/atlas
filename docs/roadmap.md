@@ -3,7 +3,11 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current release focus: Atlas 1.5.4
+## 1. Current release focus: Atlas 1.5.5
+
+Workspace version is **1.5.5**. Everything after git tag **`v1.5.4`** is 1.5.5
+work (Focus/MCP complete-result semantics, index/Focus alignment, source
+encoding — see `CHANGELOG.md` §1.5.5). Tag **`v1.5.4`** remains sealed.
 
 Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
 

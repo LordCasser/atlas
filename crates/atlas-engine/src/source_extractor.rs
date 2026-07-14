@@ -86,7 +86,7 @@ impl SourceExtractor {
             return None;
         }
 
-        let source = std::fs::read_to_string(&canonical).ok()?;
+        let source = workspace::read_source(&canonical).ok()?.text;
 
         // Primary path: tree-sitter AST-based extraction.
         if let Some(result) = self.extract_via_ast(&sym, &source, lang) {
