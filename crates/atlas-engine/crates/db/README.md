@@ -61,4 +61,4 @@ Callers are responsible for creating `.atlas/` and any parent directories
 | `file_inventory` | `file_id BLOB(32)` | Focus bootstrap file inventory and fingerprints |
 | `symbol_hints` | composite key | Lightweight symbol hints for cold scoped queries |
 
-Schema V2 contains 28 entity tables plus the `symbols_fts` virtual table. Focus control-plane rows are transient session materialization; canonical source facts and symbol edges remain durable in the same SQLite database.
+Schema V3 contains 28 entity tables plus the `symbols_fts` virtual table. CFG nodes persist managed-resource lexical ownership alongside canonical source facts; Focus control-plane rows remain transient session materialization, while symbol edges remain durable in the same SQLite database.

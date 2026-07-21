@@ -249,7 +249,7 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V2: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store.
+Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V3: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store. CFG nodes persist managed-resource lexical ownership so path-isolated scope exits survive indexing.
 
 For a cold scoped query, Focus keeps two distinct boundaries: relevant files receive
 structural extraction, while import/include dependencies normally receive only
@@ -501,7 +501,7 @@ CST root (per function)
   → CfgNode + CfgEdge (Entry → blocks → Exit)
 ```
 
-CFG construction walks the function AST, identifying control-flow splits and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. Capability profiles currently declare CFG support for every language except ArkTS and PHP. This remains best-effort tree-sitter control flow rather than a compiler CFG; inspect `atlas doctor` for the authoritative per-language capability state.
+CFG construction walks the function AST, identifying control-flow splits and building a graph of basic blocks. Each `CfgNode` records the byte range it covers, and `CfgEdge` connects predecessor → successor. Capability profiles declare limited CFG support for all 14 languages, with explicit per-language limitations. This remains best-effort tree-sitter control flow rather than a compiler CFG; inspect `atlas doctor` for the authoritative capability state.
 
 ### Edge visibility: project-internal symbols only
 

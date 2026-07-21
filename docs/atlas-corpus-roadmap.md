@@ -678,7 +678,7 @@ Elixir 自身是 AGPLv3 许可证，而 Atlas 主项目是 MIT。Corpus 可以�
 | 版本模型 | 单版本（本地 workspace） | 多版本（Git tag） |
 | 去重策略 | hash-based dirty detection | Git blob content-addressed |
 | 查询维度 | 项目内符号关系（callers, callees, path） | 跨版本符号出现位置 + 函数演化 |
-| 存储 | SQLite（Schema V2：28 张实体表 + 1 张 FTS5 索引，WAL） | SQLite + Roaring Bitmap + Segment files |
+| 存储 | SQLite（Schema V3：28 张实体表 + 1 张 FTS5 索引，WAL） | SQLite + Roaring Bitmap + Segment files |
 | 主要用户 | 开发中的 Agent/开发者 | 分析开源项目的 Agent/研究者 |
 | Web 接口 | 无（MCP only） | Elixir 兼容 Web + REST API |
 

@@ -33,7 +33,7 @@ Atlas 的核心用户是：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie 已实现 **DataflowInterproc** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图和跨函数 summary 均已实现，CFG 暂未支持。现为默认编译语言之一。
+Cangjie 已实现 **DataflowInterproc** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图、跨函数 summary，以及 branch/loop/`match` sibling CFG 均已实现。Direct unguarded wildcard 会抑制 synthetic no-match；guarded/复杂 pattern exhaustiveness、pattern binding dataflow 与 scope-aware binding 仍是显式边界。现为默认编译语言之一。
 
 当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowInterproc** frontends。所有 14 种语言均为 DataflowInterproc 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
 
@@ -58,7 +58,7 @@ Atlas 不做：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie DataflowInterproc 抽取和调用图；CFG 暂未支持。
+- Cangjie DataflowInterproc 抽取、调用图和 branch/loop/`match` CFG；direct unguarded wildcard exhaustiveness 已建模，复杂 pattern/guard/binding 与 scope-aware binding 暂未建模。
 - Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowInterproc 抽取和调用图；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
 - 低置信度 name-based resolution。
 
@@ -205,7 +205,7 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
-- `FunctionSummary`：已实现持久化摘要层（Schema V2）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接。当前开发线不兼容旧 schema；schema 变化后必须重建索引。
+- `FunctionSummary`：已实现持久化摘要层（Schema V3）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接；CFG 节点同时持久化托管资源作用域归属。当前开发线不兼容旧 schema；schema 变化后必须重建索引。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -224,20 +224,20 @@ Level 5: lightweight interprocedural summaries
 
 | 语言 | 当前 trace 边界 | 用户交互展示要求 |
 |---|---|---|
-| TypeScript | DataflowInterproc: 变量来源、call args、field access、return、CFG、跨函数 ArgToParam+ReturnToCall | 展示完整证据链；跨函数结果标注 depth、summary/heuristic 和 confidence |
-| JavaScript | 与 TypeScript 共用 JS grammar 路径，DataflowInterproc | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
-| Python | DataflowInterproc: scope-chain-aware binding, CFG, ArgToParam+ReturnToCall，confidence 0.72 | 对动态调用、属性链、import alias fallback 输出 lower confidence 或 unsupported diagnostics |
-| Java | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.75 | 调用路径精确；参数、返回值、字段来源带 limitation/confidence |
-| C | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.73；函数指针 limited depth 3 | 调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
-| C++ | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.70；模板/重载/ADL 不建模 | 调用路径和局部来源必须标注 best-effort |
-| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55)；named function/method branch-loop 已验证，ArkUI trailing-block/callback CFG 未建模 | 显示 `arkts via TypeScript grammar` provenance 与具体 limitation |
-| Go | DataflowInterproc: ArgToParam+ReturnToCall, CFG，confidence 0.78 | 调用路径精确 |
-| C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.72 | `using_statement` 和 branch/loop CFG；partial classes limitation |
-| Rust | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.70 | 宏与 borrow 语义不建模 |
-| PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG 未实现 | name-based binding 与动态调用 limitation |
-| Ruby | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.65 | block/yield 为 best-effort |
-| Kotlin | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.67 | extension receiver binding limitation |
-| Cangjie | DataflowInterproc: ArgToParam+ReturnToCall，CFG，confidence 0.65 | postfixExpression/callSuffix limitation |
+| TypeScript | DataflowInterproc: 变量来源、call args、field access、return、CFG、跨函数 ArgToParam+ReturnToCall；try/catch/finally isolated continuations | 展示完整证据链；跨函数结果标注 depth、summary/heuristic 和 confidence |
+| JavaScript | 与 TypeScript 共用 JS grammar 路径，DataflowInterproc；try/catch/finally isolated continuations | 展示同 TypeScript，但必须标注 `javascript`，不能混写成 `typescript` |
+| Python | DataflowInterproc: scope-chain-aware binding，branch/loop/`match` sibling CFG，unguarded syntax-irrefutable wildcard/capture/`as`/group/OR exhaustiveness，try/except/else/finally 与 `with` isolated continuations，ArgToParam+ReturnToCall，confidence 0.72 | guarded、structural/type-driven pattern exhaustiveness、guard/binding dataflow 与动态调用保持 limitation |
+| Java | DataflowInterproc: ArgToParam+ReturnToCall, CFG，classic try/catch/finally 与 try-with-resources 组合的 isolated continuations，direct `throw new T` 有序语法精确匹配截断，confidence 0.75 | managed exit 先于 catch/finally，cleanup 为确定性 LIFO；继承/alias/变量抛出、implicit exception 与 suppressed-exception identity/precedence 显示 limitation |
+| C | DataflowInterproc: ArgToParam+ReturnToCall，branch/loop/switch 与 direct same-function `Goto` CFG，confidence 0.73；函数指针 limited depth 3 | computed/unresolved goto 终止本地路径；调用路径可低置信度展示；宏展开、函数指针、复杂指针别名显示 limitation |
+| C++ | DataflowInterproc: ArgToParam+ReturnToCall，branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG，confidence 0.70；模板/重载/ADL 不建模 | lifecycle 在 goto target 清除不可证明的 branch context；cross-scope destruction、catch-type selection、implicit exception、调用路径和局部来源必须标注 best-effort |
+| ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55)；named function/method branch-loop-switch 与 try/catch/finally isolated continuations 已验证，ArkUI trailing-block/callback CFG 仍未建模 | 显示 `arkts via TypeScript grammar` provenance 与具体 limitation |
+| Go | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/switch、`select` sibling、direct same-function `Goto` 与 bounded path-sensitive defer-stack CFG；normal exit 通过 `Defer`/owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 在注册时执行，confidence 0.78 | computed/unresolved goto 终止本地路径；cyclic/over-budget defer 原子回退；panic/recover/Goexit、复杂 anonymous deferred body 与泛型 dataflow 显示 limitation |
+| C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，try/catch/finally 与 `using_statement` isolated continuations，direct `throw new T` 有序语法精确匹配截断，confidence 0.72 | filter/继承/alias/变量抛出保持保守；`goto case/default`、清理异常和 partial classes limitation |
+| Rust | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`match` sibling、`let-else` success 与 explicit/unconditional-loop/builtin panic-like macro abrupt alternative、`?` success/residual-return CFG，confidence 0.70 | macro shadowing/re-export、custom never-return macro、panic unwind/catch_unwind、guarded/复杂 pattern exhaustiveness、borrow 与 pattern/guard/binding dataflow 不建模；Drop 仍是 function-exit effect heuristic，不等同于 path-sensitive lexical RAII |
+| PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG WithLimitations(0.60)，覆盖 function/method branch/loop/switch/elseif、fall-through、numeric break/continue、try/catch/finally isolated continuations、return/throw→Exit 与 direct `throw new T` 有序语法精确匹配截断 | name-based binding、动态调用、labeled jump、implicit exception 与继承/alias/变量抛出的 catch selection limitation |
+| Ruby | DataflowInterproc: ArgToParam+ReturnToCall；classic `case`/`when`、method-body/nested `rescue/else/ensure` 与 block-resource isolated continuations，confidence 0.65 | `retry/redo`、block/yield implicit calls 与 Ruby 2.7+ `case ... in` pattern matching 为 best-effort/未建模 |
+| Kotlin | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`when` sibling CFG、try/catch/finally 与 `.use` isolated continuations，confidence 0.67 | cleanup 为确定性 LIFO；extension receiver binding、清理异常与 `when` condition/guard/binding dataflow limitation |
+| Cangjie | DataflowInterproc: ArgToParam+ReturnToCall 已验证；branch/loop/`match` sibling CFG、direct unguarded wildcard exhaustiveness 与 try/catch/finally isolated continuations，confidence 0.65 | guarded/复杂 pattern exhaustiveness、pattern/guard/binding 与 scope-aware binding limitation |
 
 承载语言能力的输出（`atlas doctor`、trace envelope、相关 MCP 分析响应）必须从 `LanguageCapabilityProfile` 读取事实，不得在展示层重建能力表。Trace 内层冻结契约包含：
 
@@ -347,7 +347,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 当前基线验收标准：
 
 1. 全部 14 种语言能进入解析路径，均达到 DataflowInterproc 级别；Cangjie 已提升至 DataflowInterproc。
-2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V2）。
+2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V3）。
 3. TUI / MCP `search` 工具能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
 5. 所有语言 import/include resolution 可用。
@@ -356,7 +356,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 8. MCP 输出可被 Agent 消费，并控制预算。
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
-11. 持久化跨函数摘要层（Schema V2）已实现。
+11. 持久化跨函数摘要层与托管资源 CFG owner（Schema V3）已实现。
 12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
 13. 部分索引的大型项目中，首次 cold symbol/explore 能按符号级 bounded closure 收敛；
     dependency-only 文件不被误算 structural，后台成功/失败都能到达可解释终态。
@@ -369,7 +369,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 阶段完成条件：
 
-1. 所有 14 种 DataflowInterproc 语言维持 trace 所需 facts 与 ArgToParam/ReturnToCall fixture；CFG 以 capability profile 为准（当前仅 PHP 不支持）。
+1. 所有 14 种 DataflowInterproc 语言维持 trace 所需 facts、ArgToParam/ReturnToCall fixture 与 capability-gated CFG；已声明的 fall-through 与 break/continue 路径必须由 persisted fixture 约束，各语言未覆盖的异常流、labeled jump、callback/pattern 语义必须保留明确 limitation。
 2. TypeScript/JavaScript/Python 至少有真实源码 fixture 覆盖"指定位置 → 变量来源 → caller path"。
 3. 所有语言维持 DataflowInterproc 边界；具体 gap 通过 capability profile、golden fixture 和端到端断言文档化，不用 ignored/should-panic 测试伪装已支持能力。
 4. MCP 或 high-level `Engine` 能按 file/line/column 查询 trace point / backward trace，并能按 symbol selector 查询 caller path；CLI 当前不提供 trace 子命令。
