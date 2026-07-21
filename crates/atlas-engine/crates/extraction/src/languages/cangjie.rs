@@ -664,6 +664,9 @@ fn normalize_cangjie_dataflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dataflow_builder::DataFlowBuilder;
+    use crate::extraction_ctx::ExtractionCtx;
+    use std::path::PathBuf;
 
     #[test]
     fn test_cj_adapter_metadata() {
@@ -819,6 +822,54 @@ mod tests {
         assert!(
             nodes.iter().any(|n| n.kind == DataNodeKind::Literal),
             "missing literal node"
+        );
+    }
+
+    #[test]
+    fn test_cj_initializer_flows_from_value_to_local() {
+        let spec = CangjieAdapter;
+        let lang = spec.tree_sitter_language();
+        let source = r#"func process(): String {
+    let x = source()
+    return x
+}
+"#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let file_id = FileId::generate("test.cj");
+        let file_path = PathBuf::from("test.cj");
+        let ctx = ExtractionCtx {
+            ts_lang: &lang,
+            root: tree.root_node(),
+            source,
+            file_id,
+            file_path: &file_path,
+            language: Language::Cangjie,
+        };
+
+        let result = DataFlowBuilder::extract(&spec, &ctx, &[], &[], &[], None).unwrap();
+        let value = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("source()")
+            })
+            .expect("missing Cangjie initializer expression");
+        let target = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("x"))
+            .expect("missing Cangjie local target");
+
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.kind == DataFlowKind::Assign
+                    && edge.source == value.id
+                    && edge.target == target.id
+            }),
+            "initializer must flow value → local; edges={:?}",
+            result.edges
         );
     }
 

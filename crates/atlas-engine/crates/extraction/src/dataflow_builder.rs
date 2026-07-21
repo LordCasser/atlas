@@ -546,6 +546,51 @@ fn walk_for_assign_edges(
         }
     }
 
+    // ── Cangjie: variableDeclaration (let/var/const pattern = expr) ──
+    // The grammar exposes the initializer through the intentionally
+    // misspelled `initilizer` field and wraps binding leaves in variableName.
+    // Emit value → binding edges so backward slices can cross an initialized
+    // local instead of stopping at its definition.
+    if kind == "variableDeclaration" {
+        let name_node = (0..node.child_count())
+            .filter_map(|i| node.child(i as u32))
+            .find(|child| child.kind() == "variableName");
+        let value_node = node.child_by_field_name("initilizer");
+        if let (Some(name_node), Some(value_node)) = (name_node, value_node) {
+            let value_key = NodePosKey {
+                start_byte: value_node.start_byte() as u32,
+                end_byte: value_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let Some(&source_id) = pos_map.get(&value_key) {
+                let mut bindings = Vec::new();
+                collect_pattern_bindings(name_node, &mut bindings);
+                for binding_node in bindings {
+                    let binding_key = NodePosKey {
+                        start_byte: binding_node.start_byte() as u32,
+                        end_byte: binding_node.end_byte() as u32,
+                        kind: DataNodeKind::Local,
+                    };
+                    if let Some(&target_id) = pos_map.get(&binding_key) {
+                        let edge_id = DataFlowEdgeId::generate(
+                            &source_id,
+                            &target_id,
+                            DataFlowKind::Assign.as_str(),
+                        );
+                        edges.push(DataFlowEdge::new(
+                            edge_id,
+                            source_id,
+                            target_id,
+                            DataFlowKind::Assign,
+                            ts_node_range(&binding_node),
+                            0.95,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     // ── assignment_expression / assignment: left ← right ──────────────
     if kind == "assignment_expression" || kind == "assignment" {
         if let (Some(left_node), Some(right_node)) = (
@@ -1303,7 +1348,7 @@ pub(crate) fn collect_pattern_bindings<'a>(
     out: &mut Vec<tree_sitter::Node<'a>>,
 ) {
     match pattern_node.kind() {
-        "identifier" => {
+        "identifier" | "varBindingPattern" => {
             out.push(pattern_node);
         }
         "shorthand_property_identifier_pattern" => {
