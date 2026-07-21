@@ -139,7 +139,9 @@ pub use focus::visibility_filter::VisibilityFilterRegistry;
 pub use closure_planner::IncludeRoot;
 
 /// Index precision: guards and queries for extraction mode stability.
-pub use index_precision::{guard_against_precision_downgrade, is_rich_catalog_tier};
+pub use index_precision::{
+    guard_against_precision_downgrade, has_finalized_repo_cache_for, is_rich_catalog_tier,
+};
 
 /// Workspace abstractions.
 pub use workspace::{ProjectRoot, SourcePath, SourceText, Workspace, decode_source, read_source};

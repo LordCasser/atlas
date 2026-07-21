@@ -16,7 +16,7 @@
 //! let graph       = phase_resolve_and_build(&store, root)?;
 //! phase_materialize_annotations(&store)?;
 //! phase_build_summaries(&store)?;
-//! phase_finalize(&store, root, &[])?;
+//! phase_finalize(&store, root, &[], &[], PipelineGrade::Structural)?;
 //! ```
 //!
 //! # Cancellable extraction (with per-file progress)
@@ -37,8 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use db::DbWriteTiming;
-use db::Store;
+use db::{DbWriteTiming, PipelineGrade, Store};
 use extraction::{
     ExtractionMode, LanguageFrontend, LanguageRegistry, ParseWorkerPool, WorkerConfig,
     create_frontend,
@@ -1068,9 +1067,25 @@ pub fn phase_commit_path_alias_config(store: &Arc<Store>, root: &Path) -> Result
 }
 
 /// Finalize the index: write metadata (last_index_time, last_index_root,
-/// indexed_scope).  Does **not** commit path alias config — use
+/// indexed_scope, indexed_pipeline_grade). Does **not** commit path alias config — use
 /// [`phase_commit_path_alias_config`] for that.
-pub fn phase_finalize(store: &Arc<Store>, root: &Path, scope_patterns: &[String]) -> Result<()> {
+pub fn phase_finalize(
+    store: &Arc<Store>,
+    root: &Path,
+    include_patterns: &[String],
+    exclude_patterns: &[String],
+    grade: PipelineGrade,
+) -> Result<()> {
+    store.set_metadata("last_index_root", &root.display().to_string())?;
+    let scope_json = serde_json::json!({
+        "include": include_patterns,
+        "exclude": exclude_patterns,
+    })
+    .to_string();
+    store.set_metadata("indexed_scope", &scope_json)?;
+    store.set_metadata("indexed_pipeline_grade", grade.as_str())?;
+    // Commit marker: write last so its presence means all finalization
+    // metadata for this successful pipeline is durable.
     store.set_metadata(
         "last_index_time",
         &std::time::SystemTime::now()
@@ -1079,19 +1094,64 @@ pub fn phase_finalize(store: &Arc<Store>, root: &Path, scope_patterns: &[String]
             .as_secs()
             .to_string(),
     )?;
-    store.set_metadata("last_index_root", &root.display().to_string())?;
-    let scope_json = if scope_patterns.is_empty() {
-        "[]".to_string()
-    } else {
-        serde_json::to_string(scope_patterns).unwrap_or_else(|_| "[]".to_string())
-    };
-    store.set_metadata("indexed_scope", &scope_json)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn phase_finalize_records_grade_and_complete_scope_shape() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        phase_finalize(
+            &store,
+            Path::new("/repo"),
+            &[],
+            &[],
+            PipelineGrade::Structural,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.get_metadata("indexed_pipeline_grade").unwrap(),
+            Some("structural".into())
+        );
+        assert!(store.get_metadata("last_index_time").unwrap().is_some());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &store.get_metadata("indexed_scope").unwrap().unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({ "include": [], "exclude": [] })
+        );
+    }
+
+    #[test]
+    fn phase_finalize_preserves_include_and_exclude_scope() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        phase_finalize(
+            &store,
+            Path::new("/repo"),
+            &["src/**".into()],
+            &["src/generated/**".into()],
+            PipelineGrade::Full,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &store.get_metadata("indexed_scope").unwrap().unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "include": ["src/**"],
+                "exclude": ["src/generated/**"],
+            })
+        );
+    }
 
     #[test]
     fn phase_discover_finds_ts_in_temp_dir() {

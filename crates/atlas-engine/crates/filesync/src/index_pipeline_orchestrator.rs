@@ -30,6 +30,14 @@ use crate::index_phases::{
 use crate::index_pipeline::{IndexPipelineOptions, IndexPipelineStats};
 use crate::progress::{PhaseName, ProgressEvent, ProgressSink};
 
+fn pipeline_grade(mode: &ExtractionMode) -> PipelineGrade {
+    match mode {
+        ExtractionMode::Manifest | ExtractionMode::ResolutionSymbols => PipelineGrade::Manifest,
+        ExtractionMode::Structural => PipelineGrade::Structural,
+        ExtractionMode::LazyDataflow { .. } | ExtractionMode::Full => PipelineGrade::Full,
+    }
+}
+
 /// Structured orchestrator for an index pipeline run.
 ///
 /// Drives the full 10-phase pipeline lifecycle (discovery → extraction →
@@ -88,6 +96,10 @@ impl IndexPipeline {
         // ── Phase 1: Discovery ──────────────────────────────────────────
         let _p_t0 = Instant::now();
         check_cancelled!();
+        // The previous repo-cache authority cannot remain visible while a new
+        // Index is rewriting its facts. Finalize restores the commit marker
+        // only after every phase and all accompanying metadata succeed.
+        self.store.delete_metadata("last_index_time")?;
         sink.emit(ProgressEvent::PhaseStarted {
             phase: PhaseName::Discovery,
             total: 0,
@@ -592,6 +604,8 @@ impl IndexPipeline {
             &self.store,
             &self.project_root,
             &self.options.include_patterns,
+            &self.options.exclude_patterns,
+            pipeline_grade(&self.options.mode),
         ) {
             sink.emit(ProgressEvent::Warning {
                 phase: PhaseName::Finalize,
@@ -669,19 +683,10 @@ impl IndexPipeline {
 
         let stored_hash = self.store.get_metadata(KEY_RESOLUTION_CONFIG_HASH)?;
 
-        let index_mode = match &self.options.mode {
-            ExtractionMode::Manifest => PipelineGrade::Manifest,
-            ExtractionMode::ResolutionSymbols => {
-                // ResolutionSymbols is the lightweight variant that doesn't
-                // produce references — the skip check above already returns
-                // false via produces_references().  Map to Manifest for the
-                // config-hash computation so it has a stable identity.
-                PipelineGrade::Manifest
-            }
-            ExtractionMode::Structural => PipelineGrade::Structural,
-            ExtractionMode::LazyDataflow { .. } => PipelineGrade::Full,
-            ExtractionMode::Full => PipelineGrade::Full,
-        };
+        // ResolutionSymbols is the lightweight variant that doesn't produce
+        // references. Map it to Manifest so the config hash has a stable
+        // identity matching its finalized pipeline grade.
+        let index_mode = pipeline_grade(&self.options.mode);
         // Path aliases are not tracked per-run; pass None.  Path-alias
         // config files (tsconfig.json / jsconfig.json) are detected by
         // phase_resolve_and_build's own change-detection logic.
@@ -694,13 +699,7 @@ impl IndexPipeline {
     /// counter and store the current config hash so the next run can detect
     /// a no-op scenario.
     fn record_resolution_complete(&self) -> anyhow::Result<()> {
-        let index_mode = match &self.options.mode {
-            ExtractionMode::Manifest => PipelineGrade::Manifest,
-            ExtractionMode::ResolutionSymbols => PipelineGrade::Manifest,
-            ExtractionMode::Structural => PipelineGrade::Structural,
-            ExtractionMode::LazyDataflow { .. } => PipelineGrade::Full,
-            ExtractionMode::Full => PipelineGrade::Full,
-        };
+        let index_mode = pipeline_grade(&self.options.mode);
         let current_hash = self.store.resolution_config_hash(&index_mode, None)?;
 
         // Store config hash as plain metadata (string) so

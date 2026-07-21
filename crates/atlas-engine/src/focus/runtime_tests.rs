@@ -16,7 +16,7 @@ use types::{layer, status};
 
 use crate::FocusMaterialize;
 use crate::focus::bootstrap::BootstrapManager;
-use crate::focus::query::QueryIntent;
+use crate::focus::query::{QueryIntent, QueryNeed};
 use crate::focus::runtime::{AccessStrategy, FocusRuntime};
 use crate::focus::scheduler::FocusPriority;
 
@@ -31,6 +31,26 @@ fn test_store() -> Arc<Store> {
 fn test_runtime(store: Arc<Store>) -> FocusRuntime {
     let m = FocusMaterialize::open(store.clone(), None);
     FocusRuntime::new(store, None, m)
+}
+
+fn mark_finalized_index(
+    store: &Store,
+    grade: &str,
+    include_patterns: &[&str],
+    exclude_patterns: &[&str],
+) {
+    store.set_metadata("last_index_time", "1").unwrap();
+    store
+        .set_metadata(
+            "indexed_scope",
+            &serde_json::json!({
+                "include": include_patterns,
+                "exclude": exclude_patterns,
+            })
+            .to_string(),
+        )
+        .unwrap();
+    store.set_metadata("indexed_pipeline_grade", grade).unwrap();
 }
 
 fn persistent_test_store() -> (Arc<Store>, TempDir) {
@@ -125,7 +145,7 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
         .unwrap();
     let rt = test_runtime(store);
     assert_eq!(
-        rt.detect_access_strategy(),
+        rt.detect_access_strategy(QueryNeed::CallGraph),
         AccessStrategy::Focus,
         "metadata keys should not fool detection; must check fresh extraction state"
     );
@@ -135,7 +155,10 @@ fn test_detect_focus_when_metadata_present_but_no_extraction() {
 fn test_detect_focus_when_no_metadata() {
     let store = test_store();
     let rt = test_runtime(store);
-    assert_eq!(rt.detect_access_strategy(), AccessStrategy::Focus);
+    assert_eq!(
+        rt.detect_access_strategy(QueryNeed::CallGraph),
+        AccessStrategy::Focus
+    );
 }
 
 #[test]
@@ -145,10 +168,10 @@ fn test_detect_full_index_with_finalized_structural_extraction() {
     // triggering FullIndex.
     let store = test_store();
     insert_file_structural_complete(&store, "src/main.c");
-    store.set_metadata("last_index_time", "1").unwrap();
+    mark_finalized_index(&store, "structural", &[], &[]);
     let rt = test_runtime(store);
     assert_eq!(
-        rt.detect_access_strategy(),
+        rt.detect_access_strategy(QueryNeed::CallGraph),
         AccessStrategy::FullCache,
         "finalized structural extraction should be detected as FullIndex"
     );
@@ -163,7 +186,7 @@ fn test_detect_focus_with_unfinalized_structural_extraction() {
     insert_file_structural_complete(&store, "src/main.c");
     let rt = test_runtime(store);
     assert_eq!(
-        rt.detect_access_strategy(),
+        rt.detect_access_strategy(QueryNeed::CallGraph),
         AccessStrategy::Focus,
         "unfinalized structural extraction is a focus cache, not a full index"
     );
@@ -188,7 +211,7 @@ fn test_detect_focus_with_only_manifest_extraction() {
         .unwrap();
     let rt = test_runtime(store);
     assert_eq!(
-        rt.detect_access_strategy(),
+        rt.detect_access_strategy(QueryNeed::CallGraph),
         AccessStrategy::Focus,
         "manifest-only extraction should not be detected as FullIndex"
     );
@@ -210,7 +233,7 @@ fn test_detect_access_strategy_respects_stale_metadata() {
     // No extraction state rows — simulates a DB where the index was
     // downgraded or files were changed, making old metadata irrelevant.
     let rt = test_runtime(store);
-    let mode = rt.detect_access_strategy();
+    let mode = rt.detect_access_strategy(QueryNeed::CallGraph);
     assert_eq!(
         mode,
         AccessStrategy::Focus,
@@ -266,7 +289,7 @@ fn test_prepare_full_index_returns_immediately() {
     // index-finalization metadata (last_index_time).  Focus-written rich layers
     // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
-    store.set_metadata("last_index_time", "1").unwrap();
+    mark_finalized_index(&store, "structural", &[], &[]);
     let mut rt = test_runtime(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -698,7 +721,7 @@ fn test_prepare_full_index_returns_no_coverage_counts() {
     // index-finalization metadata (last_index_time).  Focus-written rich layers
     // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     insert_file_structural_complete(&store, "src/main.c");
-    store.set_metadata("last_index_time", "1").unwrap();
+    mark_finalized_index(&store, "structural", &[], &[]);
     let mut rt = test_runtime(store);
     let intent = QueryIntent::Calls {
         symbol_name: "main".to_string(),
@@ -904,20 +927,16 @@ fn test_prepare_search_intent() {
     );
 }
 
-// ── Tests: FullIndex for all intents ─────────────────────────────────────────
+// ── Tests: pre-index reuse by query need ─────────────────────────────────────
 
 #[test]
-fn test_prepare_full_index_all_intents() {
+fn test_structural_index_serves_graph_queries_but_focus_continues_for_dataflow() {
     let store = test_store();
-    // FullIndex requires both rich extraction state (structural layer) AND
-    // index-finalization metadata (last_index_time).  Focus-written rich layers
-    // alone must NOT trigger FullIndex (detect_access_strategy hardening).
     let file_id = insert_file_structural_complete(&store, "src/main.c");
-    store.set_metadata("last_index_time", "1").unwrap();
+    mark_finalized_index(&store, "structural", &[], &[]);
     let mut rt = test_runtime(store);
 
-    // Test all 8 variants return FullIndex when structural extraction exists
-    let intents: Vec<QueryIntent> = vec![
+    let cache_satisfied_intents: Vec<QueryIntent> = vec![
         QueryIntent::Calls {
             symbol_name: "test".into(),
             file_id: Some(file_id),
@@ -954,26 +973,88 @@ fn test_prepare_full_index_all_intents() {
             line: 1,
             column: 1,
         },
-        QueryIntent::TraceVariable {
-            file_id,
-            line: 1,
-            column: 1,
-            max_depth: 30,
-        },
     ];
 
-    for intent in &intents {
+    for intent in &cache_satisfied_intents {
         let result = rt.prepare(intent, Vec::new()).unwrap();
         assert_eq!(
             result.access,
             AccessStrategy::FullCache,
-            "all intents should return FullIndex when structural extraction exists"
+            "a finalized structural Index should directly satisfy {:?}",
+            intent.required_analysis()
         );
         assert!(
             result.quality.is_none(),
             "FullIndex mode should have no precision"
         );
     }
+
+    assert_eq!(
+        rt.detect_access_strategy(QueryNeed::Dataflow),
+        AccessStrategy::Focus,
+        "structural pre-index facts must remain a Focus base for dataflow expansion"
+    );
+    let result = rt
+        .prepare(
+            &QueryIntent::TraceVariable {
+                file_id,
+                line: 1,
+                column: 1,
+                max_depth: 30,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(result.access, AccessStrategy::Focus);
+    assert!(result.built_files.contains(&file_id));
+}
+
+#[test]
+fn test_manifest_preindex_with_partial_focus_upgrade_stays_in_focus() {
+    let store = test_store();
+    insert_file_structural_complete(&store, "src/hot.c");
+    let cold_id = FileId::generate("src/cold.c");
+    store
+        .upsert_file(&FileInfo {
+            file_id: cold_id,
+            path: "src/cold.c".into(),
+            language: Language::C,
+            content_hash: "abc123".into(),
+            status: ParseStatus::Success,
+        })
+        .unwrap();
+    store
+        .upsert_file_extraction_state(
+            &cold_id,
+            layer::MANIFEST,
+            "abc123",
+            status::COMPLETE,
+            FactCoverage::default(),
+        )
+        .unwrap();
+    mark_finalized_index(&store, "manifest", &[], &[]);
+
+    assert_eq!(store.read_catalog_tier().unwrap(), "partial_structural");
+    let rt = test_runtime(store);
+    assert_eq!(
+        rt.detect_access_strategy(QueryNeed::CallGraph),
+        AccessStrategy::Focus,
+        "one Focus-upgraded file must not turn a manifest pre-index into a full cache"
+    );
+}
+
+#[test]
+fn test_scoped_structural_preindex_stays_in_focus() {
+    let store = test_store();
+    insert_file_structural_complete(&store, "src/hot.c");
+    mark_finalized_index(&store, "structural", &["src/**"], &[]);
+
+    let rt = test_runtime(store);
+    assert_eq!(
+        rt.detect_access_strategy(QueryNeed::CallGraph),
+        AccessStrategy::Focus,
+        "scoped structural facts are reusable seeds, not repository-complete proof"
+    );
 }
 
 // ── Tests: Explore vs Calls same seed behavior ───────────────────────────────

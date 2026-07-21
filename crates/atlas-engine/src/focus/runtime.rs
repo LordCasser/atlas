@@ -488,28 +488,19 @@ impl FocusRuntime {
 
     // ── Index mode detection ─────────────────────────────────────────────
 
-    /// Detect whether the project has a CLI-finalized rich index or operates
-    /// in incremental Focus mode.
+    /// Detect whether a CLI-finalized whole-project cache satisfies `need`, or
+    /// whether the query must continue through incremental Focus.
     ///
     /// Focus can write rich layers for a small closure. Those rows are useful
     /// cache entries, but they are not proof that the repository is fully
     /// indexed. A full-index decision therefore requires both fresh rich
-    /// extraction state and index-finalization metadata.
-    pub fn detect_access_strategy(&self) -> AccessStrategy {
+    /// extraction state, index-finalization metadata, whole-project scope, and
+    /// the fact layer required by the current query.
+    pub fn detect_access_strategy(&self, need: QueryNeed) -> AccessStrategy {
         if let Some(mode) = self.detect_access_strategy_override {
             return mode;
         }
-        let rich = self
-            .store
-            .read_catalog_tier()
-            .is_ok_and(|mode| crate::is_rich_catalog_tier(&mode));
-        let finalized = self
-            .store
-            .get_metadata("last_index_time")
-            .ok()
-            .flatten()
-            .is_some();
-        if rich && finalized {
+        if crate::has_finalized_repo_cache_for(&self.store, need) {
             AccessStrategy::FullCache
         } else {
             AccessStrategy::Focus
@@ -530,7 +521,7 @@ impl FocusRuntime {
         intent: &QueryIntent,
         include_roots: Vec<IncludeRoot>,
     ) -> Result<FocusResult> {
-        let mode = self.detect_access_strategy();
+        let mode = self.detect_access_strategy(intent.required_analysis());
 
         if mode == AccessStrategy::FullCache {
             return Ok(FocusResult {
@@ -794,7 +785,9 @@ impl FocusRuntime {
     /// withholds that provisional body while the tracked scheduler work runs,
     /// then either replays a complete response or returns a ticket.
     pub fn enqueue_file_focus_warm(&mut self, file_ids: &[FileId]) -> Result<Option<FocusResult>> {
-        if file_ids.is_empty() || self.detect_access_strategy() == AccessStrategy::FullCache {
+        if file_ids.is_empty()
+            || self.detect_access_strategy(QueryNeed::Structural) == AccessStrategy::FullCache
+        {
             return Ok(None);
         }
 

@@ -149,5 +149,16 @@ mod tests {
         assert!(stats.symbols > 0);
         assert_eq!(stats.resolved, 0);
         assert!(store.count_symbols().unwrap() > 0);
+        assert_eq!(
+            store.get_metadata("indexed_pipeline_grade").unwrap(),
+            Some("manifest".into())
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &store.get_metadata("indexed_scope").unwrap().unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({ "include": [], "exclude": [] })
+        );
     }
 }

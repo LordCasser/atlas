@@ -20,6 +20,17 @@ Query strength is a control-plane input, represented once by `QueryNeed`:
 - `CallGraph`: resolved cross-file topology.
 - `Dataflow`: CFG/dataflow for the query dependency region.
 
+Pre-indexing is a persistent starting point, not a competing runtime mode.
+Focus reuses fresh manifest/structural facts and grows the hot region from
+them. It skips the control plane only when a finalized whole-project Index
+already satisfies the current `QueryNeed`. That decision requires the recorded
+manual pipeline grade, an empty include/exclude scope, and a still-sufficient
+fresh catalog. Focus enrichment may improve current facts but cannot promote
+the authority of the finalized manual Index. Scoped indexes, mixed partial
+catalogs, manifest indexes enriched by Focus, and structural caches serving
+dataflow queries remain on Focus. Graph provenance uses the same CallGraph
+eligibility rule instead of inferring repository authority from rich rows alone.
+
 `TraceVariable`, semantic impact, lifecycle, and branch diff use the existing
 Sync-priority Focus closure so the job remains pending through dataflow
 materialization. Point trace remains structural; caller/forward trace use the

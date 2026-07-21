@@ -668,10 +668,20 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn php_profile_cfg_unsupported() {
+    fn php_profile_cfg_supported_with_limitations() {
         let profile = LanguageCapabilityProfile::for_language(Language::Php);
-        let cfg_support = profile.features.cfg.is_supported();
-        assert!(!cfg_support, "PHP profile must report CFG as unsupported");
+        assert!(
+            profile.features.cfg.is_supported(),
+            "PHP profile must report evidence-backed CFG support"
+        );
+        assert!(
+            matches!(
+                &profile.features.cfg,
+                types::capability::FeatureSupport::Supported { limitations, .. }
+                    if !limitations.is_empty()
+            ),
+            "PHP CFG must retain its fall-through and exception-flow limitations"
+        );
     }
 
     #[test]
