@@ -9,7 +9,8 @@
 //!
 //! # Invariants
 //!
-//! - `CfgNodeId` is unique within a function (deterministic from function_id + kind + byte).
+//! - `CfgNodeId` is unique within a function (deterministic from function_id +
+//!   kind + byte + optional lowering instance).
 //! - `CfgEdgeId` is deterministic from source + target + kind.
 //! - Every `CfgNode` has a non-empty `stmt_range`.
 //! - Every function has exactly one `Entry` and one `Exit` node.
@@ -37,6 +38,13 @@ pub struct CfgNode {
     /// Call-site context (goroutine, defer, etc.) — `None` for non-call nodes.
     #[serde(default)]
     pub call_context: CallContext,
+    /// Start byte of the managed-resource construct that owns this node.
+    ///
+    /// Resource acquisition nodes and every path-isolated `BlockExit` clone for
+    /// the same lexical construct share this value. It lets persisted analysis
+    /// match nested and branching scope exits without inferring ownership from
+    /// graph proximity.
+    pub managed_scope_start_byte: Option<u32>,
     /// Multi-effect vector — language-agnostic semantic effects for this node.
     ///
     /// When non-empty, consumers should prefer `semantic_effects` over the
@@ -49,13 +57,31 @@ pub struct CfgNode {
 impl CfgNode {
     /// Create a new CFG node.
     pub fn new(function_id: &SymbolId, kind: CfgNodeKind, range: TextRange) -> Self {
-        let id = CfgNodeId::generate(function_id, kind.as_str(), range.start_byte);
+        Self::new_with_instance(function_id, kind, range, 0)
+    }
+
+    /// Create a path-isolated lowering instance for the same source node.
+    ///
+    /// The source range remains exact; only deterministic identity differs.
+    pub fn new_with_instance(
+        function_id: &SymbolId,
+        kind: CfgNodeKind,
+        range: TextRange,
+        instance: u32,
+    ) -> Self {
+        let id = CfgNodeId::generate_with_instance(
+            function_id,
+            kind.as_str(),
+            range.start_byte,
+            instance,
+        );
         Self {
             id,
             function_id: *function_id,
             kind,
             stmt_range: range,
             call_context: CallContext::None,
+            managed_scope_start_byte: None,
             semantic_effects: Vec::new(),
         }
     }
@@ -91,8 +117,9 @@ impl CfgNode {
 /// A directed edge between two CFG nodes.
 ///
 /// Edges represent control flow: sequential flow (`Normal`), conditional
-/// branching (`TrueBranch`/`FalseBranch`), loop back edges (`LoopBack`),
-/// and exception flow (`Exception`).
+/// branching (`TrueBranch`/`FalseBranch`), loop back edges (`LoopBack`), direct
+/// lexical jumps (`Goto`), deferred-call execution (`Defer`), and exception
+/// flow (`Exception`).
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CfgEdge {

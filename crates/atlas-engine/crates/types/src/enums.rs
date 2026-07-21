@@ -1223,12 +1223,19 @@ pub enum CfgEdgeKind {
     FalseBranch,
     /// A single `case`/`default` arm of a `switch` statement.
     ///
-    /// Phase 1 models each case as an independent sibling path from the switch
-    /// dispatch (Branch) node; fall-through between cases is NOT modeled. See
-    /// `docs/roadmap.md` §8.2 for the documented limitations.
+    /// Case tails may continue into a following case through a Normal edge when
+    /// the source language permits fall-through.
     CaseBranch,
     /// Loop back edge.
     LoopBack,
+    /// An unlabeled break to the innermost loop or switch join.
+    Break,
+    /// An unlabeled continue to the innermost loop header.
+    Continue,
+    /// A direct lexical jump to a named label in the same function.
+    Goto,
+    /// Enter a dynamically registered deferred-call execution at function exit.
+    Defer,
     /// Exception flow edge.
     Exception,
 }
@@ -1241,6 +1248,10 @@ impl CfgEdgeKind {
             Self::FalseBranch => "false_branch",
             Self::CaseBranch => "case_branch",
             Self::LoopBack => "loop_back",
+            Self::Break => "break",
+            Self::Continue => "continue",
+            Self::Goto => "goto",
+            Self::Defer => "defer",
             Self::Exception => "exception",
         }
     }
@@ -1253,6 +1264,10 @@ impl CfgEdgeKind {
             "false_branch" => Some(Self::FalseBranch),
             "case_branch" => Some(Self::CaseBranch),
             "loop_back" => Some(Self::LoopBack),
+            "break" => Some(Self::Break),
+            "continue" => Some(Self::Continue),
+            "goto" => Some(Self::Goto),
+            "defer" => Some(Self::Defer),
             "exception" => Some(Self::Exception),
             _ => None,
         }
@@ -1568,6 +1583,10 @@ mod tests {
             CfgEdgeKind::FalseBranch,
             CfgEdgeKind::CaseBranch,
             CfgEdgeKind::LoopBack,
+            CfgEdgeKind::Break,
+            CfgEdgeKind::Continue,
+            CfgEdgeKind::Goto,
+            CfgEdgeKind::Defer,
             CfgEdgeKind::Exception,
         ];
         for kind in &kinds {

@@ -359,16 +359,8 @@ mod profiles {
     /// How a single feature's [`FeatureSupport`] differs from the default
     /// `supported_with_confidence(confidence_floor)`.
     enum FeatureOverride {
-        /// Override the confidence floor for this feature (no limitations).
-        /// Retained for completeness; every current spec that changes a
-        /// feature's confidence also attaches limitations via
-        /// [`FeatureOverride::WithLimitations`].
-        #[allow(dead_code)]
-        Confidence(f64),
         /// Supported with specific limitations.
         WithLimitations(f64, &'static [&'static str]),
-        /// Feature is unsupported with one or more reasons (joined).
-        Unsupported(&'static [&'static str]),
     }
 
     /// Compact per-language spec — expanded into [`LanguageCapabilityProfile`]
@@ -392,12 +384,8 @@ mod profiles {
         let mut overrides: HashMap<FeatureField, FeatureSupport> = HashMap::new();
         for (field, ov) in spec.feature_overrides {
             let fs = match ov {
-                FeatureOverride::Confidence(c) => FeatureSupport::supported_with_confidence(*c),
                 FeatureOverride::WithLimitations(c, lims) => {
                     FeatureSupport::supported_with_limitations(*c, lims.to_vec())
-                }
-                FeatureOverride::Unsupported(reasons) => {
-                    FeatureSupport::unsupported(&reasons.join("; "))
                 }
             };
             overrides.insert(*field, fs);
@@ -542,7 +530,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop/switch body traversal implemented",
+                        "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -616,7 +607,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop/switch body traversal implemented",
+                        "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -624,7 +618,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "cross-function bridges via summary tables (ReturnToCall verified; ArgToParam not yet verified)",
+                        "cross-function bridges via summary tables (ArgToParam and ReturnToCall verified)",
                         "indirect callers limited to depth 3 (runtime fallback)",
                     ],
                 ),
@@ -697,7 +691,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred, and patterns, guards, and bindings are not dataflow-aware",
+                        "try/except/finally continuations and with-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; __exit__ suppression, exception-type selection, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -770,7 +767,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.75,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal implemented",
+                        "classic try/catch/finally and try-with-resources combinations route normal/abrupt completions through path-isolated clones; managed exits precede catch/finally, are owner-matched, and cleanup is deterministic LIFO; cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; suppressed-exception identity/precedence, inherited or aliased catch types, thrown variables, guarded handlers, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -861,7 +861,9 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.73,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop/switch body traversal and direct same-function goto/label edges implemented; computed and unresolved goto targets terminate the local best-effort path",
+                    ],
                 ),
             ),
             (
@@ -940,7 +942,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop/switch body traversal and direct same-function goto/label edges implemented; computed and unresolved goto targets terminate the local best-effort path",
+                        "try/catch routes explicit throw continuations to lexical handlers through Exception edges while preserving uncaught termination; catch-type selection, implicit exceptions, cross-scope destruction on goto, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -1028,8 +1033,8 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.55,
                     &[
-                        "named function and method branch/loop body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
-                        "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
+                        "named function and method branch/loop/switch body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
+                        "try/catch/finally continuation routing for normal and abrupt paths is verified via TS grammar with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
             ),
@@ -1053,13 +1058,8 @@ mod profiles {
     // Confidence raised from 0.62 to 0.65: method calls (obj.method())
     // now captured via postfixExpression(fieldAccess, callSuffix) pattern.
     //
-    // Migration note: the previous implementation derived supported/unsupported
-    // from `fm.supported_feature_names()` / `fm.unsupported_feature_names()`.
-    // Because every feature is supported for Cangjie, that derivation produced
-    // all 13 `FeatureMatrix::named_features()` names (including
-    // "scope_extraction", which the other languages' hand-written lists omit)
-    // and an empty unsupported list. Those exact lists are encoded explicitly
-    // below to preserve behavior.
+    // Capability strings mirror the verified matrix and its precision boundary;
+    // they are user-visible evidence, not a compatibility surface.
 
     const CANGJIE_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "cangjie",
@@ -1079,9 +1079,9 @@ mod profiles {
             "cfg",
             "interprocedural_dataflow",
         ],
-        unsupported: &[],
+        unsupported: &["scope_aware_binding"],
         limitations: &[
-            "AST-driven local dataflow with basic parameter/local/return/call capture",
+            "AST-driven local dataflow with verified initializer value-to-local direction and basic parameter/local/return/call capture",
             "method call targets now captured (simple + obj.method() patterns)",
             "scope-chain-aware binding not implemented",
         ],
@@ -1127,7 +1127,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; guarded wildcards and composite exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                        "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -1135,7 +1138,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)",
+                        "cross-function bridges via summary tables (ArgToParam and ReturnToCall verified for resolved calls)",
                     ],
                 ),
             ),
@@ -1170,6 +1173,7 @@ mod profiles {
             "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
             "AST-driven local dataflow with language-specific gaps",
             "generic type parameters not captured in dataflow layer",
+            "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
         ],
         feature_overrides: &[
             (
@@ -1201,7 +1205,9 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.78,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal, switch/select sibling paths, direct same-function goto/label edges, and bounded path-sensitive defer-stack lowering implemented; normal function exits execute registered defers through owner-matched LIFO BlockExit chains, while nested call arguments keep registration-time effects; computed or unresolved goto targets, cyclic or over-budget defer stacks, panic/recover/Goexit unwinding, and complex anonymous deferred bodies remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -1277,6 +1283,7 @@ mod profiles {
                     0.72,
                     &[
                         "Control-flow graph with using_statement and branch/loop body traversal implemented",
+                        "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
             ),
@@ -1352,7 +1359,9 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded wildcards, and binding/or/range exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                    ],
                 ),
             ),
             (
@@ -1389,13 +1398,15 @@ mod profiles {
             "call_arguments",
             "return_flow",
             "interprocedural_dataflow",
+            "cfg",
         ],
-        unsupported: &["cfg", "scope_aware_binding"],
+        unsupported: &["scope_aware_binding"],
         limitations: &[
             "name-based binding (no proper shadowing)",
             "AST-driven local dataflow with language-specific gaps",
             "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
             "namespace aliases resolved at reference resolution layer",
+            "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
         ],
         feature_overrides: &[
             (
@@ -1421,7 +1432,12 @@ mod profiles {
             ),
             (
                 FeatureField::Cfg,
-                FeatureOverride::Unsupported(&["CFG builder not implemented for PHP"]),
+                FeatureOverride::WithLimitations(
+                    0.60,
+                    &[
+                        "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
+                ),
             ),
             (
                 FeatureField::InterproceduralSummaries,
@@ -1442,8 +1458,8 @@ mod profiles {
     // ---- Ruby (DataflowInterproc) -------------------------------------------------
     // NOTE: ArgToParam bridge fires (fx17 passes); ReturnToCall bridge (fx18) and
     //       basic local dataflow (fx32) also verified.  Upgraded to DataflowInterproc;
-    //       gaps tracked via golden fixtures.  CFG support added for
-    //       block-managed resource lifecycle (File.open { |f| ... }).
+    //       gaps tracked via golden fixtures. CFG supports Ruby's
+    //       rescue/else/ensure regions and block-managed resource lifecycle.
     //
     // NOTE: "cfg" intentionally appears last in the supported list (after
     // "interprocedural_dataflow"), matching the original hand-written order.
@@ -1498,7 +1514,9 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["CFG with block body traversal implemented for Ruby block-managed resources"],
+                    &[
+                        "CFG body traversal for configured branch/loop plus classic case/when sibling traversal implemented; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; cleanup-vs-body exception replacement precedence, retry/redo, and case/in pattern matching are not modeled",
+                    ],
                 ),
             ),
             (
@@ -1519,8 +1537,7 @@ mod profiles {
 
     // ---- Kotlin (DataflowInterproc) -----------------------------------------------
     // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
-    //       Bridge behavior may vary — gaps documented via should_panic if
-    //       fixtures fail.
+    //       Both bridge directions are strict passing evidence.
     //       Extension function receiver (fun String.isValid()) now creates a
     //       "this" binding as the first parameter.
 
@@ -1573,7 +1590,10 @@ mod profiles {
                 FeatureField::Cfg,
                 FeatureOverride::WithLimitations(
                     0.67,
-                    &["Control-flow graph with branch/loop body traversal implemented"],
+                    &[
+                        "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when conditions, guards, and bindings are not dataflow-aware",
+                        "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    ],
                 ),
             ),
             (
@@ -1969,6 +1989,7 @@ mod tests {
                 "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
                 "AST-driven local dataflow with language-specific gaps",
                 "generic type parameters not captured in dataflow layer",
+                "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
             ]
         );
 
@@ -2029,7 +2050,9 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.78,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal, switch/select sibling paths, direct same-function goto/label edges, and bounded path-sensitive defer-stack lowering implemented; normal function exits execute registered defers through owner-matched LIFO BlockExit chains, while nested call arguments keep registration-time effects; computed or unresolved goto targets, cyclic or over-budget defer stacks, panic/recover/Goexit unwinding, and complex anonymous deferred bodies remain precision boundaries"
+                ],
             )
         );
         assert_eq!(
@@ -2140,7 +2163,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred, and patterns, guards, and bindings are not dataflow-aware",
+                    "try/except/finally continuations and with-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; __exit__ suppression, exception-type selection, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2242,7 +2268,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop/switch body traversal implemented",
+                    "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2346,7 +2375,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop/switch body traversal implemented",
+                    "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2354,7 +2386,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "cross-function bridges via summary tables (ReturnToCall verified; ArgToParam not yet verified)",
+                    "cross-function bridges via summary tables (ArgToParam and ReturnToCall verified)",
                     "indirect callers limited to depth 3 (runtime fallback)",
                 ],
             )
@@ -2450,7 +2482,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.75,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal implemented",
+                    "classic try/catch/finally and try-with-resources combinations route normal/abrupt completions through path-isolated clones; managed exits precede catch/finally, are owner-matched, and cleanup is deterministic LIFO; cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; suppressed-exception identity/precedence, inherited or aliased catch types, thrown variables, guarded handlers, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2559,7 +2594,9 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.73,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop/switch body traversal and direct same-function goto/label edges implemented; computed and unresolved goto targets terminate the local best-effort path"
+                ],
             )
         );
         assert_eq!(
@@ -2661,7 +2698,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop/switch body traversal and direct same-function goto/label edges implemented; computed and unresolved goto targets terminate the local best-effort path",
+                    "try/catch routes explicit throw continuations to lexical handlers through Exception edges while preserving uncaught termination; catch-type selection, implicit exceptions, cross-scope destruction on goto, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2771,8 +2811,8 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.55,
                 vec![
-                    "named function and method branch/loop body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
-                    "switch/case and try/catch CFG subgraphs are deferred (shared TS limitation)",
+                    "named function and method branch/loop/switch body traversal implemented via TS grammar; ArkUI trailing blocks collapse to Statement nodes and nested arrow callbacks do not get independent CFGs",
+                    "try/catch/finally continuation routing for normal and abrupt paths is verified via TS grammar with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                 ],
             )
         );
@@ -2788,9 +2828,8 @@ mod tests {
     }
 
     /// Verify the Cangjie profile produced by `cangjie_profile()` matches the
-    /// expected values — including the explicit supported list (previously
-    /// derived from the matrix, so it includes "scope_extraction") and the
-    /// field_access (0.55) / cfg (0.60) confidence overrides.
+    /// expected values — including the explicit supported list, precision
+    /// boundary, and field_access (0.55) / cfg (0.60) confidence overrides.
     #[test]
     fn test_cangjie_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Cangjie);
@@ -2798,8 +2837,6 @@ mod tests {
         assert_eq!(p.capability_level, CapabilityLevel::DataflowInterproc);
         assert_eq!(p.confidence_floor, 0.65);
 
-        // supported_features: previously derived from fm.supported_feature_names(),
-        // which — because all features are supported — includes "scope_extraction".
         let expected_supported: Vec<&str> = vec![
             "symbol_extraction",
             "reference_extraction",
@@ -2816,13 +2853,11 @@ mod tests {
             "interprocedural_dataflow",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        // Previously derived from fm.unsupported_feature_names() — empty because
-        // every feature is supported.
-        assert!(p.unsupported_features.is_empty());
+        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
         assert_eq!(
             p.limitations,
             vec![
-                "AST-driven local dataflow with basic parameter/local/return/call capture",
+                "AST-driven local dataflow with verified initializer value-to-local direction and basic parameter/local/return/call capture",
                 "method call targets now captured (simple + obj.method() patterns)",
                 "scope-chain-aware binding not implemented",
             ]
@@ -2883,7 +2918,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; guarded wildcards and composite exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                    "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(
@@ -2891,7 +2929,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "cross-function bridges via summary tables (ArgToParam verified, ReturnToCall basic)"
+                    "cross-function bridges via summary tables (ArgToParam and ReturnToCall verified for resolved calls)"
                 ],
             )
         );
@@ -2991,7 +3029,8 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "Control-flow graph with using_statement and branch/loop body traversal implemented"
+                    "Control-flow graph with using_statement and branch/loop body traversal implemented",
+                    "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                 ],
             )
         );
@@ -3093,7 +3132,9 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded wildcards, and binding/or/range exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware"
+                ],
             )
         );
         assert_eq!(
@@ -3108,7 +3149,7 @@ mod tests {
     }
 
     /// Verify the PHP profile produced by `php_profile()` matches the expected
-    /// values — including the Unsupported CFG (in the unsupported list).
+    /// values, including the evidence-backed limited CFG boundary.
     #[test]
     fn test_php_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Php);
@@ -3128,9 +3169,10 @@ mod tests {
             "call_arguments",
             "return_flow",
             "interprocedural_dataflow",
+            "cfg",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["cfg", "scope_aware_binding"]);
+        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
         assert_eq!(
             p.limitations,
             vec![
@@ -3138,6 +3180,7 @@ mod tests {
                 "AST-driven local dataflow with language-specific gaps",
                 "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
                 "namespace aliases resolved at reference resolution layer",
+                "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
             ]
         );
 
@@ -3190,10 +3233,14 @@ mod tests {
                 vec!["name-based binding (no proper shadowing)"],
             )
         );
-        // CFG unsupported
         assert_eq!(
             fm.cfg,
-            FeatureSupport::unsupported("CFG builder not implemented for PHP")
+            FeatureSupport::supported_with_limitations(
+                0.60,
+                vec![
+                    "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries"
+                ],
+            )
         );
         assert_eq!(
             fm.interprocedural_summaries,
@@ -3208,7 +3255,7 @@ mod tests {
 
     /// Verify the Ruby profile produced by `ruby_profile()` matches the expected
     /// values — including the "cfg" entry ordered last in supported_features and
-    /// the block-body CFG limitation ("body traversal" + "implemented").
+    /// the CFG precision boundary ("body traversal" + "implemented").
     #[test]
     fn test_ruby_profile_identity() {
         let p = LanguageCapabilityProfile::for_language(Language::Ruby);
@@ -3295,7 +3342,9 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["CFG with block body traversal implemented for Ruby block-managed resources"],
+                vec![
+                    "CFG body traversal for configured branch/loop plus classic case/when sibling traversal implemented; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; cleanup-vs-body exception replacement precedence, retry/redo, and case/in pattern matching are not modeled"
+                ],
             )
         );
         assert_eq!(
@@ -3395,7 +3444,10 @@ mod tests {
             fm.cfg,
             FeatureSupport::supported_with_limitations(
                 0.67,
-                vec!["Control-flow graph with branch/loop body traversal implemented"],
+                vec![
+                    "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when conditions, guards, and bindings are not dataflow-aware",
+                    "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                ],
             )
         );
         assert_eq!(

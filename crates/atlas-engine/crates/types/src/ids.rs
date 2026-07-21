@@ -497,7 +497,8 @@ impl DataFlowEdgeId {
 // ── CfgNodeId ────────────────────────────────────────────────────────────────
 
 define_id!(
-    /// Deterministic CFG-node identifier: blake3(function_id + kind + start_byte).
+    /// Deterministic CFG-node identifier: blake3(function_id + kind + start_byte
+    /// + optional lowering instance).
     ///
     /// Represents a control-flow graph node within a function.
     CfgNodeId
@@ -512,6 +513,32 @@ impl CfgNodeId {
     pub fn generate(function_id: &SymbolId, kind: &str, start_byte: u32) -> Self {
         let sb = start_byte.to_le_bytes();
         let parts: Vec<&[u8]> = vec![function_id.as_bytes(), kind.as_bytes(), &sb];
+        Self::from_parts(&parts)
+    }
+
+    /// Generate an ID for a repeated lowering of the same source node.
+    ///
+    /// Structured control-flow lowering may need path-isolated copies of one
+    /// AST node (for example, a `finally` body cloned per continuation). The
+    /// instance is deterministic within one CFG build and affects identity
+    /// only; the node keeps its original source range.
+    pub fn generate_with_instance(
+        function_id: &SymbolId,
+        kind: &str,
+        start_byte: u32,
+        instance: u32,
+    ) -> Self {
+        if instance == 0 {
+            return Self::generate(function_id, kind, start_byte);
+        }
+        let sb = start_byte.to_le_bytes();
+        let instance_bytes = instance.to_le_bytes();
+        let parts: Vec<&[u8]> = vec![
+            function_id.as_bytes(),
+            kind.as_bytes(),
+            &sb,
+            &instance_bytes,
+        ];
         Self::from_parts(&parts)
     }
 }
@@ -856,6 +883,24 @@ mod tests {
         let id1 = CfgNodeId::generate(&func_id, "statement", 100);
         let id2 = CfgNodeId::generate(&func_id, "statement", 100);
         assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_cfg_node_lowering_instances_are_distinct_and_deterministic() {
+        let file_id = FileId::generate("src/main.ts");
+        let func_id = SymbolId::generate(&file_id, "typescript", "handler", "function", None);
+        let base = CfgNodeId::generate(&func_id, "statement", 100);
+        let first = CfgNodeId::generate_with_instance(&func_id, "statement", 100, 1);
+        let first_again = CfgNodeId::generate_with_instance(&func_id, "statement", 100, 1);
+        let second = CfgNodeId::generate_with_instance(&func_id, "statement", 100, 2);
+
+        assert_ne!(base, first);
+        assert_eq!(first, first_again);
+        assert_ne!(first, second);
+        assert_eq!(
+            base,
+            CfgNodeId::generate_with_instance(&func_id, "statement", 100, 0)
+        );
     }
 
     #[test]
