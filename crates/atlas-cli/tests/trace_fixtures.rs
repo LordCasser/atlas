@@ -15,11 +15,11 @@ use atlas_engine::GraphBuilder;
 use atlas_engine::ReferenceResolver;
 use atlas_engine::Store;
 use atlas_engine::enums::{
-    CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind,
+    CallContext, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind,
 };
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::{Locator, Slicer, TraceEngine};
-use atlas_engine::{ExtractionMode, LanguageFrontend, extract_file_with_mode};
+use atlas_engine::{CfgEdge, ExtractionMode, LanguageFrontend, extract_file_with_mode};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -73,6 +73,118 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
     let _build_stats = builder.build_all(&resolved);
 
     store
+}
+
+fn assert_persisted_exception_cfg(
+    store: &Store,
+    function_id: &atlas_engine::SymbolId,
+    label: &str,
+    min_exception_edges: usize,
+) {
+    let nodes = store
+        .find_cfg_nodes_by_function(function_id)
+        .unwrap_or_else(|error| panic!("{label} CFG nodes: {error}"));
+    assert!(
+        nodes.iter().any(|node| node.kind == CfgNodeKind::Branch),
+        "{label} try/catch missing Branch"
+    );
+    assert!(
+        nodes.iter().any(|node| node.kind == CfgNodeKind::Join),
+        "{label} try/catch missing Join"
+    );
+    let exception_edges = nodes
+        .iter()
+        .flat_map(|node| {
+            store
+                .find_cfg_edges_by_source(&node.id)
+                .unwrap_or_else(|error| panic!("{label} CFG edges: {error}"))
+        })
+        .filter(|edge| edge.kind == CfgEdgeKind::Exception)
+        .count();
+    assert!(
+        exception_edges >= min_exception_edges,
+        "{label} expected at least {min_exception_edges} Exception edges, got {exception_edges}"
+    );
+}
+
+fn persisted_cfg_node_id_for_text(
+    nodes: &[atlas_engine::cfg::CfgNode],
+    source: &str,
+    kind: CfgNodeKind,
+    expected: &str,
+) -> atlas_engine::CfgNodeId {
+    nodes
+        .iter()
+        .find(|node| {
+            if node.kind != kind {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim() == expected)
+        })
+        .unwrap_or_else(|| panic!("no persisted {kind:?} CFG node with text {expected:?}"))
+        .id
+}
+
+fn persisted_cfg_node_ids_for_text(
+    nodes: &[atlas_engine::cfg::CfgNode],
+    source: &str,
+    kind: CfgNodeKind,
+    expected: &str,
+) -> Vec<atlas_engine::CfgNodeId> {
+    nodes
+        .iter()
+        .filter(|node| {
+            if node.kind != kind {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim() == expected)
+        })
+        .map(|node| node.id)
+        .collect()
+}
+
+fn persisted_cfg_edges(
+    store: &Store,
+    nodes: &[atlas_engine::cfg::CfgNode],
+) -> Vec<atlas_engine::cfg::CfgEdge> {
+    nodes
+        .iter()
+        .flat_map(|node| {
+            store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("persisted CFG edges")
+        })
+        .collect()
+}
+
+fn persisted_cfg_reaches(
+    edges: &[atlas_engine::cfg::CfgEdge],
+    source: atlas_engine::CfgNodeId,
+    target: atlas_engine::CfgNodeId,
+) -> bool {
+    let mut pending = vec![source];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(node_id) = pending.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+        if node_id == target {
+            return true;
+        }
+        pending.extend(
+            edges
+                .iter()
+                .filter(|edge| edge.source == node_id)
+                .map(|edge| edge.target),
+        );
+    }
+    false
 }
 
 /// Locate a data node by name in a file.  Uses **last** occurrence in byte order
@@ -2451,6 +2563,800 @@ fn fx_cfg_loop_arkts() {
     }
 }
 
+/// Verify the shared TS grammar path does not collapse ArkTS switch arms into
+/// one statement: each case/default body must be a persisted sibling CFG path.
+#[test]
+#[cfg(feature = "arkts")]
+fn fx_cfg_switch_arkts() {
+    let files = &[(
+        "cfg_switch.ets",
+        r#"function dispatch(command: number): number {
+    switch (command) {
+        case 1:
+            return install();
+        case 2:
+            return remove();
+        default:
+            return unknown();
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_switch.ets");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing ArkTS dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("ArkTS switch missing Branch");
+    assert!(
+        cfg_nodes.iter().any(|node| node.kind == CfgNodeKind::Join),
+        "ArkTS switch missing Join"
+    );
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "expected two cases and default without a no-match edge"
+    );
+}
+
+#[test]
+#[cfg(feature = "arkts")]
+fn fx_cfg_try_catch_arkts_without_finally() {
+    let files = &[(
+        "cfg_try.ets",
+        r#"function load(path: string): string {
+    try {
+        if (path.length === 0) {
+            throw new Error("empty");
+        }
+        readFile(path);
+    } catch (error) {
+        recover(error);
+    }
+    return path;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_try.ets");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "load" && symbol.kind == SymbolKind::Function)
+        .expect("missing ArkTS load function");
+    assert_persisted_exception_cfg(&store, &symbol.id, "ArkTS", 2);
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_cfg_try_finally_typescript_persists_path_isolated_clones() {
+    let source = r#"function f(flag: boolean): void {
+    try {
+        if (flag) return;
+        work();
+    } finally {
+        cleanup();
+    }
+    after();
+}
+"#;
+    let store = index_files(&[("cfg_finally.ts", source)]);
+    let file_id = FileId::generate("cfg_finally.ts");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "f" && symbol.kind == SymbolKind::Function)
+        .expect("missing TypeScript f function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let cleanup_ids =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "cleanup();");
+    assert_eq!(
+        cleanup_ids.len(),
+        2,
+        "normal and return finally clones must both survive SQLite persistence"
+    );
+    assert_ne!(cleanup_ids[0], cleanup_ids[1]);
+
+    let return_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return;");
+    let work_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "work();");
+    let after_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after();");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    assert!(edges.iter().any(|edge| {
+        edge.source == return_id
+            && cleanup_ids.contains(&edge.target)
+            && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(persisted_cfg_reaches(&edges, work_id, after_id));
+    assert!(!persisted_cfg_reaches(&edges, return_id, after_id));
+}
+
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_python_with_return_persists_owned_block_exit_clones_and_cleanup() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::SemanticEffectKind;
+    use atlas_engine::enums::CallContext;
+
+    let source = "def f(flag):\n    with open('x') as resource:\n        if flag:\n            return 1\n        work(resource)\n    after()\n";
+    let store = index_files(&[("cfg_with_return.py", source)]);
+    let file_id = FileId::generate("cfg_with_return.py");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "f" && symbol.kind == SymbolKind::Function)
+        .expect("missing Python f function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let block_exits: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == CfgNodeKind::BlockExit)
+        .collect();
+    assert_eq!(block_exits.len(), 2);
+    assert_ne!(block_exits[0].id, block_exits[1].id);
+    let scope_owner = block_exits[0]
+        .managed_scope_start_byte
+        .expect("persisted managed-scope owner");
+    assert!(
+        block_exits
+            .iter()
+            .all(|node| node.managed_scope_start_byte == Some(scope_owner))
+    );
+    assert!(nodes.iter().any(|node| {
+        node.call_context == CallContext::PythonWith
+            && node.managed_scope_start_byte == Some(scope_owner)
+    }));
+
+    let return_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return 1");
+    let work_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "work(resource)");
+    let after_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after()");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    assert!(block_exits.iter().any(|block_exit| {
+        edges.iter().any(|edge| {
+            edge.source == return_id
+                && edge.target == block_exit.id
+                && edge.kind == CfgEdgeKind::Normal
+        })
+    }));
+    assert!(persisted_cfg_reaches(&edges, work_id, after_id));
+    assert!(!persisted_cfg_reaches(&edges, return_id, after_id));
+
+    let cfg = CfgGraph::build(&nodes, &edges).expect("persisted CFG");
+    let data_nodes = store
+        .find_data_nodes_by_function(&symbol.id)
+        .expect("data nodes");
+    let dataflow_edges = store
+        .find_dataflow_edges_by_sources(&data_nodes.iter().map(|node| node.id).collect::<Vec<_>>())
+        .expect("dataflow edges");
+    let composition = compose_effects(
+        &cfg,
+        &data_nodes,
+        &dataflow_edges,
+        &ResourceOpConfig::default_for(Language::Python),
+    );
+    for block_exit in block_exits {
+        assert!(
+            composition
+                .node_effects
+                .get(&block_exit.id)
+                .is_some_and(|effects| effects
+                    .iter()
+                    .any(|effect| { matches!(effect.kind, SemanticEffectKind::Free { .. }) })),
+            "every persisted continuation must receive context-managed cleanup"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_python_with_cleanup_exception_persists_handler_continuation() {
+    let source = r#"def f():
+    try:
+        with open('x') as resource:
+            return resource
+    except OSError:
+        recover()
+"#;
+    let store = index_files(&[("cfg_with_cleanup_exception.py", source)]);
+    let file_id = FileId::generate("cfg_with_cleanup_exception.py");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "f" && symbol.kind == SymbolKind::Function)
+        .expect("missing Python f function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let return_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return resource");
+    let handler =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "recover()");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let return_exit = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::BlockExit
+                && edges.iter().any(|edge| {
+                    edge.source == return_id
+                        && edge.target == node.id
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+        })
+        .expect("return must execute its own managed exit");
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == return_exit.id
+            && edge.target == handler
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+}
+
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_cfg_real_cangjie_example_finally_cleanup_is_structured() {
+    let source = include_str!("../../../examples/cangjie_example/src/command_install.cj");
+    let store = index_files(&[("command_install.cj", source)]);
+    let file_id = FileId::generate("command_install.cj");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "doinstall" && symbol.kind == SymbolKind::Function)
+        .expect("missing real Cangjie doinstall function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let install_success = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "println(\"install success.\")",
+    );
+    let cleanup_ids = persisted_cfg_node_ids_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "removeIfExists(defaultConfig.cacheDir, recursive: true)",
+    );
+    assert_eq!(
+        cleanup_ids.len(),
+        1,
+        "real example has one normal continuation"
+    );
+    let edges = persisted_cfg_edges(&store, &nodes);
+    assert!(persisted_cfg_reaches(
+        &edges,
+        install_success,
+        cleanup_ids[0]
+    ));
+    assert!(edges.iter().any(|edge| {
+        edge.source == cleanup_ids[0]
+            && edge.kind == CfgEdgeKind::Normal
+            && nodes
+                .iter()
+                .any(|node| node.id == edge.target && node.kind == CfgNodeKind::Join)
+    }));
+}
+
+#[test]
+#[cfg(feature = "cpp")]
+fn fx_cfg_real_jemalloc_cpp_try_catch_persists_exception_edge() {
+    let source = include_str!("../../../examples/redis/deps/jemalloc/src/jemalloc_cpp.cpp");
+    let store = index_files(&[("jemalloc_cpp.cpp", source)]);
+    let file_id = FileId::generate("jemalloc_cpp.cpp");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "handleOOM" && symbol.kind == SymbolKind::Function)
+        .expect("missing real jemalloc handleOOM function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let catch_start = source
+        .find("catch (const std::bad_alloc &)")
+        .expect("real catch clause");
+    let handler = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Statement
+                && node.stmt_range.start_byte as usize > catch_start
+                && source
+                    .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                    .is_some_and(|text| text.trim() == "break;")
+        })
+        .expect("catch break");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let dispatch = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Branch
+                && edges.iter().any(|edge| {
+                    edge.source == node.id
+                        && edge.target == handler.id
+                        && edge.kind == CfgEdgeKind::Exception
+                })
+        })
+        .expect("try dispatch must retain persisted Exception edge to catch");
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == dispatch.id && edge.kind == CfgEdgeKind::Normal && edge.target != handler.id
+    }));
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_exact_explicit_throw_prunes_later_handler_after_persistence() {
+    let source = include_str!(
+        "../../../examples/elasticsearch/server/src/main/java/org/elasticsearch/rest/action/RestActions.java"
+    );
+    let store = index_files(&[("RestActions.java", source)]);
+    let file_id = FileId::generate("RestActions.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "getQueryContent"
+                && symbol.kind == SymbolKind::Method
+                && symbol
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| signature.contains("SearchRequest"))
+        })
+        .expect("missing real Java RestActions.getQueryContent overload");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let body_throw = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Throw,
+        "throw new ParsingException(parser.getTokenLocation(), \"request does not support [\" + parser.currentName() + \"]\");",
+    );
+    let exact_handler =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Throw, "throw e;");
+    let later_handler = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Throw,
+        "throw new ParsingException(parser == null ? null : parser.getTokenLocation(), \"Failed to parse\", e);",
+    );
+    let edges = persisted_cfg_edges(&store, &nodes);
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == body_throw
+            && edge.target == exact_handler
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+    assert!(!edges.iter().any(|edge| {
+        edge.source == body_throw
+            && edge.target == later_handler
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.target == later_handler
+            && edge.kind == CfgEdgeKind::Exception
+            && nodes
+                .iter()
+                .any(|node| node.id == edge.source && node.kind == CfgNodeKind::Branch)
+    }));
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_example_return_executes_finally_before_exit() {
+    let source = include_str!(
+        "../../../examples/java_example/brut.j.util/src/main/java/brut/util/BrutIO.java"
+    );
+    let store = index_files(&[("BrutIO.java", source)]);
+    let file_id = FileId::generate("BrutIO.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "readAndClose" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Java BrutIO.readAndClose method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let return_id = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Return,
+        "return IOUtils.toByteArray(in);",
+    );
+    let cleanup_id = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "IOUtils.closeQuietly(in);",
+    );
+    let exit_id = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("Java CFG missing Exit")
+        .id;
+    let edges = persisted_cfg_edges(&store, &nodes);
+    assert!(edges.iter().any(|edge| {
+        edge.source == return_id && edge.target == cleanup_id && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == cleanup_id && edge.target == exit_id && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge.source == return_id && edge.target == exit_id)
+    );
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_try_with_resources_return_executes_owned_block_exit() {
+    use atlas_engine::enums::CallContext;
+
+    let source = include_str!(
+        "../../../examples/java_example/brut.j.xml/src/main/java/brut/xml/XmlUtils.java"
+    );
+    let store = index_files(&[("XmlUtils.java", source)]);
+    let file_id = FileId::generate("XmlUtils.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "loadDocument"
+                && symbol.kind == SymbolKind::Method
+                && symbol
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| signature.contains("boolean"))
+        })
+        .expect("missing real Java XmlUtils.loadDocument(File, boolean) method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let return_id = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Return,
+        "return builder.parse(new InputSource(in));",
+    );
+    let block_exit = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::BlockExit)
+        .expect("Java try-with-resources missing BlockExit");
+    let owner = block_exit
+        .managed_scope_start_byte
+        .expect("persisted Java managed scope owner");
+    assert!(nodes.iter().any(|node| {
+        node.call_context == CallContext::JavaTryWith
+            && node.managed_scope_start_byte == Some(owner)
+    }));
+
+    let exit_id = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("Java CFG missing Exit")
+        .id;
+    let edges = persisted_cfg_edges(&store, &nodes);
+    assert!(edges.iter().any(|edge| {
+        edge.source == return_id && edge.target == block_exit.id && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == block_exit.id && edge.target == exit_id && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge.source == return_id && edge.target == exit_id)
+    );
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_labeled_breaks_target_outer_loop_after_persistence() {
+    let source = include_str!(
+        "../../../examples/elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
+    );
+    let store = index_files(&[("ESLZ4Compressor.java", source)]);
+    let file_id = FileId::generate("ESLZ4Compressor.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "compress64k" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Java ESLZ4Compressor.compress64k method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let labeled_breaks =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "break label53;");
+    assert_eq!(labeled_breaks.len(), 2, "real method has two labeled exits");
+
+    let targets: std::collections::HashSet<_> = labeled_breaks
+        .iter()
+        .flat_map(|break_id| {
+            edges.iter().filter_map(move |edge| {
+                (edge.source == *break_id && edge.kind == CfgEdgeKind::Break).then_some(edge.target)
+            })
+        })
+        .collect();
+    assert_eq!(targets.len(), 1, "both labeled breaks exit the same loop");
+    let loop_join = *targets.iter().next().expect("labeled loop Join");
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.id == loop_join && node.kind == CfgNodeKind::Join)
+    );
+    assert!(nodes.iter().any(|node| {
+        node.kind == CfgNodeKind::Loop
+            && edges.iter().any(|edge| {
+                edge.source == node.id
+                    && edge.target == loop_join
+                    && edge.kind == CfgEdgeKind::Normal
+            })
+    }));
+
+    let post_loop = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "dOff = LZ4SafeUtils.lastLiterals(src, anchor, srcEnd - anchor, dest, dOff, destEnd);",
+    );
+    assert!(persisted_cfg_reaches(&edges, loop_join, post_loop));
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_labeled_continue_targets_outer_loop_after_persistence() {
+    let source = include_str!(
+        "../../../examples/elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
+    );
+    let store = index_files(&[("ESLZ4Compressor.java", source)]);
+    let file_id = FileId::generate("ESLZ4Compressor.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "compress" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Java ESLZ4Compressor.compress byte-array overload");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let continue_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "continue label63;");
+    let target_id = edges
+        .iter()
+        .find_map(|edge| {
+            (edge.source == continue_id && edge.kind == CfgEdgeKind::Continue)
+                .then_some(edge.target)
+        })
+        .expect("labeled continue edge");
+    let target = nodes
+        .iter()
+        .find(|node| node.id == target_id)
+        .expect("labeled continue target");
+    assert_eq!(target.kind, CfgNodeKind::Loop);
+    let target_start = target.stmt_range.start_byte as usize;
+    assert!(
+        source[..target_start].ends_with("label63: "),
+        "continue label63 must bypass inner loops and target the labeled loop"
+    );
+}
+
+#[test]
+#[cfg(feature = "java")]
+fn fx_cfg_real_java_try_with_resources_catch_follows_owned_block_exit() {
+    use atlas_engine::enums::CallContext;
+
+    let source =
+        include_str!("../../../examples/java_example/brut.j.util/src/main/java/brut/util/Jar.java");
+    let store = index_files(&[("Jar.java", source)]);
+    let file_id = FileId::generate("Jar.java");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "extractToTmp"
+                && symbol.kind == SymbolKind::Method
+                && symbol
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| signature.contains("tmpPrefix"))
+        })
+        .expect("missing real Java Jar.extractToTmp three-argument overload");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let body_throw = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Throw,
+        "throw new FileNotFoundException(name);",
+    );
+    let return_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return fileOut;");
+    let catch_throw = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Throw,
+        "throw new BrutException(\"Could not extract resource: \" + name, ex);",
+    );
+    let managed_exit = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::BlockExit)
+        .filter(|node| {
+            store
+                .find_cfg_edges_by_source(&body_throw)
+                .expect("body throw edges")
+                .iter()
+                .any(|edge| edge.target == node.id && edge.kind == CfgEdgeKind::Normal)
+        })
+        .expect("body throw must execute the managed exit");
+    let owner = managed_exit
+        .managed_scope_start_byte
+        .expect("persisted Java managed scope owner");
+    assert!(nodes.iter().any(|node| {
+        node.call_context == CallContext::JavaTryWith
+            && node.managed_scope_start_byte == Some(owner)
+    }));
+
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let return_exit = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::BlockExit
+                && edges.iter().any(|edge| {
+                    edge.source == return_id
+                        && edge.target == node.id
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+        })
+        .expect("return must execute its own managed exit");
+    assert_ne!(managed_exit.id, return_exit.id);
+    assert!(edges.iter().any(|edge| {
+        edge.source == managed_exit.id
+            && edge.target == catch_throw
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == return_exit.id
+            && edge.target == catch_throw
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+    assert!(!edges.iter().any(|edge| {
+        edge.source == body_throw
+            && edge.target == catch_throw
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+}
+
+#[test]
+#[cfg(feature = "csharp")]
+fn fx_cfg_real_csharp_nested_using_return_executes_both_block_exits() {
+    let source = include_str!(
+        "../../../examples/c_sharp_example/shadowsocks-csharp/Controller/FileManager.cs"
+    );
+    let store = index_files(&[("FileManager.cs", source)]);
+    let file_id = FileId::generate("FileManager.cs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "NonExclusiveReadAllText"
+                && symbol.kind == SymbolKind::Method
+                && symbol
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| signature.contains("Encoding"))
+        })
+        .expect("missing real C# NonExclusiveReadAllText overload");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let return_id = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Return,
+        "return sr.ReadToEnd();",
+    );
+    let block_exits: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == CfgNodeKind::BlockExit)
+        .collect();
+    assert_eq!(
+        block_exits.len(),
+        3,
+        "inner return exit plus outer success and propagated-cleanup-throw exits"
+    );
+    let owners: std::collections::HashSet<_> = block_exits
+        .iter()
+        .map(|node| {
+            node.managed_scope_start_byte
+                .expect("persisted C# managed scope owner")
+        })
+        .collect();
+    assert_eq!(owners.len(), 2, "inner and outer using owners must differ");
+
+    let exit_id = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("C# CFG missing Exit")
+        .id;
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let inner_exit = block_exits
+        .iter()
+        .find(|node| {
+            edges.iter().any(|edge| {
+                edge.source == return_id
+                    && edge.target == node.id
+                    && edge.kind == CfgEdgeKind::Normal
+            })
+        })
+        .expect("return must execute inner using exit");
+    let inner_owner = inner_exit
+        .managed_scope_start_byte
+        .expect("inner using owner");
+    let outer_exits: Vec<_> = block_exits
+        .iter()
+        .filter(|node| node.managed_scope_start_byte != Some(inner_owner))
+        .copied()
+        .collect();
+    assert_eq!(outer_exits.len(), 2);
+    assert!(outer_exits.iter().all(|node| {
+        edges.iter().any(|edge| {
+            edge.source == inner_exit.id
+                && edge.target == node.id
+                && edge.kind == CfgEdgeKind::Normal
+        })
+    }));
+
+    let handler =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "logger.Error(ex);");
+    for outer_exit in outer_exits {
+        assert!(edges.iter().any(|edge| {
+            edge.source == outer_exit.id
+                && edge.target == exit_id
+                && edge.kind == CfgEdgeKind::Normal
+        }));
+        assert!(edges.iter().any(|edge| {
+            edge.source == outer_exit.id
+                && edge.target == handler
+                && edge.kind == CfgEdgeKind::Exception
+        }));
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Cangjie: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
@@ -2590,6 +3496,94 @@ function process() {
     assert_source_name(&path, "secret");
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+#[test]
+#[cfg(feature = "javascript")]
+fn fx_javascript_cross_function_arg_to_param() {
+    let files = &[(
+        "bridge.js",
+        r#"function outer() {
+    const x = "secret";
+    return inner(x);
+}
+
+function inner(p) {
+    return p;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("bridge.js");
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let param = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("p"))
+        .expect("missing JavaScript parameter p");
+    let engine = TraceEngine::new(store.clone());
+    let resp = engine.trace_variable(
+        &file_id,
+        param.range.start_line + 1,
+        param.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&resp, "javascript");
+    let path = resp.result.expect("cross-function trace must produce path");
+    assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+    assert_source_name(&path, "secret");
+}
+
+#[test]
+#[cfg(feature = "javascript")]
+fn fx_cfg_switch_javascript() {
+    let source = r#"function dispatch(command) {
+    switch (command) {
+        case "install":
+            prepare();
+        case "remove":
+            remove();
+            break;
+        default:
+            unknown();
+    }
+}
+"#;
+    let files = &[("cfg_switch.js", source)];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_switch.js");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing JavaScript dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("JavaScript switch missing Branch");
+    let mut cfg_edges = Vec::new();
+    for node in &cfg_nodes {
+        cfg_edges.extend(store.find_cfg_edges_by_source(&node.id).expect("cfg edges"));
+    }
+    let case_edges = cfg_edges
+        .iter()
+        .filter(|edge| edge.source == branch.id && edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "expected two cases and default without a no-match edge"
+    );
+    let prepare =
+        persisted_cfg_node_id_for_text(&cfg_nodes, source, CfgNodeKind::Statement, "prepare();");
+    let remove =
+        persisted_cfg_node_id_for_text(&cfg_nodes, source, CfgNodeKind::Statement, "remove();");
+    assert!(cfg_edges.iter().any(|edge| {
+        edge.source == prepare && edge.target == remove && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(cfg_edges.iter().any(|edge| edge.kind == CfgEdgeKind::Break));
 }
 
 // ── Python ──────────────────────────────────────────────────────────
@@ -2911,6 +3905,212 @@ function process() {
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
 }
 
+#[test]
+#[cfg(feature = "php")]
+fn fx_cfg_php_function_and_method_boundaries() {
+    let source = r#"<?php
+function dispatch($command) {
+    if ($command > 0) {
+        positive();
+    } elseif ($command === 0) {
+        zero();
+    } else {
+        fallback();
+    }
+
+    switch ($command) {
+        case 0:
+            prepare();
+        case 1:
+            install();
+            break;
+        default:
+            unknown();
+    }
+    return $command;
+}
+
+class Worker {
+    public function run($items) {
+        foreach ($items as $item) {
+            visit($item);
+        }
+        if (!$items) {
+            throw new RuntimeException("empty");
+        }
+        return count($items);
+    }
+}
+"#;
+    let files = &[("cfg.php", source)];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg.php");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+
+    let dispatch = symbols
+        .iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing PHP dispatch function");
+    let dispatch_nodes = store
+        .find_cfg_nodes_by_function(&dispatch.id)
+        .expect("dispatch CFG nodes");
+    assert_eq!(
+        dispatch_nodes
+            .iter()
+            .filter(|node| node.kind == CfgNodeKind::Branch)
+            .count(),
+        3,
+        "expected if, elseif, and switch branches"
+    );
+    let mut dispatch_edges = Vec::new();
+    for node in &dispatch_nodes {
+        dispatch_edges.extend(
+            store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("dispatch CFG edges"),
+        );
+    }
+    assert!(
+        dispatch_edges
+            .iter()
+            .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+            .count()
+            >= 3,
+        "expected two cases and default paths"
+    );
+    let prepare = persisted_cfg_node_id_for_text(
+        &dispatch_nodes,
+        source,
+        CfgNodeKind::Statement,
+        "prepare();",
+    );
+    let install = persisted_cfg_node_id_for_text(
+        &dispatch_nodes,
+        source,
+        CfgNodeKind::Statement,
+        "install();",
+    );
+    assert!(dispatch_edges.iter().any(|edge| {
+        edge.source == prepare && edge.target == install && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(
+        dispatch_edges
+            .iter()
+            .any(|edge| edge.kind == CfgEdgeKind::Break)
+    );
+
+    let run = symbols
+        .iter()
+        .find(|symbol| symbol.name == "run" && symbol.kind == SymbolKind::Method)
+        .expect("missing PHP Worker::run method");
+    let run_nodes = store
+        .find_cfg_nodes_by_function(&run.id)
+        .expect("run CFG nodes");
+    for kind in [
+        CfgNodeKind::Entry,
+        CfgNodeKind::Loop,
+        CfgNodeKind::Branch,
+        CfgNodeKind::Throw,
+        CfgNodeKind::Return,
+        CfgNodeKind::Exit,
+    ] {
+        assert!(
+            run_nodes.iter().any(|node| node.kind == kind),
+            "PHP method CFG missing {kind:?}"
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "php")]
+fn fx_cfg_php_real_example_callable_boundaries() {
+    let source =
+        include_str!("../../../examples/rust_example/tests/syntax-tests/source/PHP/test.php");
+    let files = &[("examples/php_syntax.php", source)];
+    let store = index_files(files);
+    let file_id = FileId::generate("examples/php_syntax.php");
+    let callables: Vec<_> = store
+        .find_symbols_by_file(&file_id)
+        .expect("real PHP example symbols")
+        .into_iter()
+        .filter(|symbol| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
+        .collect();
+    assert!(
+        callables.len() >= 4,
+        "expected nested function and class methods from the real PHP syntax example"
+    );
+
+    for callable in &callables {
+        let nodes = store
+            .find_cfg_nodes_by_function(&callable.id)
+            .expect("real PHP example CFG nodes");
+        assert!(
+            nodes.iter().any(|node| node.kind == CfgNodeKind::Entry),
+            "real PHP callable {} missing Entry",
+            callable.qualified_name
+        );
+        assert!(
+            nodes.iter().any(|node| node.kind == CfgNodeKind::Exit),
+            "real PHP callable {} missing Exit",
+            callable.qualified_name
+        );
+    }
+
+    let fav_movie = callables
+        .iter()
+        .find(|symbol| symbol.name == "favMovie")
+        .expect("real PHP example missing nested favMovie function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&fav_movie.id)
+        .expect("favMovie CFG nodes");
+    let exit = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("favMovie missing Exit");
+    let return_node = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Return)
+        .expect("favMovie missing Return");
+    assert!(
+        store
+            .find_cfg_edges_by_source(&return_node.id)
+            .expect("favMovie return edges")
+            .iter()
+            .any(|edge| edge.target == exit.id && edge.kind == CfgEdgeKind::Normal),
+        "real PHP example Return must reach Exit"
+    );
+}
+
+#[test]
+#[cfg(feature = "php")]
+fn fx_cfg_try_catch_php_without_finally() {
+    let files = &[(
+        "cfg_try.php",
+        r#"<?php
+function load($path) {
+    try {
+        if (!$path) {
+            throw new RuntimeException("empty");
+        }
+        read_file($path);
+    } catch (RuntimeException $error) {
+        recover($error);
+    }
+    return $path;
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_try.php");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "load" && symbol.kind == SymbolKind::Function)
+        .expect("missing PHP load function");
+    assert_persisted_exception_cfg(&store, &symbol.id, "PHP", 2);
+}
+
 // ── Ruby ────────────────────────────────────────────────────────────
 
 #[test]
@@ -3029,10 +4229,8 @@ function process(): string {
 }
 
 // ── Cangjie ─────────────────────────────────────────────────────────
-// Cangjie DataflowLocal provides intra-procedural dataflow but
-// ReturnToCall bridging is not yet fully implemented.  The trace may
-// produce minimal steps (source == sink).  We verify the trace succeeds
-// without crashing and that the envelope is well-formed.
+// Cangjie interprocedural summaries must preserve the same ReturnToCall
+// evidence contract as the other DataflowInterproc languages.
 
 #[test]
 #[cfg(feature = "cangjie")]
@@ -3065,15 +4263,153 @@ func process(): String {
     );
     assert_envelope_ok(&resp, "cangjie");
     let path = resp.result.expect("trace path must exist");
-    // Cangjie lacks ReturnToCall — the trace may be minimal.  Verify
-    // it succeeds without crashing and has at least some steps.
-    assert!(!path.steps.is_empty(), "trace must have at least 1 step");
-    // If interprocedural bridging works (≥3 steps), validate semantics.
-    if path.steps.len() >= 3 {
-        assert_source_name(&path, "secret");
-        assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
-        assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+    assert_path_completeness(&path, 3, "y");
+    assert_source_name(&path, "secret");
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+    assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
+}
+
+/// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary
+/// `functionDefinition` nodes must receive persisted CFG facts, and Cangjie
+/// `match` arms must be represented as sibling case paths.
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_cfg_match_cangjie_entry_and_function() {
+    let files = &[(
+        "main.cj",
+        r#"main(): Unit {
+    let command = "list"
+    match (command) {
+        case "list" | "ls" => dispatch(command)
+        case "install" => install()
+        case _ => unknown()
     }
+}
+
+func dispatch(command: String): Unit {
+    println(command)
+}
+
+func install(): Unit {}
+func unknown(): Unit {}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("main.cj");
+    let symbols = store.find_symbols_by_file(&file_id).expect("symbols");
+
+    for name in ["main", "dispatch"] {
+        let symbol = symbols
+            .iter()
+            .find(|symbol| symbol.name == name && symbol.kind == SymbolKind::Function)
+            .unwrap_or_else(|| panic!("missing Cangjie function symbol {name}"));
+        let cfg_nodes = store
+            .find_cfg_nodes_by_function(&symbol.id)
+            .expect("cfg_nodes");
+        assert!(
+            cfg_nodes.iter().any(|node| node.kind == CfgNodeKind::Entry),
+            "Cangjie CFG for {name} missing Entry"
+        );
+        assert!(
+            cfg_nodes.iter().any(|node| node.kind == CfgNodeKind::Exit),
+            "Cangjie CFG for {name} missing Exit"
+        );
+
+        if name == "main" {
+            let branch = cfg_nodes
+                .iter()
+                .find(|node| node.kind == CfgNodeKind::Branch)
+                .expect("Cangjie main match missing Branch");
+            assert!(
+                cfg_nodes.iter().any(|node| node.kind == CfgNodeKind::Join),
+                "Cangjie main match missing Join"
+            );
+            let case_edges = store
+                .find_cfg_edges_by_source(&branch.id)
+                .expect("case edges")
+                .into_iter()
+                .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+                .count();
+            assert_eq!(
+                case_edges, 3,
+                "unguarded Cangjie wildcard suppresses the synthetic no-match edge"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_cfg_real_cangjie_wildcard_suppresses_persisted_no_match_path() {
+    let source = include_str!("../../../examples/cangjie_example/src/stdx/command.cj");
+    let store = index_files(&[("command.cj", source)]);
+    let file_id = FileId::generate("command.cj");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "handleCommand" && symbol.kind == SymbolKind::Function)
+        .expect("missing real Cangjie handleCommand function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let match_dispatch = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Branch
+                && edges
+                    .iter()
+                    .any(|edge| edge.source == node.id && edge.kind == CfgEdgeKind::CaseBranch)
+        })
+        .expect("real Cangjie match dispatch");
+
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| {
+                edge.source == match_dispatch.id && edge.kind == CfgEdgeKind::CaseBranch
+            })
+            .count(),
+        8,
+        "seven command patterns plus wildcard, without synthetic no-match"
+    );
+}
+
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_cfg_loop_break_cangjie_is_persisted_as_control_transfer() {
+    let files = &[(
+        "loop.cj",
+        r#"func run(): Unit {
+    while (isReady()) {
+        break
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("loop.cj");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "run" && symbol.kind == SymbolKind::Function)
+        .expect("missing Cangjie run function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    assert!(
+        !nodes.iter().any(|node| node.kind == CfgNodeKind::Return),
+        "Cangjie break must not be persisted as Return"
+    );
+    assert!(
+        nodes
+            .iter()
+            .flat_map(|node| { store.find_cfg_edges_by_source(&node.id).expect("cfg_edges") })
+            .any(|edge| edge.kind == CfgEdgeKind::Break),
+        "Cangjie break edge was not persisted"
+    );
 }
 
 // ── CFG fixture tests ─────────────────────────────────────────────────────
@@ -3385,6 +4721,158 @@ fn fx_cfg_cpp() {
             edge_count
         );
     }
+}
+
+#[test]
+#[cfg(feature = "go")]
+fn fx_cfg_real_go_select_persists_only_communication_and_default_paths() {
+    let source = include_str!("../../../examples/go_example/context.go");
+    let store = index_files(&[("context.go", source)]);
+    let file_id = FileId::generate("context.go");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "Stream" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Go Context.Stream method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let return_disconnected =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return true");
+    let default_entry = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "keepOpen := step(w)",
+    );
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let select_dispatch = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Branch
+                && edges.iter().any(|edge| {
+                    edge.source == node.id
+                        && edge.target == return_disconnected
+                        && edge.kind == CfgEdgeKind::CaseBranch
+                })
+        })
+        .expect("real Go select dispatch");
+    let case_targets: std::collections::HashSet<_> = edges
+        .iter()
+        .filter(|edge| edge.source == select_dispatch.id && edge.kind == CfgEdgeKind::CaseBranch)
+        .map(|edge| edge.target)
+        .collect();
+
+    assert_eq!(
+        case_targets,
+        std::collections::HashSet::from([return_disconnected, default_entry])
+    );
+    assert!(!persisted_cfg_reaches(
+        &edges,
+        return_disconnected,
+        default_entry
+    ));
+}
+
+#[test]
+#[cfg(feature = "go")]
+fn fx_cfg_real_go_run_unix_persists_path_sensitive_lifo_defers() {
+    let source = include_str!("../../../examples/go_example/gin.go");
+    let store = index_files(&[("gin.go", source)]);
+    let file_id = FileId::generate("gin.go");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("real Gin symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "RunUnix" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Gin Engine.RunUnix method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("RunUnix CFG nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let mut returns =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Return, "return");
+    returns.sort_by_key(|node_id| {
+        nodes
+            .iter()
+            .find(|node| node.id == *node_id)
+            .expect("return node")
+            .stmt_range
+            .start_byte
+    });
+    assert_eq!(
+        returns.len(),
+        2,
+        "RunUnix has one early and one final return"
+    );
+
+    let registration_owner = |expected: &str| {
+        nodes
+            .iter()
+            .find(|node| {
+                if node.kind != CfgNodeKind::Statement || node.call_context != CallContext::GoDefer
+                {
+                    return false;
+                }
+                let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+                source
+                    .get(range)
+                    .is_some_and(|text| text.trim() == expected)
+            })
+            .and_then(|node| node.managed_scope_start_byte)
+            .unwrap_or_else(|| panic!("missing defer registration {expected:?}"))
+    };
+    let debug_owner = registration_owner("func() { debugPrintError(err) }()");
+    let close_owner = registration_owner("listener.Close()");
+    let remove_owner = registration_owner("os.Remove(file)");
+    let owner_chain = |start| {
+        let mut current = start;
+        let mut owners = Vec::new();
+        while let Some(edge) = edges
+            .iter()
+            .find(|edge| edge.source == current && edge.kind == CfgEdgeKind::Defer)
+        {
+            let execution = nodes
+                .iter()
+                .find(|node| node.id == edge.target)
+                .expect("persisted defer execution node");
+            assert_eq!(execution.kind, CfgNodeKind::BlockExit);
+            assert_eq!(execution.call_context, CallContext::GoDefer);
+            owners.push(
+                execution
+                    .managed_scope_start_byte
+                    .expect("defer execution owner"),
+            );
+            assert_eq!(
+                edge.id,
+                CfgEdge::new(&edge.source, &edge.target, CfgEdgeKind::Defer).id
+            );
+            current = edge.target;
+        }
+        owners
+    };
+
+    assert_eq!(
+        owner_chain(returns[0]),
+        vec![debug_owner],
+        "the net.Listen error path registered only the leading debug defer"
+    );
+    assert_eq!(
+        owner_chain(returns[1]),
+        vec![remove_owner, close_owner, debug_owner],
+        "the successful path must execute all three defers in reverse registration order"
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| {
+                node.kind == CfgNodeKind::Statement && node.call_context == CallContext::GoDefer
+            })
+            .count(),
+        3,
+        "each lexical defer remains a visible registration point"
+    );
 }
 
 /// Verify CFG for Rust: function must have Entry + Statement + Exit nodes.
@@ -3743,6 +5231,309 @@ fn fx_cfg_loop_python() {
     }
 }
 
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_match_python() {
+    let files = &[(
+        "cfg_match.py",
+        r#"def dispatch(command):
+    match command:
+        case value if value > 0:
+            return positive(value)
+        case 0:
+            return zero()
+        case _:
+            return fallback()
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_match.py");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing Python dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Python match missing Branch");
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "an unguarded Python wildcard case suppresses the synthetic no-match edge"
+    );
+}
+
+#[test]
+#[cfg(feature = "python")]
+fn fx_cfg_match_python_capture_pattern_suppresses_persisted_no_match_path() {
+    let files = &[(
+        "cfg_match_capture.py",
+        r#"def dispatch(command):
+    match command:
+        case 0:
+            return zero()
+        case value:
+            return fallback(value)
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_match_capture.py");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing Python dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Python match missing Branch");
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 2,
+        "an unguarded Python capture pattern suppresses the synthetic no-match edge"
+    );
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_real_rust_unguarded_wildcard_suppresses_persisted_no_match_path() {
+    let source = include_str!("../../../examples/rust_example/src/less.rs");
+    let store = index_files(&[("less.rs", source)]);
+    let file_id = FileId::generate("less.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "parse_less_version_busybox" && symbol.kind == SymbolKind::Function
+        })
+        .expect("missing real Rust parse_less_version_busybox function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let dispatch = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Branch
+                && edges
+                    .iter()
+                    .any(|edge| edge.source == node.id && edge.kind == CfgEdgeKind::CaseBranch)
+        })
+        .expect("real Rust match dispatch");
+
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| { edge.source == dispatch.id && edge.kind == CfgEdgeKind::CaseBranch })
+            .count(),
+        2,
+        "guarded BusyBox arm plus unguarded wildcard, without synthetic no-match"
+    );
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_real_rust_try_operator_persists_success_and_residual_paths() {
+    let source = include_str!("../../../examples/rust_example/src/line_range.rs");
+    let store = index_files(&[("line_range.rs", source)]);
+    let file_id = FileId::generate("line_range.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "parse_range"
+                && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+        })
+        .expect("missing real Rust LineRange::parse_range function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let propagation = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "let first_byte = raw_range_iter.next().ok_or(\"Empty line range\")?;",
+    );
+    let exit = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("Rust CFG Exit")
+        .id;
+    let following_branch = nodes
+        .iter()
+        .filter(|node| node.kind == CfgNodeKind::Branch)
+        .min_by_key(|node| node.stmt_range.start_byte)
+        .expect("Rust parse_range first if Branch")
+        .id;
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == propagation
+            && edge.target == following_branch
+            && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == propagation && edge.target == exit && edge.kind == CfgEdgeKind::Normal
+    }));
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_real_rust_let_else_persists_match_and_loop_break_paths() {
+    let source = include_str!("../../../examples/rust_example/src/controller.rs");
+    let store = index_files(&[("controller.rs", source)]);
+    let file_id = FileId::generate("controller.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "print_file_ranges"
+                && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+        })
+        .expect("missing real Rust Controller::print_file_ranges method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let branch = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Branch
+                && source
+                    .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                    .is_some_and(|text| text == "buffered_lines.pop_front()")
+        })
+        .expect("real Rust let-else Branch");
+    let false_edge = edges
+        .iter()
+        .find(|edge| edge.source == branch.id && edge.kind == CfgEdgeKind::FalseBranch)
+        .expect("let-else alternative edge");
+    let true_edge = edges
+        .iter()
+        .find(|edge| edge.source == branch.id && edge.kind == CfgEdgeKind::TrueBranch)
+        .expect("let-else success edge");
+    let break_node = nodes
+        .iter()
+        .find(|node| node.id == false_edge.target)
+        .expect("let-else break node");
+    let success_join = nodes
+        .iter()
+        .find(|node| node.id == true_edge.target)
+        .expect("let-else success Join");
+    let following_statement = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Statement
+                && node.stmt_range.start_byte as usize
+                    == source
+                        .find("let max_buffered_line_number")
+                        .expect("real following declaration")
+        })
+        .expect("statement after real let-else");
+
+    assert_eq!(break_node.kind, CfgNodeKind::Statement);
+    assert_eq!(success_join.kind, CfgNodeKind::Join);
+    assert!(
+        edges
+            .iter()
+            .any(|edge| { edge.source == break_node.id && edge.kind == CfgEdgeKind::Break })
+    );
+    assert!(
+        persisted_cfg_reaches(&edges, success_join.id, following_statement.id),
+        "let-else success must continue to the following declaration"
+    );
+    assert!(!persisted_cfg_reaches(
+        &edges,
+        break_node.id,
+        following_statement.id
+    ));
+    assert_eq!(
+        false_edge.id,
+        CfgEdge::new(
+            &false_edge.source,
+            &false_edge.target,
+            CfgEdgeKind::FalseBranch
+        )
+        .id
+    );
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_real_rust_panic_macro_persists_as_abrupt_match_arm() {
+    let source = include_str!("../../../examples/rust_example/src/vscreen.rs");
+    let store = index_files(&[("vscreen.rs", source)]);
+    let file_id = FileId::generate("vscreen.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "next_osc"
+                && matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method)
+        })
+        .expect("missing real Rust EscapeSequenceOffsetsIterator::next_osc method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let panic_node = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Throw,
+        "panic!(\"this should not be reached: char {tc:?}\")",
+    );
+    let exit = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Exit)
+        .expect("Rust CFG Exit")
+        .id;
+    let case_edge = edges
+        .iter()
+        .find(|edge| edge.target == panic_node && edge.kind == CfgEdgeKind::CaseBranch)
+        .expect("panic match arm CaseBranch");
+
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.id == case_edge.source && node.kind == CfgNodeKind::Branch)
+    );
+    assert!(edges.iter().any(|edge| {
+        edge.source == panic_node && edge.target == exit && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert_eq!(
+        case_edge.id,
+        CfgEdge::new(
+            &case_edge.source,
+            &case_edge.target,
+            CfgEdgeKind::CaseBranch
+        )
+        .id
+    );
+}
+
 /// Verify Go CFG body traversal for if/else.
 #[test]
 #[cfg(feature = "go")]
@@ -3985,6 +5776,47 @@ fn fx_cfg_loop_rust() {
             "Rust: missing LoopBack edge"
         );
     }
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_cfg_match_rust() {
+    let files = &[(
+        "cfg_match.rs",
+        r#"fn dispatch(command: i32) {
+    match command {
+        n if n > 0 => positive(n),
+        0 => zero(),
+        _ => fallback(),
+    };
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_match.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing Rust dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Rust match missing Branch");
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "an unguarded Rust wildcard arm suppresses the synthetic no-match edge"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -4311,6 +6143,140 @@ fn fx_cfg_loop_c() {
             edges.len() > 3,
             "C: expected > 3 total CFG edges, got {}",
             edges.len()
+        );
+    }
+}
+
+#[test]
+#[cfg(feature = "c")]
+fn fx_cfg_real_c_example_non_empty_fallthrough() {
+    let source = include_str!("../../../examples/c_example/src/tool_convert.c");
+    let store = index_files(&[("examples/tool_convert.c", source)]);
+    let file_id = FileId::generate("examples/tool_convert.c");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("real C example symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "convert_char" && symbol.kind == SymbolKind::Function)
+        .expect("convert_char function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("convert_char CFG nodes");
+    let switch_branch = nodes
+        .iter()
+        .find(|node| {
+            if node.kind != CfgNodeKind::Branch {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim_start().starts_with("switch(infotype)"))
+        })
+        .expect("convert_char switch Branch");
+    let switch_join = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Join
+                && node.stmt_range.start_byte == switch_branch.stmt_range.start_byte + 1
+        })
+        .expect("convert_char switch Join");
+    let conversion = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Statement,
+        "(void)convert_from_network(&this_char, 1);",
+    );
+    let default_entry = nodes
+        .iter()
+        .find(|node| {
+            if node.kind != CfgNodeKind::Branch {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim_start().starts_with("if(ISPRINT(this_char)"))
+        })
+        .expect("convert_char executable default entry")
+        .id;
+    let mut edges = Vec::new();
+    for node in &nodes {
+        edges.extend(
+            store
+                .find_cfg_edges_by_source(&node.id)
+                .expect("convert_char CFG edges"),
+        );
+    }
+    for edge in &edges {
+        assert_eq!(
+            edge.id,
+            CfgEdge::new(&edge.source, &edge.target, edge.kind).id,
+            "persisted edge ID must encode its final kind"
+        );
+    }
+    assert!(edges.iter().any(|edge| {
+        edge.source == conversion
+            && edge.target == default_entry
+            && edge.kind == CfgEdgeKind::Normal
+    }));
+    assert!(edges.iter().any(|edge| edge.kind == CfgEdgeKind::Break));
+    assert!(!edges.iter().any(|edge| {
+        edge.source == switch_branch.id
+            && edge.target == switch_join.id
+            && edge.kind == CfgEdgeKind::CaseBranch
+    }));
+}
+
+#[test]
+#[cfg(feature = "c")]
+fn fx_cfg_real_redis_cleanup_gotos_persist_exact_label_edges() {
+    let source = include_str!("../../../examples/redis/deps/hdr_histogram/hdr_histogram.c");
+    let path = "examples/hdr_histogram.c";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("real Redis C symbols")
+        .into_iter()
+        .find(|symbol| {
+            symbol.name == "hdr_percentiles_print" && symbol.kind == SymbolKind::Function
+        })
+        .expect("hdr_percentiles_print function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("hdr_percentiles_print CFG nodes");
+    let cleanup_return =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return rc;");
+    let gotos: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            if node.kind != CfgNodeKind::Statement {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim() == "goto cleanup;")
+        })
+        .collect();
+    assert_eq!(gotos.len(), 3, "real function has three cleanup jumps");
+
+    for goto in gotos {
+        let outgoing = store
+            .find_cfg_edges_by_source(&goto.id)
+            .expect("persisted goto edges");
+        assert_eq!(
+            outgoing.len(),
+            1,
+            "goto must not retain lexical fallthrough"
+        );
+        assert_eq!(outgoing[0].target, cleanup_return);
+        assert_eq!(outgoing[0].kind, CfgEdgeKind::Goto);
+        assert_eq!(
+            outgoing[0].id,
+            CfgEdge::new(&goto.id, &cleanup_return, CfgEdgeKind::Goto).id,
+            "persisted edge ID must encode goto kind"
         );
     }
 }
@@ -4643,14 +6609,43 @@ fn fx_cfg_loop_csharp() {
     }
 }
 
+#[test]
+#[cfg(feature = "csharp")]
+fn fx_cfg_try_catch_csharp_without_finally() {
+    let files = &[(
+        "cfg_try.cs",
+        r#"class Loader {
+    string Load(string path) {
+        try {
+            if (path.Length == 0) {
+                throw new InvalidOperationException("empty");
+            }
+            Read(path);
+        } catch (InvalidOperationException error) {
+            Recover(error);
+        }
+        return path;
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_try.cs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "Load" && symbol.kind == SymbolKind::Method)
+        .expect("missing C# Loader.Load method");
+    assert_persisted_exception_cfg(&store, &symbol.id, "C#", 2);
+}
+
 // ────────────────────────────────────────────────────────────────
 // Kotlin CFG body traversal tests
 // ────────────────────────────────────────────────────────────────
 
 /// Verify Kotlin CFG body traversal for if/else:
-/// Entry/Exit nodes, Statement nodes, and CFG edges.
-/// NOTE: Kotlin CFG body traversal (Branch/Loop/Join) is not yet
-/// implemented; this test validates the current extraction baseline.
+/// Branch/Join nodes, both branch edge kinds, and body statements.
 #[test]
 #[cfg(feature = "kotlin")]
 fn fx_cfg_if_else_kotlin() {
@@ -4686,12 +6681,12 @@ fn fx_cfg_if_else_kotlin() {
             .find_cfg_nodes_by_function(&sym.id)
             .expect("cfg_nodes");
         assert!(
-            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
-            "Kotlin: missing Entry"
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Branch),
+            "Kotlin: missing Branch"
         );
         assert!(
-            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
-            "Kotlin: missing Exit"
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Kotlin: missing Join"
         );
 
         let stmt_count = cfg_nodes
@@ -4709,17 +6704,22 @@ fn fx_cfg_if_else_kotlin() {
             edges.extend(e);
         }
         assert!(
-            !edges.is_empty(),
-            "Kotlin: expected > 0 CFG edges, got {}",
-            edges.len()
+            edges
+                .iter()
+                .any(|edge| edge.kind == CfgEdgeKind::TrueBranch),
+            "Kotlin: missing TrueBranch"
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.kind == CfgEdgeKind::FalseBranch),
+            "Kotlin: missing FalseBranch"
         );
     }
 }
 
 /// Verify Kotlin CFG body traversal for while loop:
-/// Entry/Exit nodes, Statement nodes, and CFG edges.
-/// NOTE: Kotlin CFG body traversal (Loop/Join/LoopBack) is not yet
-/// implemented; this test validates the current extraction baseline.
+/// Loop/Join nodes, a body statement, and LoopBack.
 #[test]
 #[cfg(feature = "kotlin")]
 fn fx_cfg_loop_kotlin() {
@@ -4728,6 +6728,9 @@ fn fx_cfg_loop_kotlin() {
         "cfg_loop.kt",
         r#"fun testLoop(x: Int): Int {
     while (x > 0) {
+        if (x == 2) {
+            break
+        }
         x = x - 1
     }
     return x
@@ -4754,12 +6757,12 @@ fn fx_cfg_loop_kotlin() {
             .expect("cfg_nodes");
 
         assert!(
-            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Entry),
-            "Kotlin: missing Entry"
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Loop),
+            "Kotlin: missing Loop"
         );
         assert!(
-            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Exit),
-            "Kotlin: missing Exit"
+            cfg_nodes.iter().any(|n| n.kind == CfgNodeKind::Join),
+            "Kotlin: missing Join"
         );
 
         let stmt_count = cfg_nodes
@@ -4777,9 +6780,277 @@ fn fx_cfg_loop_kotlin() {
             edges.extend(e);
         }
         assert!(
-            !edges.is_empty(),
-            "Kotlin: expected > 0 CFG edges, got {}",
-            edges.len()
+            edges.iter().any(|edge| edge.kind == CfgEdgeKind::LoopBack),
+            "Kotlin: missing LoopBack"
+        );
+        assert!(
+            edges.iter().any(|edge| edge.kind == CfgEdgeKind::Break),
+            "Kotlin: break edge was not persisted"
+        );
+        assert!(
+            !cfg_nodes.iter().any(|node| {
+                let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+                node.kind == CfgNodeKind::Return
+                    && files[0]
+                        .1
+                        .get(range)
+                        .is_some_and(|text| text.trim() == "break")
+            }),
+            "Kotlin: break must not be persisted as Return"
         );
     }
+}
+
+#[test]
+#[cfg(feature = "kotlin")]
+fn fx_cfg_when_kotlin() {
+    let files = &[(
+        "cfg_when.kt",
+        r#"fun dispatch(command: Int) {
+    when (command) {
+        1 if command > 0 -> positive(command)
+        0 -> zero()
+        else -> fallback()
+    }
+}
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_when.kt");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Function)
+        .expect("missing Kotlin dispatch function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Kotlin when missing Branch");
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "expected three Kotlin entries; else makes no-match impossible"
+    );
+}
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_case_ruby() {
+    let files = &[(
+        "cfg_case.rb",
+        r#"def dispatch(command)
+  case command
+  when "install", "add"
+    install()
+  when "remove"
+    remove()
+  else
+    fallback()
+  end
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_case.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Method)
+        .expect("missing Ruby dispatch method");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let branch = cfg_nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Ruby case missing Branch");
+    let case_edges = store
+        .find_cfg_edges_by_source(&branch.id)
+        .expect("case edges")
+        .into_iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::CaseBranch)
+        .count();
+    assert_eq!(
+        case_edges, 3,
+        "expected two Ruby when clauses and else without a no-match edge"
+    );
+}
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_loop_break_and_next_ruby_are_persisted_as_control_transfers() {
+    let files = &[(
+        "cfg_loop.rb",
+        r#"def consume(flag, skip)
+  while flag
+    if skip
+      next
+    end
+    break
+  end
+  after()
+end
+"#,
+    )];
+    let store = index_files(files);
+    let file_id = FileId::generate("cfg_loop.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "consume" && symbol.kind == SymbolKind::Method)
+        .expect("missing Ruby consume method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edge_kinds: Vec<_> = nodes
+        .iter()
+        .flat_map(|node| store.find_cfg_edges_by_source(&node.id).expect("cfg_edges"))
+        .map(|edge| edge.kind)
+        .collect();
+    assert!(edge_kinds.contains(&CfgEdgeKind::Continue));
+    assert!(edge_kinds.contains(&CfgEdgeKind::Break));
+}
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_real_ruby_method_rescue_is_persisted() {
+    let source = include_str!("../../../examples/redis/utils/redis-copy.rb");
+    let store = index_files(&[("redis-copy.rb", source)]);
+    let file_id = FileId::generate("redis-copy.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "redisCopy" && symbol.kind == SymbolKind::Method)
+        .expect("missing real Redis redisCopy method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let handler = nodes
+        .iter()
+        .find(|node| {
+            if node.kind != CfgNodeKind::Statement {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim_start().starts_with("$stderr.puts"))
+        })
+        .expect("real Redis rescue handler statement");
+    let dispatch = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("method-level rescue dispatch");
+    let edges = persisted_cfg_edges(&store, &nodes);
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == dispatch.id
+            && edge.target == handler.id
+            && edge.kind == CfgEdgeKind::Exception
+    }));
+}
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_ruby_ensure_clones_survive_persistence() {
+    let source = include_str!("fixtures/ruby/cfg_ensure.rb");
+    let store = index_files(&[("cfg_ensure.rb", source)]);
+    let file_id = FileId::generate("cfg_ensure.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "process" && symbol.kind == SymbolKind::Method)
+        .expect("missing Ruby process method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let cleanup_ids =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "cleanup()");
+    let return_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Return, "return 1");
+    let raise_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Throw, "raise Error");
+    let work_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "work()");
+    let recover_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "recover()");
+    let success_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "success()");
+    let after_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after()");
+    let edges = persisted_cfg_edges(&store, &nodes);
+
+    assert_eq!(
+        cleanup_ids.len(),
+        4,
+        "each continuation needs its own ensure clone"
+    );
+    assert!(persisted_cfg_reaches(&edges, work_id, success_id));
+    assert!(persisted_cfg_reaches(&edges, success_id, after_id));
+    assert!(persisted_cfg_reaches(&edges, raise_id, recover_id));
+    assert!(persisted_cfg_reaches(&edges, recover_id, after_id));
+    assert!(!persisted_cfg_reaches(&edges, return_id, after_id));
+    assert!(
+        cleanup_ids
+            .iter()
+            .any(|cleanup| persisted_cfg_reaches(&edges, return_id, *cleanup))
+    );
+}
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_ruby_resource_block_jumps_resume_after_call_when_persisted() {
+    let source = r#"def read(stop, skip)
+  File.open('data.txt') do |resource|
+    if stop
+      break
+    end
+    if skip
+      next
+    end
+    consume(resource)
+  end
+  after()
+end
+"#;
+    let store = index_files(&[("block_jumps.rb", source)]);
+    let file_id = FileId::generate("block_jumps.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "read" && symbol.kind == SymbolKind::Method)
+        .expect("missing Ruby read method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let break_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "break");
+    let next_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "next");
+    let after_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after()");
+    let block_exits: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == CfgNodeKind::BlockExit)
+        .map(|node| node.id)
+        .collect();
+    let edges = persisted_cfg_edges(&store, &nodes);
+
+    assert_eq!(block_exits.len(), 3, "normal, break, and next block exits");
+    assert!(persisted_cfg_reaches(&edges, break_id, after_id));
+    assert!(persisted_cfg_reaches(&edges, next_id, after_id));
+    assert!(!edges.iter().any(|edge| {
+        block_exits.contains(&edge.source)
+            && matches!(edge.kind, CfgEdgeKind::Break | CfgEdgeKind::Continue)
+    }));
 }

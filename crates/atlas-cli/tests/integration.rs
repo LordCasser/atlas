@@ -1802,6 +1802,169 @@ func main() {
     );
 }
 
+#[cfg(feature = "go")]
+#[test]
+fn test_go_deferred_frees_execute_at_lifo_block_exits() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{ConsumptionStyle, SemanticEffectKind};
+    use atlas_engine::enums::{CallContext, CfgNodeKind};
+
+    let files = &[(
+        "defer.go",
+        r#"package main
+
+import "os"
+
+func run(a, b *os.File) {
+    defer a.Close()
+    defer b.Close()
+    return
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("defer.go");
+    let function = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "run")
+        .expect("run function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&function.id)
+        .expect("CFG nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&function.id)
+        .expect("CFG edges");
+    let graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("defer CFG");
+    let data_nodes = store
+        .find_data_nodes_by_function(&function.id)
+        .expect("data nodes");
+    let dataflow_edges = store
+        .find_dataflow_edges_by_sources(&data_nodes.iter().map(|node| node.id).collect::<Vec<_>>())
+        .expect("dataflow edges");
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Go);
+    let composition = compose_effects(&graph, &data_nodes, &dataflow_edges, &contract);
+
+    let registrations: Vec<_> = cfg_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == CfgNodeKind::Statement && node.call_context == CallContext::GoDefer
+        })
+        .collect();
+    assert_eq!(registrations.len(), 2);
+    for registration in registrations {
+        assert!(
+            composition
+                .node_effects
+                .get(&registration.id)
+                .is_none_or(|effects| {
+                    effects
+                        .iter()
+                        .all(|effect| !matches!(effect.kind, SemanticEffectKind::Free { .. }))
+                }),
+            "a defer registration must not consume its receiver immediately"
+        );
+    }
+
+    let execution_frees: Vec<_> = cfg_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == CfgNodeKind::BlockExit && node.call_context == CallContext::GoDefer
+        })
+        .flat_map(|node| composition.node_effects.get(&node.id).into_iter().flatten())
+        .filter(|effect| matches!(effect.kind, SemanticEffectKind::Free { .. }))
+        .collect();
+    assert_eq!(execution_frees.len(), 2);
+    assert!(
+        execution_frees
+            .iter()
+            .all(|effect| { effect.consumption_style == Some(ConsumptionStyle::Deferred) })
+    );
+}
+
+#[cfg(feature = "go")]
+#[test]
+fn test_go_defer_argument_consumption_stays_at_registration() {
+    use atlas_engine::analysis::cfg_graph::CfgGraph;
+    use atlas_engine::analysis::{ResourceOpConfig, compose_effects};
+    use atlas_engine::effects::{ConsumptionStyle, SemanticEffectKind};
+    use atlas_engine::enums::{CallContext, CfgNodeKind};
+
+    let files = &[(
+        "defer_arg.go",
+        r#"package main
+
+import "os"
+
+func report(err error) {}
+
+func run(file *os.File) {
+    defer report(file.Close())
+}
+"#,
+    )];
+    let (store, _stats) = index_files(files);
+    let file_id = FileId::generate("defer_arg.go");
+    let function = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "run")
+        .expect("run function");
+    let cfg_nodes = store
+        .find_cfg_nodes_by_function(&function.id)
+        .expect("CFG nodes");
+    let cfg_edges = store
+        .find_cfg_edges_by_function(&function.id)
+        .expect("CFG edges");
+    let graph = CfgGraph::build(&cfg_nodes, &cfg_edges).expect("defer CFG");
+    let data_nodes = store
+        .find_data_nodes_by_function(&function.id)
+        .expect("data nodes");
+    let dataflow_edges = store
+        .find_dataflow_edges_by_sources(&data_nodes.iter().map(|node| node.id).collect::<Vec<_>>())
+        .expect("dataflow edges");
+    let contract = ResourceOpConfig::default_for(atlas_engine::Language::Go);
+    let composition = compose_effects(&graph, &data_nodes, &dataflow_edges, &contract);
+    let registration = cfg_nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Statement && node.call_context == CallContext::GoDefer
+        })
+        .expect("defer registration");
+    let immediate_free = composition
+        .node_effects
+        .get(&registration.id)
+        .into_iter()
+        .flatten()
+        .find(|effect| matches!(effect.kind, SemanticEffectKind::Free { .. }))
+        .expect("file.Close argument must execute during registration");
+    assert_ne!(
+        immediate_free.consumption_style,
+        Some(ConsumptionStyle::Deferred)
+    );
+    assert!(
+        cfg_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == CfgNodeKind::BlockExit && node.call_context == CallContext::GoDefer
+            })
+            .all(|node| {
+                composition
+                    .node_effects
+                    .get(&node.id)
+                    .is_none_or(|effects| {
+                        effects
+                            .iter()
+                            .all(|effect| !matches!(effect.kind, SemanticEffectKind::Free { .. }))
+                    })
+            }),
+        "the nested Close argument must not be replayed at function exit"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────
 // Go `compose_effects` produces real effects (P0 regression)
 // ────────────────────────────────────────────────────────────────
@@ -2448,6 +2611,21 @@ class MultiDemo
         assert!(
             free_count >= 2,
             "Expected >= 2 Free effects at BlockExit for multiple using resources, got {free_count}"
+        );
+        let freed_names: Vec<_> = be_effects
+            .iter()
+            .filter_map(|effect| match &effect.kind {
+                SemanticEffectKind::Free {
+                    place: PlaceRef::Local { name },
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            freed_names,
+            vec!["output", "input"],
+            "multi-resource using cleanup must be deterministic LIFO"
         );
 
         // Verify all Free effects have ContextManaged style

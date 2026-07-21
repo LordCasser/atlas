@@ -67,9 +67,44 @@ fn p0_scope_index_records_metadata() {
     index::run(&project, &["src/**".to_string()], &[], &[], "structural").expect("atlas index");
 
     let store = open_store(&tmp);
-    let scope = store.get_metadata("indexed_scope").unwrap();
-    assert!(scope.is_some());
-    assert!(scope.unwrap().contains("src/**"));
+    let scope = serde_json::from_str::<serde_json::Value>(
+        &store.get_metadata("indexed_scope").unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        scope,
+        serde_json::json!({ "include": ["src/**"], "exclude": [] })
+    );
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("structural".into())
+    );
+}
+
+#[test]
+fn p0_exclude_index_records_scoped_metadata() {
+    let tmp = setup_project(&[
+        ("src/index.ts", "const x = 1;"),
+        ("vendor/dep.ts", "const dep = 1;"),
+    ]);
+    let project = tmp.path().to_string_lossy().to_string();
+
+    CommandContext::open(&project, DbMode::InitOrCreate).expect("atlas init");
+    index::run(&project, &[], &[], &["vendor/**".to_string()], "full").expect("atlas index");
+
+    let store = open_store(&tmp);
+    let scope = serde_json::from_str::<serde_json::Value>(
+        &store.get_metadata("indexed_scope").unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        scope,
+        serde_json::json!({ "include": [], "exclude": ["vendor/**"] })
+    );
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("full".into())
+    );
 }
 
 #[test]
@@ -467,8 +502,8 @@ fn p3_capability_mask_cfg_gated_by_language() {
         "PHP function has no callsite, so CALL_EDGES must remain unset"
     );
     assert!(
-        !php_mask.has(FactCoverage::CFG),
-        "PHP must NOT have CFG bit — language profile declares cfg as unsupported"
+        php_mask.has(FactCoverage::CFG),
+        "PHP lazy dataflow must persist CFG facts for the callable unit"
     );
 }
 

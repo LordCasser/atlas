@@ -384,6 +384,12 @@ fn golden_go_cfg_loop() {
     run_golden("go", "cfg_loop", "go", Language::Go);
 }
 
+#[cfg(feature = "go")]
+#[test]
+fn golden_go_cfg_select() {
+    run_golden("go", "cfg_select", "go", Language::Go);
+}
+
 #[cfg(feature = "rust")]
 #[test]
 fn golden_rust_cfg_if_else() {
@@ -516,6 +522,18 @@ fn golden_php_class() {
     run_golden("php", "class", "php", Language::Php);
 }
 
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_cfg_control() {
+    run_golden("php", "cfg_control", "php", Language::Php);
+}
+
+#[cfg(feature = "php")]
+#[test]
+fn golden_php_cfg_try_catch() {
+    run_golden("php", "cfg_try_catch", "php", Language::Php);
+}
+
 // -- Ruby --
 
 #[cfg(feature = "ruby")]
@@ -540,6 +558,12 @@ fn golden_ruby_calls() {
 #[test]
 fn golden_ruby_class() {
     run_golden("ruby", "class", "rb", Language::Ruby);
+}
+
+#[cfg(feature = "ruby")]
+#[test]
+fn golden_ruby_cfg_ensure() {
+    run_golden("ruby", "cfg_ensure", "rb", Language::Ruby);
 }
 
 // -- Kotlin --
@@ -640,6 +664,12 @@ fn golden_cangjie_imports() {
 #[test]
 fn golden_cangjie_calls() {
     run_golden("cangjie", "calls", "cj", Language::Cangjie);
+}
+
+#[cfg(feature = "cangjie")]
+#[test]
+fn golden_cangjie_cfg_try_finally() {
+    run_golden("cangjie", "cfg_try_finally", "cj", Language::Cangjie);
 }
 
 // ---------------------------------------------------------------------------
