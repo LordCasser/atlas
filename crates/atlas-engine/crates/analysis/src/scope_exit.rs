@@ -1,27 +1,29 @@
-//! Scope-exit post-pass: emits implicit Free effects for Rust Drop at scope exit,
-//! Python `with`, Java `try-with-resources`, C# `using`, and Ruby block-managed
-//! context blocks at BlockExit.
+//! Scope-exit post-pass: emits heuristic implicit Free effects for Rust Drop at function exit,
+//! Python `with`, Java `try-with-resources`, C# `using`, Kotlin `.use`, and Ruby
+//! block-managed context blocks at BlockExit.
 //!
 //! Runs AFTER `compose_effects` main loop. For each Alloc effect without a matching
 //! explicit Free effect, emits a Free:
-//! - At the nearest BlockExit node for PythonWith/JavaTryWith/CSharpUsing/RubyBlock-annotated Allocs
+//! - At every owner-matched BlockExit clone for context-managed Allocs
 //! - At the function's Exit node for other eligible Allocs
 //!
 //! ## Eligibility for scope-exit cleanup
 //! An Alloc is eligible for auto-cleanup only if ALL of:
 //! 1. The effect's `eligible_for_implicit_cleanup` is `Some(true)` (or `None` for
 //!    backward compat), OR the Alloc node has a context-managed call context
-//!    (PythonWith / JavaTryWith / CSharpUsing / RubyBlock).
+//!    (PythonWith / JavaTryWith / CSharpUsing / KotlinUse / RubyBlock).
 //! 2. The allocated PlaceRef does NOT appear in any Return or Escape effect
 //!    (a resource that is returned or escapes the function should not be
 //!    auto-freed — the caller or escape target owns it).
 //!
-//! This is primarily for Rust (implicit Drop) and Python/Java/C# context managers,
-//! but runs for all languages as a near-no-op when no Allocs are eligible.
+//! For Rust this is not path-sensitive lexical RAII: branch-local construction,
+//! moves, partial moves, and exact nested-scope drop points are not represented.
+//! Context-managed Python/Java/C#/Kotlin/Ruby resources instead use owner-matched
+//! BlockExit nodes. The pass runs for all languages as a near-no-op when no
+//! Allocs are eligible.
 
 use std::collections::{HashMap, HashSet};
 
-use types::cfg::CfgEdge;
 use types::effects::{ConsumptionStyle, PlaceRef, SemanticEffect, SemanticEffectKind, ValueSource};
 use types::enums::{CallContext, CfgEdgeKind, CfgNodeKind};
 use types::ids::CfgNodeId;
@@ -30,12 +32,12 @@ use super::cfg_graph::CfgGraph;
 use super::effect_composer::make_effect;
 
 /// Post-pass that emits implicit Free effects for allocations that have no
-/// explicit Free within the same function (e.g., Rust Drop at scope exit,
+/// explicit Free within the same function (e.g., heuristic Rust Drop at function exit,
 /// Python context-manager `with` statement, Ruby block resources).
 ///
 /// Eligibility is gated per-Alloc:
-/// - Context-managed Allocs (PythonWith/JavaTryWith/CSharpUsing/RubyBlock) always
-///   get a Free at the nearest BlockExit successor.
+/// - Context-managed Allocs always get a Free at every path-isolated BlockExit
+///   clone owned by the same lexical resource scope.
 /// - Other Allocs only get a Free if `eligible_for_implicit_cleanup` is true
 ///   (or absent on legacy effects) AND the allocated place is NOT returned or
 ///   escaped.
@@ -58,31 +60,16 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     }
 
     // 1. Collect all Allocs and their associated Free places
-    let mut allocs: Vec<(CfgNodeId, PlaceRef, String, bool, bool)> = Vec::new();
-    // (node_id, place, callee, is_context_managed, eligible_for_cleanup)
+    let mut allocs: Vec<(CfgNodeId, u32, PlaceRef, String, Option<u32>, bool)> = Vec::new();
+    // (node_id, effect_order, place, callee, managed_scope_start_byte, eligible)
     let mut freed_places: Vec<PlaceRef> = Vec::new();
 
     for (_node_id, node_effects) in effects.iter() {
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Alloc { target, callee } => {
-                    // Check if this alloc node has PythonWith/JavaTryWith/CSharpUsing context
-                    // Context-managed check: immediate CFG node's context
-                    // annotation plus a forward walk for Kotlin split-call-chain
-                    // (tree-sitter parses chained calls as separate statements).
-                    let is_context_managed = cfg
-                        .nodes
-                        .get(&effect.cfg_node_id)
-                        .map(|n| {
-                            n.call_context == CallContext::PythonWith
-                                || n.call_context == CallContext::JavaTryWith
-                                || n.call_context == CallContext::CSharpUsing
-                                || n.call_context == CallContext::RubyBlock
-                                || n.call_context == CallContext::KotlinUse
-                        })
-                        .unwrap_or(false);
-                    let is_context_managed =
-                        is_context_managed || has_kotlin_use_successor(&effect.cfg_node_id, cfg, 3);
+                    let managed_scope_start_byte =
+                        managed_scope_for_alloc(&effect.cfg_node_id, cfg, 3);
 
                     // Per-effect eligibility (backward compat: None = eligible)
                     let eligible = effect.eligible_for_implicit_cleanup.unwrap_or(true);
@@ -96,9 +83,10 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
 
                     allocs.push((
                         effect.cfg_node_id,
+                        effect.order,
                         target.clone(),
                         callee.clone(),
-                        is_context_managed,
+                        managed_scope_start_byte,
                         eligible && !is_escaped, // only eligible if not escaped
                     ));
                 }
@@ -110,34 +98,24 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
         }
     }
 
-    /// Walk forward along single-successor Normal edges from `start` to find a
-    /// KotlinUse node within `max_hops`.  Needed because tree-sitter-kotlin parses
-    /// `File("x").bufferedReader().use { ... }` as two separate `call_expression`
-    /// nodes — the alloc lands on the first statement, the KotlinUse context on the
-    /// second.  A bounded forward walk bridges the split.
-    fn has_kotlin_use_successor(start: &CfgNodeId, cfg: &CfgGraph, max_hops: usize) -> bool {
-        if max_hops == 0 {
-            return false;
-        }
-        let successors = cfg.successors.get(start);
-        let Some(edges) = successors else {
-            return false;
-        };
-        for edge in edges {
-            if edge.kind != CfgEdgeKind::Normal {
-                continue;
-            }
-            if let Some(target_node) = cfg.nodes.get(&edge.target) {
-                if target_node.call_context == CallContext::KotlinUse {
-                    return true;
-                }
-                if has_kotlin_use_successor(&edge.target, cfg, max_hops - 1) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
+    // Scope cleanup is LIFO. Stable source/effect ordering also prevents the
+    // HashMap traversal order above from changing the persisted effect vector.
+    allocs.sort_by(|left, right| {
+        let left_start = cfg
+            .nodes
+            .get(&left.0)
+            .map(|node| node.stmt_range.start_byte)
+            .unwrap_or_default();
+        let right_start = cfg
+            .nodes
+            .get(&right.0)
+            .map(|node| node.stmt_range.start_byte)
+            .unwrap_or_default();
+        right_start
+            .cmp(&left_start)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     // 2. Find Exit node (for non-context-managed allocs)
     let exit_node = cfg.nodes.values().find(|n| n.kind == CfgNodeKind::Exit);
@@ -146,41 +124,56 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     };
 
     // 3. Emit Free for each allocation that has no matching explicit Free
-    for (alloc_node_id, place, callee, is_context_managed, eligible_for_cleanup) in &allocs {
+    for (
+        _alloc_node_id,
+        _effect_order,
+        place,
+        callee,
+        managed_scope_start_byte,
+        eligible_for_cleanup,
+    ) in &allocs
+    {
         // Skip if this place is already freed explicitly
         let already_freed = freed_places.iter().any(|fp| match (fp, place) {
             (PlaceRef::Field { path: p1 }, PlaceRef::Field { path: p2 }) => p1 == p2,
             (PlaceRef::Local { name: n1 }, PlaceRef::Local { name: n2 }) => n1 == n2,
             _ => false, // Indeterminate doesn't match anything for safety
         });
-        if already_freed {
+        // Managed constructs execute their exit protocol regardless of an
+        // explicit close/free in the body. A function-global Free match must
+        // not erase cleanup from sibling paths (or hide a possible double
+        // close on the path where the explicit operation occurred).
+        if managed_scope_start_byte.is_none() && already_freed {
             continue;
         }
 
         // Context-managed allocs always get auto-free (at BlockExit)
         // Non-context-managed allocs must be eligible
-        if !is_context_managed && !eligible_for_cleanup {
+        if managed_scope_start_byte.is_none() && !eligible_for_cleanup {
             continue;
         }
 
-        if *is_context_managed {
-            // Find the nearest BlockExit successor from the alloc node
-            if let Some(block_exit_id) = find_block_exit_successor(alloc_node_id, cfg) {
-                let exit_effects = effects.entry(block_exit_id).or_default();
-                let mut new_effect = make_effect(
-                    &block_exit_id,
-                    exit_effects.len() as u32,
-                    SemanticEffectKind::Free {
-                        place: place.clone(),
-                        callee: format!("<block-exit>{callee}"),
-                    },
-                    0.80,
-                );
-                new_effect.consumption_style = Some(ConsumptionStyle::ContextManaged);
-                exit_effects.push(new_effect);
+        if let Some(scope_start_byte) = managed_scope_start_byte {
+            let block_exit_ids = managed_block_exits(*scope_start_byte, cfg);
+            if !block_exit_ids.is_empty() {
+                for block_exit_id in block_exit_ids {
+                    let exit_effects = effects.entry(block_exit_id).or_default();
+                    let mut new_effect = make_effect(
+                        &block_exit_id,
+                        exit_effects.len() as u32,
+                        SemanticEffectKind::Free {
+                            place: place.clone(),
+                            callee: format!("<block-exit>{callee}"),
+                        },
+                        0.80,
+                    );
+                    new_effect.consumption_style = Some(ConsumptionStyle::ContextManaged);
+                    exit_effects.push(new_effect);
+                }
                 continue;
             }
-            // Fall through: if no BlockExit found, emit at function Exit
+            // A malformed/incomplete CFG may lack its owned BlockExit; retain a
+            // visible function-exit fallback rather than dropping cleanup.
         }
 
         // Default: emit at function Exit
@@ -194,7 +187,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
             },
             0.70,
         );
-        if *is_context_managed {
+        if managed_scope_start_byte.is_some() {
             new_effect.consumption_style = Some(ConsumptionStyle::ContextManaged);
         }
         exit_effects.push(new_effect);
@@ -217,43 +210,57 @@ fn collect_escaped_value(
     }
 }
 
-/// Walk CFG forward from `start_node_id` to find the nearest BlockExit node.
-/// Only follows Normal edges (single successor path — BlockExit is on the
-/// straight-line path after a with_statement body).
-fn find_block_exit_successor(start_id: &CfgNodeId, cfg: &CfgGraph) -> Option<CfgNodeId> {
-    let mut current = *start_id;
-    let mut visited: Vec<CfgNodeId> = Vec::new();
-    let max_steps = 20; // safety limit
+fn is_managed_context(context: CallContext) -> bool {
+    matches!(
+        context,
+        CallContext::PythonWith
+            | CallContext::JavaTryWith
+            | CallContext::CSharpUsing
+            | CallContext::RubyBlock
+            | CallContext::KotlinUse
+    )
+}
 
-    for _ in 0..max_steps {
-        if visited.contains(&current) {
-            return None; // cycle detected
-        }
-        visited.push(current);
-
-        // Check if current node is BlockExit
-        if let Some(node) = cfg.nodes.get(&current) {
-            if node.kind == CfgNodeKind::BlockExit {
-                return Some(current);
-            }
-        }
-
-        // Follow Normal successors
-        let successors = cfg.successors.get(&current)?;
-        let normal_edges: Vec<&CfgEdge> = successors
-            .iter()
-            .filter(|e| e.kind == CfgEdgeKind::Normal)
-            .collect();
-
-        if normal_edges.len() == 1 {
-            current = normal_edges[0].target;
-        } else {
-            // Multiple successors or none — we're not on a straight path
-            return None;
-        }
+/// Resolve the lexical managed-scope owner of an allocation. Kotlin may place
+/// the allocation on a preceding statement, so a bounded straight-line bridge
+/// to the `.use` call is retained.
+fn managed_scope_for_alloc(start: &CfgNodeId, cfg: &CfgGraph, max_hops: usize) -> Option<u32> {
+    let node = cfg.nodes.get(start)?;
+    if is_managed_context(node.call_context) {
+        return node.managed_scope_start_byte;
     }
+    if max_hops == 0 {
+        return None;
+    }
+    let normal_successors: Vec<_> = cfg
+        .successors
+        .get(start)?
+        .iter()
+        .filter(|edge| edge.kind == CfgEdgeKind::Normal)
+        .collect();
+    if normal_successors.len() != 1 {
+        return None;
+    }
+    let successor = normal_successors[0].target;
+    let target = cfg.nodes.get(&successor)?;
+    if target.call_context == CallContext::KotlinUse {
+        return target.managed_scope_start_byte;
+    }
+    managed_scope_for_alloc(&successor, cfg, max_hops - 1)
+}
 
-    None
+fn managed_block_exits(scope_start_byte: u32, cfg: &CfgGraph) -> Vec<CfgNodeId> {
+    let mut exits: Vec<_> = cfg
+        .nodes
+        .values()
+        .filter(|node| {
+            node.kind == CfgNodeKind::BlockExit
+                && node.managed_scope_start_byte == Some(scope_start_byte)
+        })
+        .map(|node| node.id)
+        .collect();
+    exits.sort_unstable();
+    exits
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +306,7 @@ mod tests {
         let mut stmt = CfgNode::new(sym_id, CfgNodeKind::Statement, stmt_range);
         if alloc_has_python_with {
             stmt.call_context = CallContext::PythonWith;
+            stmt.managed_scope_start_byte = Some(10);
         }
         *alloc_node_id = stmt.id;
         nodes.push(stmt.clone());
@@ -314,7 +322,11 @@ mod tests {
                 end_line: 0,
                 end_column: 0,
             };
-            let be = CfgNode::new(sym_id, CfgNodeKind::BlockExit, be_range);
+            let mut be = CfgNode::new(sym_id, CfgNodeKind::BlockExit, be_range);
+            if alloc_has_python_with {
+                be.call_context = CallContext::PythonWith;
+                be.managed_scope_start_byte = Some(10);
+            }
             nodes.push(be.clone());
             last_id = be.id;
         }
@@ -365,6 +377,184 @@ mod tests {
         // effects is empty — should be a no-op
         run_scope_exit_pass(&mut effects, &cfg);
         assert!(effects.is_empty(), "empty effects should remain empty");
+    }
+
+    #[test]
+    fn owner_matching_covers_all_clones_without_crossing_nested_scopes() {
+        let sym_id = make_sym_id();
+        let entry = CfgNode::entry(&sym_id);
+        let exit = CfgNode::exit(&sym_id);
+        let range = |byte| types::structs::TextRange {
+            start_byte: byte,
+            end_byte: byte + 1,
+            start_line: 0,
+            start_column: byte,
+            end_line: 0,
+            end_column: byte + 1,
+        };
+
+        let mut outer_alloc = CfgNode::new(&sym_id, CfgNodeKind::Statement, range(10));
+        outer_alloc.call_context = CallContext::PythonWith;
+        outer_alloc.managed_scope_start_byte = Some(10);
+        let mut inner_alloc = CfgNode::new(&sym_id, CfgNodeKind::Statement, range(20));
+        inner_alloc.call_context = CallContext::PythonWith;
+        inner_alloc.managed_scope_start_byte = Some(20);
+        let mut inner_exit = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, range(30));
+        inner_exit.call_context = CallContext::PythonWith;
+        inner_exit.managed_scope_start_byte = Some(20);
+        let mut outer_exit_one =
+            CfgNode::new_with_instance(&sym_id, CfgNodeKind::BlockExit, range(40), 1);
+        outer_exit_one.call_context = CallContext::PythonWith;
+        outer_exit_one.managed_scope_start_byte = Some(10);
+        let mut outer_exit_two =
+            CfgNode::new_with_instance(&sym_id, CfgNodeKind::BlockExit, range(40), 2);
+        outer_exit_two.call_context = CallContext::PythonWith;
+        outer_exit_two.managed_scope_start_byte = Some(10);
+
+        let nodes = vec![
+            entry.clone(),
+            outer_alloc.clone(),
+            inner_alloc.clone(),
+            inner_exit.clone(),
+            outer_exit_one.clone(),
+            outer_exit_two.clone(),
+            exit.clone(),
+        ];
+        let edges = vec![
+            types::cfg::CfgEdge::new(&entry.id, &outer_alloc.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&outer_alloc.id, &inner_alloc.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&inner_alloc.id, &inner_exit.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&inner_exit.id, &outer_exit_one.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&outer_alloc.id, &outer_exit_two.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&outer_exit_one.id, &exit.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&outer_exit_two.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+        let cfg = CfgGraph::build(&nodes, &edges).expect("valid nested managed-scope CFG");
+        let mut effects = HashMap::from([
+            (
+                outer_alloc.id,
+                vec![make_effect(
+                    &outer_alloc.id,
+                    0,
+                    SemanticEffectKind::Alloc {
+                        target: PlaceRef::Local {
+                            name: "outer".into(),
+                        },
+                        callee: "open_outer".into(),
+                    },
+                    0.9,
+                )],
+            ),
+            (
+                inner_alloc.id,
+                vec![make_effect(
+                    &inner_alloc.id,
+                    0,
+                    SemanticEffectKind::Alloc {
+                        target: PlaceRef::Local {
+                            name: "inner".into(),
+                        },
+                        callee: "open_inner".into(),
+                    },
+                    0.9,
+                )],
+            ),
+        ]);
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        let freed_names = |node_id| {
+            effects
+                .get(&node_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|effect| match &effect.kind {
+                    SemanticEffectKind::Free {
+                        place: PlaceRef::Local { name },
+                        ..
+                    } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(freed_names(inner_exit.id), vec!["inner"]);
+        assert_eq!(freed_names(outer_exit_one.id), vec!["outer"]);
+        assert_eq!(freed_names(outer_exit_two.id), vec!["outer"]);
+    }
+
+    #[test]
+    fn managed_scope_cleanup_is_deterministic_lifo() {
+        let sym_id = make_sym_id();
+        let entry = CfgNode::entry(&sym_id);
+        let exit = CfgNode::exit(&sym_id);
+        let range = |byte| types::structs::TextRange {
+            start_byte: byte,
+            end_byte: byte + 1,
+            start_line: 0,
+            start_column: byte,
+            end_line: 0,
+            end_column: byte + 1,
+        };
+        let mut first = CfgNode::new(&sym_id, CfgNodeKind::Statement, range(10));
+        first.call_context = CallContext::JavaTryWith;
+        first.managed_scope_start_byte = Some(5);
+        let mut second = CfgNode::new(&sym_id, CfgNodeKind::Statement, range(20));
+        second.call_context = CallContext::JavaTryWith;
+        second.managed_scope_start_byte = Some(5);
+        let mut block_exit = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, range(30));
+        block_exit.call_context = CallContext::JavaTryWith;
+        block_exit.managed_scope_start_byte = Some(5);
+        let nodes = vec![
+            entry.clone(),
+            first.clone(),
+            second.clone(),
+            block_exit.clone(),
+            exit.clone(),
+        ];
+        let edges = vec![
+            types::cfg::CfgEdge::new(&entry.id, &first.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&first.id, &second.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&second.id, &block_exit.id, CfgEdgeKind::Normal),
+            types::cfg::CfgEdge::new(&block_exit.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+        let cfg = CfgGraph::build(&nodes, &edges).expect("valid multi-resource CFG");
+        let alloc = |node: &CfgNode, order, name: &str| {
+            make_effect(
+                &node.id,
+                order,
+                SemanticEffectKind::Alloc {
+                    target: PlaceRef::Local { name: name.into() },
+                    callee: format!("open_{name}"),
+                },
+                0.9,
+            )
+        };
+        // Deliberately insert in acquisition order; HashMap iteration must not
+        // determine the resulting cleanup order.
+        let mut effects = HashMap::from([
+            (first.id, vec![alloc(&first, 0, "first")]),
+            (
+                second.id,
+                vec![alloc(&second, 0, "second_a"), alloc(&second, 1, "second_b")],
+            ),
+        ]);
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        let freed_names: Vec<_> = effects[&block_exit.id]
+            .iter()
+            .filter_map(|effect| match &effect.kind {
+                SemanticEffectKind::Free {
+                    place: PlaceRef::Local { name },
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(freed_names, vec!["second_b", "second_a", "first"]);
+        assert_eq!(effects[&block_exit.id][0].order, 0);
+        assert_eq!(effects[&block_exit.id][1].order, 1);
+        assert_eq!(effects[&block_exit.id][2].order, 2);
     }
 
     #[test]
@@ -429,6 +619,52 @@ mod tests {
             1,
             "exit should still have exactly 1 effect (the explicit Free)"
         );
+    }
+
+    #[test]
+    fn managed_scope_exit_is_not_suppressed_by_explicit_free_elsewhere() {
+        let sym_id = make_sym_id();
+        let mut node_id = CfgNodeId::generate(&sym_id, "dummy", 0);
+        let cfg =
+            make_cfg_with_alloc_node(&sym_id, &mut node_id, CfgNodeKind::Statement, true, true);
+        let place = PlaceRef::Local { name: "f".into() };
+        let mut effects = HashMap::from([(
+            node_id,
+            vec![
+                make_effect(
+                    &node_id,
+                    0,
+                    SemanticEffectKind::Alloc {
+                        target: place.clone(),
+                        callee: "open".into(),
+                    },
+                    0.85,
+                ),
+                make_effect(
+                    &node_id,
+                    1,
+                    SemanticEffectKind::Free {
+                        place,
+                        callee: "close".into(),
+                    },
+                    0.85,
+                ),
+            ],
+        )]);
+
+        run_scope_exit_pass(&mut effects, &cfg);
+
+        let block_exit = cfg
+            .nodes
+            .values()
+            .find(|node| node.kind == CfgNodeKind::BlockExit)
+            .expect("managed CFG BlockExit");
+        assert!(effects.get(&block_exit.id).is_some_and(|node_effects| {
+            node_effects.iter().any(|effect| {
+                matches!(effect.kind, SemanticEffectKind::Free { .. })
+                    && effect.consumption_style == Some(ConsumptionStyle::ContextManaged)
+            })
+        }));
     }
 
     #[test]
@@ -681,6 +917,7 @@ mod tests {
         };
         let mut stmt = CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
         stmt.call_context = CallContext::JavaTryWith;
+        stmt.managed_scope_start_byte = Some(10);
         let java_node_id = stmt.id;
 
         let be_range = types::structs::TextRange {
@@ -691,7 +928,9 @@ mod tests {
             end_line: 0,
             end_column: 0,
         };
-        let be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        let mut be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        be.call_context = CallContext::JavaTryWith;
+        be.managed_scope_start_byte = Some(10);
         let be_id = be.id;
 
         let exit = CfgNode::exit(&sym_id);
@@ -795,6 +1034,7 @@ mod tests {
         };
         let mut stmt = CfgNode::new(&sym_id, CfgNodeKind::Statement, stmt_range);
         stmt.call_context = CallContext::CSharpUsing;
+        stmt.managed_scope_start_byte = Some(10);
         let cs_node_id = stmt.id;
 
         let be_range = types::structs::TextRange {
@@ -805,7 +1045,9 @@ mod tests {
             end_line: 0,
             end_column: 0,
         };
-        let be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        let mut be = CfgNode::new(&sym_id, CfgNodeKind::BlockExit, be_range);
+        be.call_context = CallContext::CSharpUsing;
+        be.managed_scope_start_byte = Some(10);
         let be_id = be.id;
 
         let exit = CfgNode::exit(&sym_id);

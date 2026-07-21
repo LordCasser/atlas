@@ -23,6 +23,8 @@ use types::ids::{CfgNodeId, DataNodeId, EffectId};
 use super::cfg_graph::CfgGraph;
 use super::scope_exit::run_scope_exit_pass;
 
+const GO_DEFER_EXECUTION_DESCRIPTION: &str = "Go deferred call execution";
+
 // ---------------------------------------------------------------------------
 // EffectComposition — the output of compose_effects
 // ---------------------------------------------------------------------------
@@ -199,8 +201,19 @@ pub fn compose_effects(
                 }
             })
             .collect();
+        let go_defer_outer_call_start = (node.kind == types::enums::CfgNodeKind::Statement
+            && node.call_context == CallContext::GoDefer)
+            .then(|| {
+                call_targets
+                    .iter()
+                    .map(|(target, _)| target.range.start_byte)
+                    .min()
+            })
+            .flatten();
 
-        for (_call_target, candidates) in &call_targets {
+        for (call_target, candidates) in &call_targets {
+            let is_go_defer_outer_call =
+                go_defer_outer_call_start == Some(call_target.range.start_byte);
             for candidate in candidates {
                 let mut hit_any = false;
 
@@ -225,6 +238,9 @@ pub fn compose_effects(
                                 confidence,
                             );
                             eff.eligible_for_implicit_cleanup = Some(eligible);
+                            if is_go_defer_outer_call {
+                                eff.description = Some(GO_DEFER_EXECUTION_DESCRIPTION.to_string());
+                            }
                             effects.push(eff);
                             hit_any = true;
                         }
@@ -235,7 +251,7 @@ pub fn compose_effects(
                 // Step 1b: Check if this call frees a resource
                 if let Some(mut cc) = contract.classify_consumption(candidate) {
                     // Go defer: set Deferred consumption style
-                    if node.call_context == CallContext::GoDefer {
+                    if is_go_defer_outer_call {
                         cc.style = ConsumptionStyle::Deferred;
                     }
                     let mut free_effects =
@@ -243,6 +259,9 @@ pub fn compose_effects(
                     // Propagate consumption style to each free effect
                     for eff in &mut free_effects {
                         eff.consumption_style = Some(cc.style.clone());
+                        if is_go_defer_outer_call {
+                            eff.description = Some(GO_DEFER_EXECUTION_DESCRIPTION.to_string());
+                        }
                     }
                     effects.extend(free_effects);
                     hit_any = true;
@@ -320,7 +339,14 @@ pub fn compose_effects(
         }
     }
 
-    // Step 3: Run scope-exit post-pass (implicit Drop for Rust, Python with, etc.)
+    // Step 2.7: A Go defer statement evaluates its function value/arguments
+    // now, but the outer call's resource effects happen only when the
+    // path-specific LIFO BlockExit executes. Move those effects from every
+    // registration-state clone to the owner-matched execution clones.
+    lower_go_defer_effects(&mut node_effects, cfg);
+
+    // Step 3: Run scope-exit post-pass (heuristic function-exit Drop for Rust;
+    // owner-matched BlockExit cleanup for managed contexts).
     // Always run — eligibility is gated per-Alloc via `eligible_for_implicit_cleanup`
     // and per-context (PythonWith / JavaTryWith / CSharpUsing).
     run_scope_exit_pass(&mut node_effects, cfg);
@@ -332,6 +358,92 @@ pub fn compose_effects(
         node_effects,
         transfer_graph,
     }
+}
+
+fn lower_go_defer_effects(
+    node_effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>,
+    cfg: &CfgGraph,
+) {
+    let mut owners: Vec<u32> = cfg
+        .nodes
+        .values()
+        .filter(|node| {
+            node.kind == types::enums::CfgNodeKind::BlockExit
+                && node.call_context == CallContext::GoDefer
+        })
+        .filter_map(|node| node.managed_scope_start_byte)
+        .collect();
+    owners.sort_unstable();
+    owners.dedup();
+
+    for owner in owners {
+        let mut registrations: Vec<_> = cfg
+            .nodes
+            .values()
+            .filter(|node| {
+                node.kind == types::enums::CfgNodeKind::Statement
+                    && node.call_context == CallContext::GoDefer
+                    && node.managed_scope_start_byte == Some(owner)
+            })
+            .map(|node| node.id)
+            .collect();
+        registrations.sort_unstable();
+
+        let templates = registrations
+            .iter()
+            .find_map(|node_id| {
+                node_effects.get(node_id).map(|effects| {
+                    effects
+                        .iter()
+                        .filter(|effect| is_go_deferred_call_effect(effect))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default();
+        if templates.is_empty() {
+            continue;
+        }
+
+        for registration in &registrations {
+            if let Some(effects) = node_effects.get_mut(registration) {
+                effects.retain(|effect| !is_go_deferred_call_effect(effect));
+            }
+        }
+
+        let mut exits: Vec<_> = cfg
+            .nodes
+            .values()
+            .filter(|node| {
+                node.kind == types::enums::CfgNodeKind::BlockExit
+                    && node.call_context == CallContext::GoDefer
+                    && node.managed_scope_start_byte == Some(owner)
+            })
+            .map(|node| node.id)
+            .collect();
+        exits.sort_unstable();
+        for exit_id in exits {
+            let exit_effects = node_effects.entry(exit_id).or_default();
+            for template in &templates {
+                let mut effect = make_effect(
+                    &exit_id,
+                    exit_effects.len() as u32,
+                    template.kind.clone(),
+                    template.confidence,
+                );
+                effect.consumption_style = template.consumption_style.clone();
+                effect.description = Some(GO_DEFER_EXECUTION_DESCRIPTION.to_string());
+                effect.eligible_for_implicit_cleanup = template.eligible_for_implicit_cleanup;
+                exit_effects.push(effect);
+            }
+        }
+    }
+}
+
+fn is_go_deferred_call_effect(effect: &SemanticEffect) -> bool {
+    effect.description.as_deref() == Some(GO_DEFER_EXECUTION_DESCRIPTION)
+        || matches!(effect.kind, SemanticEffectKind::Free { .. })
+            && effect.consumption_style == Some(ConsumptionStyle::Deferred)
 }
 
 // ---------------------------------------------------------------------------
@@ -812,5 +924,117 @@ pub(crate) fn effect_kind_name(kind: &SemanticEffectKind) -> &'static str {
         SemanticEffectKind::Nullify { .. } => "Nullify",
         SemanticEffectKind::Return { .. } => "Return",
         SemanticEffectKind::Escape { .. } => "Escape",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::cfg::{CfgEdge, CfgNode};
+    use types::enums::{CfgEdgeKind, CfgNodeKind};
+    use types::ids::{FileId, SymbolId};
+    use types::structs::TextRange;
+
+    #[test]
+    fn go_deferred_free_moves_from_registration_to_execution_node() {
+        let file_id = FileId::generate("defer.go");
+        let function_id = SymbolId::generate(&file_id, "go", "run", "function", None);
+        let entry = CfgNode::entry(&function_id);
+        let mut registration = CfgNode::new(
+            &function_id,
+            CfgNodeKind::Statement,
+            TextRange {
+                start_byte: 10,
+                end_byte: 20,
+                start_line: 1,
+                start_column: 2,
+                end_line: 1,
+                end_column: 12,
+            },
+        );
+        registration.call_context = CallContext::GoDefer;
+        registration.managed_scope_start_byte = Some(4);
+        let mut execution = CfgNode::new_with_instance(
+            &function_id,
+            CfgNodeKind::BlockExit,
+            TextRange {
+                start_byte: 20,
+                end_byte: 20,
+                start_line: 1,
+                start_column: 12,
+                end_line: 1,
+                end_column: 12,
+            },
+            1,
+        );
+        execution.call_context = CallContext::GoDefer;
+        execution.managed_scope_start_byte = Some(4);
+        let exit = CfgNode::exit(&function_id);
+        let graph = CfgGraph::build(
+            &[
+                entry.clone(),
+                registration.clone(),
+                execution.clone(),
+                exit.clone(),
+            ],
+            &[
+                CfgEdge::new(&entry.id, &registration.id, CfgEdgeKind::Normal),
+                CfgEdge::new(&registration.id, &execution.id, CfgEdgeKind::Defer),
+                CfgEdge::new(&execution.id, &exit.id, CfgEdgeKind::Normal),
+            ],
+        )
+        .expect("defer CFG");
+        let mut free = make_effect(
+            &registration.id,
+            0,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Local {
+                    name: "file".to_string(),
+                },
+                callee: "Close".to_string(),
+            },
+            0.9,
+        );
+        free.consumption_style = Some(ConsumptionStyle::Deferred);
+        let mut alloc = make_effect(
+            &registration.id,
+            1,
+            SemanticEffectKind::Alloc {
+                target: PlaceRef::Indeterminate,
+                callee: "openLater".to_string(),
+            },
+            0.8,
+        );
+        alloc.description = Some(GO_DEFER_EXECUTION_DESCRIPTION.to_string());
+        let mut effects = HashMap::from([(registration.id, vec![free, alloc])]);
+
+        lower_go_defer_effects(&mut effects, &graph);
+
+        assert!(
+            effects
+                .get(&registration.id)
+                .is_some_and(|effects| effects.is_empty()),
+            "registration evaluates the call operands but must not free yet"
+        );
+        let execution_effects = effects
+            .get(&execution.id)
+            .expect("deferred execution effects");
+        assert_eq!(execution_effects.len(), 2);
+        assert_eq!(execution_effects[0].cfg_node_id, execution.id);
+        assert_eq!(
+            execution_effects[0].consumption_style,
+            Some(ConsumptionStyle::Deferred)
+        );
+        assert!(matches!(
+            execution_effects[0].kind,
+            SemanticEffectKind::Free {
+                place: PlaceRef::Local { ref name },
+                ..
+            } if name == "file"
+        ));
+        assert!(matches!(
+            execution_effects[1].kind,
+            SemanticEffectKind::Alloc { ref callee, .. } if callee == "openLater"
+        ));
     }
 }

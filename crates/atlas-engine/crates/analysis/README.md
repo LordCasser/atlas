@@ -25,7 +25,7 @@ TraceEngine
 
 ### Capability gating
 
-Trace methods check the language's `LanguageCapabilityProfile` before execution. All 14 languages currently report DataflowInterproc; CFG is unsupported only for ArkTS and PHP. A supported feature can still produce a partial result when facts are missing or traversal is truncated, with the reason in diagnostics.
+Trace methods check the language's `LanguageCapabilityProfile` before execution. All 14 languages currently report DataflowInterproc and limited CFG support. C++ exposes try/catch paths through `Exception` edges. C/C++/Go direct same-function goto/label pairs use persisted `Goto` edges; lifecycle clears branch frames at a goto target because the jump may bypass or change lexical arms. JavaScript/TypeScript/ArkTS, Java, C#, PHP, Python, Kotlin, Cangjie, and Ruby additionally expose finally/ensure-style paths through path-isolated clones; Ruby includes method-body and nested begin/rescue/else/ensure, and normal and abrupt continuations cannot cross. Java/C#/PHP direct object-created explicit throws connect handlers in source order and stop at the first unguarded syntactically exact type; earlier handlers remain conservative alternatives because inheritance is unresolved. Go `select` exposes communication/default siblings without treating a blocking no-default select as a switch-style skip path. Bounded Go defer stacks are path-sensitive: normal exits traverse persisted `Defer` edges and owner-matched LIFO `BlockExit` nodes, and Deferred Free effects live on those execution nodes rather than registration points; nested call-argument consumption remains at registration. Rust `?` preserves both its success continuation and residual return-to-Exit path while respecting nested closure/async boundaries. Rust `let-else` separates successful matching from explicit return/break/continue, unconditional-loop, or unqualified builtin panic-like macro alternatives. Macro shadowing/re-exports, custom never-return macros, panic unwinding, and `catch_unwind` remain conservative. Rust implicit Drop remains a function-exit effect heuristic, not path-sensitive lexical RAII. Python unguarded syntax-irrefutable wildcard/capture/`as`/group/OR arms suppress the impossible synthetic no-match path; Rust and Cangjie currently recognize only direct unguarded wildcards. Guarded and type-driven pattern exhaustiveness stays conservative. Java try-with-resources, C# using, Python with, Kotlin use, and Ruby block resources use persisted lexical owners to bind each allocation only to that scope's path-isolated BlockExit clones, with deterministic LIFO cleanup effects. Cleanup exceptions conservatively retain ordered `Throw` continuations into enclosing handlers/finally regions. Cyclic or over-budget Go defer stacks fall back atomically to annotation; panic/recover/Goexit unwinding, complex anonymous deferred bodies, inherited or aliased catch types, thrown variables, guarded/filtered handlers, implicit exceptions, remaining complex match exhaustiveness and pattern binding dataflow, cleanup exception suppression/replacement and exact identity, Ruby retry/redo, computed/PHP/C# goto, C++ cross-scope destruction on goto, ArkUI callback/trailing-block control flow, and the bounded clone fallback remain explicit boundaries. A supported feature can still produce a partial result when facts are missing or traversal is truncated, with the reason in diagnostics.
 
 ### Response envelope
 
@@ -68,7 +68,12 @@ Backward dataflow walk from a `DataNodeId`:
 `EffectComposer` combines CFG and dataflow facts into language-neutral semantic effects.
 Handlers compose these effects at query time onto an in-memory CFG copy; persisted CFG
 nodes remain raw control-flow facts. `FieldLifecycleEngine` tracks both canonical field
-paths and exact local resource variables. `BranchDiffEngine`, lifecycle proof, and semantic
-impact consume the same composition. Language-specific ownership/resource meaning stays
-behind analysis consumers and domain-rule registries; C/C++ defaults include common libc
-and Linux kernel allocation/free APIs.
+paths and exact local resource variables. Lifecycle transitions carry owner-bound branch
+frames for true/false/case paths and for exception handlers; entering a handler discards
+frames owned by the abandoned try region, preserves enclosing conditions, and the frame is
+removed at that try's Join. MCP exposes this as each transition's `branch_context`.
+`BranchDiffEngine`, lifecycle proof, and semantic impact consume the same composition;
+branch diff deliberately does not compare handlers as ordinary true/false siblings.
+Language-specific ownership/resource meaning stays behind analysis consumers and
+domain-rule registries; C/C++ defaults include common libc and Linux kernel allocation/free
+APIs.

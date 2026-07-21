@@ -103,9 +103,10 @@ pub fn analyze_branch_semantic(
     composition: &EffectComposition,
 ) -> Vec<BranchDiffIssue> {
     let mut issues = Vec::new();
+    let reachable = cfg.reachable_from_entry();
 
     for (node_id, node) in &cfg.nodes {
-        if node.kind != CfgNodeKind::Branch {
+        if node.kind != CfgNodeKind::Branch || !reachable.contains(node_id) {
             continue;
         }
 
@@ -158,24 +159,22 @@ pub fn analyze_branch_semantic(
 }
 
 // ---------------------------------------------------------------------------
-// N-way switch-case analysis (Phase 1)
+// N-way switch-case analysis
 // ---------------------------------------------------------------------------
 
 /// A switch dispatch Branch node has one [`CfgEdgeKind::CaseBranch`] edge per
-/// case body plus a synthetic Branch→Join skip edge. Each case is an independent
-/// path from the dispatch; fall-through is NOT modeled (see
-/// `cfg_builder::walk_switch`).
+/// case body and, when there is no default, a synthetic Branch→Join skip edge.
+/// Supported fall-through is represented by case-tail → next-case edges, so a
+/// case path naturally includes downstream effects.
 ///
 /// # False-positive strategy (contract: may under-report, must NOT over-report)
 ///
-/// Because fall-through is invisible to the CFG, a case that really falls
-/// through to a freeing case would look like "missing free" if compared
-/// naively — a false positive. To stay conservative:
+/// Labeled jumps and recovered malformed syntax remain best-effort. To keep
+/// those residual uncertainties from becoming noisy findings:
 ///
 /// 1. **Only effectful cases participate.** Case paths that touch no field
-///    (empty fall-through labels, the synthetic no-match skip edge) are dropped
-///    before comparison, so a bare `case N:` fall-through can never be the
-///    flagged outlier.
+///    (empty labels and the synthetic no-match skip edge) are dropped before
+///    comparison, so they can never be the flagged outlier.
 /// 2. **All-but-one rule with a per-field union (O(n·fields)).** For each field
 ///    in the union of all case effects, we count how many cases free / alloc it.
 ///    We only flag the field when it is freed (or allocated) in **exactly n-1**
@@ -233,7 +232,7 @@ fn analyze_switch_cases(
                 IssueSeverity::Medium,
                 0.60,
                 format!(
-                    "field '{field}' freed in {} of {n} switch cases but not in 1 case (possible missing cleanup; fall-through not modeled)",
+                    "field '{field}' freed in {} of {n} switch cases but not in 1 case (possible missing cleanup)",
                     n - 1
                 ),
                 &majority,
@@ -248,7 +247,7 @@ fn analyze_switch_cases(
                 IssueSeverity::Low,
                 0.55,
                 format!(
-                    "field '{field}' allocated in {} of {n} switch cases but not in 1 case (fall-through not modeled)",
+                    "field '{field}' allocated in {} of {n} switch cases but not in 1 case",
                     n - 1
                 ),
                 &majority,
@@ -740,6 +739,7 @@ mod tests {
                 end_column: 0,
             },
             call_context: types::enums::CallContext::None,
+            managed_scope_start_byte: None,
             semantic_effects: vec![],
         };
 
@@ -796,6 +796,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -811,6 +812,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![true_free_se],
             },
             CfgNode {
@@ -826,6 +828,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![true_alloc_se],
             },
             CfgNode {
@@ -841,6 +844,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![true_store_se],
             },
             CfgNode {
@@ -856,6 +860,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -871,6 +876,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -886,6 +892,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
         ];
@@ -1058,6 +1065,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -1073,6 +1081,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -1088,6 +1097,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![free_effect.clone()],
             },
             CfgNode {
@@ -1103,6 +1113,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![free_effect.clone()],
             },
             CfgNode {
@@ -1118,6 +1129,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
             CfgNode {
@@ -1133,6 +1145,7 @@ mod tests {
                     end_column: 0,
                 },
                 call_context: types::enums::CallContext::None,
+                managed_scope_start_byte: None,
                 semantic_effects: vec![],
             },
         ];
@@ -1230,6 +1243,7 @@ mod tests {
             kind,
             stmt_range: tr(byte),
             call_context: types::enums::CallContext::None,
+            managed_scope_start_byte: None,
             semantic_effects: vec![],
         }
     }
@@ -1321,6 +1335,38 @@ mod tests {
         (nodes, edges, composition)
     }
 
+    #[test]
+    fn unreachable_branch_after_abrupt_transfer_has_no_semantic_issue() {
+        let fid = test_fid();
+        let entry = CfgNodeId::generate(&fid, "entry", 0);
+        let exit = CfgNodeId::generate(&fid, "exit", 1);
+        let branch = CfgNodeId::generate(&fid, "dead_branch", 10);
+        let free = CfgNodeId::generate(&fid, "dead_free", 11);
+        let join = CfgNodeId::generate(&fid, "dead_join", 12);
+        let nodes = vec![
+            plain_node(entry, fid, CfgNodeKind::Entry, 0),
+            plain_node(exit, fid, CfgNodeKind::Exit, 1),
+            plain_node(branch, fid, CfgNodeKind::Branch, 10),
+            plain_node(free, fid, CfgNodeKind::Statement, 11),
+            plain_node(join, fid, CfgNodeKind::Join, 12),
+        ];
+        let edges = vec![
+            CfgEdge::new(&entry, &exit, CfgEdgeKind::Normal),
+            CfgEdge::new(&branch, &free, CfgEdgeKind::TrueBranch),
+            CfgEdge::new(&branch, &join, CfgEdgeKind::FalseBranch),
+            CfgEdge::new(&free, &join, CfgEdgeKind::Normal),
+            CfgEdge::new(&join, &exit, CfgEdgeKind::Normal),
+        ];
+        let effect = free_field_effect(free, "data.ptr");
+        let composition = EffectComposition {
+            node_effects: HashMap::from([(free, vec![effect])]),
+            ..EffectComposition::default()
+        };
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+
+        assert!(analyze_branch_semantic(&graph, &composition).is_empty());
+    }
+
     /// 3 cases, `data.res` freed in 2 → all-but-one → FLAGGED.
     #[test]
     fn test_switch_semantic_all_but_one_free() {
@@ -1353,6 +1399,53 @@ mod tests {
         assert!(
             issues.is_empty(),
             "a field freed by only one case must NOT be flagged, got: {issues:?}"
+        );
+    }
+
+    #[test]
+    fn test_switch_semantic_non_empty_fallthrough_inherits_downstream_free() {
+        let fid = test_fid();
+        let (nodes, mut edges, composition) = build_switch_semantic(
+            fid,
+            &[
+                Some("data.marker"),
+                Some("data.res"),
+                Some("data.res"),
+                Some("data.res"),
+            ],
+        );
+        let branch = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Branch)
+            .expect("switch branch");
+        let join = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Join)
+            .expect("switch join");
+        let case_targets: Vec<CfgNodeId> = edges
+            .iter()
+            .filter(|edge| {
+                edge.source == branch.id
+                    && edge.kind == CfgEdgeKind::CaseBranch
+                    && edge.target != join.id
+            })
+            .map(|edge| edge.target)
+            .collect();
+        let first = case_targets[0];
+        let second = case_targets[1];
+        edges.retain(|edge| !(edge.source == first && edge.target == join.id));
+        edges.push(CfgEdge {
+            id: types::ids::CfgEdgeId::default(),
+            source: first,
+            target: second,
+            kind: CfgEdgeKind::Normal,
+        });
+
+        let graph = CfgGraph::build(&nodes, &edges).expect("build");
+        let issues = analyze_branch_semantic(&graph, &composition);
+        assert!(
+            issues.is_empty(),
+            "fall-through case inherits the downstream cleanup: {issues:?}"
         );
     }
 

@@ -84,9 +84,10 @@ impl BranchDiffEngine {
         };
 
         let mut diffs = Vec::new();
+        let reachable = graph.reachable_from_entry();
 
         for (nid, node) in &graph.nodes {
-            if node.kind != CfgNodeKind::Branch {
+            if node.kind != CfgNodeKind::Branch || !reachable.contains(nid) {
                 continue;
             }
 
@@ -163,24 +164,22 @@ impl BranchDiffEngine {
         diffs
     }
 
-    /// N-way switch-case comparison (Phase 1).
+    /// N-way switch-case comparison.
     ///
     /// A switch dispatch Branch node has one [`CfgEdgeKind::CaseBranch`] edge per
-    /// case body plus one synthetic Branch→Join skip edge (the "no case matched"
-    /// path). Each case is modeled as an **independent** path from the dispatch;
-    /// fall-through is not modeled (see `cfg_builder::walk_switch`).
+    /// case body and, when there is no default, one synthetic Branch→Join skip
+    /// edge (the "no case matched" path). Supported implicit/explicit
+    /// fall-through is represented by ordinary case-tail → next-case edges, so
+    /// walking from a case target includes the effects it inherits downstream.
     ///
     /// # False-positive strategy (contract: may under-report, must NOT over-report)
     ///
-    /// Because fall-through is invisible to the CFG, a case that *actually* falls
-    /// through to a freeing case would look like "missing free" if compared
-    /// naively — a false positive. To stay conservative we:
+    /// The builder remains best-effort for labeled jumps and malformed/recovered
+    /// syntax. To keep that uncertainty from becoming noisy findings we:
     ///
     /// 1. **Ignore effect-less paths.** Empty case bodies and the synthetic
     ///    Branch→Join skip edge land directly on the Join/Exit and carry no
-    ///    effects. A fall-through `case N:` (label with no body) is exactly such
-    ///    an empty path, so it can never be the flagged outlier. This is the
-    ///    core guard against fall-through false positives.
+    ///    effects, so they can never be the flagged outlier.
     /// 2. **Reference-union comparison, O(n).** Compute the union of effects
     ///    across all *effectful* cases once, then compare each case against the
     ///    union. We only flag the **all-but-one** shape: a resource handled in
@@ -495,6 +494,7 @@ mod tests {
             kind,
             stmt_range: range,
             call_context: types::enums::CallContext::None,
+            managed_scope_start_byte: None,
             semantic_effects: effects,
         }
     }
@@ -575,6 +575,33 @@ mod tests {
         ];
         let result = BranchDiffEngine::diff_branches(&nodes, &edges);
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_unreachable_branch_after_abrupt_transfer_is_not_analyzed() {
+        let fid = test_function_id();
+        let entry = make_entry_node(&fid, 0);
+        let exit = make_exit_node(&fid, 1);
+        let branch = make_branch_node(&fid, 10, 10);
+        let stmt_id = CfgNodeId::generate(&fid, CfgNodeKind::Statement.as_str(), 11);
+        let stmt = make_stmt_node(&fid, vec![se_free(stmt_id, 0, "ptr")], 11, 11);
+        let join = make_join_node(&fid, 12, 12);
+        let nodes = vec![
+            entry.clone(),
+            exit.clone(),
+            branch.clone(),
+            stmt.clone(),
+            join.clone(),
+        ];
+        let edges = vec![
+            make_edge(&entry.id, &exit.id, CfgEdgeKind::Normal),
+            make_edge(&branch.id, &stmt.id, CfgEdgeKind::TrueBranch),
+            make_edge(&branch.id, &join.id, CfgEdgeKind::FalseBranch),
+            make_edge(&stmt.id, &join.id, CfgEdgeKind::Normal),
+            make_edge(&join.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+
+        assert!(BranchDiffEngine::diff_branches(&nodes, &edges).is_empty());
     }
 
     #[test]
@@ -828,6 +855,49 @@ mod tests {
         );
     }
 
+    /// A non-empty case that falls through inherits the next case's cleanup.
+    /// It must not become the lone "missing free" outlier.
+    #[test]
+    fn test_switch_non_empty_fallthrough_inherits_downstream_effects() {
+        let fid = test_function_id();
+        let case_effects = vec![
+            vec![case_free(&fid, 10, "marker")],
+            vec![case_free(&fid, 11, "res")],
+            vec![case_free(&fid, 12, "res")],
+            vec![case_free(&fid, 13, "res")],
+        ];
+        let (nodes, mut edges, _line) = build_switch_cfg(&fid, &case_effects);
+        let branch = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Branch)
+            .expect("switch branch");
+        let join = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Join)
+            .expect("switch join");
+        let case_targets: Vec<CfgNodeId> = edges
+            .iter()
+            .filter(|edge| {
+                edge.source == branch.id
+                    && edge.kind == CfgEdgeKind::CaseBranch
+                    && edge.target != join.id
+            })
+            .map(|edge| edge.target)
+            .collect();
+        let first = case_targets[0];
+        let second = case_targets[1];
+        edges.retain(|edge| !(edge.source == first && edge.target == join.id));
+        edges.push(make_edge(&first, &second, CfgEdgeKind::Normal));
+
+        let result = BranchDiffEngine::diff_branches(&nodes, &edges);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].suspicious_asymmetry.is_none(),
+            "fall-through path inherits the downstream free: {:?}",
+            result[0].suspicious_asymmetry
+        );
+    }
+
     /// A plausibly-fall-through empty case (no effects) plus the synthetic skip
     /// edge must not trip the outlier detector. 3 effectful cases all free `res`
     /// symmetrically; the empty case is ignored → no flag.
@@ -924,7 +994,7 @@ mod tests {
             .count();
         assert!(
             case_edges >= 4,
-            "expected >= 4 CaseBranch edges (3 case + default + skip), got {case_edges}"
+            "expected 3 cases + default without a no-match edge, got {case_edges}"
         );
 
         // branch_diff must now record the switch (branch_count > 0).

@@ -4,7 +4,7 @@
 //! (successors and predecessors) for dataflow fixpoint algorithms, branch-path
 //! walking, and structural validation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use types::cfg::{CfgEdge, CfgNode};
 use types::enums::{CfgEdgeKind, CfgNodeKind};
 use types::ids::CfgNodeId;
@@ -77,6 +77,30 @@ impl CfgGraph {
             .get(node_id)
             .map(|edges| edges.iter().filter(|e| e.kind == kind).collect())
             .unwrap_or_default()
+    }
+
+    /// Nodes reachable from the unique function Entry through any CFG edge.
+    ///
+    /// Extraction may retain disconnected syntax so a later direct goto can
+    /// target a label after an abrupt statement. Consumers that enumerate
+    /// nodes (rather than propagating from Entry) must use this set to avoid
+    /// analyzing dead syntax as an executable branch.
+    pub fn reachable_from_entry(&self) -> HashSet<CfgNodeId> {
+        let mut reachable = HashSet::new();
+        let mut pending = VecDeque::from([self.entry]);
+        while let Some(node_id) = pending.pop_front() {
+            if !reachable.insert(node_id) {
+                continue;
+            }
+            pending.extend(
+                self.successors
+                    .get(&node_id)
+                    .into_iter()
+                    .flatten()
+                    .map(|edge| edge.target),
+            );
+        }
+        reachable
     }
 }
 
@@ -160,5 +184,28 @@ mod tests {
         let true_edges = graph.successors_by_kind(&branch.id, CfgEdgeKind::TrueBranch);
         assert_eq!(true_edges.len(), 1);
         assert_eq!(true_edges[0].target, stmt.id);
+    }
+
+    #[test]
+    fn reachable_from_entry_excludes_disconnected_syntax() {
+        let fid = test_symbol_id();
+        let entry = CfgNode::entry(&fid);
+        let live = CfgNode::new(&fid, CfgNodeKind::Statement, empty_range());
+        let mut dead = CfgNode::new(&fid, CfgNodeKind::Branch, empty_range());
+        dead.id = CfgNodeId::generate(&fid, "dead", 1);
+        let exit = CfgNode::exit(&fid);
+        let nodes = vec![entry.clone(), live.clone(), dead.clone(), exit.clone()];
+        let edges = vec![
+            CfgEdge::new(&entry.id, &live.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&live.id, &exit.id, CfgEdgeKind::Normal),
+            CfgEdge::new(&dead.id, &exit.id, CfgEdgeKind::Normal),
+        ];
+        let graph = CfgGraph::build(&nodes, &edges).unwrap();
+        let reachable = graph.reachable_from_entry();
+
+        assert!(reachable.contains(&entry.id));
+        assert!(reachable.contains(&live.id));
+        assert!(reachable.contains(&exit.id));
+        assert!(!reachable.contains(&dead.id));
     }
 }
