@@ -61,6 +61,9 @@
       "kind": "statement"
     },
     {
+      "kind": "statement"
+    },
+    {
       "kind": "join"
     },
     {
@@ -82,14 +85,19 @@
       "kind": "true_branch"
     },
     {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
       "source_kind": "statement",
       "target_kind": "join",
       "kind": "normal"
     },
     {
-      "source_kind": "branch",
+      "source_kind": "statement",
       "target_kind": "join",
-      "kind": "false_branch"
+      "kind": "normal"
     },
     {
       "source_kind": "join",

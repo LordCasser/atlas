@@ -79,6 +79,11 @@
       "source_kind": "join",
       "target_kind": "return",
       "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
     }
   ]
 }

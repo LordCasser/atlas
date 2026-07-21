@@ -449,6 +449,11 @@
       "kind": "normal"
     },
     {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
       "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
@@ -479,6 +484,11 @@
       "kind": "normal"
     },
     {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
       "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
@@ -489,6 +499,11 @@
       "kind": "normal"
     },
     {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
       "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
@@ -516,6 +531,11 @@
     {
       "source_kind": "statement",
       "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
       "kind": "normal"
     }
   ]

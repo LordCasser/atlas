@@ -66,5 +66,42 @@
       "name": "Block#159",
       "kind": "block"
     }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    },
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "entry",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
   ]
 }

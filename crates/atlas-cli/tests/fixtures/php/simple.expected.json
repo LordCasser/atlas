@@ -25,5 +25,28 @@
       "name": "Block#29",
       "kind": "block"
     }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
   ]
 }

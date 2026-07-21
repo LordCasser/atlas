@@ -93,6 +93,11 @@
       "kind": "normal"
     },
     {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
       "source_kind": "entry",
       "target_kind": "branch",
       "kind": "normal"
@@ -109,6 +114,16 @@
     },
     {
       "source_kind": "join",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
       "target_kind": "exit",
       "kind": "normal"
     }

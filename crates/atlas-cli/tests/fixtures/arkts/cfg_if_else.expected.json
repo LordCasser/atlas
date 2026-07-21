@@ -59,7 +59,25 @@
       "kind": "return"
     },
     {
-      "kind": "statement"
+      "kind": "branch"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "join"
     },
     {
       "kind": "join"
@@ -81,16 +99,61 @@
     },
     {
       "source_kind": "branch",
-      "target_kind": "statement",
+      "target_kind": "branch",
       "kind": "false_branch"
     },
     {
-      "source_kind": "statement",
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "branch",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
       "target_kind": "join",
       "kind": "normal"
     },
     {
       "source_kind": "join",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
       "target_kind": "exit",
       "kind": "normal"
     }

@@ -206,6 +206,11 @@
       "kind": "normal"
     },
     {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
       "source_kind": "entry",
       "target_kind": "statement",
       "kind": "normal"
