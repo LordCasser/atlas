@@ -1,0 +1,144 @@
+{
+  "symbols": [
+    {
+      "name": "process",
+      "kind": "function",
+      "signature": "(flag: Bool): Unit"
+    }
+  ],
+  "references": [
+    {
+      "text": "work",
+      "kind": "call"
+    },
+    {
+      "text": "cleanup",
+      "kind": "call"
+    },
+    {
+      "text": "after",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "",
+      "kind": "file"
+    },
+    {
+      "name": "func process(flag: Bool): Unit {\n    try {\n        if (flag) {\n            return\n        }\n        work()\n    } finally {\n        cleanup()\n    }\n    after()\n}",
+      "kind": "function"
+    },
+    {
+      "name": "{\n    try {\n        if (flag) {\n            return\n        }\n        work()\n    } finally {\n        cleanup()\n    }\n    after()\n}",
+      "kind": "block"
+    },
+    {
+      "name": "{\n        if (flag) {\n            return\n        }\n        work()\n    }",
+      "kind": "block"
+    },
+    {
+      "name": "{\n            return\n        }",
+      "kind": "block"
+    },
+    {
+      "name": "{\n        cleanup()\n    }",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

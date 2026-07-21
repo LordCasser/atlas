@@ -1,0 +1,100 @@
+{
+  "symbols": [
+    {
+      "name": "main",
+      "kind": "package"
+    },
+    {
+      "name": "receive",
+      "kind": "function",
+      "signature": "(ch <-chan int)"
+    }
+  ],
+  "references": [
+    {
+      "text": "int",
+      "kind": "type_reference"
+    },
+    {
+      "text": "consume",
+      "kind": "call"
+    },
+    {
+      "text": "after",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#14",
+      "kind": "function"
+    },
+    {
+      "name": "Block#42",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#45",
+      "kind": "conditional"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "receive"
+    },
+    {
+      "caller": "receive"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "case_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

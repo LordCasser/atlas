@@ -1,0 +1,248 @@
+{
+  "symbols": [
+    {
+      "name": "process",
+      "kind": "method",
+      "signature": "(flag, fail_now)"
+    }
+  ],
+  "references": [
+    {
+      "text": "raise",
+      "kind": "call"
+    },
+    {
+      "text": "Error",
+      "kind": "type_reference"
+    },
+    {
+      "text": "work",
+      "kind": "call"
+    },
+    {
+      "text": "Error",
+      "kind": "type_reference"
+    },
+    {
+      "text": "recover",
+      "kind": "call"
+    },
+    {
+      "text": "success",
+      "kind": "call"
+    },
+    {
+      "text": "cleanup",
+      "kind": "call"
+    },
+    {
+      "text": "after",
+      "kind": "call"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Method#0",
+      "kind": "method"
+    },
+    {
+      "name": "Block#30",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#40",
+      "kind": "conditional"
+    },
+    {
+      "name": "Conditional#75",
+      "kind": "conditional"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    },
+    {
+      "caller": "process"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "throw"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "return",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "throw",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "exception"
+    },
+    {
+      "source_kind": "throw",
+      "target_kind": "statement",
+      "kind": "exception"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "throw",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}

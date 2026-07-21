@@ -1,0 +1,293 @@
+{
+  "symbols": [
+    {
+      "name": "dispatch",
+      "kind": "function",
+      "signature": "($command)"
+    }
+  ],
+  "references": [
+    {
+      "text": "positive",
+      "kind": "call"
+    },
+    {
+      "text": "zero",
+      "kind": "call"
+    },
+    {
+      "text": "fallback",
+      "kind": "call"
+    },
+    {
+      "text": "visit",
+      "kind": "call"
+    },
+    {
+      "text": "install",
+      "kind": "call"
+    },
+    {
+      "text": "unknown",
+      "kind": "call"
+    },
+    {
+      "text": "RuntimeException",
+      "kind": "instantiation"
+    }
+  ],
+  "scopes": [
+    {
+      "name": "File#0",
+      "kind": "file"
+    },
+    {
+      "name": "Function#7",
+      "kind": "function"
+    },
+    {
+      "name": "Block#35",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#41",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#59",
+      "kind": "block"
+    },
+    {
+      "name": "Block#111",
+      "kind": "block"
+    },
+    {
+      "name": "Block#140",
+      "kind": "block"
+    },
+    {
+      "name": "Loop#173",
+      "kind": "loop"
+    },
+    {
+      "name": "Block#199",
+      "kind": "block"
+    },
+    {
+      "name": "Conditional#234",
+      "kind": "conditional"
+    },
+    {
+      "name": "Conditional#363",
+      "kind": "conditional"
+    },
+    {
+      "name": "Block#381",
+      "kind": "block"
+    }
+  ],
+  "callsites": [
+    {
+      "caller": "dispatch"
+    },
+    {
+      "caller": "dispatch"
+    },
+    {
+      "caller": "dispatch"
+    },
+    {
+      "caller": "dispatch"
+    },
+    {
+      "caller": "dispatch"
+    },
+    {
+      "caller": "dispatch"
+    }
+  ],
+  "cfg_nodes": [
+    {
+      "kind": "entry"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "loop"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "statement"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "branch"
+    },
+    {
+      "kind": "throw"
+    },
+    {
+      "kind": "join"
+    },
+    {
+      "kind": "return"
+    },
+    {
+      "kind": "exit"
+    }
+  ],
+  "cfg_edges": [
+    {
+      "source_kind": "entry",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "branch",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "loop",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "loop",
+      "kind": "loop_back"
+    },
+    {
+      "source_kind": "loop",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "case_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "statement",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "statement",
+      "kind": "case_branch"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "statement",
+      "target_kind": "join",
+      "kind": "break"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "branch",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "throw",
+      "kind": "true_branch"
+    },
+    {
+      "source_kind": "branch",
+      "target_kind": "join",
+      "kind": "false_branch"
+    },
+    {
+      "source_kind": "join",
+      "target_kind": "return",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "throw",
+      "target_kind": "exit",
+      "kind": "normal"
+    },
+    {
+      "source_kind": "return",
+      "target_kind": "exit",
+      "kind": "normal"
+    }
+  ]
+}
