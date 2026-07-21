@@ -424,6 +424,7 @@ pub(crate) fn row_to_cfg_node(row: &Row) -> rusqlite::Result<CfgNode> {
             end_column: row.get::<_, u32>(8)?,
         },
         call_context,
+        managed_scope_start_byte: row.get(11)?,
         semantic_effects,
     })
 }

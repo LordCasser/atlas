@@ -689,8 +689,8 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
            (cfg_node_id, function_id, kind,
             range_start_byte, range_end_byte, range_start_line, range_start_column,
             range_end_line, range_end_column,
-            semantic_effects_json, call_context)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
+            semantic_effects_json, call_context, managed_scope_start_byte)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"#,
     )?;
     for n in nodes {
         stmt.execute(params![
@@ -716,6 +716,7 @@ pub(crate) fn write_cfg_nodes(conn: &Connection, nodes: &[CfgNode]) -> anyhow::R
                 })?)
             },
             n.call_context.as_str(),
+            n.managed_scope_start_byte,
         ])?;
     }
     Ok(())
@@ -1441,7 +1442,8 @@ mod tests {
                     range_start_byte INTEGER NOT NULL, range_end_byte INTEGER NOT NULL,
                     range_start_line INTEGER NOT NULL, range_start_column INTEGER NOT NULL,
                     range_end_line INTEGER NOT NULL, range_end_column INTEGER NOT NULL,
-                    semantic_effects_json TEXT, call_context TEXT
+                    semantic_effects_json TEXT, call_context TEXT,
+                    managed_scope_start_byte INTEGER
                 );",
             )
             .unwrap();

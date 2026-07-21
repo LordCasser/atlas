@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL.
 //!
-//! Schema version: 2
+//! Schema version: 3
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -32,7 +32,7 @@
 //! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub const CURRENT_SCHEMA_VERSION: i64 = 3;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -258,7 +258,8 @@ CREATE TABLE IF NOT EXISTS cfg_nodes (
     range_end_line       INTEGER NOT NULL,
     range_end_column     INTEGER NOT NULL,
     semantic_effects_json TEXT,                     -- serialized Vec<SemanticEffect> as JSON
-    call_context         TEXT                      -- call-site context annotation (None, GoGoroutine, GoDefer, PythonWith, etc.)
+    call_context         TEXT,                      -- call-site context annotation (None, GoGoroutine, GoDefer, PythonWith, etc.)
+    managed_scope_start_byte INTEGER                -- lexical owner for resource acquisition / BlockExit clones
 );
 
 -- cfg_edges: control-flow edges between CFG nodes

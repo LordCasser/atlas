@@ -72,13 +72,29 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
+        let indexed_pipeline_grade: Option<String> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'indexed_pipeline_grade'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let indexed_scope: Option<String> = conn
+            .query_row(
+                "SELECT value FROM project_metadata WHERE key = 'indexed_scope'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
 
         Ok(format!(
-            "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};extraction_rows={extraction_rows};max_index_time={};max_extraction_time={};last_index_time={};last_sync_time={}",
+            "files={total_files};symbols={total_symbols};refs={total_references};edges={total_edges};extraction_rows={extraction_rows};max_index_time={};max_extraction_time={};last_index_time={};last_sync_time={};indexed_pipeline_grade={};indexed_scope={}",
             max_index_time.unwrap_or_default(),
             max_extraction_time.unwrap_or_default(),
             last_index_time.unwrap_or_default(),
             last_sync_time.unwrap_or_default(),
+            indexed_pipeline_grade.unwrap_or_default(),
+            indexed_scope.unwrap_or_default(),
         ))
     }
 
@@ -247,5 +263,28 @@ impl Store {
         }
 
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn index_signature_tracks_repo_cache_authority_metadata() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let initial = store.index_signature().unwrap();
+
+        store
+            .set_metadata("indexed_pipeline_grade", "structural")
+            .unwrap();
+        let with_grade = store.index_signature().unwrap();
+        assert_ne!(initial, with_grade);
+
+        store
+            .set_metadata("indexed_scope", r#"{"include":["src/**"],"exclude":[]}"#)
+            .unwrap();
+        assert_ne!(with_grade, store.index_signature().unwrap());
     }
 }
