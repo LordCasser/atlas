@@ -365,12 +365,14 @@ MCP Tool
 - `fragmentation_ratio` = `freelist_count / page_count`：表示空闲页面占比；高值意味着 `VACUUM` 可压缩文件。
 - `cache_coverage_ratio` = `cache_size_kib / total_db_kib`：表示页面缓存是否能在内存中覆盖整个 DB。>1.0 时所有页面理论可常驻内存。
 
-### 6.1 Schema（当前版本：V2）
+### 6.1 Schema（当前版本：V3）
 
-当前 schema 版本为 V2。软件处于快速原型期，新库以主 DDL 为准，不保留
+当前 schema 版本为 V3。软件处于快速原型期，新库以主 DDL 为准，不保留
 旧 schema 运行时补丁路径。schema contract 改变时直接更新主
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
-中累积旧版本补丁路径。
+中累积旧版本补丁路径。当 `user_version` 与 `CURRENT_SCHEMA_VERSION`
+不一致且数据库非空时，`init_schema` 直接拒绝并提示删除
+`.atlas/atlas.db` 重建；`atlas doctor` 同步给出 `needs_rebuild_hint`。
 
 主要表（28 张实体表 + 1 张 FTS5 索引，共 29 张）：
 
