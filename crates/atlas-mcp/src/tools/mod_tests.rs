@@ -97,8 +97,8 @@ fn ensure_graph_initialized_detects_focus_partial_mode() {
 #[test]
 fn ensure_graph_initialized_detects_full_canonical_mode() {
     let store = test_store();
-    // Register a file with a "structural" extraction state so
-    // read_catalog_tier() returns a rich index mode.
+    // A canonical graph requires both complete structural facts and a
+    // successful whole-repository structural Index finalization.
     let file_id = register_test_file(&store, "test.ts");
     store
         .upsert_file_extraction_state(
@@ -109,6 +109,16 @@ fn ensure_graph_initialized_detects_full_canonical_mode() {
             atlas_engine::structs::FactCoverage::default(),
         )
         .unwrap();
+    store.set_metadata("last_index_time", "1").unwrap();
+    store
+        .set_metadata(
+            "indexed_scope",
+            &serde_json::json!({ "include": [], "exclude": [] }).to_string(),
+        )
+        .unwrap();
+    store
+        .set_metadata("indexed_pipeline_grade", "structural")
+        .unwrap();
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
     router.ensure_graph_initialized().unwrap();
@@ -116,7 +126,46 @@ fn ensure_graph_initialized_detects_full_canonical_mode() {
     assert_eq!(
         *router.project().graph_runtime.provenance.lock().unwrap(),
         EdgeProvenance::RepoCanonical,
-        "store with structural extraction should produce FullCanonical mode"
+        "whole-repository finalized structural Index should produce FullCanonical mode"
+    );
+}
+
+#[test]
+fn structural_repo_cache_does_not_short_circuit_dataflow_focus() {
+    let store = test_store();
+    let file_id = register_test_file(&store, "test.ts");
+    store
+        .upsert_file_extraction_state(
+            &file_id,
+            "structural",
+            "hash1",
+            "complete",
+            atlas_engine::structs::FactCoverage::default(),
+        )
+        .unwrap();
+    store.set_metadata("last_index_time", "1").unwrap();
+    store
+        .set_metadata(
+            "indexed_scope",
+            &serde_json::json!({ "include": [], "exclude": [] }).to_string(),
+        )
+        .unwrap();
+    store
+        .set_metadata("indexed_pipeline_grade", "structural")
+        .unwrap();
+
+    let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+    let intent = atlas_engine::QueryIntent::TraceVariable {
+        file_id,
+        line: 1,
+        column: 1,
+        max_depth: 3,
+    };
+    let (focus_result, _warnings) = router.prepare_focus_query_with_roots(Some(intent), vec![]);
+
+    assert!(
+        focus_result.is_some(),
+        "dataflow query must enter Focus on top of a structural repo cache"
     );
 }
 
@@ -923,6 +972,51 @@ fn manifest_analysis_reports_ready() {
 
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_manifest_analysis(&resp, &resp_str);
+}
+
+#[test]
+fn finalized_manifest_repo_cache_serves_manifest_dependency_query_without_focus() {
+    let store = test_store();
+    let file_id = register_test_file(&store, "a.ts");
+    store
+        .upsert_file_extraction_state(
+            &file_id,
+            "manifest",
+            "hash1",
+            "complete",
+            atlas_engine::structs::FactCoverage::default(),
+        )
+        .unwrap();
+    store.set_metadata("last_index_time", "1").unwrap();
+    store
+        .set_metadata(
+            "indexed_scope",
+            &serde_json::json!({ "include": [], "exclude": [] }).to_string(),
+        )
+        .unwrap();
+    store
+        .set_metadata("indexed_pipeline_grade", "manifest")
+        .unwrap();
+
+    let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+    let args = serde_json::json!({
+        "file_path": "a.ts",
+        "direction": "incoming",
+        "analysis": "manifest",
+    });
+    let (resp_str, is_error) = router.handle_file_dependencies(&args);
+
+    assert!(!is_error, "Expected success, got: {resp_str}");
+    let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+    assert_manifest_analysis(&resp, &resp_str);
+    let query_id = resp["query_id"].as_str().unwrap();
+    let project = router.project();
+    let snapshots = project.job_runtime.query_snapshots.lock().unwrap();
+    assert!(snapshots[query_id].focus_result.is_none());
+    assert!(
+        !router.project().query_runtime.is_tier0_complete(),
+        "a sufficient manifest repo cache must not start Focus bootstrap"
+    );
 }
 
 #[test]
@@ -2070,7 +2164,10 @@ fn active_project_construction_wires_focus_runtime() {
     let store = test_store();
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
     // FocusRuntime is present at construction with materialize already injected.
-    let mode = router.project().query_runtime.detect_access_strategy();
+    let mode = router
+        .project()
+        .query_runtime
+        .detect_access_strategy(atlas_engine::QueryNeed::CallGraph);
     assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
     assert!(
         router.project().materialize.has_structural_rebuilder(),
@@ -2083,7 +2180,10 @@ fn focus_runtime_initialized_on_activate_project() {
     let store = test_store();
     let store2 = test_store();
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
-    let mode_before = router.project().query_runtime.detect_access_strategy();
+    let mode_before = router
+        .project()
+        .query_runtime
+        .detect_access_strategy(atlas_engine::QueryNeed::CallGraph);
     assert_eq!(
         mode_before,
         atlas_engine::focus::runtime::AccessStrategy::Focus
@@ -2091,7 +2191,10 @@ fn focus_runtime_initialized_on_activate_project() {
 
     // Project switch rebuilds ActiveProject (and FocusRuntime) from construction.
     router.activate_project(PathBuf::from("/other"), store2);
-    let mode_after = router.project().query_runtime.detect_access_strategy();
+    let mode_after = router
+        .project()
+        .query_runtime
+        .detect_access_strategy(atlas_engine::QueryNeed::CallGraph);
     assert_eq!(
         mode_after,
         atlas_engine::focus::runtime::AccessStrategy::Focus

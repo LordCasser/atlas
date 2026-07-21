@@ -301,7 +301,7 @@ fn make_semantic_analysis_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "lifecycle".into(),
-            description: "Analyze a field's lifecycle within a function using CFG effect annotations (C/C++). Walks the control-flow graph to track a field through allocate → use → free transitions, detecting use-after-free, double-free, and missing-free patterns. Triggers lazy structural extraction if CFG not yet built.".into(),
+            description: "Analyze a field's lifecycle within a function using CFG effect annotations (C/C++). Walks the control-flow graph to track a field through allocate → use → free transitions, detecting use-after-free, double-free, and missing-free patterns. Each transition includes owner-bound true/false/case/exception branch context. Triggers lazy structural extraction if CFG not yet built.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({

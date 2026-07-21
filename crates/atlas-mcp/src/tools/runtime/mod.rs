@@ -11,7 +11,7 @@
 //! | `overlay_runtime` | User annotations (fp_dispatches, domain_rules) | Store (mutation path), RuntimeInvalidation counters |
 //! | `store_query_runtime` | Direct store queries + source extraction | Store (read path), SourceExtractor |
 //! | `job_runtime` | Per-project investigation + query snapshots | InvestigationState, QuerySnapshot map |
-//! | `cache_state` | Index-signature and manual-full-index caching | (data-only) |
+//! | `cache_state` | Index-signature and QueryNeed-aware repo-cache eligibility | (data-only) |
 //! | `graph_provider` | Trait contract for graph backends | (trait definition) |
 //!
 //! # Request Flow
@@ -37,7 +37,7 @@
 //!       │    │
 //!       │    ├─ prepare_focus_query(intent, include_roots) ──► query_runtime.prepare()
 //!       │    │       │                           │
-//!       │    │       │                           ├─ cache_state.has_full_index()
+//!       │    │       │                           ├─ cache_state.has_repo_cache_for()
 //!       │    │       │                           ├─ focus_runtime.lock().detect_access_strategy()
 //!       │    │       │                           └─ focus_runtime.lock().prepare(intent, include_roots)
 //!       │    │       │
@@ -84,7 +84,7 @@
 //! Handlers produce contract data; orchestration belongs to `call_tool` /
 //! `dispatch_*` + runtime modules. When adding tools or editing handlers, **avoid**:
 //!
-//! - **Direct `cache.has_manual_full_index()`** — use `query_runtime.has_full_index()`.
+//! - **Direct `cache.has_repo_cache_for()`** — use `query_runtime.has_repo_cache_for()`.
 //! - **Direct `focus_runtime.lock()`** — use `query_runtime.prepare()` / `detect_access_strategy()`.
 //! - **Direct `materialize.dataflow().ensure_*`** — use `analysis_runtime.ensure_dataflow_*`.
 //! - **Direct `FieldLifecycleEngine::` / `BranchDiffEngine::`** — go through

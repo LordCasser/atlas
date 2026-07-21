@@ -162,9 +162,11 @@ impl ToolRouter {
             self.prepare_focus_query_with_roots(intent, include_roots);
         let lazy_warnings = focus_warnings;
         // Cache for no-path diagnostics below (used in user-facing messages).
-        let is_manual_full = {
+        let has_repo_call_graph = {
             let active = self.project();
-            active.query_runtime.has_full_index(&active.store)
+            active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
         };
 
         let project = self.project();
@@ -488,14 +490,14 @@ impl ToolRouter {
                     message.push_str(". Note: the same qualified name maps to multiple SymbolIds (e.g., declaration vs definition). All pairs were tried.");
                 }
             }
-            if !is_manual_full && max_depth < 10 {
+            if !has_repo_call_graph && max_depth < 10 {
                 message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: try a higher max_depth (up to 10), resume the query after refinement, or run a full structural index (CLI: 'atlas index --analysis full') for deeper call-graph edges.");
-            } else if !is_manual_full {
+            } else if !has_repo_call_graph {
                 message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: the path may involve function pointers or dynamic dispatch not yet resolved; resume the query after refinement or run a full structural index (CLI: 'atlas index --analysis full').");
             } else {
                 message.push_str(". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.");
             }
-            if !is_manual_full {
+            if !has_repo_call_graph {
                 no_path_warnings.push(
                     "No path was found in the current focus closure; this does not prove that no repo-wide path exists until full indexing or further refinement completes."
                         .to_string(),

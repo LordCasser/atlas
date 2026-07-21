@@ -188,9 +188,11 @@ impl ToolRouter {
         let (focus_result, mut focus_warnings) =
             self.prepare_focus_query_with_roots(intent, include_roots);
 
-        let has_full_index = {
+        let has_repo_call_graph = {
             let active = self.project();
-            active.query_runtime.has_full_index(&active.store)
+            active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
         };
 
         let project = self.project();
@@ -217,7 +219,7 @@ impl ToolRouter {
                     ));
                 }
             }
-            if !has_full_index {
+            if !has_repo_call_graph {
                 for caller_id in self.candidate_incoming_neighbors(&root_id, &call_edge_kinds) {
                     if seen.insert(caller_id) {
                         if let Some(node) = self.symbol_json_by_id(&caller_id) {
@@ -241,7 +243,7 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !has_full_index {
+        if !has_repo_call_graph {
             resp["note"] = json!(
                 "Incoming calls are complete only within the current focus closure. Background refinement may discover additional callers outside this closure."
             );
@@ -325,9 +327,11 @@ impl ToolRouter {
         let (focus_result, mut focus_warnings) =
             self.prepare_focus_query_with_roots(intent, include_roots);
 
-        let has_full_index = {
+        let has_repo_call_graph = {
             let active = self.project();
-            active.query_runtime.has_full_index(&active.store)
+            active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
         };
 
         let project = self.project();
@@ -354,7 +358,7 @@ impl ToolRouter {
                     ));
                 }
             }
-            if !has_full_index {
+            if !has_repo_call_graph {
                 for callee_id in self.candidate_outgoing_neighbors(&root_id, &call_edge_kinds) {
                     if seen.insert(callee_id) {
                         if let Some(node) = self.symbol_json_by_id(&callee_id) {
@@ -381,7 +385,7 @@ impl ToolRouter {
             resp["unresolved_callee_note"] = json!(
                 "These call tokens were extracted from the function body but did not resolve to local symbols. They may be macros, builtins, external helpers, or code outside the current focus/full index."
             );
-            if !has_full_index {
+            if !has_repo_call_graph {
                 focus_warnings.push(format!(
                     "{total_unresolved_callees} outgoing call token(s) remain unresolved in the current focus closure."
                 ));
@@ -392,7 +396,7 @@ impl ToolRouter {
                 resp["resolution"] = rm;
             }
         }
-        if !has_full_index {
+        if !has_repo_call_graph {
             resp["note"] = json!(
                 "Outgoing calls are complete only within the current focus closure. Unresolved callees mark the refinement frontier."
             );
@@ -621,7 +625,10 @@ impl ToolRouter {
         }
         {
             let active = self.project();
-            if !active.query_runtime.has_full_index(&active.store) {
+            if !active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
+            {
                 resp["note"] = json!(
                     "Graph expansion is complete only within the current focus closure. Background refinement may discover additional edges outside this closure; use CLI `atlas index --analysis full` only when you want an explicit project-wide cache."
                 );

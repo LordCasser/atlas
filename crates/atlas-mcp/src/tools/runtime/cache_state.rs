@@ -1,65 +1,56 @@
-//! Cache state — index signature and manual-full-index detection cache.
+//! Cache state — index signature and finalized repo-cache detection cache.
 //!
 //! Owned by QueryRuntime. Provides:
-//! - `has_manual_full_index(store)`: cached check for CLI-finalized rich index existence
+//! - `has_repo_cache_for(store, need)`: cached check for a finalized
+//!   whole-project cache that satisfies the current query
 //! - `cached_signature`: current index signature for change detection
 //! - `last_signature_check`: timestamp of last signature comparison
 
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
-use atlas_engine::Store;
-use atlas_engine::is_rich_catalog_tier;
+use atlas_engine::{QueryNeed, Store, has_finalized_repo_cache_for};
 
-/// Index-signature and manual-full-index detection cache.
+/// Index-signature and finalized repo-cache detection cache.
 pub(crate) struct CacheState {
     /// Cached index signature to avoid per-request COUNT queries.
     pub(crate) cached_signature: Mutex<String>,
     /// When the cached signature was last checked (avoids re-query within cooldown).
     pub(crate) last_signature_check: Mutex<Instant>,
-    /// Cached result of `has_manual_full_index()` keyed by index signature.
+    /// Cached result of `has_repo_cache_for()` keyed by index signature
+    /// and query need.
     /// `None` means not yet checked; signature changes force re-check.
-    pub(crate) cached_manual_full_index: RwLock<Option<(String, bool)>>,
+    pub(crate) cached_repo_cache: RwLock<Option<(String, QueryNeed, bool)>>,
 }
 
 impl CacheState {
-    /// Detect whether the current database already has a reusable rich index
-    /// finalized by an explicit CLI/TUI indexing run.
+    /// Detect whether the current database has a finalized whole-project Index
+    /// that already satisfies `need`.
     ///
     /// Focus writes can produce rich per-file layers in a small local closure.
     /// Those layers must not make later MCP queries believe the whole project
-    /// is fully indexed, so this check requires both rich extraction state and
-    /// index-finalization metadata.
+    /// is fully indexed. Scoped Index output is also only a reusable fact base,
+    /// and a structural Index cannot satisfy a dataflow query by itself.
     ///
     /// The result is cached by store signature; signature changes force
     /// re-detection.
     //
-    // ⚠️ Mirrors the core check in FocusRuntime::detect_access_strategy()
-    //    (crates/atlas-engine/src/focus/runtime.rs).  Both require
-    //    `is_rich_catalog_tier() && last_index_time.is_some()`.  Keep in sync.
-    pub(crate) fn has_manual_full_index(&self, store: &Store) -> bool {
+    pub(crate) fn has_repo_cache_for(&self, store: &Store, need: QueryNeed) -> bool {
         let signature = store.index_signature().unwrap_or_default();
-        if let Some((cached_signature, cached)) = &*self
-            .cached_manual_full_index
+        if let Some((cached_signature, cached_need, cached)) = &*self
+            .cached_repo_cache
             .read()
             .unwrap_or_else(|e| e.into_inner())
             && *cached_signature == signature
+            && *cached_need == need
         {
             return *cached;
         }
-        let catalog_tier = store
-            .read_catalog_tier()
-            .unwrap_or_else(|_| "unknown".to_string());
-        let finalized = store
-            .get_metadata("last_index_time")
-            .ok()
-            .flatten()
-            .is_some();
-        let result = finalized && is_rich_catalog_tier(&catalog_tier);
+        let result = has_finalized_repo_cache_for(store, need);
         *self
-            .cached_manual_full_index
+            .cached_repo_cache
             .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some((signature, result));
+            .unwrap_or_else(|e| e.into_inner()) = Some((signature, need, result));
         result
     }
 }

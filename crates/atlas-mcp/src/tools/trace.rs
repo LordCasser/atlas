@@ -595,9 +595,11 @@ impl ToolRouter {
         if let Some(ref result) = focus_result {
             lr = crate::tools::apply_focus_result_to_lr(lr, result);
         }
-        let has_full_index = {
+        let has_repo_call_graph = {
             let active = self.project();
-            active.query_runtime.has_full_index(&active.store)
+            active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
         };
 
         let mut resp = self
@@ -621,7 +623,7 @@ impl ToolRouter {
             .diagnostics
             .iter()
             .any(|d| d.code.as_deref() == Some("no_path_found"));
-        if has_no_path && !has_full_index {
+        if has_no_path && !has_repo_call_graph {
             resp.partial_result = true;
             resp.diagnostics.push(
                 TraceDiagnostic::warning(

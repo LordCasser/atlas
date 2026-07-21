@@ -30,7 +30,7 @@ const FORBIDDEN: &[&str] = &[
     "materialize.dataflow().ensure_for_position",
     "LazyDataflowService::with_structural_rebuilder",
     "FocusMaterialize::open",
-    "cache.has_manual_full_index()",
+    "cache.has_repo_cache_for()",
     "focus_runtime.lock()",
     "store.upsert_fp_annotation(",
     "store.upsert_domain_rule(",

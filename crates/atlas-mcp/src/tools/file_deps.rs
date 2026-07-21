@@ -46,11 +46,18 @@ impl ToolRouter {
             }
         };
 
-        let has_full_index = {
-            let active = self.project();
-            active.query_runtime.has_full_index(&active.store)
+        let required_cache = if is_manifest {
+            atlas_engine::QueryNeed::Manifest
+        } else {
+            atlas_engine::QueryNeed::CallGraph
         };
-        let focus_result = if has_full_index {
+        let has_sufficient_repo_cache = {
+            let active = self.project();
+            active
+                .query_runtime
+                .has_repo_cache_for(&active.store, required_cache)
+        };
+        let focus_result = if has_sufficient_repo_cache {
             None
         } else {
             let mut candidates = vec![file_id];

@@ -678,25 +678,22 @@ impl ToolRouter {
             }
         }
 
-        let project = self.project();
-        // 1. Full index already exists — no focus needed.
-        if project.query_runtime.has_full_index(&project.store) {
-            return (None, vec![]);
-        }
-
-        // 2. No intent — nothing to prepare.
+        // No intent means there is no query strength from which to decide
+        // whether a pre-index is sufficient.
         let intent = match intent {
             Some(i) => i,
             None => return (None, vec![]),
         };
 
-        // 3. Delegate FocusRuntime interaction to QueryRuntime.
+        let project = self.project();
+        // QueryRuntime performs the QueryNeed-aware pre-index check before
+        // entering Focus.
         let (focus_result, warnings) =
             project
                 .query_runtime
                 .prepare(&intent, &project.store, include_roots);
 
-        // 4. Post-processing: record lazy writes and refresh graph.
+        // Post-processing: record lazy writes and refresh graph.
         if let Some(ref result) = focus_result {
             let materialized_files = result.materialized_files();
             if !materialized_files.is_empty() {
@@ -890,12 +887,12 @@ impl ToolRouter {
                 .graph_runtime
                 .state
                 .swap_graph(&project.store, graph);
-            // Re-check whether a manual full index now exists (layer distribution
-            // may have changed after external index/sync or lazy structural).
+            // Re-check QueryNeed-specific repo-cache eligibility (layer
+            // distribution may have changed after Index/sync or Focus writes).
             *project
                 .query_runtime
                 .cache
-                .cached_manual_full_index
+                .cached_repo_cache
                 .write()
                 .unwrap_or_else(|e| e.into_inner()) = None;
         }
@@ -964,7 +961,7 @@ impl ToolRouter {
             *project
                 .query_runtime
                 .cache
-                .cached_manual_full_index
+                .cached_repo_cache
                 .write()
                 .unwrap_or_else(|e| e.into_inner()) = None;
             project
@@ -1010,7 +1007,7 @@ impl ToolRouter {
             *project
                 .query_runtime
                 .cache
-                .cached_manual_full_index
+                .cached_repo_cache
                 .write()
                 .unwrap_or_else(|e| e.into_inner()) = None;
             project.graph_runtime.mark_graph_fresh();

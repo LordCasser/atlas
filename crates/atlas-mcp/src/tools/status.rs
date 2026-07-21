@@ -206,11 +206,11 @@ impl ToolRouter {
             .store
             .count_file_inventory_in_scope(&scope)
             .unwrap_or_default();
-        let full_index = self
+        let has_manifest_repo_cache = self
             .project()
             .query_runtime
-            .has_full_index(&self.project().store);
-        if !full_index {
+            .has_repo_cache_for(&self.project().store, atlas_engine::QueryNeed::Manifest);
+        if !has_manifest_repo_cache {
             self.project().query_runtime.ensure_focus_started();
         }
         let mut scoped_discovery_complete = None;
@@ -285,7 +285,7 @@ impl ToolRouter {
                     .store
                     .count_file_inventory_in_scope(&scope)
                     .unwrap_or_default();
-                let inventory_complete = full_index
+                let inventory_complete = has_manifest_repo_cache
                     || scoped_discovery_complete == Some(true)
                     || self.project().query_runtime.is_tier0_complete();
                 let coverage = if inventory_complete {

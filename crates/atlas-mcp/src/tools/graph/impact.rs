@@ -220,7 +220,10 @@ impl ToolRouter {
         }
         {
             let active = self.project();
-            if !active.query_runtime.has_full_index(&active.store) {
+            if !active
+                .query_runtime
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
+            {
                 resp["capability_note"] = json!(
                     "focus mode: impact is bounded by the current focus closure; background refinement may discover additional affected symbols."
                 );

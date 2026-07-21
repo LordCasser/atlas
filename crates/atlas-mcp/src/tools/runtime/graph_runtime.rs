@@ -138,7 +138,10 @@ impl GraphRuntime {
     pub fn detect_and_set_mode(&self, store: &Store) {
         let catalog_tier = store.read_catalog_tier().unwrap_or_default();
         *self.cached_catalog_tier.lock().unwrap() = Some(catalog_tier.clone());
-        *self.provenance.lock().unwrap() = if atlas_engine::is_rich_catalog_tier(&catalog_tier) {
+        *self.provenance.lock().unwrap() = if atlas_engine::has_finalized_repo_cache_for(
+            store,
+            atlas_engine::QueryNeed::CallGraph,
+        ) {
             EdgeProvenance::RepoCanonical
         } else {
             EdgeProvenance::FocusScoped
@@ -161,7 +164,7 @@ impl GraphRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_engine::Store;
+    use atlas_engine::{FactCoverage, FileId, FileInfo, Language, ParseStatus, Store};
     use std::sync::Arc;
 
     fn create_test_graph_runtime() -> GraphRuntime {
@@ -170,6 +173,43 @@ mod tests {
         let source_extractor = SourceExtractor::new(store.clone(), PathBuf::from("."));
         let invalidation = Arc::new(RuntimeInvalidation::new());
         GraphRuntime::new(store, source_extractor, PathBuf::from("."), invalidation)
+    }
+
+    fn insert_complete_structural_file(store: &Store) {
+        let file_id = FileId::generate("src/main.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "hash",
+                "complete",
+                FactCoverage::default(),
+            )
+            .unwrap();
+    }
+
+    fn mark_finalized_index(store: &Store, grade: &str, include_patterns: &[&str]) {
+        store.set_metadata("last_index_time", "1").unwrap();
+        store
+            .set_metadata(
+                "indexed_scope",
+                &serde_json::json!({
+                    "include": include_patterns,
+                    "exclude": [],
+                })
+                .to_string(),
+            )
+            .unwrap();
+        store.set_metadata("indexed_pipeline_grade", grade).unwrap();
     }
 
     #[test]
@@ -184,6 +224,52 @@ mod tests {
         // Clone store to avoid simultaneous mutable+immutable borrow.
         let store = gr.store.clone();
         gr.detect_and_set_mode(&store);
+        assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
+    }
+
+    #[test]
+    fn unfinalized_structural_facts_are_focus_scoped() {
+        let gr = create_test_graph_runtime();
+        insert_complete_structural_file(&gr.store);
+        let store = gr.store.clone();
+        gr.detect_and_set_mode(&store);
+
+        assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
+    }
+
+    #[test]
+    fn whole_repo_structural_index_is_repo_canonical() {
+        let gr = create_test_graph_runtime();
+        insert_complete_structural_file(&gr.store);
+        mark_finalized_index(&gr.store, "structural", &[]);
+        let store = gr.store.clone();
+        gr.detect_and_set_mode(&store);
+
+        assert_eq!(
+            *gr.provenance.lock().unwrap(),
+            EdgeProvenance::RepoCanonical
+        );
+    }
+
+    #[test]
+    fn focus_enrichment_cannot_promote_manifest_index_provenance() {
+        let gr = create_test_graph_runtime();
+        insert_complete_structural_file(&gr.store);
+        mark_finalized_index(&gr.store, "manifest", &[]);
+        let store = gr.store.clone();
+        gr.detect_and_set_mode(&store);
+
+        assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
+    }
+
+    #[test]
+    fn scoped_structural_index_is_focus_scoped() {
+        let gr = create_test_graph_runtime();
+        insert_complete_structural_file(&gr.store);
+        mark_finalized_index(&gr.store, "structural", &["src/**"]);
+        let store = gr.store.clone();
+        gr.detect_and_set_mode(&store);
+
         assert_eq!(*gr.provenance.lock().unwrap(), EdgeProvenance::FocusScoped);
     }
 

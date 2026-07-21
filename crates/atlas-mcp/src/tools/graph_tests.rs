@@ -1436,7 +1436,10 @@ fn focus_runtime_wired_at_construction() {
         .unwrap();
     let router = test_router(store);
     // FocusRuntime + FocusMaterialize are injected by ActiveProject construction.
-    let mode = router.project().query_runtime.detect_access_strategy();
+    let mode = router
+        .project()
+        .query_runtime
+        .detect_access_strategy(atlas_engine::QueryNeed::CallGraph);
     assert_eq!(mode, atlas_engine::focus::runtime::AccessStrategy::Focus);
     assert!(router.project().materialize.has_structural_rebuilder());
 }
@@ -1485,9 +1488,10 @@ fn graph_response_without_focus_has_no_focus_fields() {
         .project()
         .query_runtime
         .cache
-        .cached_manual_full_index
+        .cached_repo_cache
         .write()
-        .unwrap_or_else(|e| e.into_inner()) = Some((signature, true));
+        .unwrap_or_else(|e| e.into_inner()) =
+        Some((signature, atlas_engine::QueryNeed::CallGraph, true));
     router.ensure_graph_initialized().unwrap();
     // focus is NOT active for this query — focus fields should NOT appear
     let (resp_str, is_error) = router.handle_impact(&json!({"symbol": "focus_test_fn"}));

@@ -168,6 +168,10 @@ impl ToolRouter {
                 "to": t.to_state.as_str(),
                 "line": t.node_line,
                 "reason": t.effect.map(|e| format!("{e:?}")).unwrap_or_else(|| "transition".to_string()),
+                "branch_context": t.branch_frames.iter().map(|frame| json!({
+                    "owner_line": frame.branch_node_line,
+                    "path": frame.path.as_str(),
+                })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "suspicious_count": result.suspicious_points.len(),
             "suspicious": result.suspicious_points.iter().map(|p| json!({

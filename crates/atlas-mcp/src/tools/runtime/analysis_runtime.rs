@@ -654,6 +654,7 @@ mod tests {
                 end_column: 0,
             },
             call_context: CallContext::None,
+            managed_scope_start_byte: None,
             semantic_effects: vec![],
         }
     }

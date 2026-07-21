@@ -70,14 +70,14 @@ impl ToolRouter {
             .filter(|s| !s.is_empty());
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
-        // When a manual full structural index exists (built via CLI `atlas index`),
+        // When a whole-repository structural Index exists (built via CLI `atlas index`),
         // the search analysis mode is set to Manifest (structural facts are already
         // in the store) instead of Auto (lazy triggering).  Scope is still required
         // — it defines the search boundary.
-        let is_manual_full = self
+        let has_structural_repo_cache = self
             .project()
             .query_runtime
-            .has_full_index(&self.project().store);
+            .has_repo_cache_for(&self.project().store, atlas_engine::QueryNeed::Structural);
 
         let scope = match scope {
             Some(s) => s.to_string(),
@@ -101,7 +101,7 @@ impl ToolRouter {
             limit,
             kind,
             &scope,
-            is_manual_full,
+            has_structural_repo_cache,
             include_roots,
             root_warnings,
         )
@@ -118,7 +118,7 @@ impl ToolRouter {
         limit: usize,
         kind: Option<&str>,
         scope: &str,
-        is_manual_full: bool,
+        has_structural_repo_cache: bool,
         include_roots: Vec<atlas_engine::IncludeRoot>,
         root_warnings: Vec<String>,
     ) -> (String, bool) {
@@ -126,7 +126,7 @@ impl ToolRouter {
 
         // Build the search request → delegate to ScopedSearchService.
         let kind_filter = kind.and_then(SymbolKind::from_str);
-        let analysis = if is_manual_full {
+        let analysis = if has_structural_repo_cache {
             SearchAnalysis::Manifest
         } else {
             SearchAnalysis::Auto
