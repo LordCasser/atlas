@@ -766,6 +766,20 @@ impl Store {
         facts: &FileFacts,
     ) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
+            // Any unchanged file that resolved a reference into the replaced
+            // file must leave the canonical-resolution fast path. Its source
+            // hash is unchanged, but its resolution context is not.
+            tx.execute(
+                r#"UPDATE extraction_state SET resolution_fingerprint = NULL
+                   WHERE layer = 'resolution' AND unit_id IS NULL
+                     AND file_id IN (
+                       SELECT DISTINCT r.file_id FROM "references" r
+                       WHERE r.resolved_symbol_id IN (
+                           SELECT symbol_id FROM symbols WHERE file_id = ?1
+                       )
+                     )"#,
+                params![file_id],
+            )?;
             // Invalidate cross-file references pointing to this file's symbols.
             tx.execute(
                 r#"UPDATE "references" SET
@@ -1713,6 +1727,106 @@ mod tests {
         let stats = store.get_stats().unwrap();
         assert_eq!(stats.total_files, 1);
         assert_eq!(stats.total_symbols, 1);
+    }
+
+    #[test]
+    fn replacing_target_facts_revokes_importer_resolution_fingerprint() {
+        let store = test_store();
+        let target_id = FileId::generate("src/target.ts");
+        let target_symbol = test_symbol(target_id, "target", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: target_id,
+                    path: "src/target.ts".into(),
+                    language: Language::TypeScript,
+                    content_hash: "target-v1".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![target_symbol.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let caller_id = FileId::generate("src/caller.ts");
+        let caller_symbol = test_symbol(caller_id, "caller", SymbolKind::Function);
+        let range = TextRange::default();
+        let reference_id = ReferenceId::generate(
+            &caller_id,
+            Some(&caller_symbol.id),
+            range.start_byte,
+            range.end_byte,
+            "target",
+            ReferenceKind::Call,
+        );
+        store
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: caller_id,
+                    path: "src/caller.ts".into(),
+                    language: Language::TypeScript,
+                    content_hash: "caller-v1".into(),
+                    status: ParseStatus::Success,
+                },
+                symbols: vec![caller_symbol.clone()],
+                references: vec![ReferenceUse {
+                    id: reference_id,
+                    file_id: caller_id,
+                    source_symbol: Some(caller_symbol.id),
+                    scope_id: None,
+                    kind: ReferenceKind::Call,
+                    text: "target".into(),
+                    name: "target".into(),
+                    receiver: None,
+                    arity: Some(0),
+                    range,
+                    binding_id: None,
+                    resolved: None,
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .update_reference_resolution(
+                &reference_id,
+                &ResolvedTarget {
+                    symbol_id: target_symbol.id,
+                    confidence: Confidence::certain(),
+                    strategy: ResolutionStrategy::ExactMatch,
+                    provenance: Provenance::TreeSitter,
+                },
+            )
+            .unwrap();
+        store
+            .update_resolution_fingerprint(&caller_id, "caller-v1")
+            .unwrap();
+
+        store
+            .replace_file_facts_with_invalidation(
+                &target_id,
+                &FileFacts {
+                    file: FileInfo {
+                        file_id: target_id,
+                        path: "src/target.ts".into(),
+                        language: Language::TypeScript,
+                        content_hash: "target-v2".into(),
+                        status: ParseStatus::Success,
+                    },
+                    symbols: vec![target_symbol],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(store.get_resolution_fingerprint(&caller_id).unwrap(), None);
+        assert!(!store.scope_has_current_resolution_fingerprint("").unwrap());
+        assert!(
+            store
+                .find_unresolved_references()
+                .unwrap()
+                .iter()
+                .any(|reference| reference.id == reference_id)
+        );
     }
 
     #[test]

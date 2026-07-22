@@ -222,21 +222,36 @@ impl Store {
         &self,
         file_id: &FileId,
     ) -> anyhow::Result<usize> {
-        let conn = self.lock();
-        // Find all symbol IDs belonging to this file, then clear any
-        // reference in ANY file whose resolved_symbol_id matches.
-        let count = conn.execute(
-            r#"UPDATE "references" SET
-                resolved_symbol_id = NULL,
-                resolved_confidence = NULL,
-                resolved_strategy = NULL,
-                resolved_provenance = NULL
-               WHERE resolved_symbol_id IN (
-                   SELECT symbol_id FROM symbols WHERE file_id = ?1
-               )"#,
-            params![file_id],
-        )?;
-        Ok(count)
+        self.with_transaction(|tx| {
+            // The importing file did not change, but its resolution context
+            // did. Clear its fingerprint before nulling the target so a later
+            // Index cannot mistake it for a clean canonical resolution.
+            tx.execute(
+                r#"UPDATE extraction_state SET resolution_fingerprint = NULL
+                   WHERE layer = 'resolution' AND unit_id IS NULL
+                     AND file_id IN (
+                       SELECT DISTINCT r.file_id FROM "references" r
+                       WHERE r.resolved_symbol_id IN (
+                           SELECT symbol_id FROM symbols WHERE file_id = ?1
+                       )
+                     )"#,
+                params![file_id],
+            )?;
+            // Find all symbol IDs belonging to this file, then clear any
+            // reference in ANY file whose resolved_symbol_id matches.
+            let count = tx.execute(
+                r#"UPDATE "references" SET
+                    resolved_symbol_id = NULL,
+                    resolved_confidence = NULL,
+                    resolved_strategy = NULL,
+                    resolved_provenance = NULL
+                   WHERE resolved_symbol_id IN (
+                       SELECT symbol_id FROM symbols WHERE file_id = ?1
+                   )"#,
+                params![file_id],
+            )?;
+            Ok(count)
+        })
     }
 
     /// Delete all edges that were created from references belonging to a file.

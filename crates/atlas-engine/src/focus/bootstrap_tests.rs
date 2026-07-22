@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use db::Store;
+use db::{DiscoveredFile, Store};
 use types::FileId;
 
 use super::bootstrap::BootstrapManager;
@@ -186,7 +186,15 @@ fn test_bootstrap_skips_project_wide_work_for_persistent_inventory() {
     let store = test_store();
     let known_id = FileId::generate("already_known.c");
     store
-        .insert_file_inventory(&known_id, "already_known.c", "c", 0, 20, 0, 0)
+        .insert_file_inventory(&DiscoveredFile {
+            file_id: known_id,
+            path: "already_known.c".into(),
+            language: types::Language::C,
+            mtime: 0,
+            size: 20,
+            inode: 0,
+            dev: 0,
+        })
         .unwrap();
     let mut manager = BootstrapManager::new(store.clone(), Some(root));
 
@@ -348,15 +356,15 @@ fn test_bootstrap_tier2_extracts_manifest() {
     let language = types::Language::from_path(std::path::Path::new(rel_path)).unwrap();
 
     store
-        .insert_file_inventory(
-            &file_id,
-            rel_path,
-            language.as_str(),
+        .insert_file_inventory(&DiscoveredFile {
+            file_id,
+            path: rel_path.into(),
+            language,
             mtime,
-            metadata.len() as i64,
-            0,
-            0,
-        )
+            size: metadata.len() as i64,
+            inode: 0,
+            dev: 0,
+        })
         .unwrap();
 
     let content = fs::read(&abs_path).unwrap();
@@ -430,15 +438,15 @@ fn test_bootstrap_tier2_skips_already_extracted() {
     let language = types::Language::from_path(std::path::Path::new(rel_path)).unwrap();
 
     store
-        .insert_file_inventory(
-            &file_id,
-            rel_path,
-            language.as_str(),
+        .insert_file_inventory(&DiscoveredFile {
+            file_id,
+            path: rel_path.into(),
+            language,
             mtime,
-            metadata.len() as i64,
-            0,
-            0,
-        )
+            size: metadata.len() as i64,
+            inode: 0,
+            dev: 0,
+        })
         .unwrap();
 
     let content = fs::read(&abs_path).unwrap();
@@ -493,15 +501,15 @@ fn test_bootstrap_tier2_respects_cancellation() {
         let language = types::Language::from_path(std::path::Path::new(&rel_path)).unwrap();
 
         store
-            .insert_file_inventory(
-                &file_id,
-                &rel_path,
-                language.as_str(),
+            .insert_file_inventory(&DiscoveredFile {
+                file_id,
+                path: rel_path,
+                language,
                 mtime,
-                metadata.len() as i64,
-                0,
-                0,
-            )
+                size: metadata.len() as i64,
+                inode: 0,
+                dev: 0,
+            })
             .unwrap();
 
         let content = fs::read(&abs_path).unwrap();

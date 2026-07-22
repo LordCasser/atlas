@@ -174,18 +174,35 @@ impl Store {
     }
 
     /// Return true when every indexed file in a project-relative scope has a
-    /// fresh, complete structural extraction record.
+    /// fresh, complete record satisfying one coarse fact layer.
+    ///
+    /// `required` must be exactly one of [`FactCoverage::MANIFEST`],
+    /// [`FactCoverage::STRUCTURAL`], or [`FactCoverage::DATAFLOW`]. Higher
+    /// extraction layers imply the lower layers even when an older or lazy
+    /// writer left `capability_mask` empty.
     ///
     /// This is a scope-wide predicate, not a union of per-file capability
     /// masks: one structurally extracted file must not make a mixed
-    /// manifest/structural scope appear complete.
-    pub fn scope_has_fresh_complete_structural(&self, scope: &str) -> anyhow::Result<bool> {
+    /// manifest/structural scope appear structurally complete.
+    pub fn scope_has_fresh_complete_fact(
+        &self,
+        scope: &str,
+        required: FactCoverage,
+    ) -> anyhow::Result<bool> {
+        let minimum_layer_rank = match required.bits() {
+            FactCoverage::MANIFEST => 1i64,
+            FactCoverage::STRUCTURAL => 2i64,
+            FactCoverage::DATAFLOW => 3i64,
+            bits => {
+                anyhow::bail!("scope fact coverage requires one coarse layer bit, got 0x{bits:04x}")
+            }
+        };
         let scope = normalize_scope(scope);
         let conn = self.lock_read();
-        let structural_bit = FactCoverage::STRUCTURAL as i64;
+        let required_bit = required.bits() as i64;
         let (has_files, all_covered): (bool, bool) = if scope.is_empty() {
             conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM files),
+                r#"SELECT EXISTS(SELECT 1 FROM files),
                         NOT EXISTS(
                             SELECT 1
                             FROM files f
@@ -196,17 +213,23 @@ impl Store {
                               AND l.unit_id IS NULL
                               AND l.content_hash = f.content_hash
                               AND l.status = 'complete'
-                              AND (l.layer = 'structural'
+                              AND ((CASE l.layer
+                                      WHEN 'manifest' THEN 1
+                                      WHEN 'resolution_symbols' THEN 1
+                                      WHEN 'structural' THEN 2
+                                      WHEN 'dataflow' THEN 3
+                                      ELSE 0
+                                    END) >= ?2
                                    OR (l.capability_mask & ?1) != 0)
                             )
-                        )",
-                params![structural_bit],
+                        )"#,
+                params![required_bit, minimum_layer_rank],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?
         } else {
             let (lower, upper) = scope_child_bounds(&scope);
             conn.query_row(
-                "SELECT EXISTS(
+                r#"SELECT EXISTS(
                             SELECT 1 FROM files
                             WHERE path = ?2 OR (path >= ?3 AND path < ?4)
                         ),
@@ -221,11 +244,84 @@ impl Store {
                               AND l.unit_id IS NULL
                               AND l.content_hash = f.content_hash
                               AND l.status = 'complete'
-                              AND (l.layer = 'structural'
+                              AND ((CASE l.layer
+                                      WHEN 'manifest' THEN 1
+                                      WHEN 'resolution_symbols' THEN 1
+                                      WHEN 'structural' THEN 2
+                                      WHEN 'dataflow' THEN 3
+                                      ELSE 0
+                                    END) >= ?5
                                    OR (l.capability_mask & ?1) != 0)
                             )
-                        )",
-                params![structural_bit, scope, lower, upper],
+                        )"#,
+                params![required_bit, scope, lower, upper, minimum_layer_rank],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        };
+        Ok(has_files && all_covered)
+    }
+
+    /// Return true when every indexed file in a project-relative scope that
+    /// contains references has a completed canonical resolution fingerprint
+    /// for its current content.
+    ///
+    /// Structural extraction alone does not prove that repository-wide
+    /// resolution/edge construction is current: Focus may rebuild a changed
+    /// file and intentionally keep its new resolutions closure-scoped. The
+    /// full Index resolution phase writes this fingerprint after canonical
+    /// resolution succeeds.
+    pub fn scope_has_current_resolution_fingerprint(&self, scope: &str) -> anyhow::Result<bool> {
+        let scope = normalize_scope(scope);
+        let conn = self.lock_read();
+        let (has_files, all_covered): (bool, bool) = if scope.is_empty() {
+            conn.query_row(
+                r#"SELECT EXISTS(SELECT 1 FROM files),
+                        NOT EXISTS(
+                            SELECT 1
+                            FROM files f
+                            WHERE EXISTS(
+                                SELECT 1 FROM "references" ref
+                                WHERE ref.file_id = f.file_id
+                            )
+                              AND NOT EXISTS(
+                                SELECT 1
+                                FROM extraction_state r
+                                WHERE r.file_id = f.file_id
+                                  AND r.unit_id IS NULL
+                                  AND r.layer = 'resolution'
+                                  AND r.status = 'complete'
+                                  AND r.resolution_fingerprint = f.content_hash
+                            )
+                        )"#,
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+        } else {
+            let (lower, upper) = scope_child_bounds(&scope);
+            conn.query_row(
+                r#"SELECT EXISTS(
+                            SELECT 1 FROM files
+                            WHERE path = ?1 OR (path >= ?2 AND path < ?3)
+                        ),
+                        NOT EXISTS(
+                            SELECT 1
+                            FROM files f
+                            WHERE (f.path = ?1 OR (f.path >= ?2 AND f.path < ?3))
+                              AND EXISTS(
+                                SELECT 1 FROM "references" ref
+                                WHERE ref.file_id = f.file_id
+                              )
+                              AND NOT EXISTS(
+                                SELECT 1
+                                FROM extraction_state r
+                                WHERE r.file_id = f.file_id
+                                  AND r.unit_id IS NULL
+                                  AND r.layer = 'resolution'
+                                  AND r.status = 'complete'
+                                  AND r.resolution_fingerprint = f.content_hash
+                            )
+                        )"#,
+                params![scope, lower, upper],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?
         };

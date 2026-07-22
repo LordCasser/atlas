@@ -1,7 +1,8 @@
 //! Tests for file_inventory store module.
 
 use super::*;
-use types::ids::FileId;
+use crate::DiscoveredFile;
+use types::{Language, ids::FileId};
 
 fn test_store() -> Store {
     let store = Store::open_in_memory().unwrap();
@@ -13,14 +14,39 @@ fn make_file_id(name: &str) -> FileId {
     FileId::generate(name)
 }
 
+fn discovered_file(
+    path: &str,
+    language: Language,
+    mtime: i64,
+    size: i64,
+    inode: i64,
+    dev: i64,
+) -> DiscoveredFile {
+    DiscoveredFile {
+        file_id: make_file_id(path),
+        path: path.into(),
+        language,
+        mtime,
+        size,
+        inode,
+        dev,
+    }
+}
+
 #[test]
 fn test_file_inventory_insert_and_query() {
     let store = test_store();
-    let file_id = make_file_id("src/main.rs");
     let path = "src/main.rs";
 
     store
-        .insert_file_inventory(&file_id, path, "rust", 1_700_000_000, 1024, 12345, 42)
+        .insert_file_inventory(&discovered_file(
+            path,
+            Language::Rust,
+            1_700_000_000,
+            1024,
+            12345,
+            42,
+        ))
         .unwrap();
 
     let row = store
@@ -41,13 +67,13 @@ fn test_file_inventory_count() {
     let store = test_store();
 
     store
-        .insert_file_inventory(&make_file_id("a.ts"), "a.ts", "typescript", 1, 100, 1, 1)
+        .insert_file_inventory(&discovered_file("a.ts", Language::TypeScript, 1, 100, 1, 1))
         .unwrap();
     store
-        .insert_file_inventory(&make_file_id("b.py"), "b.py", "python", 2, 200, 2, 1)
+        .insert_file_inventory(&discovered_file("b.py", Language::Python, 2, 200, 2, 1))
         .unwrap();
     store
-        .insert_file_inventory(&make_file_id("c.go"), "c.go", "go", 3, 300, 3, 1)
+        .insert_file_inventory(&discovered_file("c.go", Language::Go, 3, 300, 3, 1))
         .unwrap();
 
     assert_eq!(store.file_inventory_count().unwrap(), 3);
@@ -68,7 +94,14 @@ fn test_set_fingerprint() {
     let path = "src/main.rs";
 
     store
-        .insert_file_inventory(&file_id, path, "rust", 1_700_000_000, 1024, 1, 1)
+        .insert_file_inventory(&discovered_file(
+            path,
+            Language::Rust,
+            1_700_000_000,
+            1024,
+            1,
+            1,
+        ))
         .unwrap();
 
     store
@@ -89,16 +122,36 @@ fn test_get_unfingerprinted() {
     // Insert 2 files with fingerprint, 1 without
     let f1 = make_file_id("hashed1.ts");
     let f2 = make_file_id("hashed2.ts");
-    let f3 = make_file_id("unhashed.ts");
 
     store
-        .insert_file_inventory(&f1, "hashed1.ts", "typescript", 1, 100, 1, 1)
+        .insert_file_inventory(&discovered_file(
+            "hashed1.ts",
+            Language::TypeScript,
+            1,
+            100,
+            1,
+            1,
+        ))
         .unwrap();
     store
-        .insert_file_inventory(&f2, "hashed2.ts", "typescript", 2, 200, 2, 1)
+        .insert_file_inventory(&discovered_file(
+            "hashed2.ts",
+            Language::TypeScript,
+            2,
+            200,
+            2,
+            1,
+        ))
         .unwrap();
     store
-        .insert_file_inventory(&f3, "unhashed.ts", "typescript", 3, 300, 3, 1)
+        .insert_file_inventory(&discovered_file(
+            "unhashed.ts",
+            Language::TypeScript,
+            3,
+            300,
+            3,
+            1,
+        ))
         .unwrap();
 
     store.set_file_fingerprint(&f1, "aaa").unwrap();
@@ -112,17 +165,16 @@ fn test_get_unfingerprinted() {
 #[test]
 fn test_file_inventory_replace() {
     let store = test_store();
-    let file_id = make_file_id("src/lib.rs");
     let path = "src/lib.rs";
 
     // Insert initial
     store
-        .insert_file_inventory(&file_id, path, "rust", 100, 500, 1, 1)
+        .insert_file_inventory(&discovered_file(path, Language::Rust, 100, 500, 1, 1))
         .unwrap();
 
     // Replace (INSERT OR REPLACE)
     store
-        .insert_file_inventory(&file_id, path, "rust", 200, 999, 2, 2)
+        .insert_file_inventory(&discovered_file(path, Language::Rust, 200, 999, 2, 2))
         .unwrap();
 
     let row = store
@@ -139,7 +191,14 @@ fn test_find_file_inventory_path() {
     let file_id = make_file_id("src/utils.rs");
 
     store
-        .insert_file_inventory(&file_id, "src/utils.rs", "rust", 1, 100, 1, 1)
+        .insert_file_inventory(&discovered_file(
+            "src/utils.rs",
+            Language::Rust,
+            1,
+            100,
+            1,
+            1,
+        ))
         .unwrap();
 
     let path = store

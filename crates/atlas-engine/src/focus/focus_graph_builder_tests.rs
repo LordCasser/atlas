@@ -129,10 +129,9 @@ fn insert_visible_resolution(
     generation: i64,
     ref_id: &ReferenceId,
     target_sym_id: &SymbolId,
-    coverage_tier: &str,
-    semantic_confidence: &str,
-    resolution_strategy: &str,
+    metadata: (&str, &str, &str),
 ) {
+    let (coverage_tier, semantic_confidence, resolution_strategy) = metadata;
     store
         .insert_reference_resolution(
             ref_id.as_bytes(),
@@ -198,9 +197,7 @@ fn test_build_for_closure_creates_canonical_edges() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_reachable",
+        ("closure_complete", "certain", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -240,9 +237,7 @@ fn test_new_closure_replaces_superseded_focus_target() {
         1,
         &ref_id,
         &old_target.id,
-        "boundary",
-        "certain",
-        "name_only",
+        ("boundary", "certain", "name_only"),
     );
     let builder = FocusGraphBuilder::new(store.clone());
     builder.build_for_closure("cl_old", 1).unwrap();
@@ -254,9 +249,7 @@ fn test_new_closure_replaces_superseded_focus_target() {
         1,
         &ref_id,
         &new_target.id,
-        "boundary",
-        "certain",
-        "name_only",
+        ("boundary", "certain", "name_only"),
     );
     builder.build_for_closure("cl_new", 1).unwrap();
 
@@ -284,9 +277,7 @@ fn test_build_for_closure_candidate_edges() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "medium",
-        "closure_reachable",
+        ("closure_complete", "medium", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -321,9 +312,7 @@ fn test_build_for_closure_low_confidence_not_persisted() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "low",
-        "closure_reachable",
+        ("closure_complete", "low", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -356,9 +345,7 @@ fn test_build_for_closure_certain_edges_immutable() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_reachable",
+        ("closure_complete", "certain", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -372,9 +359,7 @@ fn test_build_for_closure_certain_edges_immutable() {
         2,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "medium",
-        "closure_reachable",
+        ("closure_complete", "medium", "closure_reachable"),
     );
 
     let result = builder.build_for_closure("cl_medium", 2).unwrap();
@@ -460,9 +445,7 @@ fn test_build_for_closure_edge_kind_calls() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_reachable",
+        ("closure_complete", "certain", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -492,9 +475,7 @@ fn test_build_for_closure_multiple_closures_independent() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_a",
+        ("closure_complete", "certain", "closure_a"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -528,9 +509,7 @@ fn test_build_for_closure_edge_kind_references() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_reachable",
+        ("closure_complete", "certain", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -558,9 +537,7 @@ fn test_build_for_closure_edge_kind_instantiates() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete",
-        "certain",
-        "closure_reachable",
+        ("closure_complete", "certain", "closure_reachable"),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());
@@ -592,9 +569,11 @@ fn test_build_for_closure_resolution_pipeline_consistency() {
         1,
         &ref_id,
         &target.id,
-        "closure_complete", // <-- must be snake_case (what resolution writes)
-        "certain",
-        "closure_reachable",
+        (
+            "closure_complete", // <-- must be snake_case (what resolution writes)
+            "certain",
+            "closure_reachable",
+        ),
     );
 
     let builder = FocusGraphBuilder::new(store.clone());

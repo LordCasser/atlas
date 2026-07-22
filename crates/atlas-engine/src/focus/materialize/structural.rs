@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use db::{ClaimResult, Store};
+use db::{ClaimResult, DiscoveredFile, Store};
 use extraction::{CancelCheck, ExtractionMode, create_frontend, extract_file_with_mode};
 use types::ids::FileId;
 use types::structs::AnswerQuality;
@@ -1059,15 +1059,15 @@ fn insert_inventory_candidate(
     let (inode, dev) = (0i64, 0i64);
 
     let file_id = FileId::generate(rel_path);
-    store.insert_file_inventory(
-        &file_id,
-        rel_path,
-        language.as_str(),
+    store.insert_file_inventory(&DiscoveredFile {
+        file_id,
+        path: rel_path.to_string(),
+        language,
         mtime,
-        metadata.len() as i64,
+        size: metadata.len() as i64,
         inode,
         dev,
-    )?;
+    })?;
     Ok(Some(file_id))
 }
 
@@ -1719,15 +1719,15 @@ mod tests {
         let (inode, dev) = (0i64, 0i64);
 
         store
-            .insert_file_inventory(
-                &fid,
-                path,
-                Language::Python.as_str(),
+            .insert_file_inventory(&DiscoveredFile {
+                file_id: fid,
+                path: path.to_string(),
+                language: Language::Python,
                 mtime,
-                metadata.len() as i64,
+                size: metadata.len() as i64,
                 inode,
                 dev,
-            )
+            })
             .unwrap();
         store.set_file_fingerprint(&fid, &content_hash).unwrap();
         store
@@ -1787,15 +1787,15 @@ mod tests {
         let (inode, dev) = (0i64, 0i64);
 
         store
-            .insert_file_inventory(
-                &fid,
-                path,
-                Language::C.as_str(),
+            .insert_file_inventory(&DiscoveredFile {
+                file_id: fid,
+                path: path.to_string(),
+                language: Language::C,
                 mtime,
-                metadata.len() as i64,
+                size: metadata.len() as i64,
                 inode,
                 dev,
-            )
+            })
             .unwrap();
         assert!(
             store.get_file(&fid).unwrap().is_none(),

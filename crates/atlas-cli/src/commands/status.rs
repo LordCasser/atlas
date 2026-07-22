@@ -18,6 +18,12 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!("  Database:        {}/atlas.db", ws.atlas_dir().display());
     println!("  SQLite version:  {}", stats.sqlite_version);
     println!("  Atlas version:   {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "  Catalog tier:    {}",
+        ctx.store
+            .read_catalog_tier()
+            .unwrap_or_else(|_| "unknown".into())
+    );
     println!();
     println!("  Files indexed:   {}", stats.total_files);
     println!("  Symbols:         {}", stats.total_symbols);

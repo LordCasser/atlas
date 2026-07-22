@@ -11,7 +11,7 @@ pub(crate) use atlas_engine::symbol_selector::{
     MAX_AGGREGATION_CANDIDATES, ResolvedSymbol, ScoredCandidate, SymbolInput, SymbolResolution,
     SymbolResolutionPolicy, SymbolSelector,
 };
-use atlas_engine::{FileId, Language};
+use atlas_engine::{DiscoveredFile, FileId, Language};
 
 use super::ToolRouter;
 use std::path::Path;
@@ -93,15 +93,15 @@ impl ToolRouter {
 
         active
             .store
-            .insert_file_inventory(
-                &file_id,
-                clean,
-                language.as_str(),
+            .insert_file_inventory(&DiscoveredFile {
+                file_id,
+                path: clean.to_string(),
+                language,
                 mtime,
-                metadata.len() as i64,
+                size: metadata.len() as i64,
                 inode,
                 dev,
-            )
+            })
             .ok()?;
 
         if let Ok(content) = std::fs::read(&abs_path) {

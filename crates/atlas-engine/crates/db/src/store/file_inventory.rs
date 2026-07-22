@@ -4,28 +4,27 @@
 //! file lookup without full extraction.
 
 use rusqlite::params;
-use types::ids::FileId;
+use types::{Language, ids::FileId};
 
 use super::Store;
 
 impl Store {
     /// Insert or update a file in the inventory (cheap stat, no content hash).
-    pub fn insert_file_inventory(
-        &self,
-        file_id: &FileId,
-        path: &str,
-        language: &str,
-        mtime: i64,
-        size: i64,
-        inode: i64,
-        dev: i64,
-    ) -> anyhow::Result<()> {
+    pub fn insert_file_inventory(&self, file: &DiscoveredFile) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
             "INSERT OR REPLACE INTO file_inventory
                 (file_id, path, language, mtime, size, inode, dev, discovered_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
-            params![file_id, path, language, mtime, size, inode, dev],
+            params![
+                &file.file_id,
+                &file.path,
+                file.language.as_str(),
+                file.mtime,
+                file.size,
+                file.inode,
+                file.dev,
+            ],
         )?;
         Ok(())
     }
@@ -288,6 +287,21 @@ fn normalize_inventory_scope(scope: &str) -> String {
     } else {
         trimmed.trim_end_matches('/').to_string()
     }
+}
+
+/// A project-relative source file discovered from cheap filesystem metadata.
+///
+/// This is the write-side inventory unit. It deliberately excludes the
+/// content fingerprint, which belongs to the later Tier 0.5 phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredFile {
+    pub file_id: FileId,
+    pub path: String,
+    pub language: Language,
+    pub mtime: i64,
+    pub size: i64,
+    pub inode: i64,
+    pub dev: i64,
 }
 
 /// A row from the file_inventory table.

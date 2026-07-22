@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use db::Store;
+use db::{DiscoveredFile, Store};
 use filesync::discovery::{DiscoveryConfig, discover_files_bounded};
 use search::query_parser::parse_query;
 use search::scoring::{ScoreWeights, language_preference_bonus};
@@ -279,9 +279,10 @@ impl ScopedSearchService {
         // Run this check regardless of analysis mode so precision is
         // correctly reported even for Manifest-only searches.
         if !inventory_backed
-            && self
-                .store
-                .scope_has_fresh_complete_structural(&normalized_scope)?
+            && self.store.scope_has_fresh_complete_fact(
+                &normalized_scope,
+                FactCoverage::from_bits(FactCoverage::STRUCTURAL),
+            )?
         {
             scope_has_structural_coverage = true;
             quality = AnswerQuality::best();
@@ -790,15 +791,15 @@ pub fn seed_file_inventory_from_scope(
         #[cfg(not(unix))]
         let (inode, dev) = (0i64, 0i64);
 
-        store.insert_file_inventory(
-            &file_id,
-            &rel_path,
-            language.as_str(),
+        store.insert_file_inventory(&DiscoveredFile {
+            file_id,
+            path: rel_path,
+            language,
             mtime,
-            metadata.len() as i64,
+            size: metadata.len() as i64,
             inode,
             dev,
-        )?;
+        })?;
     }
     Ok(complete)
 }

@@ -1,5 +1,5 @@
 use crate::focus::query::QueryNeed;
-use crate::{ExtractionMode, Store};
+use crate::{ExtractionMode, FactCoverage, Store};
 
 /// Return true when `requested` would lower the fact coverage of `current` CatalogTier.
 pub fn would_downgrade_index_precision(current: &str, requested: &ExtractionMode) -> bool {
@@ -26,9 +26,10 @@ pub fn is_rich_catalog_tier(catalog_tier: &str) -> bool {
 /// Return true when a finalized whole-project Index already satisfies a query.
 ///
 /// A scoped Index is a reusable fact source, but it is not proof of repository
-/// coverage. Likewise, a manifest Index followed by a few Focus structural
-/// upgrades must remain on the Focus path instead of turning the mixed catalog
-/// into a false full-cache signal.
+/// coverage. Authority is checked per query need across every fresh file;
+/// `CatalogTier` is only a display summary. This preserves whole-repository
+/// manifest authority after Focus enriches a few files while keeping stronger
+/// queries on the Focus path.
 pub fn has_finalized_repo_cache_for(store: &Store, need: QueryNeed) -> bool {
     let finalized = store
         .get_metadata("last_index_time")
@@ -60,19 +61,26 @@ pub fn has_finalized_repo_cache_for(store: &Store, need: QueryNeed) -> bool {
         return false;
     }
 
-    let catalog_tier = store
-        .read_catalog_tier()
-        .unwrap_or_else(|_| "unknown".to_string());
+    let fact_coverage = match need {
+        QueryNeed::Manifest => {
+            store.scope_has_fresh_complete_fact("", FactCoverage::from_bits(FactCoverage::MANIFEST))
+        }
+        QueryNeed::Structural | QueryNeed::CallGraph => store
+            .scope_has_fresh_complete_fact("", FactCoverage::from_bits(FactCoverage::STRUCTURAL)),
+        QueryNeed::Dataflow => {
+            store.scope_has_fresh_complete_fact("", FactCoverage::from_bits(FactCoverage::DATAFLOW))
+        }
+    }
+    .unwrap_or(false);
+    if !fact_coverage {
+        return false;
+    }
+
     match need {
-        QueryNeed::Manifest => matches!(
-            catalog_tier.as_str(),
-            "manifest" | "structural" | "structural+lazy" | "full"
-        ),
-        QueryNeed::Structural | QueryNeed::CallGraph => matches!(
-            catalog_tier.as_str(),
-            "structural" | "structural+lazy" | "full"
-        ),
-        QueryNeed::Dataflow => catalog_tier == "full",
+        QueryNeed::CallGraph | QueryNeed::Dataflow => store
+            .scope_has_current_resolution_fingerprint("")
+            .unwrap_or(false),
+        QueryNeed::Manifest | QueryNeed::Structural => true,
     }
 }
 
@@ -124,7 +132,10 @@ pub fn guard_against_precision_downgrade(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{FactCoverage, FileId, FileInfo, Language, ParseStatus};
+    use types::{
+        FactCoverage, FileId, FileInfo, Language, ParseStatus, ReferenceId, ReferenceKind,
+        ReferenceUse, TextRange,
+    };
 
     fn store_with_complete_layer(layer: &str) -> Store {
         let store = Store::open_in_memory().unwrap();
@@ -149,6 +160,9 @@ mod tests {
             )
             .unwrap();
         store
+            .update_resolution_fingerprint(&file_id, "hash")
+            .unwrap();
+        store
     }
 
     fn mark_finalized(
@@ -169,6 +183,33 @@ mod tests {
             )
             .unwrap();
         store.set_metadata("indexed_pipeline_grade", grade).unwrap();
+    }
+
+    fn insert_unresolved_reference(store: &Store, file_id: FileId, name: &str) {
+        let range = TextRange::default();
+        store
+            .insert_references(&[ReferenceUse {
+                id: ReferenceId::generate(
+                    &file_id,
+                    None,
+                    range.start_byte,
+                    range.end_byte,
+                    name,
+                    ReferenceKind::Call,
+                ),
+                file_id,
+                source_symbol: None,
+                scope_id: None,
+                kind: ReferenceKind::Call,
+                text: name.into(),
+                name: name.into(),
+                receiver: None,
+                arity: None,
+                range,
+                binding_id: None,
+                resolved: None,
+            }])
+            .unwrap();
     }
 
     #[test]
@@ -216,6 +257,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn manifest_authority_survives_partial_focus_structural_enrichment() {
+        let store = store_with_complete_layer("manifest");
+        let hot_id = FileId::generate("src/hot.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id: hot_id,
+                path: "src/hot.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hot-hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &hot_id,
+                "structural",
+                "hot-hash",
+                "complete",
+                FactCoverage::default(),
+            )
+            .unwrap();
+        mark_finalized(&store, "manifest", &[], &[]);
+
+        assert_eq!(store.read_catalog_tier().unwrap(), "partial_structural");
+        assert!(
+            has_finalized_repo_cache_for(&store, QueryNeed::Manifest),
+            "Focus enrichment must not revoke a finalized whole-repo manifest layer"
+        );
+        assert!(!has_finalized_repo_cache_for(&store, QueryNeed::Structural));
+    }
+
+    #[test]
+    fn focus_rebuild_revokes_canonical_call_graph_but_not_structural_facts() {
+        let store = store_with_complete_layer("structural");
+        let file_id = FileId::generate("src/main.ts");
+        insert_unresolved_reference(&store, file_id, "before_focus");
+        mark_finalized(&store, "structural", &[], &[]);
+        assert!(has_finalized_repo_cache_for(&store, QueryNeed::Structural));
+        assert!(has_finalized_repo_cache_for(&store, QueryNeed::CallGraph));
+
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "src/main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "focus-hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "focus-hash",
+                "complete",
+                FactCoverage::default(),
+            )
+            .unwrap();
+        insert_unresolved_reference(&store, file_id, "after_focus");
+
+        assert!(has_finalized_repo_cache_for(&store, QueryNeed::Structural));
+        assert!(
+            !has_finalized_repo_cache_for(&store, QueryNeed::CallGraph),
+            "Focus-scoped resolution cannot retain RepoCanonical authority"
+        );
+    }
+
+    #[test]
+    fn reference_free_files_do_not_require_resolution_fingerprints() {
+        let store = store_with_complete_layer("structural");
+        let file_id = FileId::generate("src/main.ts");
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "resolution",
+                "hash",
+                "complete",
+                FactCoverage::default(),
+            )
+            .unwrap();
+        mark_finalized(&store, "structural", &[], &[]);
+
+        assert!(has_finalized_repo_cache_for(&store, QueryNeed::CallGraph));
     }
 
     #[test]

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use std::{fs, time};
 
 use anyhow::Result;
-use db::Store;
+use db::{DiscoveredFile, Store};
 use extraction::{ExtractionMode, create_frontend, extract_file_with_mode};
 use filesync::discovery::{DiscoveryConfig, discover_files};
 use types::FactCoverage;
@@ -284,15 +284,15 @@ fn insert_one_inventory(
     #[cfg(not(unix))]
     let (inode, dev) = (0i64, 0i64);
 
-    store.insert_file_inventory(
-        &file_id,
-        &rel_path.to_string_lossy(),
-        language.as_str(),
+    store.insert_file_inventory(&DiscoveredFile {
+        file_id,
+        path: rel_path.to_string_lossy().into_owned(),
+        language,
         mtime,
-        metadata.len() as i64,
+        size: metadata.len() as i64,
         inode,
         dev,
-    )?;
+    })?;
 
     Ok(())
 }
