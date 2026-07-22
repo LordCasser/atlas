@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use atlas_engine::{CallerChain, ContextView, SearchResult, Store};
+use atlas_engine::{
+    CallerChain, ContextView, QueryNeed, SearchResult, Store, has_finalized_repo_cache_for,
+};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -686,6 +688,34 @@ impl App {
         if self.selected_index >= self.search_results.len() {
             return;
         }
+        if !has_finalized_repo_cache_for(&self.store, QueryNeed::CallGraph) {
+            // A native ContextBuilder view has no coverage envelope. Route
+            // partial/scoped/manifest catalogs through the shared MCP handler
+            // so Focus, pending work, and known gaps remain visible.
+            let result = &self.search_results[self.selected_index];
+            let symbol = serde_json::json!({
+                "qualified_name": result.symbol.qualified_name,
+                "file_path": result.file_path,
+                "line": result.symbol.range.start_line.saturating_add(1),
+                "kind": result.symbol.kind.as_str(),
+                "language": result.symbol.language.as_str(),
+            });
+            self.tool_name = Some("symbol".into());
+            self.tool_scroll = 0;
+            self.tool_raw = false;
+            self.last_tool_result = None;
+            self.job_manager.submit(TuiJob::ToolCall {
+                name: "symbol".into(),
+                arguments: serde_json::json!({
+                    "symbol": symbol,
+                    "view": "context",
+                    "includeCode": true,
+                }),
+                cancel: Arc::new(AtomicBool::new(false)),
+            });
+            self.focus = Focus::Results;
+            return;
+        }
         let symbol_id = self.search_results[self.selected_index].symbol.id;
 
         if !self.session.is_initialized() || self.session.needs_refresh() {
@@ -912,6 +942,12 @@ impl App {
                 text,
                 is_error,
             } => {
+                // Shared MCP handlers may have materialized Focus facts. The
+                // native TUI graph is a separate snapshot, so invalidate it
+                // and refresh the shared Store-derived status boundary after
+                // every tool call.
+                self.session.mark_stale();
+                self.refresh_cached_status();
                 let view = ToolResultView::from_text(text, is_error);
                 if let Some(query_id) = view.query_id() {
                     self.latest_query_id = Some(query_id.to_owned());
@@ -1109,7 +1145,9 @@ mod tests {
     use super::*;
 
     fn test_app() -> App {
-        let store = Arc::new(Store::open_in_memory().expect("in-memory store"));
+        let store = Store::open_in_memory().expect("in-memory store");
+        store.init_schema().expect("initialize in-memory schema");
+        let store = Arc::new(store);
         let project_root = PathBuf::from(".");
         let session = GraphSession::new(Arc::clone(&store), project_root.clone());
         let job_manager = JobManager::new(Arc::clone(&store), project_root.clone());
@@ -1211,6 +1249,109 @@ mod tests {
 
         assert_eq!(app.tool_name.as_deref(), Some("Graph"));
         assert!(app.last_tool_result.is_some());
+    }
+
+    #[test]
+    fn partial_catalog_symbol_detail_uses_shared_focus_aware_handler() {
+        use atlas_engine::{
+            FileId, FileInfo, GraphEngine, Language, ParseStatus, SearchEngine, SearchOptions,
+            SymbolDef, SymbolId, SymbolKind, TextRange,
+        };
+
+        let mut app = test_app();
+        let file_id = FileId::generate("a.ts");
+        app.store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "a.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        app.store
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                "hash",
+                "complete",
+                atlas_engine::FactCoverage::default(),
+            )
+            .unwrap();
+        let symbol = SymbolDef {
+            id: SymbolId::generate(
+                &file_id,
+                Language::TypeScript.as_str(),
+                "handler",
+                SymbolKind::Function.as_str(),
+                None,
+            ),
+            kind: SymbolKind::Function,
+            name: "handler".into(),
+            qualified_name: "handler".into(),
+            symbol_path: vec!["handler".into()],
+            file_id,
+            language: Language::TypeScript,
+            range: TextRange::default(),
+            name_range: TextRange::default(),
+            signature: None,
+            visibility: None,
+            exported: false,
+            static_: false,
+            async_: false,
+            container: None,
+            scope_id: None,
+            package_name: None,
+            namespace_path: vec![],
+            layer: "manifest".into(),
+        };
+        app.store.insert_symbols(&[symbol]).unwrap();
+        let search = SearchEngine::new(Arc::clone(&app.store), Arc::new(GraphEngine::empty()));
+        app.search_results = search
+            .search("handler", 10, &SearchOptions::default())
+            .unwrap();
+
+        app.open_symbol_detail();
+
+        assert_eq!(app.tool_name.as_deref(), Some("symbol"));
+        assert!(app.pending_detail_symbol.is_none());
+        assert!(!app.session.is_initialized());
+    }
+
+    #[test]
+    fn tool_output_invalidates_native_graph_and_refreshes_catalog_status() {
+        use atlas_engine::{FactCoverage, FileId, FileInfo, Language, ParseStatus};
+
+        let mut app = test_app();
+        let file_id = FileId::generate("a.ts");
+        app.store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "a.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        app.store
+            .upsert_file_extraction_state(
+                &file_id,
+                "structural",
+                "hash",
+                "complete",
+                FactCoverage::default(),
+            )
+            .unwrap();
+
+        app.handle_job_completion(JobResult::ToolOutput {
+            name: "search".into(),
+            text: r#"{"ok":true}"#.into(),
+            is_error: false,
+        });
+
+        assert!(app.session.needs_refresh());
+        assert_eq!(app.file_count, 1);
+        assert_eq!(app.catalog_tier, "structural");
     }
 
     #[test]

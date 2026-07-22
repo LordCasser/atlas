@@ -267,7 +267,7 @@ fn jobs_has_jobs_field() {
 #[test]
 fn list_fp_annotations_does_not_panic() {
     let router = python_example_router();
-    let (s, _) = router.handle_list_fp_annotations();
+    let (s, _) = router.handle_list_fp_annotations(&serde_json::json!({}));
     let r = parse_json(&s);
     assert!(
         r.get("annotations").is_some(),
@@ -281,15 +281,17 @@ fn list_fp_annotations_does_not_panic() {
 
 #[test]
 fn handlers_no_panic_empty_args() {
+    type ReadOnlyHandler<'a> = Box<dyn Fn() -> (String, bool) + 'a>;
+
     let router = python_example_router();
     let router2 = python_example_router();
 
-    let read_only: Vec<(&str, Box<dyn Fn() -> (String, bool)>)> = vec![
+    let read_only: Vec<(&str, ReadOnlyHandler<'_>)> = vec![
         ("status", Box::new(|| router2.handle_status())),
         ("jobs", Box::new(|| router2.handle_jobs())),
         (
             "list_fp_annotations",
-            Box::new(|| router2.handle_list_fp_annotations()),
+            Box::new(|| router2.handle_list_fp_annotations(&serde_json::json!({}))),
         ),
     ];
 
@@ -339,8 +341,7 @@ mod focus_tests {
 
     fn focus_router(project_root: &Path) -> ToolRouter {
         let store = fresh_focus_store();
-        let router = ToolRouter::new_empty(store, project_root.to_path_buf());
-        router
+        ToolRouter::new_empty(store, project_root.to_path_buf())
     }
 
     #[test]

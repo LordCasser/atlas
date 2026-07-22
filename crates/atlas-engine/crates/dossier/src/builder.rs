@@ -13,22 +13,45 @@ use super::types::*;
 /// Builder that orchestrates dossier construction.
 pub struct ExploreDossierBuilder;
 
+/// Read-side dependencies used while assembling one dossier.
+#[derive(Clone, Copy)]
+pub struct DossierRepositories<'a> {
+    pub symbols: &'a dyn SymbolRepository,
+    pub relations: &'a dyn RelationRepository,
+    pub file_facts: &'a dyn FileFactsRepository,
+    pub source: &'a dyn SourceRepository,
+}
+
+impl<'a> DossierRepositories<'a> {
+    pub fn new(
+        symbols: &'a dyn SymbolRepository,
+        relations: &'a dyn RelationRepository,
+        file_facts: &'a dyn FileFactsRepository,
+        source: &'a dyn SourceRepository,
+    ) -> Self {
+        Self {
+            symbols,
+            relations,
+            file_facts,
+            source,
+        }
+    }
+}
+
 impl ExploreDossierBuilder {
     /// Build a full dossier for a resolved symbol.
     pub fn build(
         sym: &types::SymbolDef,
         file_path: &str,
-        sym_repo: &dyn SymbolRepository,
-        rel_repo: &dyn RelationRepository,
-        file_repo: &dyn FileFactsRepository,
-        src_repo: &dyn SourceRepository,
+        repositories: DossierRepositories<'_>,
         request: &ExploreRequest,
         precision_tier: String,
     ) -> Result<ExploreDossier> {
         let mut warnings: Vec<String> = Vec::new();
 
         // ── Subject info ──────────────────────────────────────────────
-        let signature = sym_repo
+        let signature = repositories
+            .symbols
             .get_signature(&sym.id)
             .unwrap_or(None)
             .or_else(|| sym.signature.clone());
@@ -48,14 +71,20 @@ impl ExploreDossierBuilder {
 
         // ── Source excerpt ────────────────────────────────────────────
         let source_excerpt = if request.source_mode != SourceMode::None_ {
-            build_source_excerpt(sym, src_repo, request, &mut warnings)
+            build_source_excerpt(sym, repositories.source, request, &mut warnings)
         } else {
             None
         };
 
         // ── Relation counts (centralized, used by multiple sub‑builders) ──────
-        let incoming_counts = rel_repo.count_incoming_by_kind(&sym.id).unwrap_or_default();
-        let outgoing_counts = rel_repo.count_outgoing_by_kind(&sym.id).unwrap_or_default();
+        let incoming_counts = repositories
+            .relations
+            .count_incoming_by_kind(&sym.id)
+            .unwrap_or_default();
+        let outgoing_counts = repositories
+            .relations
+            .count_outgoing_by_kind(&sym.id)
+            .unwrap_or_default();
         if incoming_counts.is_empty() && outgoing_counts.is_empty() {
             warnings.push("Relation count data unavailable; totals may be inaccurate".to_string());
         }
@@ -63,9 +92,7 @@ impl ExploreDossierBuilder {
         // ── Call evidence ─────────────────────────────────────────────
         let call_evidence = build_call_evidence(
             &sym.id,
-            sym_repo,
-            rel_repo,
-            src_repo,
+            &repositories,
             request.evidence_limit,
             &incoming_counts,
             &outgoing_counts,
@@ -75,9 +102,7 @@ impl ExploreDossierBuilder {
         // ── Relation groups ───────────────────────────────────────────
         let relation_groups = build_relation_groups(
             &sym.id,
-            sym_repo,
-            rel_repo,
-            src_repo,
+            &repositories,
             request.relation_limit,
             &incoming_counts,
             &outgoing_counts,
@@ -86,7 +111,13 @@ impl ExploreDossierBuilder {
 
         // ── File context ───────────────────────────────────────────────
         let file_context = if request.include_file_context {
-            build_file_context(sym, file_path, sym_repo, file_repo, request.peer_limit)
+            build_file_context(
+                sym,
+                file_path,
+                repositories.symbols,
+                repositories.file_facts,
+                request.peer_limit,
+            )
         } else {
             None
         };
@@ -231,9 +262,7 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> &str {
 /// Build call evidence (incoming + outgoing) with call-site snippets.
 fn build_call_evidence(
     symbol_id: &types::SymbolId,
-    sym_repo: &dyn SymbolRepository,
-    rel_repo: &dyn RelationRepository,
-    src_repo: &dyn SourceRepository,
+    repositories: &DossierRepositories<'_>,
     evidence_limit: usize,
     incoming_counts: &HashMap<InternalRelationKind, usize>,
     outgoing_counts: &HashMap<InternalRelationKind, usize>,
@@ -242,7 +271,10 @@ fn build_call_evidence(
     let call_kinds: &[InternalRelationKind] = &[InternalRelationKind::Calls];
 
     let incoming_evidence =
-        match rel_repo.incoming_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+        match repositories
+            .relations
+            .incoming_evidence(symbol_id, Some(call_kinds), evidence_limit)
+        {
             Ok(v) => v,
             Err(e) => {
                 warnings.push(format!("Failed to query incoming call evidence: {e}"));
@@ -250,7 +282,10 @@ fn build_call_evidence(
             }
         };
     let outgoing_evidence =
-        match rel_repo.outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit) {
+        match repositories
+            .relations
+            .outgoing_evidence(symbol_id, Some(call_kinds), evidence_limit)
+        {
             Ok(v) => v,
             Err(e) => {
                 warnings.push(format!("Failed to query outgoing call evidence: {e}"));
@@ -271,8 +306,8 @@ fn build_call_evidence(
         total: incoming_total,
         examples: evidence_to_call_entries(
             incoming_evidence,
-            sym_repo,
-            src_repo,
+            repositories.symbols,
+            repositories.source,
             /* is_incoming */ true,
             warnings,
         ),
@@ -281,8 +316,8 @@ fn build_call_evidence(
         total: outgoing_total,
         examples: evidence_to_call_entries(
             outgoing_evidence,
-            sym_repo,
-            src_repo,
+            repositories.symbols,
+            repositories.source,
             /* is_incoming */ false,
             warnings,
         ),
@@ -374,9 +409,7 @@ fn evidence_to_call_entries(
 /// FieldRead + FieldWrite are merged into `field_access`.
 fn build_relation_groups(
     symbol_id: &types::SymbolId,
-    sym_repo: &dyn SymbolRepository,
-    rel_repo: &dyn RelationRepository,
-    src_repo: &dyn SourceRepository,
+    repositories: &DossierRepositories<'_>,
     relation_limit: usize,
     incoming_counts: &HashMap<InternalRelationKind, usize>,
     outgoing_counts: &HashMap<InternalRelationKind, usize>,
@@ -394,16 +427,22 @@ fn build_relation_groups(
         InternalRelationKind::RegistersCallback,
     ];
 
-    let incoming = match rel_repo.incoming_evidence(symbol_id, Some(non_call_kinds), relation_limit)
-    {
+    let incoming = match repositories.relations.incoming_evidence(
+        symbol_id,
+        Some(non_call_kinds),
+        relation_limit,
+    ) {
         Ok(v) => v,
         Err(e) => {
             warnings.push(format!("Failed to query incoming non-call relations: {e}"));
             Vec::new()
         }
     };
-    let outgoing = match rel_repo.outgoing_evidence(symbol_id, Some(non_call_kinds), relation_limit)
-    {
+    let outgoing = match repositories.relations.outgoing_evidence(
+        symbol_id,
+        Some(non_call_kinds),
+        relation_limit,
+    ) {
         Ok(v) => v,
         Err(e) => {
             warnings.push(format!("Failed to query outgoing non-call relations: {e}"));
@@ -425,17 +464,24 @@ fn build_relation_groups(
         if !seen_peers.insert((ev.relation_kind, peer_id)) {
             continue;
         }
-        let peer_sym = match sym_repo.get_symbol_by_id(&peer_id).ok().flatten() {
+        let peer_sym = match repositories
+            .symbols
+            .get_symbol_by_id(&peer_id)
+            .ok()
+            .flatten()
+        {
             Some(s) => s,
             None => continue,
         };
-        let peer_file = sym_repo
+        let peer_file = repositories
+            .symbols
             .get_file_path(&peer_sym.file_id)
             .ok()
             .flatten()
             .unwrap_or_default();
 
-        let snippet = src_repo
+        let snippet = repositories
+            .source
             .read_range(&ev.file_id, &ev.range)
             .ok()
             .filter(|s| !s.is_empty());
@@ -1025,10 +1071,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/main.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1139,10 +1182,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/a.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1175,10 +1215,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/full.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1286,10 +1323,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/call.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1349,10 +1383,12 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &subject,
             "src/subject.ts",
-            &sym_repo,
-            &rel_repo,
-            &MockFileFactsRepo::new(),
-            &MockSourceRepo::new(),
+            DossierRepositories::new(
+                &sym_repo,
+                &rel_repo,
+                &MockFileFactsRepo::new(),
+                &MockSourceRepo::new(),
+            ),
             &default_request(),
             "exact".into(),
         )
@@ -1389,10 +1425,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/err.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1428,10 +1461,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/noctx.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1468,10 +1498,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/rec.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )
@@ -1509,10 +1536,7 @@ mod tests {
         let dossier = ExploreDossierBuilder::build(
             &sym,
             "src/big.ts",
-            &sym_repo,
-            &rel_repo,
-            &file_repo,
-            &src_repo,
+            DossierRepositories::new(&sym_repo, &rel_repo, &file_repo, &src_repo),
             &req,
             "exact".to_string(),
         )

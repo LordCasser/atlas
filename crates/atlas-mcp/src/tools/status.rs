@@ -165,29 +165,45 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_jobs(&self) -> (String, bool) {
+        const MAX_ACTIVE_JOBS: usize = 100;
         match self.project().store.list_active_extraction_jobs() {
-            Ok(jobs) => (
-                serde_json::to_string_pretty(&json!({
-                    "active_jobs": jobs.iter().map(|job| json!({
-                        "job_id": job.job_id,
-                        "file_id": job.file_id.to_hex(),
-                        "unit_id": job.unit_id.map(unit_id_hex),
-                        "layer": job.layer,
-                        "status": job.status,
-                        "trigger_query": job.trigger_query,
-                        "started_at": job.started_at,
-                        "budget_ms": job.budget_ms,
-                    })).collect::<Vec<_>>(),
-                }))
-                .unwrap_or_else(|e| e.to_string()),
-                false,
-            ),
+            Ok(jobs) => {
+                let active_jobs = jobs
+                    .iter()
+                    .take(MAX_ACTIVE_JOBS)
+                    .map(|job| {
+                        json!({
+                            "job_id": job.job_id,
+                            "file_id": job.file_id.to_hex(),
+                            "unit_id": job.unit_id.map(unit_id_hex),
+                            "layer": job.layer,
+                            "status": job.status,
+                            "trigger_query": job.trigger_query,
+                            "started_at": job.started_at,
+                            "budget_ms": job.budget_ms,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let returned = active_jobs.len();
+                (
+                    serde_json::to_string_pretty(&json!({
+                        "active_jobs": active_jobs,
+                        "total": jobs.len(),
+                        "returned": returned,
+                        "truncated": jobs.len() > returned,
+                    }))
+                    .unwrap_or_else(|e| e.to_string()),
+                    false,
+                )
+            }
             Err(e) => (format!("Error listing active extraction jobs: {e}"), true),
         }
     }
 
     pub(crate) fn handle_files(&self, args: &serde_json::Value) -> (String, bool) {
-        let limit = super::get_u64(args, "limit").map(|v| v as usize);
+        const DEFAULT_FILE_LIMIT: usize = 500;
+        const MAX_FILE_LIMIT: usize = 1000;
+        let limit = super::bounded_usize_arg(args, "limit", DEFAULT_FILE_LIMIT, MAX_FILE_LIMIT);
         let language = super::get_str(args, "language");
         let path_prefix = super::get_str(args, "path_prefix");
         let scope = path_prefix
@@ -225,7 +241,9 @@ impl ToolRouter {
             }
         }
 
-        let row_limit = limit.unwrap_or(usize::MAX / 2);
+        // Fetch one extra row so truncation remains explicit without ever
+        // slicing the serialized JSON response at the router boundary.
+        let row_limit = limit.saturating_add(1);
         let language_filter = (!language.is_empty()).then_some(language);
         match self
             .project()
@@ -270,9 +288,8 @@ impl ToolRouter {
                         .unwrap_or_default()
                         .cmp(right["path"].as_str().unwrap_or_default())
                 });
-                if let Some(n) = limit {
-                    rows.truncate(n);
-                }
+                let truncated = rows.len() > limit;
+                rows.truncate(limit);
                 let source = match (indexed_rows_present, inventory_rows_present) {
                     (true, true) => "mixed",
                     (true, false) => "indexed",
@@ -302,6 +319,8 @@ impl ToolRouter {
                         "source": source,
                         "coverage": coverage,
                         "inventory_file_count": inventory_count,
+                        "returned": rows.len(),
+                        "truncated": truncated,
                     }))
                     .unwrap_or_else(|e| e.to_string()),
                     false,

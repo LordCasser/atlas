@@ -102,6 +102,44 @@ impl ToolRouter {
                 });
             };
 
+            let failures = snapshot
+                .focus_result
+                .as_ref()
+                .map(|result| {
+                    let mut failures = result
+                        .job_tracker
+                        .as_ref()
+                        .map(|tracker| tracker.failures_for(&result.pending_closure_ids))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(job_id, reason)| format!("{job_id}: {reason}"))
+                        .collect::<Vec<_>>();
+                    for job_id in &result.pending_extraction_job_ids {
+                        if let Ok(Some(job)) = self.project().store.get_extraction_job(job_id)
+                            && job.status == "failed"
+                        {
+                            failures.push(format!(
+                                "{}: {}",
+                                job.job_id,
+                                job.error_msg
+                                    .as_deref()
+                                    .unwrap_or("background extraction failed")
+                            ));
+                        }
+                    }
+                    failures
+                })
+                .unwrap_or_default();
+            if !failures.is_empty() {
+                return json!({
+                    "query_id": qid,
+                    "tool": snapshot.tool_name,
+                    "status": "failed",
+                    "pending_jobs": 0,
+                    "detail": failures.join("; "),
+                });
+            }
+
             let (pending, retry_after_ms) = snapshot
                 .focus_result
                 .as_ref()

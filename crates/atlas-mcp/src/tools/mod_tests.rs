@@ -109,6 +109,9 @@ fn ensure_graph_initialized_detects_full_canonical_mode() {
             atlas_engine::structs::FactCoverage::default(),
         )
         .unwrap();
+    store
+        .update_resolution_fingerprint(&file_id, "hash1")
+        .unwrap();
     store.set_metadata("last_index_time", "1").unwrap();
     store
         .set_metadata(
@@ -367,6 +370,111 @@ fn tasks_query_status_uses_snapshot_job_tracker() {
     assert_eq!(ready["query"]["status"], "ready");
     assert_eq!(ready["query"]["pending_jobs"], 0);
     assert!(ready["query"].get("retry_after_ms").is_none());
+}
+
+#[test]
+fn tasks_reports_failed_focus_work_as_failed_not_ready() {
+    use atlas_engine::focus::job_tracker::JobTracker;
+
+    let store = test_store();
+    let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+    let tracker = Arc::new(JobTracker::new());
+    tracker.mark_failed("cl_failed", "fixture extraction failed");
+    router.store_query_snapshot(QuerySnapshot {
+        query_id: "q_failed".into(),
+        tool_name: "trace".into(),
+        tool_args: serde_json::json!({"kind": "variable"}),
+        focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
+            gaps: vec![],
+            pending_closure_ids: vec!["cl_failed".into()],
+            pending_extraction_job_ids: vec![],
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: vec![],
+            coverage_counts: None,
+            job_tracker: Some(tracker),
+        }),
+        created_at: std::time::Instant::now(),
+        status: crate::tools::query_snapshot::QueryStatus::Retryable,
+    });
+
+    let (response, is_error) = router.handle_tasks(&serde_json::json!({"query_id": "q_failed"}));
+    assert!(
+        !is_error,
+        "tasks is observability, not the failed query replay"
+    );
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["query"]["status"], "failed");
+    assert_eq!(response["query"]["pending_jobs"], 0);
+    assert!(
+        response["query"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("fixture extraction failed")),
+        "{response}"
+    );
+    assert!(response["query"].get("retry_after_ms").is_none());
+}
+
+#[test]
+fn tasks_reports_failed_raw_extraction_as_failed_not_ready() {
+    let store = test_store();
+    let file_id = register_test_file(&store, "failed.ts");
+    store
+        .claim_file_extraction_job(
+            &file_id,
+            "structural",
+            Some("q_raw_failed"),
+            None,
+            Some(30_000),
+        )
+        .unwrap();
+    let job_id = store
+        .find_active_file_extraction_job(&file_id, "structural")
+        .unwrap()
+        .unwrap()
+        .job_id;
+    store
+        .fail_extraction_job(&job_id, "fixture raw extraction failed")
+        .unwrap();
+
+    let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
+    router.store_query_snapshot(QuerySnapshot {
+        query_id: "q_raw_failed".into(),
+        tool_name: "explore".into(),
+        tool_args: serde_json::json!({"symbol": "target"}),
+        focus_result: Some(atlas_engine::focus::runtime::FocusResult {
+            access: atlas_engine::focus::runtime::AccessStrategy::Focus,
+            quality: None,
+            gaps: vec![],
+            pending_closure_ids: vec![],
+            pending_extraction_job_ids: vec![job_id],
+            closure_id: None,
+            seed_symbol_id: None,
+            seed_file_id: None,
+            built_files: vec![],
+            coverage_counts: None,
+            job_tracker: None,
+        }),
+        created_at: std::time::Instant::now(),
+        status: crate::tools::query_snapshot::QueryStatus::Retryable,
+    });
+
+    let (response, is_error) =
+        router.handle_tasks(&serde_json::json!({"query_id": "q_raw_failed"}));
+    assert!(!is_error);
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["query"]["status"], "failed");
+    assert_eq!(response["query"]["pending_jobs"], 0);
+    assert!(
+        response["query"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("fixture raw extraction failed")),
+        "{response}"
+    );
+    assert!(response["query"].get("retry_after_ms").is_none());
 }
 
 #[test]
@@ -779,7 +887,7 @@ fn manifest_incoming_returns_correct_deps() {
 }
 
 #[test]
-fn focus_manifest_incoming_converges_to_importers_without_blocking() {
+fn focus_structural_incoming_converges_to_importers_without_blocking() {
     let root = tempfile::tempdir().unwrap();
     let src = root.path().join("src");
     std::fs::create_dir_all(&src).unwrap();
@@ -812,7 +920,7 @@ fn focus_manifest_incoming_converges_to_importers_without_blocking() {
     let args = serde_json::json!({
         "file_path": "src/VideoComponent.ets",
         "direction": "incoming",
-        "analysis": "manifest",
+        "analysis": "structural",
     });
     let started = std::time::Instant::now();
     let (body, is_error) = router.handle_file_dependencies(&args);
@@ -955,7 +1063,7 @@ fn structural_returns_analysis() {
 }
 
 #[test]
-fn manifest_analysis_reports_ready() {
+fn manifest_analysis_is_terminal_with_gap_when_catalog_is_incomplete() {
     let store = test_store();
     let _file_a = register_test_file(&store, "a.ts");
 
@@ -972,16 +1080,32 @@ fn manifest_analysis_reports_ready() {
 
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_manifest_analysis(&resp, &resp_str);
+    assert_eq!(resp["gaps"][0]["reason"], "manifest_catalog_incomplete");
+    assert!(resp["analysis"].get("retry_after_ms").is_none());
+    assert!(
+        !router.project().query_runtime.is_tier0_complete(),
+        "manifest mode must remain a pure current-facts read"
+    );
 }
 
 #[test]
-fn finalized_manifest_repo_cache_serves_manifest_dependency_query_without_focus() {
+fn manifest_dependency_query_never_focuses_on_mixed_catalog() {
     let store = test_store();
     let file_id = register_test_file(&store, "a.ts");
     store
         .upsert_file_extraction_state(
             &file_id,
             "manifest",
+            "hash1",
+            "complete",
+            atlas_engine::structs::FactCoverage::default(),
+        )
+        .unwrap();
+    let hot_id = register_test_file(&store, "hot.ts");
+    store
+        .upsert_file_extraction_state(
+            &hot_id,
+            "structural",
             "hash1",
             "complete",
             atlas_engine::structs::FactCoverage::default(),
@@ -997,6 +1121,7 @@ fn finalized_manifest_repo_cache_serves_manifest_dependency_query_without_focus(
     store
         .set_metadata("indexed_pipeline_grade", "manifest")
         .unwrap();
+    assert_eq!(store.read_catalog_tier().unwrap(), "partial_structural");
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
     let args = serde_json::json!({
@@ -1009,13 +1134,14 @@ fn finalized_manifest_repo_cache_serves_manifest_dependency_query_without_focus(
     assert!(!is_error, "Expected success, got: {resp_str}");
     let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
     assert_manifest_analysis(&resp, &resp_str);
+    assert!(resp.get("gaps").is_none(), "{resp}");
     let query_id = resp["query_id"].as_str().unwrap();
     let project = router.project();
     let snapshots = project.job_runtime.query_snapshots.lock().unwrap();
     assert!(snapshots[query_id].focus_result.is_none());
     assert!(
         !router.project().query_runtime.is_tier0_complete(),
-        "a sufficient manifest repo cache must not start Focus bootstrap"
+        "manifest mode is a pure read of current facts and must not start Focus"
     );
 }
 
@@ -1554,11 +1680,9 @@ fn insert_symbol_with_range(
     file_id: FileId,
     name: &str,
     kind: atlas_engine::SymbolKind,
-    start_line: u32,
-    start_col: u32,
-    end_line: u32,
-    end_col: u32,
+    source_range: (u32, u32, u32, u32),
 ) -> atlas_engine::SymbolId {
+    let (start_line, start_col, end_line, end_col) = source_range;
     let range = atlas_engine::TextRange {
         start_byte: 0,
         end_byte: 10,
@@ -1620,10 +1744,7 @@ fn position_lookup_picks_innermost_symbol() {
         file_id,
         "outer",
         atlas_engine::SymbolKind::Function,
-        0,
-        0,
-        9,
-        80,
+        (0, 0, 9, 80),
     );
     // Inner: function at lines 3-5 (0-based: 2..4), cols 0-40
     insert_symbol_with_range(
@@ -1631,10 +1752,7 @@ fn position_lookup_picks_innermost_symbol() {
         file_id,
         "inner",
         atlas_engine::SymbolKind::Function,
-        2,
-        0,
-        4,
-        40,
+        (2, 0, 4, 40),
     );
 
     let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -1679,10 +1797,7 @@ fn position_lookup_no_candidates_returns_empty() {
         file_id,
         "func",
         atlas_engine::SymbolKind::Function,
-        0,
-        0,
-        2,
-        10,
+        (0, 0, 2, 10),
     );
 
     let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -1713,20 +1828,14 @@ fn position_lookup_respects_column_filter() {
         file_id,
         "left",
         atlas_engine::SymbolKind::Variable,
-        2,
-        0,
-        2,
-        20, // line 3 (0-based 2), cols 0-20
+        (2, 0, 2, 20), // line 3 (0-based 2), cols 0-20
     );
     insert_symbol_with_range(
         &store,
         file_id,
         "right",
         atlas_engine::SymbolKind::Variable,
-        2,
-        25,
-        2,
-        45, // line 3 (0-based 2), cols 25-45
+        (2, 25, 2, 45), // line 3 (0-based 2), cols 25-45
     );
 
     let symbols = store.find_symbols_by_file(&file_id).unwrap();
@@ -1802,10 +1911,7 @@ fn handle_symbol_by_position_with_detail_view() {
         file_id,
         "myFunc",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80, // (start_line, start_col, end_line, end_col) 0-based
+        (0, 1, 0, 80), // (start_line, start_col, end_line, end_col) 0-based
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -1842,10 +1948,7 @@ fn handle_symbol_by_position_with_context_view() {
         file_id,
         "process",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80,
+        (0, 1, 0, 80),
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -1879,10 +1982,7 @@ fn handle_symbol_by_position_with_usages_view() {
         file_id,
         "helper",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80,
+        (0, 1, 0, 80),
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -1920,10 +2020,7 @@ fn handle_symbol_by_position_with_invalid_view() {
         file_id,
         "func",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80,
+        (0, 1, 0, 80),
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -1953,20 +2050,14 @@ fn structured_selector_detail_resolves_uniquely() {
         file_a,
         "Helper",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80,
+        (0, 1, 0, 80),
     );
     insert_symbol_with_range(
         &store,
         file_b,
         "Helper",
         atlas_engine::SymbolKind::Function,
-        5,
-        1,
-        5,
-        80,
+        (5, 1, 5, 80),
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -2010,10 +2101,7 @@ fn plain_string_symbol_detail_still_works() {
         file_id,
         "SingleFunction",
         atlas_engine::SymbolKind::Function,
-        0,
-        1,
-        0,
-        80,
+        (0, 1, 0, 80),
     );
 
     let router = ToolRouter::new_empty(store, PathBuf::from("/tmp"));
@@ -3188,9 +3276,9 @@ fn e2e_unknown_tool_falls_back_to_status_read() {
 }
 
 #[test]
-fn call_tool_truncates_large_results_with_visible_marker() {
+fn call_tool_preserves_large_results_as_valid_json() {
     let store = test_store();
-    for i in 0..600 {
+    for i in 0..1100 {
         let path = format!(
             "src/very_long_directory_name_for_truncation_{i:04}/very_long_file_name_for_mcp_truncation_{i:04}.ts"
         );
@@ -3202,25 +3290,38 @@ fn call_tool_truncates_large_results_with_visible_marker() {
     let result = router.call_tool(&ctx, "project", &serde_json::json!({"action": "files"}));
 
     assert_eq!(result.is_error, Some(false));
-    assert_eq!(
-        result.content.len(),
-        2,
-        "large MCP responses must include a visible truncation marker"
-    );
+    assert_eq!(result.content.len(), 1);
     let first = match &result.content[0] {
         ContentBlock::Text { text } => text,
     };
-    assert!(
-        first.len() <= 25000,
-        "first content block must be bounded to 25KB, got {}",
-        first.len()
+    let parsed: serde_json::Value = serde_json::from_str(first)
+        .expect("MCP content blocks must never contain a globally sliced JSON document");
+    assert_eq!(parsed["files"].as_array().map(Vec::len), Some(500));
+    assert_eq!(parsed["returned"], 500);
+    assert_eq!(parsed["truncated"], true);
+
+    let oversized_limit = router.call_tool(
+        &ctx,
+        "project",
+        &serde_json::json!({"action": "files", "limit": u64::MAX}),
     );
-    let marker = match &result.content[1] {
+    let text = match &oversized_limit.content[0] {
         ContentBlock::Text { text } => text,
     };
-    assert!(
-        marker.contains("truncated") && marker.contains("showing first 25000"),
-        "truncation marker must be explicit, got: {marker}"
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["returned"], 1000);
+    assert_eq!(parsed["truncated"], true);
+}
+
+#[test]
+fn numeric_tool_arguments_cannot_exceed_handler_bounds() {
+    assert_eq!(
+        bounded_usize_arg(&serde_json::json!({}), "limit", 20, 200),
+        20
+    );
+    assert_eq!(
+        bounded_usize_arg(&serde_json::json!({"limit": u64::MAX}), "limit", 20, 200,),
+        200
     );
 }
 

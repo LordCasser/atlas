@@ -46,16 +46,67 @@ impl ToolRouter {
             }
         };
 
-        let required_cache = if is_manifest {
-            atlas_engine::QueryNeed::Manifest
-        } else {
-            atlas_engine::QueryNeed::CallGraph
-        };
+        if is_manifest {
+            let coverage_complete = {
+                let active = self.project();
+                if matches!(direction, "incoming" | "both") {
+                    active
+                        .query_runtime
+                        .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::Manifest)
+                } else {
+                    active
+                        .store
+                        .get_file(&file_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|file| {
+                            active
+                                .store
+                                .file_has_fresh_complete_capability(
+                                    &file_id,
+                                    &file.content_hash,
+                                    atlas_engine::FactCoverage::from_bits(
+                                        atlas_engine::FactCoverage::MANIFEST,
+                                    ),
+                                )
+                                .ok()
+                        })
+                        .unwrap_or(false)
+                }
+            };
+            let (out, err) = self.handle_file_dependencies_manifest(file_id, direction, args);
+            let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
+            let mut lr = AnalysisEnvelope::new("file_dependencies", args)
+                .with_is_error(err)
+                .with_analysis_scope("local".into())
+                .with_analysis_summary(
+                    "Manifest file dependency facts currently stored for this file.".into(),
+                )
+                .with_analysis_basis(vec!["manifest".into()]);
+            if !coverage_complete {
+                lr = lr.with_gap_records(vec![analysis_envelope::GapRecord {
+                    scope: clean.to_string(),
+                    reason: "manifest_catalog_incomplete".into(),
+                    detail: if matches!(direction, "incoming" | "both") {
+                        "Incoming dependencies are limited to currently stored manifest facts; no finalized whole-repository manifest coverage is available, and manifest mode does not start Focus."
+                            .into()
+                    } else {
+                        "This file has no fresh complete manifest layer; the response contains only currently stored facts, and manifest mode does not start Focus."
+                            .into()
+                    },
+                }]);
+            }
+            return lr.build(body, self);
+        }
+
+        // Structural dependencies depend on resolved cross-file call/import
+        // topology, so their cache contract is CallGraph rather than merely
+        // parsed structural facts.
         let has_sufficient_repo_cache = {
             let active = self.project();
             active
                 .query_runtime
-                .has_repo_cache_for(&active.store, required_cache)
+                .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
         };
         let focus_result = if has_sufficient_repo_cache {
             None
@@ -73,25 +124,6 @@ impl ToolRouter {
             self.enqueue_background_file_focus(&candidates)
         };
         let lazy_warnings = Vec::new();
-
-        if is_manifest {
-            let (out, err) = self.handle_file_dependencies_manifest(file_id, direction, args);
-            let body = serde_json::from_str::<Value>(&out).unwrap_or_default();
-            let lr = AnalysisEnvelope::new("file_dependencies", args)
-                .with_lazy_warnings(lazy_warnings)
-                .with_is_error(err);
-            let lr = if let Some(ref result) = focus_result {
-                crate::tools::apply_focus_result_to_lr(lr, result)
-                    .with_analysis_basis(vec!["manifest".into()])
-            } else {
-                lr.with_analysis_scope("local".into())
-                    .with_analysis_summary(
-                        "Manifest file dependency facts are available for this file.".into(),
-                    )
-                    .with_analysis_basis(vec!["manifest".into()])
-            };
-            return lr.build(body, self);
-        }
 
         // ── structural mode ─────────────────────────────────────────────
 
@@ -164,7 +196,7 @@ impl ToolRouter {
         args: &Value,
     ) -> (String, bool) {
         let file_id_hex = file_id.to_hex();
-        let limit = get_u64(args, "limit").unwrap_or(50) as usize;
+        let limit = bounded_usize_arg(args, "limit", 50, 100);
 
         match direction {
             "incoming" => {

@@ -38,8 +38,7 @@ void foo(void) {
 
     let store = Arc::new(Store::open_in_memory().expect("open_in_memory"));
     store.init_schema().expect("init_schema");
-    let router = ToolRouter::new_empty(store, temp_dir.to_path_buf());
-    router
+    ToolRouter::new_empty(store, temp_dir.to_path_buf())
 }
 
 /// Extract the first text block from a CallToolResult.

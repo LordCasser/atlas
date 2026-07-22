@@ -198,6 +198,13 @@ mod tests {
     }
 
     fn mark_finalized_index(store: &Store, grade: &str, include_patterns: &[&str]) {
+        if matches!(grade, "structural" | "full") {
+            for file in store.list_files().unwrap() {
+                store
+                    .update_resolution_fingerprint(&file.file_id, &file.content_hash)
+                    .unwrap();
+            }
+        }
         store.set_metadata("last_index_time", "1").unwrap();
         store
             .set_metadata(

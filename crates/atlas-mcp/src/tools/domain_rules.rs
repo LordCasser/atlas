@@ -1,6 +1,6 @@
 //! Domain rules management tools: annotate, list, learn.
 
-use super::{ToolRouter, get_str};
+use super::{ToolRouter, bounded_usize_arg, get_str};
 use serde_json::{Value, json};
 
 impl ToolRouter {
@@ -79,6 +79,7 @@ impl ToolRouter {
             }
             _ => {
                 // Default: list with optional filters
+                let limit = bounded_usize_arg(args, "limit", 200, 500);
                 let lang_filter = if language.is_empty() {
                     None
                 } else {
@@ -95,9 +96,14 @@ impl ToolRouter {
                     .list_domain_rules(lang_filter, status_filter)
                 {
                     Ok(rules) => {
-                        let items: Vec<_> = rules
+                        let filtered: Vec<_> = rules
                             .iter()
                             .filter(|r| source.is_empty() || r.source == source)
+                            .collect();
+                        let total = filtered.len();
+                        let items: Vec<_> = filtered
+                            .into_iter()
+                            .take(limit)
                             .map(|r| {
                                 json!({
                                     "id": r.id,
@@ -113,9 +119,12 @@ impl ToolRouter {
                                 })
                             })
                             .collect();
+                        let returned = items.len();
                         let resp = json!({
                             "ok": true,
-                            "total": items.len(),
+                            "total": total,
+                            "returned": returned,
+                            "truncated": total > returned,
                             "rules": items,
                         });
                         (
@@ -130,6 +139,7 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_atlas_rule_learn(&self, args: &serde_json::Value) -> (String, bool) {
+        let limit = bounded_usize_arg(args, "limit", 200, 500);
         let min_confidence = args
             .get("min_confidence")
             .and_then(|v| v.as_f64())
@@ -145,6 +155,11 @@ impl ToolRouter {
                 let filtered: Vec<_> = candidates
                     .iter()
                     .filter(|c| c.confidence >= min_confidence)
+                    .collect();
+                let total = filtered.len();
+                let filtered: Vec<_> = filtered
+                    .into_iter()
+                    .take(limit)
                     .map(|c| {
                         json!({
                             "function_name": c.pattern,
@@ -154,9 +169,13 @@ impl ToolRouter {
                         })
                     })
                     .collect();
+                let returned = filtered.len();
                 let resp = json!({
                     "ok": true,
                     "candidates": filtered,
+                    "total": total,
+                    "returned": returned,
+                    "truncated": total > returned,
                     "message": "Review candidates and use domain_rules(action='add') to approve them; learned rules are not applied automatically.",
                 });
                 (

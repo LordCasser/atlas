@@ -16,6 +16,39 @@ use super::symbol_selector::{
 use atlas_engine::InvestigationFocus;
 use serde_json::json;
 
+const MAX_CONTEXT_ITEMS: usize = 100;
+const MAX_CONTEXT_SOURCE_BYTES: usize = 65_536;
+
+fn bounded_source_lines(source: &str) -> (Vec<String>, usize, bool) {
+    let total_lines = source.lines().count();
+    let mut used_bytes = 0usize;
+    let mut lines = Vec::new();
+    let mut cut_inside_line = false;
+
+    for line in source.lines() {
+        if used_bytes >= MAX_CONTEXT_SOURCE_BYTES {
+            break;
+        }
+        let remaining = MAX_CONTEXT_SOURCE_BYTES - used_bytes;
+        if line.len() <= remaining {
+            lines.push(line.to_string());
+            used_bytes = used_bytes.saturating_add(line.len()).saturating_add(1);
+            continue;
+        }
+
+        let mut end = remaining;
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        lines.push(line[..end].to_string());
+        cut_inside_line = true;
+        break;
+    }
+
+    let truncated = cut_inside_line || lines.len() < total_lines;
+    (lines, total_lines, truncated)
+}
+
 /// Result of [`ToolRouter::resolve_context_symbol`].
 enum ContextResolution {
     /// Symbol found — proceed with context building.
@@ -29,6 +62,18 @@ enum ContextResolution {
     Ambiguous(Vec<ScoredCandidate>),
     /// Not found — caller should return an error.
     NotFound(String),
+}
+
+struct ContextResponseInput<'a> {
+    view: &'a atlas_engine::ContextView,
+    qname: &'a str,
+    include_code: bool,
+    symbol_id: &'a atlas_engine::SymbolId,
+    root_warnings: Vec<String>,
+    focus_warnings: Vec<String>,
+    resolved: Option<ResolvedSymbol>,
+    envelope: AnalysisEnvelope,
+    args: &'a serde_json::Value,
 }
 
 impl ToolRouter {
@@ -120,17 +165,17 @@ impl ToolRouter {
                 {
                     Some(Ok(view)) => {
                         ctx.send_progress(0.8, "Context complete");
-                        self.build_context_response(
-                            &view,
+                        self.build_context_response(ContextResponseInput {
+                            view: &view,
                             qname,
                             include_code,
-                            &sid,
+                            symbol_id: &sid,
                             root_warnings,
-                            lazy_warnings,
+                            focus_warnings: lazy_warnings,
                             resolved,
-                            lr,
+                            envelope: lr,
                             args,
-                        )
+                        })
                     }
                     Some(Err(e)) => (format!("Context build error: {e}"), true),
                     None => ("Graph not initialized".to_string(), true),
@@ -153,18 +198,18 @@ impl ToolRouter {
     }
 
     /// Build the context JSON response for a resolved symbol.
-    fn build_context_response(
-        &self,
-        view: &atlas_engine::ContextView,
-        qname: &str,
-        include_code: bool,
-        sid: &atlas_engine::SymbolId,
-        root_warnings: Vec<String>,
-        lazy_warnings: Vec<String>,
-        resolved: Option<ResolvedSymbol>,
-        lr: AnalysisEnvelope,
-        args: &serde_json::Value,
-    ) -> (String, bool) {
+    fn build_context_response(&self, input: ContextResponseInput<'_>) -> (String, bool) {
+        let ContextResponseInput {
+            view,
+            qname,
+            include_code,
+            symbol_id,
+            root_warnings,
+            focus_warnings,
+            resolved,
+            envelope,
+            args,
+        } = input;
         // ── resolved ───────────────────────────────────────────────────
         let resolved_json = resolved.as_ref().and_then(|r| serde_json::to_value(r).ok());
 
@@ -173,33 +218,44 @@ impl ToolRouter {
 
         // ── subject_source ─────────────────────────────────────────────
         let subject_source = if include_code {
-            if let Some(src) = self.project().store_query_runtime.read_symbol_source(sid) {
-                let lines: Vec<String> = src.lines().map(|l| l.to_string()).collect();
-                let total = lines.len() as u32;
+            if let Some(src) = self
+                .project()
+                .store_query_runtime
+                .read_symbol_source(symbol_id)
+            {
+                let (lines, total_lines, truncated) = bounded_source_lines(&src);
                 Some(json!({
                     "lines": lines,
                     "start_line": view.subject_source.as_ref().map(|s| s.start_line).unwrap_or(0),
-                    "total_lines": total,
-                    "truncated": false,
+                    "total_lines": total_lines,
+                    "truncated": truncated,
+                    "max_bytes": MAX_CONTEXT_SOURCE_BYTES,
                 }))
             } else {
                 view.subject_source.as_ref().map(|s| {
+                    let returned = s.lines.len().min(MAX_CONTEXT_ITEMS);
                     json!({
-                        "lines": s.lines,
+                        "lines": s.lines.iter().take(MAX_CONTEXT_ITEMS).collect::<Vec<_>>(),
                         "start_line": s.start_line,
                         "total_lines": s.total_lines,
-                        "truncated": s.truncated,
+                        "truncated": s.truncated || returned < s.lines.len(),
                     })
                 })
             }
         } else {
             None
         };
+        let source_truncated = subject_source
+            .as_ref()
+            .and_then(|source| source.get("truncated"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         // ── caller_details ─────────────────────────────────────────────
         let caller_details: Vec<serde_json::Value> = view
             .caller_details
             .iter()
+            .take(MAX_CONTEXT_ITEMS)
             .map(|c| {
                 json!({
                     "symbol": serde_json::to_value(&c.symbol).unwrap_or(json!(null)),
@@ -214,6 +270,7 @@ impl ToolRouter {
         let callee_details: Vec<serde_json::Value> = view
             .callee_details
             .iter()
+            .take(MAX_CONTEXT_ITEMS)
             .map(|c| {
                 json!({
                     "symbol": serde_json::to_value(&c.symbol).unwrap_or(json!(null)),
@@ -229,8 +286,22 @@ impl ToolRouter {
         let file_peers: Vec<serde_json::Value> = view
             .file_peers
             .iter()
+            .take(MAX_CONTEXT_ITEMS)
             .map(|p| serde_json::to_value(p).unwrap_or(json!(null)))
             .collect();
+        let importers: Vec<_> = view.importers.iter().take(MAX_CONTEXT_ITEMS).collect();
+        let dependencies: Vec<_> = view.dependencies.iter().take(MAX_CONTEXT_ITEMS).collect();
+        let caller_returned = caller_details.len();
+        let callee_returned = callee_details.len();
+        let peer_returned = file_peers.len();
+        let importer_returned = importers.len();
+        let dependency_returned = dependencies.len();
+        let truncated = source_truncated
+            || view.caller_details.len() > caller_returned
+            || view.callee_details.len() > callee_returned
+            || view.file_peers.len() > peer_returned
+            || view.importers.len() > importer_returned
+            || view.dependencies.len() > dependency_returned;
 
         // ── trail ──────────────────────────────────────────────────────
         let mut trail = json!({
@@ -261,8 +332,18 @@ impl ToolRouter {
             "caller_details": caller_details,
             "callee_details": callee_details,
             "file_peers": file_peers,
-            "importers": view.importers,
-            "dependencies": view.dependencies,
+            "importers": importers,
+            "dependencies": dependencies,
+            "truncated": truncated,
+            "truncation": {
+                "item_limit": MAX_CONTEXT_ITEMS,
+                "source": { "max_bytes": MAX_CONTEXT_SOURCE_BYTES, "truncated": source_truncated },
+                "caller_details": { "total": view.caller_details.len(), "returned": caller_returned },
+                "callee_details": { "total": view.callee_details.len(), "returned": callee_returned },
+                "file_peers": { "total": view.file_peers.len(), "returned": peer_returned },
+                "importers": { "total": view.importers.len(), "returned": importer_returned },
+                "dependencies": { "total": view.dependencies.len(), "returned": dependency_returned },
+            },
             "trail": trail,
         });
         if let Some(ss) = subject_source {
@@ -277,8 +358,9 @@ impl ToolRouter {
             obj.insert("view".into(), serde_json::Value::String("context".into()));
         }
 
-        lr.with_root_warnings(root_warnings)
-            .with_lazy_warnings(lazy_warnings)
+        envelope
+            .with_root_warnings(root_warnings)
+            .with_lazy_warnings(focus_warnings)
             .with_is_error(false)
             .build_with_args(result, &stored_args, self)
     }
@@ -539,6 +621,18 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         Arc::new(store)
+    }
+
+    #[test]
+    fn context_source_bound_preserves_utf8_boundaries() {
+        let source = "界".repeat(MAX_CONTEXT_SOURCE_BYTES);
+        let (lines, total_lines, truncated) = bounded_source_lines(&source);
+
+        assert_eq!(total_lines, 1);
+        assert!(truncated);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].len() <= MAX_CONTEXT_SOURCE_BYTES);
+        assert!(std::str::from_utf8(lines[0].as_bytes()).is_ok());
     }
 
     fn register_test_file(store: &Store, path: &str) -> atlas_engine::FileId {

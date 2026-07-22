@@ -63,6 +63,7 @@ fn v1_tool_argument_shapes_are_frozen() {
             [
                 "action",
                 "confidence",
+                "limit",
                 "min_confidence",
                 "pattern",
                 "rule_id",
@@ -101,6 +102,7 @@ fn v1_tool_argument_shapes_are_frozen() {
                 "annotation_id",
                 "confidence",
                 "field_qname",
+                "limit",
                 "target_qname",
             ]
             .as_slice(),

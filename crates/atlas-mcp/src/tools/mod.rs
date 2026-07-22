@@ -1120,18 +1120,11 @@ impl ToolRouter {
         let (result, is_error) =
             self.settle_focus_response(&contract, name, result, is_error, started_at);
 
-        // Wrap long results with truncation warning
-        let text = truncate(&result, 25000);
-        let mut content = vec![ContentBlock::text(text)];
-        if result.len() > 25000 {
-            content.push(ContentBlock::text(format!(
-                "(truncated — {} chars total, showing first 25000)",
-                result.len()
-            )));
-        }
-
         CallToolResult {
-            content,
+            // Handlers own their result bounds and truncation metadata. Never
+            // slice the serialized envelope here: every client, including the
+            // TUI, must receive one complete JSON document.
+            content: vec![ContentBlock::text(result)],
             is_error: Some(is_error),
         }
     }
@@ -1536,18 +1529,13 @@ pub(crate) fn get_u64(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(|v| v.as_u64())
 }
 
-fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    let mut end = 0;
-    for (idx, _) in s.char_indices() {
-        if idx > max_len {
-            break;
-        }
-        end = idx;
-    }
-    &s[..end]
+/// Read a non-negative integer argument while preserving the handler's hard
+/// resource bound. MCP schemas advertise these maxima, but handlers enforce
+/// them because not every client validates JSON Schema before calling a tool.
+pub(crate) fn bounded_usize_arg(args: &Value, key: &str, default: usize, maximum: usize) -> usize {
+    get_u64(args, key)
+        .unwrap_or(default as u64)
+        .min(maximum as u64) as usize
 }
 
 /// Normalize a project-relative path: replace backslashes, remove leading ./

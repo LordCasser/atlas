@@ -11,7 +11,7 @@ use super::{
 };
 use crate::tools::analysis_envelope::AnalysisEnvelope;
 use crate::tools::symbol_selector::SymbolResolutionPolicy;
-use crate::tools::{ToolRouter, get_str, get_u64};
+use crate::tools::{ToolRouter, bounded_usize_arg, get_str};
 
 /// Check whether an edge kind is allowed by a configurable filter.
 /// An empty `allowed` slice means *all* edge kinds are allowed.
@@ -132,7 +132,7 @@ impl ToolRouter {
         if let Err(e) = crate::tools::validate_symbol_name_length(qname) {
             return (e, true);
         }
-        let limit = get_u64(args, "limit").unwrap_or(20) as usize;
+        let limit = bounded_usize_arg(args, "limit", 20, 500);
         let (include_roots, mut tool_warnings) = self.include_roots_from_args(args);
         // callers/callees are fixed 1-hop; multi-hop is callgraph / direction=both+depth.
         // (tool_warnings: include_roots validation + call-depth policy; not roots-only.)
@@ -236,6 +236,8 @@ impl ToolRouter {
         let mut resp = json!({
             "symbol": qname,
             "total_callers": total_callers,
+            "returned": nodes.len(),
+            "truncated": total_callers > nodes.len(),
             "callers": nodes,
         });
         if let Some(rm) = resolution_meta_opt {
@@ -272,7 +274,7 @@ impl ToolRouter {
         if let Err(e) = crate::tools::validate_symbol_name_length(qname) {
             return (e, true);
         }
-        let limit = get_u64(args, "limit").unwrap_or(20) as usize;
+        let limit = bounded_usize_arg(args, "limit", 20, 500);
         let (include_roots, mut tool_warnings) = self.include_roots_from_args(args);
         // tool_warnings: include_roots validation + call-depth policy; not roots-only.
         if args.get("depth").is_some() {
@@ -377,6 +379,8 @@ impl ToolRouter {
         let mut resp = json!({
             "symbol": qname,
             "total_callees": total_callees,
+            "returned": nodes.len(),
+            "truncated": total_callees > nodes.len() || total_unresolved_callees > unresolved_callees.len(),
             "callees": nodes,
         });
         if total_unresolved_callees > 0 {
@@ -421,8 +425,8 @@ impl ToolRouter {
         if let Err(e) = crate::tools::validate_symbol_name_length(qname) {
             return (e, true);
         }
-        let depth = get_u64(args, "depth").unwrap_or(3) as usize;
-        let limit = get_u64(args, "limit").unwrap_or(100) as usize;
+        let depth = bounded_usize_arg(args, "depth", 3, 5);
+        let limit = bounded_usize_arg(args, "limit", 100, 500).max(1);
 
         let direction = get_str(args, "direction");
         let edge_kinds = match resolve_call_edge_kinds(args) {
@@ -497,6 +501,9 @@ impl ToolRouter {
         let mut visited: HashSet<SymbolId> = HashSet::new();
         let mut frontier: Vec<SymbolId> = Vec::new();
         for &root_id in &symbol_ids {
+            if total_nodes >= limit {
+                break;
+            }
             if let Some(ix) = snap.id_to_idx.get(&root_id).copied() {
                 root_nodes.push(crate::tools::node_json(
                     &self.project().store_query_runtime,
@@ -531,7 +538,7 @@ impl ToolRouter {
             }));
         }
 
-        for d in 1..=depth.min(5) {
+        for d in 1..=depth {
             if total_nodes >= limit {
                 break;
             }
@@ -546,10 +553,28 @@ impl ToolRouter {
             let want_outgoing =
                 direction.is_empty() || direction == "both" || direction == "outgoing";
 
+            // Bound discovery itself, not just the serialized vectors. This
+            // keeps the next frontier within the same node budget and avoids
+            // traversing thousands of discarded neighbors at the next hop.
+            let remaining = limit.saturating_sub(total_nodes);
+            let incoming_budget = match (want_incoming, want_outgoing) {
+                (true, true) => remaining / 2,
+                (true, false) => remaining,
+                _ => 0,
+            };
+            let outgoing_budget = match (want_incoming, want_outgoing) {
+                (true, true) => remaining.saturating_sub(incoming_budget),
+                (false, true) => remaining,
+                _ => 0,
+            };
+
             for fid in &frontier {
-                if want_incoming {
+                if want_incoming && hop_callers.len() < incoming_budget {
                     // Incoming edges → callers
                     for (neighbor_ix, edge_kind) in snap.incoming_neighbors_with_kinds(fid) {
+                        if hop_callers.len() >= incoming_budget {
+                            break;
+                        }
                         let neighbor_id = snap.node(neighbor_ix).symbol_id;
                         if visited.contains(&neighbor_id) {
                             continue;
@@ -570,9 +595,12 @@ impl ToolRouter {
                         }));
                     }
                 }
-                if want_outgoing {
+                if want_outgoing && hop_callees.len() < outgoing_budget {
                     // Outgoing edges → callees
                     for (neighbor_ix, edge_kind) in snap.outgoing_neighbors_with_kinds(fid) {
+                        if hop_callees.len() >= outgoing_budget {
+                            break;
+                        }
                         let neighbor_id = snap.node(neighbor_ix).symbol_id;
                         if visited.contains(&neighbor_id) {
                             continue;
@@ -594,11 +622,6 @@ impl ToolRouter {
                 }
             }
 
-            // Split remaining budget evenly between callers and callees.
-            let remaining = limit.saturating_sub(total_nodes);
-            let half = remaining / 2;
-            hop_callers.truncate(half);
-            hop_callees.truncate(remaining.saturating_sub(half));
             total_nodes = total_nodes
                 .saturating_add(hop_callers.len())
                 .saturating_add(hop_callees.len());
@@ -610,12 +633,17 @@ impl ToolRouter {
             }));
 
             frontier = next_frontier;
+            if frontier.is_empty() {
+                break;
+            }
         }
 
         let mut resp = json!({
             "symbol": qname,
             "max_depth": depth,
+            "limit": limit,
             "total_nodes_visited": total_nodes,
+            "truncated": total_nodes >= limit,
             "hops": hops,
         });
         if let Some(rm) = resolution_meta_opt {
@@ -630,7 +658,7 @@ impl ToolRouter {
                 .has_repo_cache_for(&active.store, atlas_engine::QueryNeed::CallGraph)
             {
                 resp["note"] = json!(
-                    "Graph expansion is complete only within the current focus closure. Background refinement may discover additional edges outside this closure; use CLI `atlas index --analysis full` only when you want an explicit project-wide cache."
+                    "Graph expansion is complete only within the current focus closure. Background refinement may discover additional edges outside this closure; use CLI `atlas index --analysis structural` only when you want an explicit project-wide call-graph cache."
                 );
             }
         }

@@ -18,6 +18,7 @@ pub struct CommandSpec {
 #[derive(Debug, Clone)]
 pub enum FieldKind {
     Text,
+    StringList,
     Number,
     Boolean,
     Choice(&'static [&'static str]),
@@ -52,6 +53,7 @@ impl CommandForm {
                 text("symbol", "Symbol", symbol, true),
                 choice("view", "View", "detail", &["detail", "context", "usages"]),
                 boolean("includeCode", "Include code", false),
+                string_list("include_roots", "Include roots", ""),
             ],
             "calls" => vec![
                 text("symbol", "Symbol", symbol, true),
@@ -62,7 +64,8 @@ impl CommandForm {
                     &["incoming", "outgoing", "both"],
                 ),
                 number("depth", "Depth", "1"),
-                number("limit", "Limit", "50"),
+                number("limit", "Limit", ""),
+                string_list("include_roots", "Include roots", ""),
             ],
             "explore" => vec![
                 text("symbol", "Symbol", symbol, true),
@@ -75,6 +78,7 @@ impl CommandForm {
                 number("source_lines", "Source lines", "40"),
                 number("evidence_limit", "Evidence", "5"),
                 boolean("include_file_context", "File context", true),
+                string_list("include_roots", "Include roots", ""),
             ],
             "impact" => vec![
                 text("symbol", "Symbol", symbol, true),
@@ -97,7 +101,8 @@ impl CommandForm {
                     "outgoing",
                     &["outgoing", "incoming", "both"],
                 ),
-                boolean("prefer_production", "Prefer production", true),
+                boolean("prefer_production", "Prefer production", false),
+                string_list("include_roots", "Include roots", ""),
             ],
             "trace" => vec![
                 choice(
@@ -112,7 +117,8 @@ impl CommandForm {
                 text("file_path", "File", file, false),
                 number("line", "Line", ""),
                 number("column", "Column", ""),
-                number("max_depth", "Max depth", "10"),
+                number("max_depth", "Max depth", ""),
+                string_list("include_roots", "Include roots", ""),
             ],
             "file_dependencies" => vec![
                 text("file_path", "File", file, true),
@@ -133,8 +139,12 @@ impl CommandForm {
             "lifecycle" => vec![
                 text("symbol", "Symbol", symbol, true),
                 text("field", "Field", "", true),
+                string_list("include_roots", "Include roots", ""),
             ],
-            "branch_diff" => vec![text("symbol", "Symbol", symbol, true)],
+            "branch_diff" => vec![
+                text("symbol", "Symbol", symbol, true),
+                string_list("include_roots", "Include roots", ""),
+            ],
             "domain_rules" => vec![
                 choice(
                     "action",
@@ -153,6 +163,7 @@ impl CommandForm {
                 choice("source", "Source", "", &["user", "builtin", "learned"]),
                 number("confidence", "Confidence", "1.0"),
                 number("min_confidence", "Min confidence", "0.5"),
+                number("limit", "Limit", ""),
             ],
             "fp_dispatches" => vec![
                 choice("action", "Action", "list", &["list", "add", "delete"]),
@@ -160,6 +171,7 @@ impl CommandForm {
                 text("target_qname", "Target", "", false),
                 text("annotation_id", "Annotation ID", "", false),
                 number("confidence", "Confidence", "1.0"),
+                number("limit", "Limit", ""),
             ],
             "tasks" => vec![text("query_id", "Query ID", "", false)],
             "resume_query" => vec![text("query_id", "Query ID", "", true)],
@@ -205,6 +217,15 @@ impl CommandForm {
                 continue;
             }
             let value = match field.kind {
+                FieldKind::StringList => Value::Array(
+                    field
+                        .value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| Value::String(value.to_string()))
+                        .collect(),
+                ),
                 FieldKind::Number => parse_number(&field.value)
                     .ok_or_else(|| format!("{} must be a number", field.label))?,
                 FieldKind::Boolean => json!(field.value == "true"),
@@ -237,8 +258,21 @@ impl CommandForm {
             .map(|field| field.value.as_str())
     }
 
+    fn direction(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.key == "direction")
+            .map(|field| field.value.as_str())
+    }
+
     fn field_applies(&self, key: &str) -> bool {
-        field_applies(self.command, self.action(), self.trace_kind(), key)
+        field_applies(
+            self.command,
+            self.action(),
+            self.trace_kind(),
+            self.direction(),
+            key,
+        )
     }
 
     fn field_required(&self, field: &FormField) -> bool {
@@ -344,7 +378,10 @@ impl CommandForm {
         let Some(field) = self.fields.get(self.selected) else {
             return;
         };
-        if matches!(field.kind, FieldKind::Text | FieldKind::Number) {
+        if matches!(
+            field.kind,
+            FieldKind::Text | FieldKind::StringList | FieldKind::Number
+        ) {
             self.edit_buffer = field.value.clone();
             self.edit_cursor = self.edit_buffer.chars().count();
             self.editing = true;
@@ -378,6 +415,16 @@ fn number(key: &'static str, label: &'static str, value: &str) -> FormField {
         label,
         value: value.into(),
         kind: FieldKind::Number,
+        required: false,
+    }
+}
+
+fn string_list(key: &'static str, label: &'static str, value: &str) -> FormField {
+    FormField {
+        key,
+        label,
+        value: value.into(),
+        kind: FieldKind::StringList,
         required: false,
     }
 }
@@ -417,28 +464,49 @@ fn parse_number(value: &str) -> Option<Value> {
     })
 }
 
-fn field_applies(command: &str, action: Option<&str>, trace_kind: Option<&str>, key: &str) -> bool {
-    match (command, action, trace_kind) {
-        ("trace", _, Some("callers")) => matches!(key, "kind" | "symbol" | "max_depth"),
-        ("trace", _, Some("forward")) => matches!(key, "kind" | "from" | "to" | "max_depth"),
-        ("trace", _, Some("point")) => matches!(key, "kind" | "file_path" | "line" | "column"),
-        ("trace", _, Some("variable")) => {
-            matches!(key, "kind" | "file_path" | "line" | "column" | "max_depth")
+fn field_applies(
+    command: &str,
+    action: Option<&str>,
+    trace_kind: Option<&str>,
+    direction: Option<&str>,
+    key: &str,
+) -> bool {
+    match (command, action, trace_kind, direction) {
+        ("calls", _, _, Some("incoming" | "outgoing")) => key != "depth",
+        ("trace", _, Some("callers"), _) => {
+            matches!(key, "kind" | "symbol" | "max_depth" | "include_roots")
         }
-        ("domain_rules", Some("list"), _) => matches!(key, "action" | "source"),
-        ("domain_rules", Some("add"), _) => {
+        ("trace", _, Some("forward"), _) => {
+            matches!(key, "kind" | "from" | "to" | "max_depth" | "include_roots")
+        }
+        ("trace", _, Some("point"), _) => {
+            matches!(
+                key,
+                "kind" | "file_path" | "line" | "column" | "include_roots"
+            )
+        }
+        ("trace", _, Some("variable"), _) => {
+            matches!(
+                key,
+                "kind" | "file_path" | "line" | "column" | "max_depth" | "include_roots"
+            )
+        }
+        ("domain_rules", Some("list"), _, _) => matches!(key, "action" | "source" | "limit"),
+        ("domain_rules", Some("add"), _, _) => {
             matches!(key, "action" | "rule_kind" | "pattern" | "confidence")
         }
-        ("domain_rules", Some("delete"), _) => matches!(key, "action" | "rule_id"),
-        ("domain_rules", Some("learn"), _) => matches!(key, "action" | "min_confidence"),
-        ("fp_dispatches", Some("list"), _) => key == "action",
-        ("fp_dispatches", Some("add"), _) => {
+        ("domain_rules", Some("delete"), _, _) => matches!(key, "action" | "rule_id"),
+        ("domain_rules", Some("learn"), _, _) => {
+            matches!(key, "action" | "min_confidence" | "limit")
+        }
+        ("fp_dispatches", Some("list"), _, _) => matches!(key, "action" | "limit"),
+        ("fp_dispatches", Some("add"), _, _) => {
             matches!(
                 key,
                 "action" | "field_qname" | "target_qname" | "confidence"
             )
         }
-        ("fp_dispatches", Some("delete"), _) => {
+        ("fp_dispatches", Some("delete"), _, _) => {
             matches!(key, "action" | "annotation_id" | "field_qname")
         }
         _ => true,
@@ -780,24 +848,70 @@ mod tests {
         assert_eq!(form.arguments().unwrap_err(), "Symbol is required");
         assert_eq!(
             form.visible_field_keys(),
-            vec!["kind", "symbol", "max_depth"]
+            vec!["kind", "symbol", "max_depth", "include_roots"]
         );
 
         form.fields[0].value = "point".into();
         assert_eq!(
             form.visible_field_keys(),
-            vec!["kind", "file_path", "line", "column"]
+            vec!["kind", "file_path", "line", "column", "include_roots"]
         );
         assert_eq!(form.arguments().unwrap_err(), "File is required");
     }
 
     #[test]
+    fn palette_defaults_do_not_override_mcp_query_defaults() {
+        let calls = CommandForm::new("calls", Some(("crate::handler", None)));
+        let calls = calls.arguments().unwrap();
+        assert!(calls.get("limit").is_none());
+
+        let mut incoming_calls = CommandForm::new("calls", Some(("crate::handler", None)));
+        incoming_calls.fields[1].value = "incoming".into();
+        assert!(incoming_calls.arguments().unwrap().get("depth").is_none());
+        assert!(!incoming_calls.visible_field_keys().contains(&"depth"));
+
+        let path = CommandForm::new("path", Some(("crate::handler", None)));
+        assert_eq!(path.arguments().unwrap_err(), "To is required");
+        let prefer_production = path
+            .fields
+            .iter()
+            .find(|field| field.key == "prefer_production")
+            .unwrap();
+        assert_eq!(prefer_production.value, "false");
+
+        let trace = CommandForm::new("trace", Some(("crate::handler", None)));
+        let trace = trace.arguments().unwrap();
+        assert!(
+            trace.get("max_depth").is_none(),
+            "each trace kind must retain its handler-specific default"
+        );
+    }
+
+    #[test]
+    fn include_roots_are_forwarded_as_a_string_array() {
+        let mut form = CommandForm::new("calls", Some(("crate::handler", None)));
+        form.fields
+            .iter_mut()
+            .find(|field| field.key == "include_roots")
+            .unwrap()
+            .value = "include, third_party/include".into();
+
+        assert_eq!(
+            form.arguments().unwrap()["include_roots"],
+            json!(["include", "third_party/include"])
+        );
+    }
+
+    #[test]
     fn domain_rule_actions_expose_only_relevant_fields() {
         let mut form = CommandForm::new("domain_rules", None);
-        assert_eq!(form.visible_field_keys(), vec!["action", "source"]);
+        assert_eq!(form.visible_field_keys(), vec!["action", "source", "limit"]);
 
         form.fields[0].value = "learn".into();
-        assert_eq!(form.visible_field_keys(), vec!["action", "min_confidence"]);
+        assert_eq!(
+            form.visible_field_keys(),
+            vec!["action", "min_confidence", "limit"]
+        );
         form.fields
             .iter_mut()
             .find(|field| field.key == "min_confidence")
@@ -814,6 +928,8 @@ mod tests {
         form.selected = 0;
         form.move_next();
         assert_eq!(form.fields[form.selected].key, "source");
+        form.move_next();
+        assert_eq!(form.fields[form.selected].key, "limit");
         form.move_next();
         assert_eq!(form.selected, form.fields.len());
     }

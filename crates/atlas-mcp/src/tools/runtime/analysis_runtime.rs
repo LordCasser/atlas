@@ -847,7 +847,7 @@ mod tests {
         nodes[2].stmt_range.end_byte = nodes[2].stmt_range.start_byte + 1;
         let statement_id = nodes[2].id;
         let function_id = nodes[2].function_id;
-        let range = nodes[2].stmt_range.clone();
+        let range = nodes[2].stmt_range;
         let file_id = atlas_engine::FileId::generate("rule.c");
         let call_target = DataNode::call_target(
             DataNodeId::generate(
@@ -879,7 +879,7 @@ mod tests {
             None,
             "widget_free",
             "widget_free",
-            nodes[2].stmt_range.clone(),
+            nodes[2].stmt_range,
         );
 
         let without_rules = ar.compose_effects_for(
@@ -944,7 +944,7 @@ mod tests {
         let symbol = store.find_symbol_by_id(&sid).unwrap().unwrap();
         let (mut nodes, edges) = branched_cfg_for(sid);
         nodes[2].stmt_range.end_byte = nodes[2].stmt_range.start_byte + 1;
-        let effect_range = nodes[2].stmt_range.clone();
+        let effect_range = nodes[2].stmt_range;
         store.insert_cfg_nodes(&nodes).unwrap();
         store.insert_cfg_edges(&edges).unwrap();
         store
@@ -973,7 +973,7 @@ mod tests {
             Some(sid),
             "ptr",
             "state.ptr",
-            effect_range.clone(),
+            effect_range,
         );
         let call_arg = DataNode::call_arg(
             DataNodeId::generate(
@@ -988,7 +988,7 @@ mod tests {
             Some(sid),
             None,
             Some("ptr"),
-            effect_range.clone(),
+            effect_range,
         );
         let call_target = DataNode::call_target(
             DataNodeId::generate(
@@ -1004,7 +1004,7 @@ mod tests {
             None,
             "release_owned",
             "release_owned",
-            effect_range.clone(),
+            effect_range,
         );
         let field_to_arg = DataFlowEdge::new(
             DataFlowEdgeId::generate(&field.id, &call_arg.id, DataFlowKind::FieldLoad.as_str()),

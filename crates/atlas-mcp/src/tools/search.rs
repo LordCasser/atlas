@@ -540,88 +540,6 @@ impl ToolRouter {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use atlas_engine::Store;
-    use serde_json::Value;
-
-    use super::*;
-
-    #[test]
-    fn cold_search_tracks_one_retryable_job_per_candidate_directory_and_converges() {
-        let root = tempfile::tempdir().unwrap();
-        let src = root.path().join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        for idx in 0..3 {
-            std::fs::write(
-                src.join(format!("widget{idx}.ts")),
-                "export function Widget() {}\nWidget();\n",
-            )
-            .unwrap();
-        }
-
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store.init_schema().unwrap();
-        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
-
-        let (body, is_error) = router.handle_search(
-            &ToolCallContext::empty(),
-            &serde_json::json!({"query": "Widget", "scope": "src", "limit": 10}),
-        );
-
-        assert!(!is_error, "{body}");
-        let value: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value["coverage"]["state"], "partial", "{value}");
-        assert!(
-            value["analysis"]["retry_after_ms"].as_u64().is_some(),
-            "{value}"
-        );
-        assert!(
-            value.get("pending_background_jobs").is_none(),
-            "internal job counts must not leak into the public response: {value}"
-        );
-        assert!(value.get("gaps").is_none(), "{value}");
-
-        let query_id = value["query_id"].as_str().unwrap().to_string();
-        let snapshot = router
-            .project()
-            .job_runtime
-            .query_snapshots
-            .lock()
-            .unwrap()
-            .get(&query_id)
-            .cloned()
-            .expect("search query snapshot");
-        let focus = snapshot.focus_result.expect("tracked search focus result");
-        assert_eq!(
-            focus.pending_closure_ids.len(),
-            1,
-            "all deferred candidates are in the same directory"
-        );
-
-        let mut resumed = value;
-        for _ in 0..50 {
-            if resumed["analysis"].get("retry_after_ms").is_none() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let (body, is_error) =
-                router.handle_resume_query(&serde_json::json!({"query_id": query_id}));
-            assert!(!is_error, "{body}");
-            resumed = serde_json::from_str(&body).unwrap();
-        }
-        assert!(
-            resumed["analysis"].get("retry_after_ms").is_none(),
-            "search retry must converge: {resumed}"
-        );
-        assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
-        assert_eq!(resumed["total"], 3, "{resumed}");
-        assert_eq!(resumed["results"].as_array().unwrap().len(), 3, "{resumed}");
-    }
-}
-
 impl ToolRouter {
     /// Handle `symbol` tool - dispatch by `view` to sub-handlers.
     /// Remaps `symbol` -> `qualified_name` (detail) or passes through as `symbol` (context/usages).
@@ -879,5 +797,87 @@ impl ToolRouter {
                 true,
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use atlas_engine::Store;
+    use serde_json::Value;
+
+    use super::*;
+
+    #[test]
+    fn cold_search_tracks_one_retryable_job_per_candidate_directory_and_converges() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..3 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+        let (body, is_error) = router.handle_search(
+            &ToolCallContext::empty(),
+            &serde_json::json!({"query": "Widget", "scope": "src", "limit": 10}),
+        );
+
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["coverage"]["state"], "partial", "{value}");
+        assert!(
+            value["analysis"]["retry_after_ms"].as_u64().is_some(),
+            "{value}"
+        );
+        assert!(
+            value.get("pending_background_jobs").is_none(),
+            "internal job counts must not leak into the public response: {value}"
+        );
+        assert!(value.get("gaps").is_none(), "{value}");
+
+        let query_id = value["query_id"].as_str().unwrap().to_string();
+        let snapshot = router
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get(&query_id)
+            .cloned()
+            .expect("search query snapshot");
+        let focus = snapshot.focus_result.expect("tracked search focus result");
+        assert_eq!(
+            focus.pending_closure_ids.len(),
+            1,
+            "all deferred candidates are in the same directory"
+        );
+
+        let mut resumed = value;
+        for _ in 0..50 {
+            if resumed["analysis"].get("retry_after_ms").is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let (body, is_error) =
+                router.handle_resume_query(&serde_json::json!({"query_id": query_id}));
+            assert!(!is_error, "{body}");
+            resumed = serde_json::from_str(&body).unwrap();
+        }
+        assert!(
+            resumed["analysis"].get("retry_after_ms").is_none(),
+            "search retry must converge: {resumed}"
+        );
+        assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
+        assert_eq!(resumed["total"], 3, "{resumed}");
+        assert_eq!(resumed["results"].as_array().unwrap().len(), 3, "{resumed}");
     }
 }

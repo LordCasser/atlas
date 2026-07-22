@@ -2,6 +2,7 @@
 //! direction control, optional child inclusion, and semantic impact overlay.
 
 use super::*;
+use crate::tools::bounded_usize_arg;
 
 /// Default edge kinds for impact analysis: calls, instantiates, implements,
 /// callback registrations, imports, and includes.
@@ -24,7 +25,7 @@ impl ToolRouter {
         if let Err(e) = crate::tools::validate_symbol_name_length(qname) {
             return (e, true);
         }
-        let depth = get_u64(args, "depth").unwrap_or(3) as usize;
+        let depth = bounded_usize_arg(args, "depth", 3, 5);
         let semantic = args
             .get("semantic")
             .and_then(|v| v.as_bool())
@@ -143,9 +144,9 @@ impl ToolRouter {
             None => return ("Graph not initialized".to_string(), true),
         };
         let sub = if include_children {
-            graph.impact_with_children_and_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
+            graph.impact_with_children_and_kinds(&sid, depth, edge_kinds.clone(), direction)
         } else {
-            graph.impact_with_kinds(&sid, depth.min(5), edge_kinds.clone(), direction)
+            graph.impact_with_kinds(&sid, depth, edge_kinds.clone(), direction)
         };
         let snap = graph.snapshot();
 

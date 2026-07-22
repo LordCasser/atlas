@@ -10,7 +10,7 @@
 
 use atlas_engine::{FpAnnotation, Language};
 
-use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, get_str};
+use super::{MAX_ANNOTATION_QNAME_LENGTH, ToolRouter, bounded_usize_arg, get_str};
 use crate::tools::symbol_selector::{SymbolInput, SymbolResolution, SymbolResolutionPolicy};
 
 use serde_json::{Value, json};
@@ -247,12 +247,14 @@ impl ToolRouter {
     }
 
     /// Handle `list_fp_annotations` — list all dispatch annotations.
-    pub(crate) fn handle_list_fp_annotations(&self) -> (String, bool) {
+    pub(crate) fn handle_list_fp_annotations(&self, args: &serde_json::Value) -> (String, bool) {
+        let limit = bounded_usize_arg(args, "limit", 200, 500);
         match self.project().store.get_all_fp_annotations() {
             Ok(annotations) => {
+                let shown: Vec<_> = annotations.iter().take(limit).collect();
                 // Batch-lookup all source + target symbols to avoid N+1 queries.
                 let mut symbol_ids = std::collections::HashSet::new();
-                for a in &annotations {
+                for a in &shown {
                     symbol_ids.insert(a.source_symbol);
                     symbol_ids.insert(a.target_symbol);
                 }
@@ -271,8 +273,8 @@ impl ToolRouter {
                     }
                 }
 
-                let items: Vec<serde_json::Value> = annotations
-                    .iter()
+                let items: Vec<serde_json::Value> = shown
+                    .into_iter()
                     .map(|a| {
                         let source_qname = symbol_map
                             .get(&a.source_symbol)
@@ -292,10 +294,13 @@ impl ToolRouter {
                         })
                     })
                     .collect();
+                let returned = items.len();
 
                 (
                     json!({
                         "count": annotations.len(),
+                        "returned": returned,
+                        "truncated": annotations.len() > returned,
                         "annotations": items,
                     })
                     .to_string(),
@@ -413,7 +418,7 @@ impl ToolRouter {
         let action = get_str(args, "action");
         match action {
             "add" => self.handle_annotate_fp_dispatch(args),
-            "list" | "" => self.handle_list_fp_annotations(),
+            "list" | "" => self.handle_list_fp_annotations(args),
             "delete" => self.handle_delete_fp_annotation(args),
             other => (
                 format!("Unknown action: '{other}'. Must be one of: add, list, delete"),

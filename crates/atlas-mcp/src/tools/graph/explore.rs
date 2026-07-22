@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::tools::analysis_envelope;
+use crate::tools::bounded_usize_arg;
 
 /// Parse the `source_mode` parameter from explore tool arguments.
 fn parse_source_mode(args: &serde_json::Value) -> atlas_engine::dossier::types::SourceMode {
@@ -123,22 +124,10 @@ impl ToolRouter {
         let include_roots_for_scope: Vec<String> =
             include_roots.iter().map(|root| root.path.clone()).collect();
         let source_mode = parse_source_mode(args);
-        let source_lines = args
-            .get("source_lines")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(40) as u32;
-        let evidence_limit = args
-            .get("evidence_limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5) as usize;
-        let relation_limit = args
-            .get("relation_limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(12) as usize;
-        let peer_limit = args
-            .get("peer_limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(12) as usize;
+        let source_lines = bounded_usize_arg(args, "source_lines", 40, 200) as u32;
+        let evidence_limit = bounded_usize_arg(args, "evidence_limit", 5, 50);
+        let relation_limit = bounded_usize_arg(args, "relation_limit", 12, 100);
+        let peer_limit = bounded_usize_arg(args, "peer_limit", 12, 100);
         let max_source_bytes: usize = 65536;
         let include_file_context = args
             .get("include_file_context")
@@ -374,10 +363,12 @@ impl ToolRouter {
         let mut dossier = match atlas_engine::dossier::builder::ExploreDossierBuilder::build(
             &sym,
             &file_path,
-            &sym_repo,
-            &relation_repo,
-            &file_repo,
-            &source_repo,
+            atlas_engine::dossier::builder::DossierRepositories::new(
+                &sym_repo,
+                &relation_repo,
+                &file_repo,
+                &source_repo,
+            ),
             &request,
             tier_str,
         ) {

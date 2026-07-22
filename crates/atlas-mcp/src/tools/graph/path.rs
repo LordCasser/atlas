@@ -2,6 +2,7 @@
 //! with ambiguity resolution, frontier diagnostics, and path-quality insights.
 
 use super::*;
+use crate::tools::bounded_usize_arg;
 
 /// Default edge kinds for path finding — call relationships only.
 /// Excludes non-control-flow edges (References, TypeOf, Contains, etc.)
@@ -62,7 +63,7 @@ impl ToolRouter {
         if let Err(e) = crate::tools::validate_symbol_name_length(to_qname) {
             return (e, true);
         }
-        let max_depth = get_u64(args, "max_depth").unwrap_or(5) as usize;
+        let max_depth = bounded_usize_arg(args, "max_depth", 5, 10);
         let prefer_production = args
             .get("prefer_production")
             .and_then(|v| v.as_bool())
@@ -491,9 +492,9 @@ impl ToolRouter {
                 }
             }
             if !has_repo_call_graph && max_depth < 10 {
-                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: try a higher max_depth (up to 10), resume the query after refinement, or run a full structural index (CLI: 'atlas index --analysis full') for deeper call-graph edges.");
+                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: try a higher max_depth (up to 10), resume the query after refinement, or run an explicit whole-repository structural index (CLI: 'atlas index --analysis structural') for deeper call-graph edges.");
             } else if !has_repo_call_graph {
-                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: the path may involve function pointers or dynamic dispatch not yet resolved; resume the query after refinement or run a full structural index (CLI: 'atlas index --analysis full').");
+                message.push_str(". In focus mode this is only a current-closure result, not a repo-wide proof. Tip: the path may involve function pointers or dynamic dispatch not yet resolved; resume the query after refinement or run an explicit whole-repository structural index (CLI: 'atlas index --analysis structural').");
             } else {
                 message.push_str(". The symbols may not be connected by call edges, or the path exceeds the depth limit. Try a higher max_depth.");
             }

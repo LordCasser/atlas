@@ -17,8 +17,8 @@ fn main() -> anyhow::Result<()> {
     let format = cli.log_format();
     atlas_cli::logging::init(verbosity, format);
 
-    // No subcommand → launch TUI immediately.
-    // Auto-index runs in background if DB is empty; the TUI starts right away.
+    // No subcommand → prepare the local store, running the default structural
+    // Index synchronously when no usable basic catalog exists, then launch TUI.
     let command = match cli.command {
         None => {
             let project_root = PathBuf::from(".");

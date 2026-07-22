@@ -11,7 +11,7 @@ use atlas_engine::{
 };
 
 use super::analysis_envelope::AnalysisEnvelope;
-use super::{MAX_AMBIGUOUS_CANDIDATES, ToolRouter, get_str_opt, get_u64};
+use super::{MAX_AMBIGUOUS_CANDIDATES, ToolRouter, get_str_opt};
 use crate::tools::symbol_selector::{
     ScoredCandidate, SymbolInput, SymbolResolution, SymbolResolutionPolicy, SymbolSelector,
     parse_symbol_input,

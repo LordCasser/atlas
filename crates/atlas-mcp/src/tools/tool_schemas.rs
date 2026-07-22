@@ -25,7 +25,7 @@ fn make_project_tools() -> Vec<Tool> {
                 },
                 "project_path": { "type": "string", "description": "Absolute path to the project directory to open (required for action='open')." },
                 "verbose": { "type": "boolean", "description": "Include verbose details (action='status')." },
-                "limit": { "type": "integer", "description": "Max files returned (action='files', default unlimited)." },
+                "limit": { "type": "integer", "maximum": 1000, "description": "Max files returned (action='files', default 500, hard max 1000)." },
                 "language": { "type": "string", "description": "Filter files by language (action='files', e.g. 'rust', 'typescript')." },
                 "path_prefix": { "type": "string", "description": "Filter files by path prefix (action='files')." },
             })),
@@ -83,14 +83,14 @@ fn make_symbol_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "search".into(),
-            description: "Search symbols by name within a required project-relative scope. Scope is always required because it is both the result boundary and the focus seed; an existing CLI-built full index improves precision/performance but does not make scope optional.".into(),
+            description: "Search symbols by name within a required project-relative scope. Scope is always required because it is both the result boundary and the focus seed; an existing CLI-built whole-repository index improves precision/performance but does not make scope optional.".into(),
             input_schema: ToolInputSchema {
                 schema_type: "object".into(),
                 properties: Some(json!({
                     "query": { "type": "string", "description": "Search query text" },
                     "scope": { "type": "string", "description": "Required project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Defines the search boundary and focus hotspot." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
-                    "limit": { "type": "integer", "description": "Max results (default 20)" },
+                    "limit": { "type": "integer", "maximum": 200, "description": "Max results (default 20, hard max 200)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["query".into(), "scope".into()]),
@@ -113,7 +113,7 @@ fn make_symbol_tools() -> Vec<Tool> {
                     },
                     "includeCode": { "type": "boolean", "description": "When true, includes the full source code of the enclosing definition (function/class/struct body). Default false (applies to view='detail' and 'context')." },
                     "includeFilePeers": { "type": "boolean", "description": "Include file peer symbols in context view (default: true). Set false for faster, smaller responses." },
-                    "limit": { "type": "integer", "description": "Max results for view='usages' (default 50)." },
+                    "limit": { "type": "integer", "maximum": 100, "description": "Max results for view='usages' (default 50, hard max 100)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: Some(vec!["symbol".into()]),
@@ -138,8 +138,8 @@ fn make_graph_tools() -> Vec<Tool> {
                         "enum": ["incoming", "outgoing", "both"],
                         "description": "Edge direction: 'incoming' for callers (1-hop), 'outgoing' for callees (1-hop), 'both' for multi-hop when depth>1 (default 'both')."
                     },
-                    "depth": { "type": "integer", "description": "Only for direction=both: traversal depth (default 1, max 5). Ignored for incoming/outgoing (1-hop only)." },
-                    "limit": { "type": "integer", "description": "Max nodes returned (default depends on mode)." },
+                    "depth": { "type": "integer", "maximum": 5, "description": "Only for direction=both: traversal depth (default 1, hard max 5). Ignored for incoming/outgoing (1-hop only)." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Max nodes returned (default depends on mode, hard max 500)." },
                     "edge_kinds": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -159,10 +159,10 @@ fn make_graph_tools() -> Vec<Tool> {
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches return candidates. Use SymbolSelector object for precise disambiguation."),
                     "scope": { "type": "string", "description": "Optional project-relative directory or file scope for cold/local exploration (e.g. drivers/hid, net/smc). Keeps first-pass analysis bounded to the requested region." },
                     "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
-                    "source_lines": { "type": "integer", "description": "Max source lines to return when source_mode=excerpt. Default: 40." },
-                    "evidence_limit": { "type": "integer", "description": "Max call evidence examples per direction. Default: 5." },
-                    "relation_limit": { "type": "integer", "description": "Max non-call relation examples across all groups. Default: 12." },
-                    "peer_limit": { "type": "integer", "description": "Max file peer symbols to return. Default: 12." },
+                    "source_lines": { "type": "integer", "maximum": 200, "description": "Max source lines to return when source_mode=excerpt. Default: 40; hard max: 200." },
+                    "evidence_limit": { "type": "integer", "maximum": 50, "description": "Max call evidence examples per direction. Default: 5; hard max: 50." },
+                    "relation_limit": { "type": "integer", "maximum": 100, "description": "Max non-call relation examples across all groups. Default: 12; hard max: 100." },
+                    "peer_limit": { "type": "integer", "maximum": 100, "description": "Max file peer symbols to return. Default: 12; hard max: 100." },
                     "include_file_context": { "type": "boolean", "description": "Include imports, exports, and file peers. Default: true." },
                     "include_recommendations": { "type": "boolean", "description": "Include recommended next queries. Default: true." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
@@ -178,7 +178,7 @@ fn make_graph_tools() -> Vec<Tool> {
                 properties: Some(json!({
                     "from": symbol_param_schema("Source symbol qualified name. Ambiguous matches are auto-aggregated."),
                     "to": symbol_param_schema("Target symbol qualified name. Ambiguous matches are auto-aggregated."),
-                    "max_depth": { "type": "integer", "description": "Max search depth (default 5, max 10)" },
+                    "max_depth": { "type": "integer", "maximum": 10, "description": "Max search depth (default 5, hard max 10)." },
                     "direction": {
                         "type": "string",
                         "enum": ["outgoing", "incoming", "both"],
@@ -208,7 +208,7 @@ fn make_graph_tools() -> Vec<Tool> {
                         "enum": ["outgoing", "incoming", "both"],
                         "description": "Traversal direction. 'outgoing' (default) follows forward/call edges only (downstream effects). 'incoming' follows reverse/caller edges only. 'both' follows both directions for full impact radius."
                     },
-                    "depth": { "type": "integer", "description": "Max traversal depth (default 3, max 5)" },
+                    "depth": { "type": "integer", "maximum": 5, "description": "Max traversal depth (default 3, hard max 5)." },
                     "semantic": { "type": "boolean", "description": "When true, includes semantic impact analysis (lifecycle invariants, branch diffs) for impacted functions. Default false." },
                 })),
                 required: Some(vec!["symbol".into()]),
@@ -233,7 +233,7 @@ fn make_file_graph_tools() -> Vec<Tool> {
                         "enum": ["incoming", "outgoing", "both"],
                         "description": "Direction: 'outgoing' (default) for imports by this file, 'incoming' for files importing this file, 'both' for both directions."
                     },
-                    "limit": { "type": "integer", "description": "Max results (default 50)." },
+                    "limit": { "type": "integer", "maximum": 100, "description": "Max results (default 50, hard max 100)." },
                     "analysis": {
                         "type": "string",
                         "enum": ["manifest", "structural"],
@@ -286,7 +286,7 @@ pub(crate) fn make_trace_tools() -> Vec<Tool> {
                     "symbol": symbol_param_schema("Qualified symbol name. Use SymbolSelector object for precise disambiguation."),
                     "from": symbol_param_schema("Source qualified symbol name."),
                     "to": symbol_param_schema("Target qualified symbol name."),
-                    "max_depth": { "type": "integer", "description": "Maximum traversal depth (kind='variable'/'forward'/'callers')." },
+                    "max_depth": { "type": "integer", "maximum": 100, "description": "Maximum traversal depth (kind='variable'/'forward'/'callers', hard max 100; defaults vary by kind)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
                 })),
                 required: None,
@@ -352,6 +352,7 @@ fn make_domain_rules_tools() -> Vec<Tool> {
                     "source": { "type": "string", "enum": ["builtin", "learned", "user"], "description": "Filter by source (optional for action='list')." },
                     "confidence": { "type": "number", "description": "Confidence 0.0-1.0 (default 1.0 for user-declared)." },
                     "min_confidence": { "type": "number", "description": "Minimum confidence threshold for action='learn' (default 0.5)." },
+                    "limit": { "type": "integer", "maximum": 500, "description": "Max rules or learned candidates returned for list/learn (default 200, hard max 500)." },
                 })),
                 required: None,
             },
@@ -378,6 +379,7 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
                     "target_qname": { "type": "string", "description": "Qualified name of the target function (required for action='add')." },
                     "annotation_id": { "type": "string", "description": "Annotation ID from list (alternative identifier for action='delete')." },
                     "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
+                    "limit": { "type": "integer", "maximum": 500, "description": "Max annotations returned for action='list' (default 200, hard max 500)." },
                 })),
                 required: None,
             },

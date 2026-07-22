@@ -14,8 +14,6 @@
 //! *factory* (construction-time, not per-request orchestration) - a documented
 //! legitimate exception.
 
-#![cfg(test)]
-
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -184,8 +182,7 @@ fn handler_purity_analysis_handlers_have_no_engine_hits() {
             .collect();
         assert!(
             engine_hits.is_empty(),
-            "{rel} must not call lifecycle/branch-diff engines by name (route via AnalysisRuntime):\n{:?}",
-            engine_hits
+            "{rel} must not call lifecycle/branch-diff engines by name (route via AnalysisRuntime):\n{engine_hits:?}"
         );
     }
 }

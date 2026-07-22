@@ -126,7 +126,7 @@ pub fn contract_for(tool_name: &str, args: &Value) -> ToolContract {
         "search" => ToolContract::StoreFactQuery(QueryNeed::Structural),
         "file_dependencies" => ToolContract::StoreFactQuery(
             if args.get("analysis").and_then(Value::as_str) == Some("structural") {
-                QueryNeed::Structural
+                QueryNeed::CallGraph
             } else {
                 QueryNeed::Manifest
             },
@@ -269,7 +269,7 @@ mod tests {
             "file_dependencies",
             &json!({"file_path": "src/main.rs", "analysis": "structural"}),
         );
-        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::Structural));
+        assert_eq!(c, ToolContract::StoreFactQuery(QueryNeed::CallGraph));
     }
 
     #[test]

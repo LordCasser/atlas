@@ -6,7 +6,7 @@ use atlas_engine::{InvestigationFocus, TraceDiagnostic, TraceQueryResponse};
 
 use super::analysis_envelope::AnalysisEnvelope;
 use super::{
-    MAX_FILE_PATH_LENGTH, ToolRouter, get_str_opt, get_u64, resolve_file_id,
+    MAX_FILE_PATH_LENGTH, ToolRouter, bounded_usize_arg, get_str_opt, get_u64, resolve_file_id,
     warnings_to_trace_diagnostics,
 };
 use crate::tools::symbol_selector::{
@@ -142,7 +142,7 @@ impl ToolRouter {
         let file_path = get_str_opt(args, "file_path");
         let line = get_u64(args, "line");
         let column = get_u64(args, "column");
-        let max_depth = get_u64(args, "max_depth").unwrap_or(30) as usize;
+        let max_depth = bounded_usize_arg(args, "max_depth", 30, 100);
 
         // Validate file_path length
         if let Some(fp) = file_path {
@@ -267,7 +267,7 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_caller_path(&self, args: &serde_json::Value) -> (String, bool) {
-        let max_depth = args["max_depth"].as_u64().unwrap_or(20) as usize;
+        let max_depth = bounded_usize_arg(args, "max_depth", 20, 100);
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse symbol parameter as unified SymbolInput (string or structured selector).
@@ -407,7 +407,7 @@ impl ToolRouter {
     }
 
     pub(crate) fn handle_trace_forward(&self, args: &serde_json::Value) -> (String, bool) {
-        let max_depth = args["max_depth"].as_u64().unwrap_or(10) as usize;
+        let max_depth = bounded_usize_arg(args, "max_depth", 10, 100);
         let (include_roots, root_warnings) = self.include_roots_from_args(args);
 
         // Parse 'from' parameter as unified SymbolInput.
