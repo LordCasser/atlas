@@ -232,7 +232,7 @@ Level 5: lightweight interprocedural summaries
 | C++ | DataflowInterproc: ArgToParam+ReturnToCall，branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG，confidence 0.70；模板/重载/ADL 不建模 | lifecycle 在 goto target 清除不可证明的 branch context；cross-scope destruction、catch-type selection、implicit exception、调用路径和局部来源必须标注 best-effort |
 | ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55)；named function/method branch-loop-switch 与 try/catch/finally isolated continuations 已验证，ArkUI trailing-block/callback CFG 仍未建模 | 显示 `arkts via TypeScript grammar` provenance 与具体 limitation |
 | Go | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/switch、`select` sibling、direct same-function `Goto` 与 bounded path-sensitive defer-stack CFG；normal exit 通过 `Defer`/owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 在注册时执行，confidence 0.78 | computed/unresolved goto 终止本地路径；cyclic/over-budget defer 原子回退；panic/recover/Goexit、复杂 anonymous deferred body 与泛型 dataflow 显示 limitation |
-| C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，try/catch/finally 与 `using_statement` isolated continuations，direct `throw new T` 有序语法精确匹配截断，confidence 0.72 | filter/继承/alias/变量抛出保持保守；`goto case/default`、清理异常和 partial classes limitation |
+| C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，try/catch/finally 与 `using_statement` isolated continuations，无 finally/using cleanup ownership 的 direct same-function `Goto`，direct `throw new T` 有序语法精确匹配截断，confidence 0.72 | filter/继承/alias/变量抛出保持保守；`goto case/default`、cleanup-crossing goto、清理异常和 partial classes limitation |
 | Rust | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`match` sibling、`let-else` success 与 explicit/unconditional-loop/builtin panic-like macro abrupt alternative、`?` success/residual-return CFG，confidence 0.70 | macro shadowing/re-export、custom never-return macro、panic unwind/catch_unwind、guarded/复杂 pattern exhaustiveness、borrow 与 pattern/guard/binding dataflow 不建模；Drop 仍是 function-exit effect heuristic，不等同于 path-sensitive lexical RAII |
 | PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG WithLimitations(0.60)，覆盖 function/method branch/loop/switch/elseif、fall-through、numeric break/continue、try/catch/finally isolated continuations、return/throw→Exit 与 direct `throw new T` 有序语法精确匹配截断 | name-based binding、动态调用、labeled jump、implicit exception 与继承/alias/变量抛出的 catch selection limitation |
 | Ruby | DataflowInterproc: ArgToParam+ReturnToCall；classic `case`/`when`、method-body/nested `rescue/else/ensure` 与 block-resource isolated continuations，confidence 0.65 | `retry/redo`、block/yield implicit calls 与 Ruby 2.7+ `case ... in` pattern matching 为 best-effort/未建模 |
@@ -365,7 +365,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 ## 7. 当前阶段验收焦点
 
-当前 workspace crate 拆分和 15-tool MCP 收敛已经完成。当前阶段不再做新的大拆分，也不启动 Corpus 产品线；重点是稳定 Atlas 1.5.x 的公共契约、文档、发布验证和真实项目性能。
+当前 workspace crate 拆分和 15-tool MCP 收敛已经完成。当前阶段不再做新的大拆分，也不启动 Corpus 产品线；重点是稳定 Atlas 1.6.x 的公共契约、文档、发布验证和真实项目性能。
 
 阶段完成条件：
 

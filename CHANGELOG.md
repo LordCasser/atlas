@@ -4,6 +4,89 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.6.0] - 2026-07-22
+
+All changes after tag `v1.5.5` form the CFG v3 milestone. The public MCP V1
+tool names and trace envelope remain stable; persisted index semantics move to
+SQLite Schema V3 and require rebuilding an older `.atlas/atlas.db`.
+
+### CFG v3 and persistence
+
+- Persist dedicated `CaseBranch`, `Break`, `Continue`, `Goto`, `Defer`, and
+  `Exception` edges, deterministic lowering-instance node identities, managed
+  scope ownership, call context, and branch-context facts.
+- Cover limited function/method CFG for all 14 default languages, including
+  switch/match/select sibling paths, language-correct fall-through, lexical
+  break/continue labels, and direct same-function goto for C/C++/Go.
+- Add cleanup-safe C# direct goto/label resolution for functions without
+  `finally`/`using` ownership. `goto case/default` and cleanup-crossing goto
+  remain conservative terminals. Real Shadowsocks `Listener.ReceiveCallback`
+  verifies extraction through SQLite persistence.
+- Ignore comment AST extras as executable statements, including comments
+  between a label and its first executable body node.
+
+### Exceptional and managed control flow
+
+- Lower try/catch/finally-style control flow with path-isolated normal and
+  abrupt continuations for JavaScript/TypeScript/ArkTS, Java, C#, PHP, Python,
+  Kotlin, Cangjie, and Ruby; C++ exposes explicit exception paths.
+- Route Java try-with-resources, C# using, Python with, Kotlin use, and Ruby
+  resource blocks through owner-matched `BlockExit` nodes with deterministic
+  LIFO cleanup effects. Cleanup exceptions retain conservative ordered
+  continuations into enclosing handlers/finally regions.
+- Cap clone expansion at 64 per isolated region and fall back atomically rather
+  than persisting a partial graph.
+
+### Language precision
+
+- Go switch/select preserves blocking semantics; bounded path-sensitive defer
+  stacks execute registered calls in LIFO order on normal exits.
+- Rust `?` retains success plus residual-return paths; `let-else` separates the
+  success path from abrupt alternatives; standalone unqualified
+  `panic!`/`unreachable!`/`todo!`/`unimplemented!` terminate the local path.
+- Python syntax-irrefutable match patterns and direct Rust/Cangjie wildcards
+  suppress impossible synthetic no-match paths. PHP, Ruby, Kotlin, and Cangjie
+  receive expanded grammar-specific branch, exception, and resource coverage.
+- Capability profiles and architecture documentation state the remaining
+  macro, unwind, pattern, callback, cleanup-identity, and computed-jump limits
+  explicitly instead of implying compiler-grade CFG precision.
+
+### Analysis, Focus, and verification
+
+- Lifecycle, branch diff, semantic effect composition, Focus materialization,
+  Index mode, SQLite readers/writers, CLI status, and MCP analysis consume the
+  same structured CFG facts.
+- Add cross-language Golden, extraction, persistence, Focus, MCP, and real
+  project regression fixtures for the schema v3 semantics.
+
+### TUI, MCP, and mixed-index alignment
+
+- Determine FullCache authority per QueryNeed from finalized whole-repository
+  Index metadata plus fresh complete coverage for every file. Partial Focus
+  enrichment preserves lower-layer authority without promoting CallGraph or
+  dataflow queries; CallGraph/dataflow also require current canonical resolution
+  fingerprints for reference-bearing files after source-changing Focus rebuilds;
+  replacing a target also revokes fingerprints of importers whose resolutions
+  were invalidated.
+- Make manifest file-dependency queries pure reads and align structural mode on
+  the CallGraph contract. `tasks` now preserves failed Focus/extraction work as
+  a failed terminal state instead of reporting ready.
+- Keep MCP responses as one complete JSON document; handlers enforce schema
+  maxima and expose explicit returned/truncation metadata instead of slicing
+  serialized JSON. Project files default to 500/cap at 1000; graph, trace,
+  dossier, context, task, and overlay collections have hard resource bounds.
+- Align TUI forms with MCP defaults and request-scoped `include_roots`. Partial
+  catalogs open symbol context through the shared focus-aware handler; shared
+  tool completion invalidates the separate native graph snapshot and refreshes
+  Store-derived status.
+- Replace the seven-position-argument file inventory write API with the typed
+  `DiscoveredFile` Tier-0 record; content fingerprints remain a later Tier-0.5
+  concern rather than being mixed into discovery metadata.
+
+### Version
+
+- Workspace package version and skill metadata: **1.6.0**.
+
 ## [1.5.5] - 2026-07-14
 
 All changes **after tag `v1.5.4`** belong to 1.5.5 (commits since the tag plus

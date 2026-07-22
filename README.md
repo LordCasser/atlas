@@ -335,7 +335,7 @@ types/workspace/db ─▶ extraction/resolution/graph/analysis/domain_rules/sear
 
 ### Storage model
 
-Atlas stores index data in `.atlas/atlas.db` (schema version 2). Core tables include:
+Atlas stores index data in `.atlas/atlas.db` (schema version 3). Core tables include:
 
 ```text
 files                    symbols            scopes               references

@@ -85,10 +85,10 @@ Use **resume**, not full index, when the first answer is thin.
 | Status / files | `project(action="status"\|"files")` | optional filters |
 | Search | `search` | `query` + **`scope`** |
 | Detail / context / usages | `symbol` | `view` |
-| Calls | `calls` | depth 1 first |
+| Calls | `calls` | incoming/outgoing are fixed one hop; only `direction=both` honors depth |
 | Explore | `explore` | `symbol` |
 | Path / impact | `path`, `impact` | — |
-| File deps | `file_dependencies` | — |
+| File deps | `file_dependencies` | manifest reads stored facts only; structural requests CallGraph Focus |
 | Point / variable / callers / forward | `trace` | see SKILL |
 | C/C++ lifecycle / branch | `lifecycle`, `branch_diff` | — |
 | Refine | **`resume_query`**, `tasks` | `query_id` |
@@ -112,12 +112,19 @@ expect provisional result fields.
 
 `status=failed` is also result-free. Read `pending.detail` and re-run the
 original tool call; do not interpret absence of `retry_after_ms` as success.
+`tasks(query_id=...)` reports the same failure as `status=failed` with
+`pending_jobs=0` and no retry timer.
 
 **Trace:** also `ok`, `kind`, `capability`, `partial_result`, `diagnostics`, optional
 `lazy_summary`, `result`.
 
 Terminal: no `retry_after_ms` and no `gaps` → complete for **current** scope;
 no retry with `gaps` → terminal limited result.
+
+Handlers enforce advertised depth/collection maxima even if the MCP host skips
+schema validation. Treat `returned`, `truncated`, and per-field totals as part of
+the answer contract; narrow the query rather than trying to request an unbounded
+payload.
 
 ## Troubleshooting (agent)
 

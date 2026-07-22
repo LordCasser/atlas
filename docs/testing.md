@@ -36,6 +36,18 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 同一修复如果影响 Focus materialize ensure 与 Index 预物化，必须至少各有一条回归（禁止只测 helper）。
 - capability/status 测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
+- FullCache/Focus 判定必须覆盖：整仓 finalized manifest + 少量 Focus structural、
+  整仓 finalized structural + 少量 Focus dataflow、任一 scoped Index、以及 stale/
+  incomplete file layer。断言必须按 QueryNeed 分开，不能拿聚合 CatalogTier 代替
+  scope-wide fresh complete per-file coverage。另须覆盖源码变化后的 Focus structural
+  rebuild：Structural 可保持 FullCache，但含 reference 的变化文件或仍指向其旧 symbol
+  的调用方必须失效 current resolution fingerprint，使 CallGraph 回到 Focus；无 reference
+  且未被引用的文件不得因此永久降级。
+- MCP/TUI 一致性改动必须覆盖同一工具的 `ToolContract` 与 handler required need、
+  pending→resume、background failure→`tasks(status=failed)`、单块有效 JSON、TUI 表单
+  默认值/array 参数，以及 ToolRouter 写后 native GraphSession stale + 状态栏刷新。
+- `file_dependencies(manifest)` 必须断言不启动 Focus；
+  `file_dependencies(structural)` 必须断言 CallGraph Focus 能收敛到跨文件依赖。
 
 强制回归场景：
 - `run_index_pipeline(Manifest)`、CLI `atlas index --analysis manifest` 和 `atlas sync --analysis manifest` 必须覆盖“文件已删除后再次索引”的场景，断言 stale file、symbol、reference、edge 和 extraction_state 均被清理。
@@ -242,6 +254,7 @@ rg 'read_to_string' crates/atlas-engine crates/atlas-mcp --glob '*.rs'
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
@@ -254,7 +267,7 @@ cargo test --workspace --all-features
 - 所有失败测试、跳过测试和 residual risk。
 
 Release-gate policy:
-- `cargo clippy` passes with pre-existing warnings; `-D warnings` is not a release gate.
+- Workspace-wide, all-target, all-feature Clippy must pass with `-D warnings`.
 - Local verification is macOS arm64 only; Linux and Windows coverage is via the gated release matrix (actionlint is not available locally).
 - When schema is unchanged but extraction semantics change (e.g., ArkUI recovery rewrite), existing `.atlas` DBs must be removed and re-indexed — `doctor` cannot detect this via source hashes alone.
 

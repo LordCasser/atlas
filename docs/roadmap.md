@@ -3,11 +3,13 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current release focus: Atlas 1.5.5
+## 1. Current release focus: Atlas 1.6.0
 
-Workspace version is **1.5.5**. Everything after git tag **`v1.5.4`** is 1.5.5
-work (Focus/MCP complete-result semantics, index/Focus alignment, source
-encoding — see `CHANGELOG.md` §1.5.5). Tag **`v1.5.4`** remains sealed.
+Workspace version is **1.6.0**. Everything after git tag **`v1.5.5`** is the
+CFG v3 milestone: structured control-transfer/exception/resource facts,
+Schema V3 persistence, aligned Focus/Index/MCP consumers, and cross-language
+real-project regression coverage. Tag **`v1.5.5`** remains sealed; see
+`CHANGELOG.md` §1.6.0.
 
 Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
 
@@ -23,8 +25,8 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
 - Add release notes / changelog entry for the current public version. ✅ Done:
-  `CHANGELOG.md` contains a dedicated 1.5.4 section for the ArkTS boundary and
-  release hardening work.
+  `CHANGELOG.md` contains a dedicated 1.6.0 CFG v3 milestone section and keeps
+  the sealed 1.5.x history intact.
 
 ### 1.2 User-facing documentation
 
@@ -48,9 +50,11 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   refresh; regression tests cover empty batches, external writes, preservation
   across refresh, queue deduplication, and rebuild threshold behavior.
 - Keep all MCP outputs bounded and ensure truncation is visible in the response.
-  ✅ Done: `ToolRouter::call_tool()` bounds returned text blocks to 25KB and
-  emits an extra content block with truncation metadata; regression coverage
-  verifies the marker on oversized tool output.
+  ✅ Done: individual handlers bound result collections/source and expose
+  structured truncation metadata (`project(files)` defaults to 500 rows).
+  `ToolRouter::call_tool()` returns one complete JSON content block and never
+  byte-slices a serialized response; oversized-response regression coverage
+  parses the result and verifies the truncation fields.
 
 ### 1.4 CLI and database release gates
 
@@ -68,7 +72,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible
   development databases.
 - Keep MCP and trace JSON output stable for scripted/agent use; CLI stdout JSON
-  is not part of the current 1.5.x command surface. ✅ Done: engine trace
+  is not part of the current 1.6.x command surface. ✅ Done: engine trace
   envelope tests lock the serialized V1 fields, MCP schema validation freezes
   tool argument shapes, and `handler_regression` covers the `trace` tool through
   `ToolRouter::call_tool()` including `query_id`/`analysis` and retired-field
@@ -77,11 +81,12 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   includes the 2026-07-08 release-mode Atlas self-index smoke baseline on a
   clean `git archive HEAD` checkout, plus historical large-project baselines.
 
-### 1.5 Release smoke tests
+### Release smoke tests
 
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo build --release -p atlas-cli --features mcp
 ```
@@ -101,6 +106,64 @@ check/tests, and the release MCP binary build completed with exit code 0;
 Atlas checkout. Local verification was macOS arm64; Linux and Windows coverage
 remains the responsibility of the gated release matrix.
 
+✅ Done for 1.6.0: verified on 2026-07-22. Formatting, all-feature workspace
+check/tests, workspace-wide all-target/all-feature `-D warnings` Clippy, and the
+release MCP binary build completed with exit code 0;
+`target/release/atlas --version` reports 1.6.0. `atlas doctor` correctly rejects
+the checkout's ignored pre-CFG-v3 database (found v2, expected v3) and prints
+the documented rebuild guidance; the local index was deliberately not destroyed
+or silently migrated. Local verification was macOS arm64; Linux and Windows
+coverage remains the responsibility of the gated release matrix.
+
+Path-level verification record:
+
+- Impacted paths: full/dataflow CFG extraction, CFG SQLite persistence,
+  C# capability text, and the shared Focus/Index readers of persisted CFG facts.
+  The real `Listener.ReceiveCallback` fixture starts from source, runs the full
+  extraction pipeline, reads SQLite, and verifies exact deterministic `Goto`
+  identity plus unreachable lexical fall-through.
+- Public surfaces: all CLI/MCP/TUI/shared-pipeline tests passed; MCP V1 names,
+  schemas, trace envelopes, capability level, and confidence remain unchanged.
+- Intentionally unaffected: symbol/reference/dataflow IR and Schema V3 DDL did
+  not change in the final C# increment. The version bump updates all 16
+  workspace package lock entries and Atlas skill metadata.
+- Adversarial boundaries: `goto case/default`, unresolved targets, and any C#
+  function containing `finally`/`using` cleanup remain abrupt without a guessed
+  label edge; positive forward/backward, comment-separated label, finally,
+  using, and real-project cases are covered.
+- Observed failures were the expected red tests before implementation and the
+  stale ignored v2 development DB reported by doctor. No release-gate test
+  remains failing. Cleanup-crossing C# goto, computed/PHP goto, and platform
+  matrix execution outside macOS arm64 remain residual risks.
+
+Pre-release TUI/MCP/Focus alignment review:
+
+- Query cache authority is `PipelineGrade` + whole-repository finalized scope
+  + fresh complete per-file coverage for the requested `QueryNeed`; display
+  `catalog_tier` neither revokes manifest authority after partial Focus
+  enrichment nor grants stronger authority. CallGraph/dataflow additionally
+  require current canonical resolution fingerprints for reference-bearing
+  files, so a source-changing Focus rebuild also revokes affected importers and
+  cannot retain stale RepoCanonical provenance, while unrelated reference-free
+  files do not force unnecessary Focus.
+- `file_dependencies(manifest)` is a pure current-facts read;
+  `analysis=structural` consistently requires CallGraph in contract and
+  handler preparation. Failed Focus work remains failed in both the original
+  query gate and `tasks`.
+- TUI forms preserve handler-specific defaults and expose request-scoped
+  `include_roots`; partial/scoped catalogs open symbol context through the
+  shared focus-aware handler, while native graph views require finalized
+  whole-project CallGraph coverage. Palette completion invalidates the native
+  snapshot and refreshes shared Store status.
+- MCP schemas and handlers share explicit hard bounds; oversized numeric
+  arguments are clamped at the handler boundary, list/context responses expose
+  returned/truncated metadata, and multi-hop calls bound the traversal frontier
+  itself rather than only truncating the serialized vector. TUI list forms use
+  the same optional limit arguments.
+- Tier-0 inventory writes accept one typed `DiscoveredFile` record instead of
+  seven positional discovery fields; the later content fingerprint phase
+  remains a separate boundary.
+
 ### 1.6 Completed baseline release gates
 
 The original baseline implementation blockers are closed and covered by the release test matrix:
@@ -111,6 +174,8 @@ The original baseline implementation blockers are closed and covered by the rele
 - ✅ Every language has an explicit top-level-only Manifest path.
 - ✅ CLI rejects unknown `--analysis` values.
 - ✅ Lazy-triggering MCP tools use the shared public analysis view, including no-result trace and CFG-consuming paths.
+- ✅ Mixed Index + Focus catalogs preserve lower-layer authority per QueryNeed without promoting stronger queries.
+- ✅ MCP responses remain valid single-document JSON; bounding occurs inside tool result structures.
 
 ## 2. Completed work
 
@@ -118,7 +183,7 @@ The original baseline implementation blockers are closed and covered by the rele
 
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
-> **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) exposes limited function/method CFG for all 14 languages. PHP branch/loop/switch/elseif, wrapped throw, return terminals, persisted E2E, golden, and the repository PHP syntax example are verified at WithLimitations(0.60). Switch sibling paths preserve C/C++/JS/TS/ArkTS/PHP and Java-colon implicit fall-through plus Go's explicit `fallthrough`; Go `select` additionally preserves communication/default siblings and blocking no-default semantics，真实 `gin.Context.Stream` 覆盖 SQLite persistence。`Break`/`Continue` edges resolve nested control paths, including PHP numeric nesting and Java、JS/TS/ArkTS、Go、Rust、Kotlin grammar-visible lexical labels；标签 target 可跨 finally/managed cleanup 后再由目标 loop/block 消费，真实 `ESLZ4Compressor.compress64k/compress` 覆盖 labeled break/continue 的 SQLite persistence。C/C++/Go direct same-function goto/label 使用专用 `Goto` edge，真实 Redis `hdr_percentiles_print` 覆盖 extraction→SQLite persistence；未知/非直接目标终止本地 best-effort 路径。Go defer 在 64-clone 预算内按 CFG×runtime-stack 展开，条件注册不会串线，normal return 通过专用 `Defer` edge 和 owner-matched `BlockExit` 执行 LIFO cleanup；真实 Gin `Engine.RunUnix` 覆盖 early/final return 的不同持久化 defer stack。Rust `?` 保留 success continuation 与 residual return-to-Exit，并在 closure/async boundary 停止；Rust `let-else` 将 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative 分离，真实 `Controller::print_file_ranges` 与 `EscapeSequenceOffsetsIterator::next_osc` 覆盖 SQLite persistence。C++ lowers try/catch and explicit throw through `Exception` edges；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated finally/ensure clones 表达 normal、return、throw、break 与 continue continuation。Java/C#/PHP direct object-created explicit throw 按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；真实 Elasticsearch `RestActions.getQueryContent` 覆盖 extraction→SQLite 边界。Java try-with-resources、C# using、Python with、Kotlin use 与 Ruby block resource 使用持久化 owner 匹配 normal/abrupt completion 的隔离 BlockExit，并确定性地按 LIFO 生成 cleanup；cleanup 自身抛出的异常会保留有序 `Throw` continuation，经过外层资源退出与 finally/ensure 后进入词法 handler。注释 AST extras 不生成可执行 Statement。单个路径隔离区域超过 64 个 clone 时原子回退为 Statement。All return/throw terminals connect to the unique function Exit. Go cyclic/over-budget defer、panic/recover/Goexit 与复杂 anonymous deferred body、Rust macro shadowing/re-export、custom never-return macro 与 panic unwind/catch_unwind、ArkUI trailing blocks and nested arrow callbacks、Ruby `retry/redo`、cleanup exception suppression/replacement 与精确 identity、computed/PHP/C# goto、C++ cross-scope destruction、grammar-hidden labels、继承/alias/变量/guard handler selection 和 implicit exceptions remain explicit boundaries.
+> **CFG status (updated 2026-07)**: CFG builder (`cfg_builder.rs`) exposes limited function/method CFG for all 14 languages. PHP branch/loop/switch/elseif, wrapped throw, return terminals, persisted E2E, golden, and the repository PHP syntax example are verified at WithLimitations(0.60). Switch sibling paths preserve C/C++/JS/TS/ArkTS/PHP and Java-colon implicit fall-through plus Go's explicit `fallthrough`; Go `select` additionally preserves communication/default siblings and blocking no-default semantics，真实 `gin.Context.Stream` 覆盖 SQLite persistence。`Break`/`Continue` edges resolve nested control paths, including PHP numeric nesting and Java、JS/TS/ArkTS、Go、Rust、Kotlin grammar-visible lexical labels；标签 target 可跨 finally/managed cleanup 后再由目标 loop/block 消费，真实 `ESLZ4Compressor.compress64k/compress` 覆盖 labeled break/continue 的 SQLite persistence。C/C++/Go direct same-function goto/label 使用专用 `Goto` edge；C# 在函数无 finally/using cleanup ownership 时复用同一语义。真实 Redis `hdr_percentiles_print` 与 Shadowsocks `Listener.ReceiveCallback` 覆盖 extraction→SQLite persistence；未知/非直接目标终止本地 best-effort 路径。Go defer 在 64-clone 预算内按 CFG×runtime-stack 展开，条件注册不会串线，normal return 通过专用 `Defer` edge 和 owner-matched `BlockExit` 执行 LIFO cleanup；真实 Gin `Engine.RunUnix` 覆盖 early/final return 的不同持久化 defer stack。Rust `?` 保留 success continuation 与 residual return-to-Exit，并在 closure/async boundary 停止；Rust `let-else` 将 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative 分离，真实 `Controller::print_file_ranges` 与 `EscapeSequenceOffsetsIterator::next_osc` 覆盖 SQLite persistence。C++ lowers try/catch and explicit throw through `Exception` edges；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated finally/ensure clones 表达 normal、return、throw、break 与 continue continuation。Java/C#/PHP direct object-created explicit throw 按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；真实 Elasticsearch `RestActions.getQueryContent` 覆盖 extraction→SQLite 边界。Java try-with-resources、C# using、Python with、Kotlin use 与 Ruby block resource 使用持久化 owner 匹配 normal/abrupt completion 的隔离 BlockExit，并确定性地按 LIFO 生成 cleanup；cleanup 自身抛出的异常会保留有序 `Throw` continuation，经过外层资源退出与 finally/ensure 后进入词法 handler。注释 AST extras 不生成可执行 Statement，包括 label 与正文之间的 comment extras。单个路径隔离区域超过 64 个 clone 时原子回退为 Statement。All return/throw terminals connect to the unique function Exit. Go cyclic/over-budget defer、panic/recover/Goexit 与复杂 anonymous deferred body、Rust macro shadowing/re-export、custom never-return macro 与 panic unwind/catch_unwind、ArkUI trailing blocks and nested arrow callbacks、Ruby `retry/redo`、cleanup exception suppression/replacement 与精确 identity、computed/PHP goto、C# `goto case/default`/cleanup-crossing goto、C++ cross-scope destruction、grammar-hidden labels、继承/alias/变量/guard handler selection 和 implicit exceptions remain explicit boundaries.
 
 > **ArkTS state-flow status (updated 2026-07)**: `AppStorage.set/setOrCreate` incoming flow is query-time `StateFlow`, with exact `this`-field and literal/expression key-category matching. Full-cache and cold Focus paths are both covered; cold Focus uses `StateChannel` closure discovery plus writer-function dataflow materialization on resume. Reverse `StorageLink`, constant evaluation, timing, and process boundaries remain explicit limitations.
 
@@ -126,11 +191,24 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 
 > **ArkTS advancement triggers (updated 2026-07)**: Re-evaluate the ArkTS analysis boundary when any of the following is met: (1) real queries need to distinguish ArkUI conditional render paths; (2) a sink inside a callback has no explainable path via existing facts; (3) callback registration or callback lifecycle/branch analysis is needed; (4) a stable versioned grammar covering ArkUI declarative syntax exists. Before choosing between ArkTS/ArkUI tree-sitter grammar vs callback IR, build a baseline with real ArkTS corpus; capability must not be raised before implementation.
 
+> **Cross-language advancement rule (updated 2026-07)**: ArkTS is not a special
+> testing exception. For every language, promote a boundary only after a real
+> query demonstrates that the current fact model cannot explain a required path,
+> a stable grammar exposes the construct, and extraction→SQLite→consumer tests
+> prove the new semantics. Before promotion, add negative/boundary fixtures when
+> a limitation could otherwise look like a complete empty result. The next
+> corpus-driven candidates are ArkUI callbacks, C# cleanup-crossing goto,
+> C++ cross-scope destruction, Ruby retry/redo, and guarded/pattern-binding
+> dataflow; none is a pre-1.6.0 capability gate without such a fixture.
+
 ### 2.2 Index scope / manifest + Focus materialize
 
 - **Scope Index** — `--include` / `--scope` / `--exclude`.
 - **Manifest** — `ExtractionMode::Manifest` top-level symbols.
 - **Focus materialize** — on-demand structural/dataflow under `FocusMaterialize`（机制类型可名 `Lazy*`；产品路径 Focus）。
+- **Mixed catalogs** — a finalized whole-repo Index retains authority only for
+  QueryNeeds covered by both its PipelineGrade and every file's fresh facts;
+  partial Focus enrichment neither revokes lower facts nor promotes higher ones.
 
 ### 2.3 Workspace
 
@@ -179,8 +257,10 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   call/type expansion.
 - Type ranges across supported brace-based languages participate in the same stale-cache
   invariant and one-time self-healing path; persisted line intervals cannot be inverted.
-- TUI native search is independent of graph snapshot readiness; first detail loading and
-  stale graph refresh run through the background job system.
+- TUI native search is independent of graph snapshot readiness. Native detail/caller
+  views require finalized whole-project CallGraph coverage; partial catalogs use the
+  shared focus-aware MCP handler. Native snapshot loading and stale refresh run through
+  the background job system.
 
 ## 3. Trace and language capability work
 
@@ -330,7 +410,7 @@ CFG + DataFlow
     - Both branch-diff engines now walk downstream case effects, so `case 1: log(); case 2: free(x); break;` attributes the free to both runtime entry paths. The conservative all-but-one rule remains: effect-less paths are ignored, a finding requires at least three effectful paths, and a resource unique to one case is treated as intentional.
     - Lifecycle branch frames bind to their matching Join ID. A nested `break` can unwind inner conditional and case frames while preserving an outer branch frame; fall-through keeps the active case context until the switch Join.
     - Adversarial grammar tests also closed wrapper/classification gaps outside switch: Ruby `do`/`then` bodies and Kotlin `control_structure_body` are traversed, Ruby `next` resolves as `Continue`, and Kotlin/Cangjie `break` is no longer misclassified as `Return`.
-    - Exact lexical labels now resolve `break`/`continue` for Java、JS/TS/ArkTS、Go、Rust 与 Kotlin, including nested target selection and continuation through finally/managed cleanup. Java labeled blocks and Rust labeled blocks resolve break without emitting a fake statement. C/C++/Go direct same-function goto/label resolves forward and backward jumps through dedicated `Goto` edges; lifecycle clears active branch frames at the target instead of retaining conditions the jump may have invalidated，branch-diff 只枚举 Entry 可达的 Branch，避免为查找后置 label 而保留的 disconnected syntax 产生假告警。Real Elasticsearch `ESLZ4Compressor.compress64k/compress` covers labeled break/continue, and Redis `hdr_percentiles_print` covers cleanup goto through SQLite persistence. Computed/PHP/C# goto, C# `goto case/default`, C++ cross-scope destruction, unknown labels, and labels hidden by the selected grammar remain deferred; unresolved transfers terminate the local best-effort path rather than being connected to a guessed target.
+    - Exact lexical labels now resolve `break`/`continue` for Java、JS/TS/ArkTS、Go、Rust 与 Kotlin, including nested target selection and continuation through finally/managed cleanup. Java labeled blocks and Rust labeled blocks resolve break without emitting a fake statement. C/C++/Go direct same-function goto/label resolves forward and backward jumps through dedicated `Goto` edges；C# 在函数不含 finally/using cleanup ownership 时复用同一语义。Lifecycle clears active branch frames at the target instead of retaining conditions the jump may have invalidated，branch-diff 只枚举 Entry 可达的 Branch，避免为查找后置 label 而保留的 disconnected syntax 产生假告警。Real Elasticsearch `ESLZ4Compressor.compress64k/compress` covers labeled break/continue, Redis `hdr_percentiles_print` covers cleanup goto, and Shadowsocks `Listener.ReceiveCallback` covers a comment-separated C# label through SQLite persistence. Computed/PHP goto、C# `goto case/default`、cleanup-crossing goto、C++ cross-scope destruction, unknown labels, and labels hidden by the selected grammar remain deferred; unresolved transfers terminate the local best-effort path rather than being connected to a guessed target.
     - Rust `?` now adds a residual return-to-Exit continuation without removing the containing statement/control header's success path. Nested closure、async block 与 nested function stop recursive detection, and explicit `return foo()?` still emits one Exit edge. Real `examples/rust_example/src/line_range.rs::parse_range` covers extraction→SQLite persistence.
     - Rust `let-else` now evaluates its value on a `Branch`, routes the successful pattern path to a Join, and walks the alternative so explicit return/break/continue, an unconditional `loop`, or unqualified builtin `panic!`/`unreachable!`/`todo!`/`unimplemented!` remains abrupt. A `?` in the value adds an independent residual return path. Real `examples/rust_example/src/controller.rs::Controller::print_file_ranges` verifies that the alternative `break` cannot reach the following declaration, and `EscapeSequenceOffsetsIterator::next_osc` verifies a persisted panic match arm. Macro shadowing/re-exports, custom never-return macros, panic unwinding, and `catch_unwind` remain conservative.
     - Ruby 2.7+ `case ... in` (`case_match`/`in_clause`) remains deferred. Classic Ruby `case`/`when`, Python, Rust, Kotlin, and Cangjie sibling paths are wired. Python recognizes syntax-irrefutable unguarded wildcard/capture/`as`/group/OR patterns; Rust/Cangjie recognize only direct unguarded wildcards. Remaining binding/range/structural/type-driven exhaustiveness and guard/binding dataflow stay outside CFG/dataflow.
@@ -338,7 +418,7 @@ CFG + DataFlow
   - **Finally continuations — Phase 2 implemented:** JavaScript/TypeScript/ArkTS, Java, C#, PHP, Python, Kotlin, Cangjie, and Ruby clone the finally/ensure AST once per incoming normal, caught-exception, return, throw, break, or continue continuation. Ruby handles both method-body implicit begin and nested begin. Clones retain exact source ranges and receive deterministic lowering-instance node IDs, so persistence keeps every path while consumers can still join facts by source range. Abrupt completion inside finally/ensure overrides the incoming continuation; nested throws resume an enclosing catch only after the inner finally/ensure completes. Lifecycle matches Branch/Join pairs through graph-local edges rather than globally ambiguous source ranges.
   - **Managed-resource continuations — Phase 2 implemented:** Java try-with-resources、C# using、Python with、Kotlin use 与 Ruby block resources 将 normal、return、throw、break、continue 分别路由到独立 BlockExit。资源获取节点与所有出口共享持久化 lexical owner，consumer 只在 owner 相同的出口生成 `ContextManaged` Free，因此 nested/sibling scope 不串线；多个资源按 CFG source range 与 effect order 的逆序生成确定性 LIFO cleanup。每个非 Throw completion 同时保留 cleanup 自身抛错的有序 `Throw` continuation，nested resources 先经过外层 BlockExit，再进入词法 handler/finally/ensure；catch body 内的 cleanup 异常不会回入同一个 handler。Ruby block-level `break/next` 的成功出口在 cleanup 后汇合为 yielding call 的普通后继，不误交给外层 loop。Java try-with-resources 继续复用 try continuation lowering，显式 throw 与 return-path cleanup throw 均在 managed exit 后进入 catch，normal/abrupt managed exit 再进入各自的 finally clone；真实 Java `Jar.extractToTmp`、C# nested using 与持久化 Python/Ruby fixture 已验证。
   - **Bounded degradation:** one try/finally or managed-resource region may create at most 64 path-isolated clones. Over-budget input rolls back all nodes, edges, terminal queues, control-transfer queues, call context, and managed ownership emitted for that region, then persists one opaque Statement. This prevents adversarial CFG multiplication without publishing a partial graph.
-  - Remaining boundaries: resolved inheritance/alias catch selection and ambiguous thrown values, implicit exceptions from ordinary statements, Ruby `retry/redo`, cleanup exception suppression/replacement and exact exception identity, computed/PHP/C# goto, C++ cross-scope destruction and grammar-hidden labels, exception-handler sibling effect comparison, and full multi-path lifecycle proof conditions.
+  - Remaining boundaries: resolved inheritance/alias catch selection and ambiguous thrown values, implicit exceptions from ordinary statements, Ruby `retry/redo`, cleanup exception suppression/replacement and exact exception identity, computed/PHP goto, C# `goto case/default` and cleanup-crossing goto, C++ cross-scope destruction and grammar-hidden labels, exception-handler sibling effect comparison, and full multi-path lifecycle proof conditions.
 
 - **Go exit semantics — bounded normal-exit phase implemented:** `go` and `defer` call contexts are persisted. The CFG forms a bounded product with the runtime defer stack: the same lexical continuation reached with different registrations receives distinct deterministic node identities, and every normal function exit executes owner-matched `BlockExit` nodes in LIFO order through persisted `Defer` edges. Deferred resource consumption moves from the registration node to the matching execution node; resource-consuming nested call arguments remain immediate because Go evaluates function values and arguments at registration. Real Gin `Engine.RunUnix` verifies that its `net.Listen` error return executes only the leading defer while the final return executes `os.Remove → listener.Close → debug` through SQLite persistence. A stack that can grow through a loop, or expansion beyond 64 clones, falls back atomically to the annotated base CFG. Panic/recover/Goexit unwinding, deferred-call panic replacement, and complete effect ordering inside complex anonymous deferred bodies remain explicit boundaries.
 
@@ -409,7 +489,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 全部默认语言的 `LanguageCapabilityProfile` 经 `ProfileSpec` + `build_profile()` 声明构造。  
 身份与一致性由 `test_<lang>_profile_identity` 及四项全局 profile 测试约束。
 
-特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65，C/C++/Go CFG 覆盖 direct same-function `Goto`；C++ `include_resolution`；PHP `cfg` WithLimitations(0.60)，覆盖 branch/loop/switch/elseif、fall-through、numeric break/continue 与 terminal→Exit；ArkTS `cfg` WithLimitations(0.55)、其余 TS-fallback dataflow 能力 WithLimitations(0.60)；Cangjie `scope_aware_binding` Unsupported，CFG 覆盖 branch/loop/`match` sibling paths。当前 `FeatureOverride` 只保留有实际使用的 `WithLimitations` 变体。
+特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65，C/C++/Go CFG 覆盖 direct same-function `Goto`，C# 在无 finally/using cleanup ownership 时覆盖同类跳转；C++ `include_resolution`；PHP `cfg` WithLimitations(0.60)，覆盖 branch/loop/switch/elseif、fall-through、numeric break/continue 与 terminal→Exit；ArkTS `cfg` WithLimitations(0.55)、其余 TS-fallback dataflow 能力 WithLimitations(0.60)；Cangjie `scope_aware_binding` Unsupported，CFG 覆盖 branch/loop/`match` sibling paths。当前 `FeatureOverride` 只保留有实际使用的 `WithLimitations` 变体。
 
 **`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
 

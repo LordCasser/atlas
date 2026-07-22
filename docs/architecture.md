@@ -3,14 +3,14 @@
 本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
 版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前基线：Atlas `1.5.5`、SQLite Schema V3、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前基线：Atlas `1.6.0`、SQLite Schema V3、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
 1. Atlas 是 CodeGraph-inspired，不是 CodeGraph-compatible。
 2. Rust 实现使用 trait、newtype ID、enum、immutable facts、batch write、read snapshot 和 Rayon。
 3. SQLite 是持久化源（`.atlas/atlas.db`）；内存图只作为查询加速和分析工作集。
-4. MCP 是一等入口；CLI、MCP、context 输出都必须可限制大小。
+4. MCP 是一等入口；CLI、MCP、context 输出都必须可限制大小。MCP handler 负责集合/源码边界并显式报告截断；router 不得按字节切断已序列化 JSON。
 5. 所有启发式语义结果必须可解释，不能把低置信度结果伪装成精确结果。
 6. 分析等级相关改动必须验证完整入口矩阵：CLI / shared filesync / sync（Index）、Focus materialize ensure、高层 Engine、raw analysis consumer。任何模式或 capability/status 变化都不能只验证单一路径。
 7. **终态必然可达**：每次工具调用必须收敛到终态；不存在永久 `building` / `wait` 状态。MCP 响应的 `analysis.retry_after_ms` 必须最终变为 null。
@@ -51,7 +51,7 @@
 **MCP 公共词汇（冻结）**：`capability`（语言+feature）、`analysis.*`、`gaps`、`coverage_counts`、`note`、`query_id`、trace 内层 `partial_result`。  
 **禁止**进入公共 JSON：`AnswerQuality`、`AccessStrategy` 原始枚举名、`PipelineGrade`、`EdgeProvenance`、`FactCoverage` 原始字段。
 
-**状态字段**：`project(status)` 使用 JSON 键 **`catalog_tier`**（`read_catalog_tier()` 派生字符串，L1）；不是 `AccessStrategy`。
+**状态字段**：`project(status)` 使用 JSON 键 **`catalog_tier`**（`read_catalog_tier()` 派生字符串，L1）；CLI status 和 TUI 状态栏读取同一 Store 边界。CatalogTier 是混合库的展示摘要，不是某个 `QueryNeed` 的仓库级充分性证明，也不是 `AccessStrategy`。
 
 ## 2. 模块边界与依赖方向
 
@@ -86,17 +86,17 @@ crates/
 | **Index** | **简单、通用**的预物化：scope/全仓按 `ExtractionMode` 写入 SQLite 并 finalize | `filesync::IndexPipeline` / `atlas index`；**不**依赖 Focus 控制面 |
 | **Focus** | **查询时唯一复杂路径**：意图驱动热点与闭包，**局部优先**物化，使闭包内体验≈该邻域已被 Index | `FocusRuntime` + 内部 materialize；MCP open-first 默认 |
 
-**AccessStrategy（L3）：** `FullCache`（全仓 Index 已 finalize，且完整 catalog 满足本次 `QueryNeed`）| `Focus`（否则查询时局部加强）。判定必须同时满足三项：最后一次成功 Index 的 `PipelineGrade` 足够、include/exclude 都为空（真正整仓）、当前 fresh `catalog_tier` 仍足够。Focus 后续补写只能改善当前 facts，不能提升那次手动 Index 的仓库级权威等级。
+**AccessStrategy（L3）：** `FullCache`（全仓 Index 已 finalize，且当前 facts 满足本次 `QueryNeed`）| `Focus`（否则查询时局部加强）。判定必须同时满足三项：最后一次成功 Index 的 `PipelineGrade` 足够、include/exclude 都为空（真正整仓）、Store 中**每个当前文件**都有 fresh complete 的对应 fact layer（高层可满足低层）。CallGraph/Dataflow 还要求每个含 reference 的文件都有与当前文件 hash 一致的 canonical resolution fingerprint；无 reference 文件不需要解析证明。`catalog_tier` 只用于展示，不能替代这些证明。Focus 后续补写只能改善当前 facts，不能提升那次手动 Index 的仓库级权威等级。
 
 | 手动 Index | Manifest 查询 | Structural / CallGraph 查询 | Dataflow 查询 |
 |------------|---------------|------------------------------|---------------|
 | 整仓 `manifest` | `FullCache` | `Focus`，复用 manifest 后扩热点 | `Focus`，复用 manifest 后扩热点 |
 | 整仓 `structural` | `FullCache` | `FullCache` | `Focus`，以 structural 为底座补 dataflow |
-| 整仓 `full` | `FullCache` | `FullCache` | `FullCache`（仅当前 catalog 仍为 full） |
+| 整仓 `full` | `FullCache` | `FullCache` | `FullCache`（仅每个当前文件仍有 fresh complete dataflow） |
 | 任一模式带 include 或 exclude | `Focus` | `Focus` | `Focus` |
 | 未成功 finalize | `Focus` | `Focus` | `Focus` |
 
-scope Index、manifest→局部或全量 Focus structural 的混合 catalog、以及 structural Index 上的 dataflow 查询都继续走 Focus；已有 fresh complete facts 作为 cache 命中、候选种子和闭包扩展起点，不重复抽取。`EdgeProvenance::RepoCanonical` 使用同一仓库级 CallGraph 资格判定，不能仅凭当前存在 structural rows 推断。
+scope Index 与未成功 finalize 的 catalog 对所有 QueryNeed 都走 Focus。混合 catalog 按 QueryNeed 分别判断：整仓 manifest Index 被少量 Focus structural 富化后，Manifest 查询仍为 FullCache；Structural/CallGraph/Dataflow 仍走 Focus。整仓 structural Index 被少量 Focus dataflow 富化后，只要 canonical resolution 指纹未变，Structural/CallGraph 仍为 FullCache，Dataflow 仍走 Focus；若 Focus 因源码变化重建 structural，Structural facts 仍可完整，但变化文件以及引用其旧 symbols 的文件会失效 canonical resolution 指纹，CallGraph 必须回到 Focus。已有 fresh complete facts 作为 cache 命中、候选种子和闭包扩展起点，不重复抽取。`EdgeProvenance::RepoCanonical` 使用同一仓库级 CallGraph 资格判定，不能仅凭当前存在 structural rows 推断。
 
 **产品路径 vs 机制类型**
 
@@ -661,7 +661,7 @@ LanguageCapabilityProfile
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG；lifecycle goto 清除不可证明的 branch context；cross-scope destruction、模板/重载/ADL、catch-type selection、implicit exception 不建模 |
 | ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback 仍是显式边界 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
-| C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
+| C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；无 finally/using cleanup ownership 的 direct same-function `Goto`；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
 | Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` arm 抑制 synthetic no-match；macro resolution/unwind 与 guarded/复杂 pattern 保守；Drop 仅为 function-exit effect heuristic，不是 path-sensitive lexical RAII |
 | PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
 | Ruby | DataflowInterproc | ✓ (classic `case`/`when` + `rescue/else/ensure` + block resource) | 0.65 | ✓ (ArgToParam + ReturnToCall) | method-body/nested ensure isolated continuation CFG；resource-block `break/next` 清理后恢复 yielding call 后继；`retry/redo`、`case ... in` 未建模；yield 仍为 best-effort |
@@ -711,6 +711,12 @@ unqualified builtin `panic!`/`unreachable!`/`todo!`/`unimplemented!` 保持 abru
 `catch_unwind` 或 macro shadowing/re-export resolution。注释类 AST extra 在 statement dispatch 前
 过滤，不能成为可执行 CFG entity。
 
+Direct goto 继续复用 pending target 与持久化 `Goto` edge，不增加 label IR。C/C++/Go
+解析 grammar-visible 的同函数标签；C# 仅在整个函数不含 `finally_clause` 或
+`using_statement` 时启用解析，避免在没有 cleanup-region ownership 的情况下直连绕过清理。
+`goto case/default` 与 cleanup-crossing goto 只作为本地 abrupt terminal，不猜测目标。标签与
+正文之间的 comment extra 在选择 executable entry 时会被跳过。
+
 符号源码范围是抽取事实，不由展示层猜测。函数/方法使用 enclosing callable
 scope；C/C++ 的 class/struct/interface/enum 使用完整 defining scope（包括成员和闭合
 delimiter），不能把 manifest 的声明起始行冒充完整定义。TUI、MCP `explore` 和
@@ -723,8 +729,8 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 可靠判定的抽取语义变化，才应提升 schema/extractor revision 并要求重索引。
 
 已知限制：
-- CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed/PHP/C# goto、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
-- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue 与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go 的 direct same-function goto/label 解析为专用 `Goto` edge，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确类型匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby `retry/redo`、computed/PHP/C# goto、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
+- CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed/PHP goto、C# `goto case/default`/cleanup-crossing goto、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
+- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue 与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 仅在函数没有 finally/using cleanup ownership 时复用该语义，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确类型匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby `retry/redo`、computed/PHP goto、C# `goto case/default`/cleanup-crossing goto、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
 - 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
   `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 
@@ -964,7 +970,7 @@ handler 的临时 body 丢弃，只发布上述票据。后台 closure/dataflow 
 | 不变量 | 不依赖 Focus 控制面 | 共用 extract/post-extract；单一 materialize 配置；邻域 facts 切片可对拍 |
 
 - **控制面** `FocusRuntime`：构建范围、顺序、closure 可见性、analysis/retry/gaps。Handler 只产 `QueryIntent`。
-- **预索引续算**：Index facts 是 Focus 的持久底座，不是互斥模式。只有 finalized、记录的 `PipelineGrade` 满足查询、`indexed_scope.include/exclude` 均为空且当前 catalog 完整满足 `QueryNeed` 时才短路为 `FullCache`；scope Index、partial catalog、manifest→Focus enrichment 与 structural→dataflow 升级必须进入 Focus，从 fresh complete 文件继续闭包与热点扩展。
+- **预索引续算**：Index facts 是 Focus 的持久底座，不是互斥模式。只有 finalized、记录的 `PipelineGrade` 满足查询、`indexed_scope.include/exclude` 均为空，且每个当前文件都有满足该 `QueryNeed` 的 fresh complete fact layer 时才短路为 `FullCache`；CallGraph/Dataflow 另需每个含 reference 文件的 current canonical resolution fingerprint（无 reference 文件无需该证明），`catalog_tier` 只做展示。scope Index、未 finalize 或缺本次所需 facts 的 catalog 进入 Focus，从 fresh complete 文件继续闭包与热点扩展。较强 Focus 富化不会撤销较低 QueryNeed 已有的整仓 Index 权威：manifest Index + 部分 structural Focus 仍可 FullCache 读取 manifest，但 CallGraph 继续 Focus；源码变化触发的 Focus structural rebuild 会撤销旧 CallGraph canonical 权威，而不撤销 fresh Structural facts。
 - **符号解析（短名 / 限定名）**：plain string 先 exact `qualified_name`，未命中再按 **simple name**（路径最后一段，分隔符 `.` / `:` / `\`）查 `symbols.name`。多命中返回 `Ambiguous`，候选带完整 `qualified_name` 与 `symbol_ref`（含 file/line），引导客户端下次用精确 qname 消歧；`calls` Aggregate 策略可对多 id 并集 callers/callees。C++/PHP 限定调用抽取只 capture 末段 name（如 `CertUtils::GetDev` → ref.name=`GetDev`，`text`=全文，`receiver`=前缀），以便 resolution 建 `Calls` 边（改 query 后需 re-index）。嵌套 `A::B::C` 的 `text`/`receiver` 取最外层 `qualified_identifier` 跨度。
 - **MCP orchestration**：`contract_for(name, args)` 决定 `ToolContract`；`call_tool` 按 contract 走 `dispatch_*` 再进 handler。**Analysis 工具**（`lifecycle` / `branch_diff` / `impact(semantic=true)`）的编排所有权在 `AnalysisRuntime`（见下），不是 handler 内联 service。
 - **Handler 纯度（DEBT-8，ratchet 完成）**：`handler_purity` 源码扫描双层守卫——(1) 禁止 engine 直点名（`FieldLifecycleEngine::` / `BranchDiffEngine::` 等）；(2) 禁止 analysis tool handler 内 orchestration 模式（`find_cfg_*` / `find_data_nodes_*` / `compose_effects(` / `CfgGraph::build` / `CppOwnershipRules::load_for` / runtime helper 拼装等）。allowlist **只缩不涨**；残量条目必须仍有真实 FORBIDDEN 命中。god-router 已不再直接 `focus_runtime.lock()`（统一走 `QueryRuntime` 委托：`enqueue_file_focus_warm` / `focus_materialize_*`），annotation 测试 seed 走 `overlay_runtime`。**唯一残量**：`active_project.rs` 的 `FocusMaterialize::open`--这是 project-open **工厂**（构造期一次焊死 materialize，非 per-request 编排），factory != handler orchestration，记为合法例外。残量上限 `assert!(allowlist.len() <= 1)`。`graph.rs` 只选择 impact 子图目标并调用 `AnalysisRuntime::run_semantic_impact`。
@@ -973,7 +979,7 @@ handler 的临时 body 丢弃，只发布上述票据。后台 closure/dataflow 
 - **`AnalysisRuntime`（真 dispatcher，非改名 facade）**：共享 materialize 上的 ensure **与** 全链路 analysis 编排——能力门控（lifecycle 仅 C/C++）、dataflow ensure/I/O、`compose_effects`、ownership rules 加载、`FieldLifecycleEngine` / `BranchDiffEngine` 调用。公开入口仅为完整用例：`run_lifecycle` / `run_branch_diff` / `run_semantic_impact`；store/composition/engine helper 为 runtime 私有。C/C++ 持久化 `alloc_fn` / `free_fn` / `cleanup_fn` 合并进该语言既有 `ResourceOpConfig` 后参与同一次 `compose_effects`，不得替换并丢失默认 matcher/implicit-cleanup；其他语言使用各自默认 config。handler 只做参数/符号/图目标准备与 envelope 渲染。不是第二 materialize 配置。
 - `FocusRuntime` 是 MCP 查询时唯一控制入口。
 - `SemanticFunction` intent：只保证目标函数文件的 structural/dataflow/CFG，不排 call/type expansion。
-- Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 full-index / shared pipeline 更新。
+- Focus resolution 写 closure-scoped `reference_resolutions` 与 scoped graph overlay；全局 `references.resolved_*` 与 repo-wide `symbol_edges` 仅由 finalized whole-repository Index / shared pipeline 更新。
 - 查询可见性由 Store 统一：canonical `references.resolved_*` 优先；canonical target 为空时读取该 reference 最新的 visible closure resolution。usages/call evidence 等消费者不得直接假设只有其中一张表。
 - 内部质量用 `AnswerQuality`；不进 public MCP contract。
 - Closure expansion：策略顺序去重；import/include 可见性查询先依赖后 call graph；超预算按容量截断并 `budget_exhausted` gap，不得整批拒绝成 seed-only。
@@ -981,6 +987,7 @@ handler 的临时 body 丢弃，只发布上述票据。后台 closure/dataflow 
 - `closure_coverage` / `reference_resolutions` / `symbol_edge_candidates` 为临时 control-plane facts；新 session 清表；同 session 成功物化后只保留最近 16 个 committed closure。
 - 已有 inventory 或源码事实时 bootstrap 只标 ready，不全仓后台扫；resolver fallback 用 `symbols.name`，不建 project-wide `GlobalSymbolIndex`。
 - `JobTracker` 记录 closure 终态与耗时；失败必退出 pending 并映射 `background_refinement_failed` gap。经 `FocusResult.job_tracker` 交给 MCP 判 retry/终态。
+- `tasks(query_id)` 必须观察同一 JobTracker/raw extraction 终态：任一必需工作失败时返回 `status=failed`、`pending_jobs=0` 和原因，不得把 `pending==0` 误报为 ready，也不得附 retry timer。
 - Explore 的 file context 只表达当前文件的 lexical imports，不把 incoming dependents 混入 imports；exports 从现有 `SymbolDef.exported`、本地 export facts 与 `export ... from` facts 聚合，不得用“未实现”的空数组冒充确定为空。
 - `EnsureStructuralResult` 只把实际 built/cached 文件计入 closure。抽取失败记录
   `extraction_failed` gap；取消或预算截断记录 budget gap；`AlreadyBuilding`
@@ -1049,13 +1056,13 @@ discover files
 
 TUI 继续使用 Ratatui；当前问题域不需要第二套终端框架。其边界分为两类：
 
-- 高频交互由 TUI 原生状态机承担：symbol search、详情 tabs、caller trace、选择和滚动。
+- 高频交互由 TUI 原生状态机承担：symbol search、选择和滚动；只有 finalized whole-project CallGraph 足够时，详情 tabs 与 caller trace 才走原生 Store/Graph 快照。scoped/manifest/partial catalog 打开结果时改走共享 `symbol(view="context")` handler，使 Focus pending 与 gaps 可见，避免原生空 caller/callee 被误读为完整结果。
 - 低频分析通过 `:` command palette 进入既有 `atlas_mcp::tools::ToolRouter`：
   `symbol`、`calls`、`explore`、`impact`、`path`、`trace`、
   `file_dependencies`、`lifecycle`、`branch_diff`、`domain_rules`、
   `fp_dispatches`、`tasks`、`resume_query`。当前选择的 qualified name / file path 由入口层注入；
-  其余参数通过 typed field form 填写。枚举和布尔参数循环选择，数值和文本参数在提交前校验。
-  `trace kind`、`domain_rules action`、`fp_dispatches action` 等 discriminator 同时驱动字段可见性、
+  其余参数通过 typed field form 填写。枚举和布尔参数循环选择，数值和文本参数在提交前校验；`include_roots` 以逗号分隔文本编辑并转换为 MCP string array。表单对 handler 自带的参数默认值保持省略，不能用 UI 常量覆盖按 variant 决定的默认值。
+  `calls direction`、`trace kind`、`domain_rules action`、`fp_dispatches action` 等 discriminator 同时驱动字段可见性、
   动态必填、键盘导航和最终参数生成；四者不得各自维护分支规则。TUI 不要求用户手写 MCP JSON。
 
 TUI 的后台工作在既有单 worker `JobManager` 中执行；`JobManager` 持有一个
@@ -1068,6 +1075,8 @@ session-persistent `ToolRouter`，使 `query_id`、`tasks` 和 `resume_query` �
 - 首次打开 graph-backed detail 时提交 `LoadGraph` job。worker 从 Store 构建不可变
   `GraphEngine`，主线程只安装 snapshot 并创建轻量 `ContextBuilder`。lazy 写入只标记
   snapshot stale；下一次 detail 复用相同后台 reload 路径。
+- 每次共享 ToolRouter 调用完成后，TUI 都把独立的 native `GraphSession` 标记 stale，并从
+  `Store::get_stats` / `read_catalog_tier` 刷新状态栏；handler 是否实际写入由共享边界吸收，入口不重复推断。
 - `GraphSession` 不保留同步 lazy-init/refresh 入口，避免以后再次把大型 snapshot 构建
   放回按键处理路径。
 - 新 job 替换旧 worker 时只设置 cooperative cancel 并 detach 原 `JoinHandle`，不得在
@@ -1140,6 +1149,9 @@ analysis response
 成功后调用 `mark_done(closure_id)`，失败后调用 `mark_failed(closure_id, reason)`；
 `FocusRuntime::prepare()` 在前台闭包完成后立即标记终态，前台闭包 ID 不进入
 `pending_closure_ids`。两种后台终态都保留已物化文件供 graph refresh 使用。
+失败是第四种无结果终态：原 tool gate 与 `tasks(query_id)` 必须同时报告
+`status=failed`；`tasks` 此时返回 `pending_jobs=0`、失败 `detail`，且不含
+`retry_after_ms`。
 
 ### 10.5 架构收敛约束
 
@@ -1254,7 +1266,7 @@ Progress token 只影响观测通道，不改变终态策略：
 | Project | `project(action="open\|status\|files")` |
 | Symbol | `search`, `symbol(view="detail\|context\|usages")` — 主参数 `symbol` |
 | Graph / Impact | `calls(direction="incoming\|outgoing\|both", edge_kinds=[...])`, `explore`, `path`, `impact` |
-| File Graph | `file_dependencies(file_path, direction="incoming\|outgoing\|both")` |
+| File Graph | `file_dependencies(file_path, direction="incoming\|outgoing\|both", analysis="manifest\|structural")` |
 | Source Trace | `trace(kind="point\|variable\|forward\|callers")` |
 | Semantic Analysis | `lifecycle`, `branch_diff` |
 | Annotations / Rules | `fp_dispatches(action="add\|list\|delete")`, `domain_rules(action="add\|list\|delete\|learn")` |
@@ -1268,8 +1280,14 @@ Progress token 只影响观测通道，不改变终态策略：
 - MCP 查询路径不探测或同步整个工作树。磁盘文件与持久化索引的全项目同步由显式 CLI `atlas sync`/`atlas index` 负责；查询触发的 lazy extraction 只更新当前 scope/closure，并通过 `tasks`、`query_id` 和 analysis envelope 暴露状态。
 - 显式全项目索引只通过 CLI `atlas index` 执行。
 - `search` 的 `scope` 永远强制参数；scope 同时是结果边界和 focus seed，即使存在满足 Structural 查询的整仓缓存也不省略。
+- `file_dependencies(analysis="manifest")` 只读取当前 DB 中的 import/include/edge facts，不启动 Focus；覆盖不足时以终态 `manifest_catalog_incomplete` gap 表达，不返回 retry。`analysis="structural"` 的 ToolContract 与 handler 都要求 CallGraph，并对文件邻域做可恢复 Focus refinement。
 - MCP 不支持 `background=true`；未完成的 scoped focus/lazy 工作通过 `analysis.retry_after_ms` + `query_id` 表达，终态限制通过 `gaps` 表达，客户端使用 `resume_query` 重放。
-- 结果截断 25KB，额外 content block 标注截断信息。
+- handler 在字段层限制集合/源码并用 `returned` / `truncated` 等元数据标注；JSON
+  Schema 的 `maximum` 只是客户端提示，handler 必须再次执行硬上限。当前边界包括
+  project files 1000、search 200、calls 500/depth 5、file dependencies 与 usages 100、
+  path depth 10、impact depth 5、trace depth 100、context source 64 KiB/关系组 100、
+  overlay list 500。`ToolRouter::call_tool()` 始终返回单个完整 JSON content block，
+  不对序列化文本做 25KB 字节切片。
 
 ### 11.4 CLI
 核心命令：`status`, `doctor`, `index`, `sync`, `files`, `mcp`。
@@ -1278,14 +1296,15 @@ Progress token 只影响观测通道，不改变终态策略：
 或 schema 初始化失败，`atlas` 会先保留不可用 DB 为 `.corrupt.<timestamp>` 备份，
 创建新 schema，并运行与 `atlas index` 默认值一致的 structural index；
 索引完成后才启动 TUI。已有基础 index 或更高等级 index 时直接进入 TUI。
-TUI 状态栏必须显示当前
-index mode（empty/manifest/structural/full/partial）。
+TUI 状态栏必须显示 `Store::read_catalog_tier()` 的当前 catalog tier（例如
+`none` / `manifest` / `partial_structural` / `structural` / `structural+lazy` / `full`）。
 
 TUI 首跑索引属于 CLI 入口前置步骤，不属于 TUI 内交互状态机：
 
-- “基础 index”定义为所有已索引文件至少有 fresh `manifest:complete` extraction state；
-  `structural:complete` 和 `dataflow:complete` 均满足直接进入 TUI 的条件。
-- `empty`、`partial`、无法打开 DB、schema init 失败都不能直接进入 TUI；必须先恢复/创建 DB
+- “可用基础 catalog”定义为 `read_catalog_tier()` 不是 `none` / `unknown`；manifest、
+  partial structural、structural/lazy 和 full 都可直接进入 TUI。partial catalog 的
+  graph-backed detail 走共享 focus-aware handler，不假装本地图完整。
+- `none` / `unknown`、无法打开 DB、schema init 失败不能直接进入 TUI；必须先恢复/创建 DB
   并完成默认 structural index。
 - 入口层只能调用共享 `IndexPipeline` 完成默认 structural index；不得在 TUI 模块内复制 discovery、
   hash check、cleanup、extraction、resolution 或 graph build phase。

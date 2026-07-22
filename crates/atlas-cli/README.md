@@ -9,7 +9,7 @@ CLI binary for Atlas. Command dispatch, logging, and integration tests.
 | `atlas` (no subcommand) | Launch the interactive code-graph workbench; recover/create the DB and run default structural indexing first when no usable basic index exists |
 | `atlas index` | Auto-initialize `.atlas/` schema and index source files |
 | `atlas sync` | Incrementally update index after file changes |
-| `atlas status` | Show index statistics and project health |
+| `atlas status` | Show index statistics, catalog tier, and project health |
 | `atlas doctor` | Check schema, SQLite, grammar, capability readiness |
 | `atlas files` | List indexed files with language and parse status |
 | `atlas mcp` | Start MCP server (requires `mcp` feature) |
@@ -39,6 +39,8 @@ cycle with Left/Right, and text or numeric fields are edited with Enter.
 Variant-dependent forms show only fields used by the current `trace` kind or
 management action. Validation and submitted arguments use that same field rule,
 so hidden parameters cannot leak into calls and users do not construct MCP JSON.
+Request-scoped `include_roots` fields accept comma-separated project-relative
+paths and are submitted as the same string arrays used by MCP.
 
 `Enter` opens the highlighted command, `Tab` moves between active form fields,
 and `Esc` returns to the previous layer. Analysis output uses the full workbench
@@ -57,10 +59,14 @@ the TUI owns one local project and provides native symbol search.
 
 Native search does not wait for the full graph snapshot. Before a snapshot is installed,
 it uses SQLite symbol facts with neutral graph-degree scoring; exact name, kind, language,
-and path signals remain available. Opening the first graph-backed detail submits one
+and path signals remain available. Native detail tabs and caller tracing are used only when
+a finalized whole-project CallGraph cache satisfies the query. With a scoped, manifest, or
+otherwise partial catalog, opening a result runs the shared `symbol(view="context")` handler
+so Focus pending state and coverage gaps remain visible. Opening native detail submits one
 `LoadGraph` job, keeps rendering the running state, then installs the resulting immutable
-snapshot into `GraphSession`. Lazy writes mark that snapshot stale; the next detail action
-uses the same background reload path. No graph construction runs on the UI thread.
+snapshot into `GraphSession`. Any palette tool completion marks that separate snapshot stale
+and refreshes Store-derived counts/catalog tier; the next native detail action reloads in the
+background. No graph construction runs on the UI thread.
 
 The result projector is presentation-only. It never invents precision or
 coverage, and it preserves unknown non-metadata fields in the facts view rather

@@ -12,7 +12,7 @@ compatibility: >-
   Requires Atlas MCP (`atlas mcp` / built `atlas` with `--features mcp`) and a
   local source checkout. Queries need no network. Agent path is MCP-only.
 metadata:
-  version: "1.5.5"
+  version: "1.6.0"
   repository: https://github.com/lordcasser/atlas
 ---
 
@@ -63,8 +63,9 @@ Full-repo CLI indexing is an **optional human/operator** action (see
 
 ## Language support (summary)
 
-14 languages build by default. Overall **DataflowInterproc** does **not** mean every
-feature works everywhere (e.g. CFG unsupported for PHP/ArkTS). Check:
+14 languages build by default. All 14 expose limited function/method CFG, but
+construct coverage and confidence differ by language; overall
+**DataflowInterproc** still does **not** mean every feature works everywhere. Check:
 
 - `project(action="status")` (verbose if needed)
 - Trace response `capability` / diagnostics
@@ -125,8 +126,8 @@ Without a pre-existing full CLI cache, tools use **Focus** only (not a separate
 | Goal | Tool |
 |------|------|
 | Find by name | `search` (**requires `scope`**, e.g. `"src"`) → `symbol` |
-| Callers / callees | `calls(direction="incoming"\|"outgoing")` — **depth 1 first** |
-| Multi-hop | `calls` with higher `depth` only after depth 1 + resume if needed |
+| Callers / callees | `calls(direction="incoming"\|"outgoing")` — fixed one hop; `depth` is ignored |
+| Multi-hop | `calls(direction="both", depth=...)` only after one hop + resume if needed |
 | File imports | `file_dependencies` |
 | Position context | `trace(kind="point")` |
 | **Local value origin (dataflow)** | `trace(kind="variable")` — Focus materialize DF for that region |
@@ -164,11 +165,11 @@ Native short names (hosts may prefix `atlas_`). Install/config:
 | `project` | `project_path` on `open` | `open` / `status` / `files` |
 | `search` | `query`, **`scope`** | Scope = boundary + focus seed |
 | `symbol` | `symbol` or position | `view`: detail / context / usages |
-| `calls` | `symbol` | Prefer depth 1; Focus-scoped on cold DBs |
+| `calls` | `symbol` | incoming/outgoing=fixed one hop; only `both` honors `depth` |
 | `explore` | `symbol` | Dossier |
 | `path` | `from`, `to` | Both ends must resolve in available facts |
 | `impact` | `symbol` | optional `semantic` (C/C++) |
-| `file_dependencies` | `file_path` | `analysis`: manifest (default) / structural |
+| `file_dependencies` | `file_path` | manifest=current stored facts, no Focus (terminal gap if incomplete); structural=CallGraph Focus |
 | `trace` | per `kind` | Local DF via Focus materialize for `variable` |
 | `lifecycle` | `symbol`, `field` | C/C++; function-local |
 | `branch_diff` | `symbol` | C/C++ |
@@ -179,18 +180,24 @@ Native short names (hosts may prefix `atlas_`). Install/config:
 
 Required Focus fact levels are parameter-sensitive: scoped `search` and
 `symbol(detail)` need structural facts; `symbol(usages|context)` and
-`trace(forward|callers)` need the cross-file call graph; `trace(variable)`,
-semantic impact, lifecycle, and branch diff need tracked dataflow/CFG
-materialization.
+`trace(forward|callers)` need the cross-file call graph;
+`file_dependencies(analysis=manifest)` is a pure read while
+`analysis=structural` needs CallGraph; `trace(variable)`, semantic impact,
+lifecycle, and branch diff need tracked dataflow/CFG materialization.
 
 ### Trace kinds
 
-| kind | Need | Default max_depth |
-|------|------|-------------------|
+| kind | Need | Default / hard max_depth |
+|------|------|--------------------------|
 | `point` | file + line + column | — |
-| `variable` | file + line + column | 30 |
-| `forward` | `from`, `to` | 20 |
-| `callers` | `symbol` | 10 |
+| `variable` | file + line + column | 30 / 100 |
+| `forward` | `from`, `to` | 10 / 100 |
+| `callers` | `symbol` | 20 / 100 |
+
+Collection and traversal arguments are hard-bounded by the handler even when a
+client skips JSON Schema validation. Read `returned`, `truncated`, totals, and
+per-field truncation metadata before drawing an absence conclusion; narrow the
+scope or selector instead of requesting an unbounded response.
 
 ## Symbol selector
 
@@ -215,8 +222,14 @@ Reuse `symbol_ref` from prior results when present.
 - Stay local: file/dir scope, exact symbol, then expand.
 - Value flow: `trace(point)` then `trace(variable)` — this is how you get **local dataflow**
   without a full index.
-- Prefer depth 1–2; resume before deepening on cold Focus.
+- For `calls`, use incoming/outgoing for one hop; deepen only with
+  `direction="both"`. Resume before deepening on cold Focus.
 - C/C++ system headers: pass `include_roots` when needed.
+
+An operator-built whole-repository Index is reused per query need, not by one
+coarse catalog label. For example, a finalized manifest Index remains
+authoritative for manifest reads after Focus structurally enriches a few files;
+CallGraph/dataflow queries still enter Focus.
 
 ## Anti-patterns (do not)
 

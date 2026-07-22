@@ -40,7 +40,7 @@ you want a reusable full-project cache.
 | `explore` | Symbol dossier: source, call evidence, relations, file context. | Call graph plus import neighborhood. |
 | `path` | Ranked graph paths between two resolved symbols. | Cross-file call-graph region grown toward both endpoints. |
 | `impact` | Bounded affected-symbol/file traversal; optional semantic overlay. | Call graph; `semantic=true` upgrades to dataflow/CFG. |
-| `file_dependencies` | Incoming/outgoing imports/includes for one file. | Manifest by default; `analysis=structural` upgrades the file neighborhood. |
+| `file_dependencies` | Incoming/outgoing imports/includes for one file. | Manifest reads existing facts without Focus and reports a terminal gap when coverage is incomplete; `analysis=structural` requires CallGraph and refines the file neighborhood. |
 | `trace` | Point lookup, variable provenance, forward chain, or caller chain. | Point=structural; forward/callers=call graph; variable=dataflow over a widened cross-file dependency region. |
 | `lifecycle` | C/C++ field allocate/use/free state analysis. | Function CFG, dataflow effects, and domain rules via tracked Sync Focus work. |
 | `branch_diff` | Compare sibling branch side effects/asymmetries. | Function CFG/dataflow effects via tracked Sync Focus work. |
@@ -67,8 +67,19 @@ Removed MCP tools: `index`, `task_status`, `wait_for_task`, and
 - If tracked materialization fails, MCP returns a result-free `status=failed`
   ticket with the original `query_id` and failure reason. Re-run the original
   tool call to retry; failed work is never exposed as a limited result.
+- `tasks(query_id=...)` observes that same terminal failure as `status=failed`,
+  `pending_jobs=0`, and a `detail` reason; it does not turn failure into ready.
 - `QueryNeed` is shared by MCP contracts and the Focus control plane:
   `manifest`, `structural`, `call_graph`, or `dataflow`.
+- FullCache authority is query-specific: successful whole-repository Index
+  metadata is combined with fresh, complete per-file fact coverage for the
+  requested `QueryNeed`; CallGraph/dataflow also require current canonical
+  resolution fingerprints for reference-bearing files (reference-free files
+  need no resolution proof). `catalog_tier` is status/display only. A manifest
+  Index therefore remains valid for manifest reads after partial Focus
+  enrichment, while stronger queries still enter Focus. A Focus structural
+  rebuild after a source change preserves Structural facts but revokes stale
+  RepoCanonical CallGraph authority.
 
 - `search.scope` is mandatory even when a rich index exists. It bounds the
   answer and seeds focus coverage. Non-terminal work is exposed through
@@ -115,6 +126,16 @@ that prepare focus closures accept the same parameter, including `search`,
 ```json
 {"query": "do_sched", "scope": "kernel/sched", "include_roots": ["include"]}
 ```
+
+Handlers bound their own result collections and expose `returned` / `truncated`
+metadata where applicable. Schema maxima are enforced again in handlers because
+not every MCP client validates JSON Schema: project files default to 500 and cap
+at 1000; search caps at 200; symbol usages and file dependencies at 100; calls
+at 500 nodes / depth 5; path at depth 10; impact at depth 5; trace at depth 100;
+and dossier subcollections have explicit per-field caps. Context source is capped
+at 64 KiB and context relation groups at 100 items. Overlay lists cap at 500.
+The router returns one complete JSON content block and never byte-slices a
+serialized response.
 
 ## Source Of Truth
 
