@@ -26,6 +26,12 @@ pub struct ProjectWriteCoordinator {
     background_cancelled: AtomicBool,
 }
 
+impl Default for ProjectWriteCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProjectWriteCoordinator {
     pub fn new() -> Self {
         ProjectWriteCoordinator {

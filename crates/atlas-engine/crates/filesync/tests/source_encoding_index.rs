@@ -77,11 +77,11 @@ fn gbk_index_stores_raw_file_hash_and_chinese_symbols() {
     let symbols = store.get_all_symbols().expect("get_all_symbols");
     let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(
-        names.iter().any(|n| *n == "计算总和"),
+        names.contains(&"计算总和"),
         "indexed symbols should include 计算总和, got {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "数据服务"),
+        names.contains(&"数据服务"),
         "indexed symbols should include 数据服务, got {names:?}"
     );
 

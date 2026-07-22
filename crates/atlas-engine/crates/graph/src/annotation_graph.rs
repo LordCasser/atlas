@@ -218,8 +218,7 @@ int invoke(struct dispatch_ops *ops, int value) {
                     })
                     .collect::<Vec<_>>();
                 panic!(
-                    "C extractor must index function-pointer fields as Field symbols; got symbols: {:?}",
-                    symbols
+                    "C extractor must index function-pointer fields as Field symbols; got symbols: {symbols:?}"
                 )
             });
         let target = store

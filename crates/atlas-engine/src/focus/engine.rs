@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use db::Store;
-use resolution::ReferenceResolver;
+use resolution::{ReferenceResolver, VisibilityFilterFn};
 use types::enums::{Language, ReferenceKind, SymbolKind};
 use types::ids::{FileId, SymbolId};
 use types::structs::{KnownGap, SymbolDef};
@@ -183,8 +183,7 @@ impl ClosureEngine {
             // correctly because the filter's `from_file` parameter is set
             // by the resolver for each individual reference.
             let visibility_filter = self.build_visibility_filter(&closure.files);
-            let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
-                visibility_filter.as_deref();
+            let filter_ref: Option<&VisibilityFilterFn> = visibility_filter.as_deref();
             self.resolver.borrow_mut().resolve_for_closure_kinds(
                 closure_id,
                 0, // generation 0 = seed resolution
@@ -343,8 +342,7 @@ impl ClosureEngine {
         let closure_files: Vec<FileId> = closure.files.iter().copied().collect();
         if !closure_files.is_empty() && Instant::now() < deadline {
             let visibility_filter = self.build_visibility_filter(&closure.files);
-            let filter_ref: Option<&dyn Fn(&SymbolDef, FileId) -> bool> =
-                visibility_filter.as_deref();
+            let filter_ref: Option<&VisibilityFilterFn> = visibility_filter.as_deref();
             self.resolver.borrow_mut().resolve_for_closure_kinds(
                 closure_id,
                 last_generation,
@@ -549,7 +547,7 @@ impl ClosureEngine {
     fn build_visibility_filter(
         &self,
         closure_files: &HashSet<FileId>,
-    ) -> Option<Box<dyn Fn(&SymbolDef, FileId) -> bool>> {
+    ) -> Option<Box<VisibilityFilterFn>> {
         let language: Option<Language> = closure_files
             .iter()
             .filter_map(|file_id| self.store.get_file(file_id).ok().flatten())

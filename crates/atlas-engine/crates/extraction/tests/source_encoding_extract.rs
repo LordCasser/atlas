@@ -93,15 +93,15 @@ fn gbk_python_extract_preserves_chinese_symbol_names() {
 
     let names: Vec<&str> = facts.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(
-        names.iter().any(|n| *n == "计算总和"),
+        names.contains(&"计算总和"),
         "expected function 计算总和 in symbols, got {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "数据服务"),
+        names.contains(&"数据服务"),
         "expected class 数据服务 in symbols, got {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "查询"),
+        names.contains(&"查询"),
         "expected method 查询 in symbols, got {names:?}"
     );
 
@@ -131,11 +131,11 @@ fn gbk_python_manifest_top_level_chinese_names() {
 
     let top: Vec<&str> = facts.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(
-        top.iter().any(|n| *n == "计算总和"),
+        top.contains(&"计算总和"),
         "manifest should include top-level 计算总和: {top:?}"
     );
     assert!(
-        top.iter().any(|n| *n == "数据服务"),
+        top.contains(&"数据服务"),
         "manifest should include top-level 数据服务: {top:?}"
     );
     // Encoding-focused: Chinese names must not be mojibake even in Manifest mode.

@@ -50,6 +50,8 @@ const SCORE_LINE_FAR_PER: u64 = 100; // max(0, 100 - delta), only if delta <= 10
 // Kind and language: weak tiebreakers
 const SCORE_KIND_EXACT: u64 = 200;
 const SCORE_LANGUAGE_EXACT: u64 = 100;
+const _: () = assert!(SCORE_KIND_EXACT < MIN_SCORE_GAP_FOR_UNIQUE);
+const _: () = assert!(SCORE_LANGUAGE_EXACT < MIN_SCORE_GAP_FOR_UNIQUE);
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -1278,18 +1280,6 @@ mod tests {
     }
 
     // ── Scoring invariants ──────────────────────────────────────────────
-
-    #[test]
-    fn test_kind_cannot_force_unique() {
-        // SCORE_KIND_EXACT (200) < MIN_SCORE_GAP_FOR_UNIQUE (400).
-        assert!(SCORE_KIND_EXACT < MIN_SCORE_GAP_FOR_UNIQUE);
-    }
-
-    #[test]
-    fn test_language_cannot_force_unique() {
-        // SCORE_LANGUAGE_EXACT (100) < MIN_SCORE_GAP_FOR_UNIQUE (400).
-        assert!(SCORE_LANGUAGE_EXACT < MIN_SCORE_GAP_FOR_UNIQUE);
-    }
 
     #[test]
     fn test_line_exact_can_force_unique() {

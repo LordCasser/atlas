@@ -28,6 +28,31 @@ use self::context::{GlobalSymbolIndex, ResolutionContext, is_explicit_test_path,
 use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
+type ResolvedReference = (ReferenceUse, ResolvedTarget);
+type WriterOutput = (Vec<ResolvedReference>, ResolutionStats, WriterTelemetry);
+pub type VisibilityFilterFn = dyn Fn(&SymbolDef, FileId) -> bool;
+type StagedResolutionRow = (
+    String,
+    i64,
+    Vec<u8>,
+    String,
+    Option<Vec<u8>>,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
+struct ScopedResolutionState<'a> {
+    context: &'a ResolutionContext,
+    visibility_filter: Option<&'a VisibilityFilterFn>,
+    preferred_files: HashSet<FileId>,
+    source_is_test: bool,
+    source_parent: Option<String>,
+    candidate_cache: &'a mut HashMap<String, Vec<SymbolDef>>,
+    file_path_cache: &'a mut HashMap<FileId, String>,
+}
+
 pub mod builtins;
 pub mod config;
 
@@ -871,60 +896,31 @@ impl ReferenceResolver {
         let writer_matched = Arc::clone(&matched_counter);
         let writer_processed_progress = Arc::clone(&writer_processed_counter);
         let writer_batch_progress = Arc::clone(&writer_batch_counter);
-        let writer_handle = std::thread::spawn(
-            move || -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats, WriterTelemetry)> {
-                let _phase2_span = tracing::info_span!(target: "atlas_resolve", "resolution.phase2").entered();
-                let writer_start = Instant::now();
-                let sent_counter = writer_matched;
-                let mut batch_id: u64 = 0;
-                let mut slow_batches: u64 = 0;
-                let mut stats = ResolutionStats {
-                    total_refs: total_refs as usize,
-                    ..Default::default()
-                };
-                let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
-                let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
-                let batch_size = 2000;
-                let mut processed = 0u64;
+        let writer_handle = std::thread::spawn(move || -> anyhow::Result<WriterOutput> {
+            let _phase2_span =
+                tracing::info_span!(target: "atlas_resolve", "resolution.phase2").entered();
+            let writer_start = Instant::now();
+            let sent_counter = writer_matched;
+            let mut batch_id: u64 = 0;
+            let mut slow_batches: u64 = 0;
+            let mut stats = ResolutionStats {
+                total_refs: total_refs as usize,
+                ..Default::default()
+            };
+            let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
+            let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
+            let batch_size = 2000;
+            let mut processed = 0u64;
 
-                for (reference, target) in rx {
-                    pending.push((reference.id, target.clone()));
-                    let strategy = target.strategy.as_str().to_string();
-                    all.push((reference, target));
-                    processed += 1;
-                    stats.resolved += 1;
-                    *stats.by_strategy.entry(strategy).or_default() += 1;
+            for (reference, target) in rx {
+                pending.push((reference.id, target.clone()));
+                let strategy = target.strategy.as_str().to_string();
+                all.push((reference, target));
+                processed += 1;
+                stats.resolved += 1;
+                *stats.by_strategy.entry(strategy).or_default() += 1;
 
-                    if pending.len() >= batch_size {
-                        let batch_start = Instant::now();
-                        writer_store.batch_update_resolutions(&pending)?;
-                        let batch_elapsed = batch_start.elapsed();
-                        let elapsed_ms = batch_elapsed.as_millis() as u64;
-                        let rows_per_sec = if elapsed_ms > 0 {
-                            (pending.len() as f64) / (elapsed_ms as f64) * 1000.0
-                        } else {
-                            0.0
-                        };
-                        if elapsed_ms > 2000 {
-                            let lag = sent_counter.load(Ordering::Relaxed).saturating_sub(processed);
-                            tracing::warn!(
-                                target: "atlas_db_write",
-                                batch_id = batch_id,
-                                rows = pending.len(),
-                                elapsed_ms = elapsed_ms,
-                                rows_per_sec = rows_per_sec,
-                                pending_queue_lag = lag,
-                                "writer.slow_batch"
-                            );
-                            slow_batches += 1;
-                        }
-                        batch_id += 1;
-                        writer_batch_progress.store(batch_id, Ordering::Relaxed);
-                        writer_processed_progress.store(processed, Ordering::Relaxed);
-                        pending.clear();
-                    }
-                }
-                if !pending.is_empty() {
+                if pending.len() >= batch_size {
                     let batch_start = Instant::now();
                     writer_store.batch_update_resolutions(&pending)?;
                     let batch_elapsed = batch_start.elapsed();
@@ -935,7 +931,9 @@ impl ReferenceResolver {
                         0.0
                     };
                     if elapsed_ms > 2000 {
-                        let lag = sent_counter.load(Ordering::Relaxed).saturating_sub(processed);
+                        let lag = sent_counter
+                            .load(Ordering::Relaxed)
+                            .saturating_sub(processed);
                         tracing::warn!(
                             target: "atlas_db_write",
                             batch_id = batch_id,
@@ -950,25 +948,55 @@ impl ReferenceResolver {
                     batch_id += 1;
                     writer_batch_progress.store(batch_id, Ordering::Relaxed);
                     writer_processed_progress.store(processed, Ordering::Relaxed);
+                    pending.clear();
                 }
-                stats.unresolved = total_refs as usize - stats.resolved;
-                let writer_elapsed = writer_start.elapsed();
-                let writer_total_ms = writer_elapsed.as_millis() as u64;
-                let rows_per_sec = if writer_total_ms > 0 {
-                    processed as f64 / writer_total_ms as f64 * 1000.0
+            }
+            if !pending.is_empty() {
+                let batch_start = Instant::now();
+                writer_store.batch_update_resolutions(&pending)?;
+                let batch_elapsed = batch_start.elapsed();
+                let elapsed_ms = batch_elapsed.as_millis() as u64;
+                let rows_per_sec = if elapsed_ms > 0 {
+                    (pending.len() as f64) / (elapsed_ms as f64) * 1000.0
                 } else {
                     0.0
                 };
-                let writer_tel = WriterTelemetry {
-                    total_ms: writer_total_ms,
-                    batches: batch_id,
-                    rows_written: processed,
-                    rows_per_sec,
-                    slow_batch_count: slow_batches,
-                };
-                Ok((all, stats, writer_tel))
-            },
-        );
+                if elapsed_ms > 2000 {
+                    let lag = sent_counter
+                        .load(Ordering::Relaxed)
+                        .saturating_sub(processed);
+                    tracing::warn!(
+                        target: "atlas_db_write",
+                        batch_id = batch_id,
+                        rows = pending.len(),
+                        elapsed_ms = elapsed_ms,
+                        rows_per_sec = rows_per_sec,
+                        pending_queue_lag = lag,
+                        "writer.slow_batch"
+                    );
+                    slow_batches += 1;
+                }
+                batch_id += 1;
+                writer_batch_progress.store(batch_id, Ordering::Relaxed);
+                writer_processed_progress.store(processed, Ordering::Relaxed);
+            }
+            stats.unresolved = total_refs as usize - stats.resolved;
+            let writer_elapsed = writer_start.elapsed();
+            let writer_total_ms = writer_elapsed.as_millis() as u64;
+            let rows_per_sec = if writer_total_ms > 0 {
+                processed as f64 / writer_total_ms as f64 * 1000.0
+            } else {
+                0.0
+            };
+            let writer_tel = WriterTelemetry {
+                total_ms: writer_total_ms,
+                batches: batch_id,
+                rows_written: processed,
+                rows_per_sec,
+                slow_batch_count: slow_batches,
+            };
+            Ok((all, stats, writer_tel))
+        });
 
         // Enter Phase 2 progress bar before spawning rayon to show percentage.
         if let Some(ps) = progress_mutex {
@@ -1278,7 +1306,7 @@ impl ReferenceResolver {
         closure_id: &str,
         generation: i64,
         closure_files: &[FileId],
-        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+        visibility_filter: Option<&VisibilityFilterFn>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         self.resolve_for_closure_kinds(
             closure_id,
@@ -1297,7 +1325,7 @@ impl ReferenceResolver {
         closure_id: &str,
         generation: i64,
         closure_files: &[FileId],
-        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
+        visibility_filter: Option<&VisibilityFilterFn>,
         reference_kinds: Option<&HashSet<ReferenceKind>>,
     ) -> anyhow::Result<(Vec<(ReferenceUse, ResolvedTarget)>, ResolutionStats)> {
         let mut by_file: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
@@ -1320,17 +1348,7 @@ impl ReferenceResolver {
         let mut resolved_pairs: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let mut scoped_candidate_cache: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut scoped_file_path_cache: HashMap<FileId, String> = HashMap::new();
-        let mut batch: Vec<(
-            String,
-            i64,
-            Vec<u8>,
-            String,
-            Option<Vec<u8>>,
-            String,
-            String,
-            String,
-            Option<String>,
-        )> = Vec::new();
+        let mut batch: Vec<StagedResolutionRow> = Vec::new();
         let batch_size = 500;
 
         for (file_id, refs) in &by_file {
@@ -1346,18 +1364,18 @@ impl ReferenceResolver {
             let source_parent = std::path::Path::new(&ctx.file.path)
                 .parent()
                 .map(|path| path.to_string_lossy().to_string());
+            let mut scoped_state = ScopedResolutionState {
+                context: &ctx,
+                visibility_filter,
+                preferred_files: preferred,
+                source_is_test,
+                source_parent,
+                candidate_cache: &mut scoped_candidate_cache,
+                file_path_cache: &mut scoped_file_path_cache,
+            };
 
             for reference in refs {
-                let target = self.resolve_one_scoped(
-                    reference,
-                    &ctx,
-                    visibility_filter,
-                    &preferred,
-                    source_is_test,
-                    source_parent.as_ref(),
-                    &mut scoped_candidate_cache,
-                    &mut scoped_file_path_cache,
-                );
+                let target = self.resolve_one_scoped(reference, &mut scoped_state);
                 match target {
                     Some(target) => {
                         let (resolution_scope, coverage_tier) = scope_and_tier(&target);
@@ -1419,22 +1437,19 @@ impl ReferenceResolver {
     fn resolve_one_scoped(
         &self,
         reference: &ReferenceUse,
-        ctx: &ResolutionContext,
-        visibility_filter: Option<&dyn Fn(&SymbolDef, FileId) -> bool>,
-        preferred: &HashSet<FileId>,
-        source_is_test: bool,
-        source_parent: Option<&String>,
-        candidate_cache: &mut HashMap<String, Vec<SymbolDef>>,
-        file_path_cache: &mut HashMap<FileId, String>,
+        state: &mut ScopedResolutionState<'_>,
     ) -> Option<ResolvedTarget> {
-        if is_builtin_reference(reference, ctx.file.language) {
+        if is_builtin_reference(reference, state.context.file.language) {
             return None;
         }
 
         // Contextual strategies 2-5 are shared with resolve_one_core.
-        if let Some(result) =
-            resolve_contextual_strategies(reference, ctx, &self.import_resolver, &self.name_matcher)
-        {
+        if let Some(result) = resolve_contextual_strategies(
+            reference,
+            state.context,
+            &self.import_resolver,
+            &self.name_matcher,
+        ) {
             return Some(result);
         }
 
@@ -1443,7 +1458,8 @@ impl ReferenceResolver {
         // symbol. Ambiguous fuzzy evidence remains unresolved in local mode.
         {
             let _timer = StrategyTimer::new(&S6_TIME_NS);
-            let candidates = candidate_cache
+            let candidates = state
+                .candidate_cache
                 .entry(reference.name.clone())
                 .or_insert_with(|| {
                     self.store
@@ -1454,10 +1470,13 @@ impl ReferenceResolver {
                 .iter()
                 .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
                 .filter(|symbol| {
-                    visibility_filter.is_none_or(|filter| filter(symbol, reference.file_id))
+                    state
+                        .visibility_filter
+                        .is_none_or(|filter| filter(symbol, reference.file_id))
                 })
                 .filter_map(|symbol| {
-                    let candidate_path = file_path_cache
+                    let candidate_path = state
+                        .file_path_cache
                         .entry(symbol.file_id)
                         .or_insert_with(|| {
                             self.store
@@ -1469,7 +1488,7 @@ impl ReferenceResolver {
                         })
                         .clone();
                     if candidate_path.is_empty()
-                        || (!source_is_test && is_explicit_test_path(&candidate_path))
+                        || (!state.source_is_test && is_explicit_test_path(&candidate_path))
                     {
                         return None;
                     }
@@ -1477,8 +1496,11 @@ impl ReferenceResolver {
                         .parent()
                         .map(|path| path.to_string_lossy().to_string());
                     Some((
-                        usize::from(!preferred.is_empty() && !preferred.contains(&symbol.file_id)),
-                        proximity_tier(source_parent, candidate_parent.as_ref()),
+                        usize::from(
+                            !state.preferred_files.is_empty()
+                                && !state.preferred_files.contains(&symbol.file_id),
+                        ),
+                        proximity_tier(state.source_parent.as_ref(), candidate_parent.as_ref()),
                         candidate_path,
                         symbol.qualified_name.clone(),
                         symbol.id,
@@ -1689,7 +1711,7 @@ mod tests {
     fn extract_full(
         frontend: &extraction::LanguageFrontend,
         file_id: FileId,
-        path: &PathBuf,
+        path: &std::path::Path,
         source: &str,
         content_hash: &str,
     ) -> anyhow::Result<FileFacts> {

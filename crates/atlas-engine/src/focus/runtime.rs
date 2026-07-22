@@ -1235,8 +1235,7 @@ mod include_roots_integration {
         assert!(
             q1_counts.contains_key("boundary"),
             "q1 (with include_roots): expected a 'boundary' coverage entry from the resolved \
-             angle-include header, got: {:?}",
-            q1_counts
+             angle-include header, got: {q1_counts:?}"
         );
         // Confirm the header specifically was recorded as a resolved dependency
         // (source = "extracted_resolution_symbols" after visibility commit).
@@ -1278,8 +1277,7 @@ mod include_roots_integration {
             q2.coverage_counts.clone().unwrap_or_default();
         assert!(
             !q2_counts.contains_key("boundary"),
-            "q2 (no include_roots): 'boundary' coverage must be absent (no leaked roots), got: {:?}",
-            q2_counts
+            "q2 (no include_roots): 'boundary' coverage must be absent (no leaked roots), got: {q2_counts:?}"
         );
     }
 }
