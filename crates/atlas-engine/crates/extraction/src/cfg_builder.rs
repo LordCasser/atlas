@@ -24,7 +24,8 @@
 //!   resources with owner-matched path-isolated BlockExit nodes
 //! - lexically resolved labeled break/continue for Java, JS/TS/ArkTS, Go,
 //!   Rust, and Kotlin, including transfer through finally/managed cleanup
-//! - direct same-function goto/label edges for C, C++, and Go
+//! - direct same-function goto/label edges for C, C++, Go, and C# functions
+//!   that do not require finally/using cleanup-region ownership
 //! - bounded path-sensitive Go defer registration with LIFO execution on
 //!   normal function exits
 //! - Rust `?` success and residual-return paths, bounded by nested closure and
@@ -35,8 +36,9 @@
 //!
 //! # NOT supported (deferred)
 //! - async/await
-//! - computed goto, PHP/C# goto, C# goto case/default, and labels that the
-//!   selected tree-sitter grammar does not expose as a lexical control target
+//! - computed/PHP goto, C# goto case/default or goto requiring finally/using
+//!   cleanup-region ownership, and labels that the selected tree-sitter
+//!   grammar does not expose as a lexical control target
 //! - resolved/inherited catch-type selection and implicit exceptions from
 //!   ordinary statements (Java/C#/PHP only apply an ordered exact-match cutoff
 //!   for direct object-created explicit throws)
@@ -335,10 +337,12 @@ struct CfgContext<'a> {
     /// synthetic label node.
     pending_goto_node_ids: Vec<(types::ids::CfgNodeId, String)>,
     goto_label_targets: Vec<(String, types::ids::CfgNodeId)>,
-    /// A function containing goto must keep scanning after abrupt statements
-    /// so later label entries are still materialized. Such nodes stay
-    /// disconnected unless a resolved goto makes them reachable.
-    has_direct_goto: bool,
+    /// A function with safely resolvable direct goto must keep scanning after
+    /// abrupt statements so later label entries are still materialized. Such
+    /// nodes stay disconnected unless a resolved goto makes them reachable.
+    /// C# disables resolution when finally/using cleanup ownership would be
+    /// required; those goto statements remain conservative abrupt terminals.
+    can_resolve_direct_goto: bool,
     /// Non-zero while lowering a path-isolated clone of one AST region.
     node_instance: u32,
     /// Monotonic deterministic instance allocator scoped to this CFG build.
@@ -386,8 +390,10 @@ impl CfgBuilder {
         source_bytes: &[u8],
     ) -> CfgResult {
         let config = cfg_config(language);
-        let has_direct_goto = CfgContext::supports_direct_goto(language)
-            && CfgContext::contains_direct_goto(function_node);
+        let can_resolve_direct_goto = CfgContext::supports_direct_goto(language)
+            && CfgContext::contains_direct_goto(function_node)
+            && !(language == Language::CSharp
+                && CfgContext::contains_csharp_goto_cleanup(function_node));
 
         // Detect React cleanup arrow: an arrow_function that is the direct
         // child of a return_statement (e.g., `return () => cleanup()`).
@@ -410,7 +416,7 @@ impl CfgBuilder {
             pending_continue_node_ids: Vec::new(),
             pending_goto_node_ids: Vec::new(),
             goto_label_targets: Vec::new(),
-            has_direct_goto,
+            can_resolve_direct_goto,
             node_instance: 0,
             next_node_instance: 1,
             language,
@@ -772,7 +778,10 @@ fn is_comment_node_kind(kind: &str) -> bool {
 
 impl CfgContext<'_> {
     fn supports_direct_goto(language: Language) -> bool {
-        matches!(language, Language::C | Language::Cpp | Language::Go)
+        matches!(
+            language,
+            Language::C | Language::Cpp | Language::Go | Language::CSharp
+        )
     }
 
     fn contains_direct_goto(root: Node<'_>) -> bool {
@@ -786,7 +795,33 @@ impl CfgContext<'_> {
             }
             if matches!(
                 node.kind(),
-                "function_definition" | "function_item" | "lambda_expression" | "func_literal"
+                "function_definition"
+                    | "function_item"
+                    | "local_function_statement"
+                    | "lambda_expression"
+                    | "anonymous_method_expression"
+                    | "func_literal"
+            ) {
+                continue;
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+        false
+    }
+
+    fn contains_csharp_goto_cleanup(root: Node<'_>) -> bool {
+        let mut pending = Vec::new();
+        let mut cursor = root.walk();
+        pending.extend(root.named_children(&mut cursor));
+
+        while let Some(node) = pending.pop() {
+            if matches!(node.kind(), "finally_clause" | "using_statement") {
+                return true;
+            }
+            if matches!(
+                node.kind(),
+                "local_function_statement" | "lambda_expression" | "anonymous_method_expression"
             ) {
                 continue;
             }
@@ -1448,10 +1483,12 @@ impl CfgContext<'_> {
                 let node_id =
                     self.emit_stmt(CfgNodeKind::Statement, range.start_byte, &abrupt_stmt);
                 self.prev_node_id.take();
-                if let Some(target) = self.direct_goto_target(abrupt_stmt) {
+                if self.can_resolve_direct_goto
+                    && let Some(target) = self.direct_goto_target(abrupt_stmt)
+                {
                     self.pending_goto_node_ids.push((node_id, target));
                 }
-                if self.has_direct_goto {
+                if self.can_resolve_direct_goto {
                     i += 1;
                     continue;
                 }
@@ -1464,7 +1501,7 @@ impl CfgContext<'_> {
                 if let Some(target) = self.control_transfer_target(&abrupt_stmt, "break") {
                     self.pending_break_node_ids.push((node_id, target));
                 }
-                if self.has_direct_goto {
+                if self.can_resolve_direct_goto {
                     i += 1;
                     continue;
                 }
@@ -1477,7 +1514,7 @@ impl CfgContext<'_> {
                 if let Some(target) = self.control_transfer_target(&abrupt_stmt, "continue") {
                     self.pending_continue_node_ids.push((node_id, target));
                 }
-                if self.has_direct_goto {
+                if self.can_resolve_direct_goto {
                     i += 1;
                     continue;
                 }
@@ -1492,7 +1529,7 @@ impl CfgContext<'_> {
             } else if self.is_throw_statement(&abrupt_stmt) {
                 let range = node_text_range(&abrupt_stmt, self.source);
                 self.emit_stmt(CfgNodeKind::Throw, range.start_byte, &abrupt_stmt);
-                if self.has_direct_goto {
+                if self.can_resolve_direct_goto {
                     i += 1;
                     continue;
                 }
@@ -1510,7 +1547,7 @@ impl CfgContext<'_> {
                         break;
                     }
                 }
-                if self.has_direct_goto {
+                if self.can_resolve_direct_goto {
                     i += 1;
                     continue;
                 }
@@ -2823,7 +2860,7 @@ impl CfgContext<'_> {
         let mut cursor = node.walk();
         let target = node.child_by_field_name("label").or_else(|| {
             node.named_children(&mut cursor)
-                .find(|child| matches!(child.kind(), "statement_identifier" | "label_name"))
+                .find(|child| self.is_direct_goto_label_node(*child))
         })?;
         target
             .utf8_text(self.source)
@@ -2840,7 +2877,7 @@ impl CfgContext<'_> {
         let mut cursor = node.walk();
         let label = node.child_by_field_name("label").or_else(|| {
             node.named_children(&mut cursor)
-                .find(|child| matches!(child.kind(), "statement_identifier" | "label_name"))
+                .find(|child| self.is_direct_goto_label_node(*child))
         })?;
         label
             .utf8_text(self.source)
@@ -2848,6 +2885,11 @@ impl CfgContext<'_> {
             .map(str::trim)
             .filter(|label| !label.is_empty())
             .map(str::to_string)
+    }
+
+    fn is_direct_goto_label_node(&self, node: Node<'_>) -> bool {
+        matches!(node.kind(), "statement_identifier" | "label_name")
+            || self.language == Language::CSharp && node.kind() == "identifier"
     }
 
     fn record_direct_goto_label(&mut self, label: Option<String>, node_start: usize) {
@@ -2911,12 +2953,14 @@ impl CfgContext<'_> {
                 )
             })
         })?;
-        let body = node.child_by_field_name("body").or_else(|| {
-            named
-                .iter()
-                .copied()
-                .find(|child| child.id() != label_node.id())
-        })?;
+        let body = node
+            .child_by_field_name("body")
+            .filter(|child| !is_comment_node_kind(child.kind()))
+            .or_else(|| {
+                named.iter().copied().find(|child| {
+                    child.id() != label_node.id() && !is_comment_node_kind(child.kind())
+                })
+            })?;
         let label = label_node
             .utf8_text(self.source)
             .ok()?
@@ -4663,6 +4707,13 @@ func receive(ch <-chan int) {
                 "skipped()",
                 "finish()",
             ),
+            (
+                Language::CSharp,
+                "class T { void Run() { goto Cleanup; Skipped(); Cleanup: Finish(); return; } }",
+                "goto Cleanup;",
+                "Skipped();",
+                "Finish();",
+            ),
         ];
 
         for (language, source, goto_text, skipped_text, target_text) in fixtures {
@@ -4685,22 +4736,42 @@ func receive(ch <-chan int) {
 
     #[test]
     fn test_backward_goto_targets_the_labeled_statement() {
-        let source = r#"int run(int again) {
+        let fixtures = [
+            (
+                Language::C,
+                r#"int run(int again) {
 retry:
     work();
     if (again) goto retry;
     return 0;
-}"#;
-        let result = build_cfg_for_first_fn(Language::C, source);
-        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto retry;");
-        let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "work();");
+}"#,
+                "goto retry;",
+                "work();",
+            ),
+            (
+                Language::CSharp,
+                r#"class T { void Run(bool again) {
+Retry:
+    Work();
+    if (again) goto Retry;
+} }"#,
+                "goto Retry;",
+                "Work();",
+            ),
+        ];
 
-        assert!(
-            result.edges.iter().any(|edge| {
-                edge.source == goto_id && edge.target == work && edge.kind == CfgEdgeKind::Goto
-            }),
-            "backward goto must create a direct cycle to the label entry"
-        );
+        for (language, source, goto_text, work_text) in fixtures {
+            let result = build_cfg_for_first_fn(language, source);
+            let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, goto_text);
+            let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, work_text);
+
+            assert!(
+                result.edges.iter().any(|edge| {
+                    edge.source == goto_id && edge.target == work && edge.kind == CfgEdgeKind::Goto
+                }),
+                "{language:?} backward goto must create a direct cycle to the label entry"
+            );
+        }
     }
 
     #[test]
@@ -4742,6 +4813,96 @@ cleanup:
             "an unresolved label must not invent a continuation"
         );
         assert!(!cfg_reaches(&result, goto_id, skipped));
+    }
+
+    #[test]
+    fn test_csharp_goto_case_terminates_without_guessing_a_label_target() {
+        let source = r#"class T {
+  void Run(int value) {
+    switch (value) {
+      case 1:
+        goto case 2;
+        skipped();
+      case 2:
+        finish();
+        break;
+    }
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto case 2;");
+        let skipped = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "skipped();");
+
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, skipped));
+    }
+
+    #[test]
+    fn test_csharp_direct_goto_ignores_comment_before_labeled_body() {
+        let source = r#"class T {
+  void Run() {
+    goto Done;
+    skipped();
+    Done:
+    // label documentation
+    if (ready()) finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let target = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Branch
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text.trim_start().starts_with("if (ready())"))
+            })
+            .expect("comment must not hide the labeled executable body");
+
+        assert!(has_cfg_edge(&result, goto_id, target.id, CfgEdgeKind::Goto));
+    }
+
+    #[test]
+    fn test_csharp_goto_does_not_bypass_a_finally_region() {
+        let source = r#"class T {
+  void Run() {
+    try {
+      goto Done;
+    } finally {
+      cleanup();
+    }
+    Done: finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(
+            !has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto),
+            "without cleanup-region ownership, C# goto must not bypass finally"
+        );
+        assert!(!cfg_reaches(&result, goto_id, finish));
+    }
+
+    #[test]
+    fn test_csharp_goto_does_not_bypass_a_using_region() {
+        let source = r#"class T {
+  void Run() {
+    using (Resource resource = Open()) {
+      goto Done;
+    }
+    Done: finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(!has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto));
+        assert!(!cfg_reaches(&result, goto_id, finish));
     }
 
     #[test]

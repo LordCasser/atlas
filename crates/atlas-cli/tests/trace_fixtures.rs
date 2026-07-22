@@ -3357,6 +3357,65 @@ fn fx_cfg_real_csharp_nested_using_return_executes_both_block_exits() {
     }
 }
 
+#[test]
+#[cfg(feature = "csharp")]
+fn fx_cfg_real_csharp_direct_goto_persists_exact_label_edge() {
+    let source = include_str!(
+        "../../../examples/c_sharp_example/shadowsocks-csharp/Controller/Service/Listener.cs"
+    );
+    let path = "examples/Listener.cs";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("real C# Listener symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "ReceiveCallback" && symbol.kind == SymbolKind::Method)
+        .expect("Listener.ReceiveCallback method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("ReceiveCallback CFG nodes");
+    let goto_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "goto Shutdown;");
+    let target = nodes
+        .iter()
+        .find(|node| {
+            if node.kind != CfgNodeKind::Branch {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source.get(range).is_some_and(|text| {
+                text.trim_start()
+                    .starts_with("if (conn.ProtocolType == ProtocolType.Tcp)")
+            })
+        })
+        .expect("Shutdown label executable entry");
+    let skipped_loop = nodes
+        .iter()
+        .find(|node| {
+            if node.kind != CfgNodeKind::Loop {
+                return false;
+            }
+            let range = node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize;
+            source
+                .get(range)
+                .is_some_and(|text| text.trim_start().starts_with("foreach (IService service"))
+        })
+        .expect("service loop skipped by goto");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let outgoing: Vec<_> = edges.iter().filter(|edge| edge.source == goto_id).collect();
+
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(outgoing[0].target, target.id);
+    assert_eq!(outgoing[0].kind, CfgEdgeKind::Goto);
+    assert_eq!(
+        outgoing[0].id,
+        CfgEdge::new(&goto_id, &target.id, CfgEdgeKind::Goto).id,
+        "persisted C# edge ID must encode the final goto kind"
+    );
+    assert!(!persisted_cfg_reaches(&edges, goto_id, skipped_loop.id));
+}
+
 // ────────────────────────────────────────────────────────────────
 // Cangjie: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────

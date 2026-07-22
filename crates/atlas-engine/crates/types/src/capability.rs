@@ -1282,8 +1282,8 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "Control-flow graph with using_statement and branch/loop body traversal implemented",
-                        "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                        "Control-flow graph with using_statement, branch/loop body traversal, and direct same-function goto/label edges in functions without finally/using cleanup ownership implemented",
+                        "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, cleanup-crossing goto, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
             ),
@@ -3029,8 +3029,8 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "Control-flow graph with using_statement and branch/loop body traversal implemented",
-                    "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                    "Control-flow graph with using_statement, branch/loop body traversal, and direct same-function goto/label edges in functions without finally/using cleanup ownership implemented",
+                    "try/catch/finally continuations and using-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; cleanup-vs-body exception replacement precedence, inherited or aliased catch types, thrown variables, filtered handlers, implicit exceptions, goto case/default, cleanup-crossing goto, and over-budget atomic fallback remain precision boundaries",
                 ],
             )
         );
