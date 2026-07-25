@@ -162,6 +162,7 @@ Config files by client:
 | OpenCode | `~/.config/opencode/opencode.json` | `opencode.json` in the project root |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | - |
 | Cursor | Cursor Settings -> MCP -> Add new MCP server | `.cursor/mcp.json` |
+| Grok | `~/.grok/config.toml` | `.grok/config.toml` |
 
 > Claude/Cursor-style clients use `mcpServers` with `command` and `args`.
 > OpenCode uses its own `mcp` object: each server is `type: "local"` and
@@ -200,6 +201,15 @@ OpenCode (`~/.config/opencode/opencode.json`):
 ```
 
 Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.atlas]
+command = "/path/to/atlas"
+args = ["mcp"]
+enabled = true
+```
+
+Grok (`~/.grok/config.toml`):
 
 ```toml
 [mcp_servers.atlas]
