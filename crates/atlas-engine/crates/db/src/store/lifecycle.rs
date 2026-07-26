@@ -94,24 +94,30 @@ impl Store {
             "#,
         )?;
 
-        // Open a dedicated read connection.  query_only = ON ensures
-        // accidental writes through this connection fail at the SQLite
-        // level instead of silently corrupting data.
-        let read_conn = Connection::open(db_path)?;
-        read_conn.execute_batch(
-            r#"
-            PRAGMA query_only = ON;
-            PRAGMA busy_timeout = 10000;
-            PRAGMA cache_size = -65536;
-            PRAGMA temp_store = MEMORY;
-            PRAGMA mmap_size = 268435456;
-            "#,
-        )?;
+        // Open a pool of dedicated read connections.  query_only = ON ensures
+        // accidental writes through these connections fail at the SQLite
+        // level instead of silently corrupting data.  Multiple connections
+        // let parallel readers (rayon resolution workers) proceed without
+        // serializing behind one mutex.
+        let mut read_pool = Vec::with_capacity(crate::store::read_pool_size());
+        for _ in 0..crate::store::read_pool_size() {
+            let rc = Connection::open(db_path)?;
+            rc.execute_batch(
+                r#"
+                PRAGMA query_only = ON;
+                PRAGMA busy_timeout = 10000;
+                PRAGMA cache_size = -65536;
+                PRAGMA temp_store = MEMORY;
+                PRAGMA mmap_size = 268435456;
+                "#,
+            )?;
+            read_pool.push(Mutex::new(rc));
+        }
 
         Ok(Self {
             reader: StoreReader {
                 conn: Mutex::new(conn),
-                read_conn: Some(Mutex::new(read_conn)),
+                read_pool,
             },
             db_path: db_path.to_path_buf(),
         })
@@ -138,7 +144,7 @@ impl Store {
         Ok(Self {
             reader: StoreReader {
                 conn: Mutex::new(conn),
-                read_conn: None,
+                read_pool: Vec::new(),
             },
             db_path: db_path.to_path_buf(),
         })
@@ -155,7 +161,7 @@ impl Store {
         Ok(Self {
             reader: StoreReader {
                 conn: Mutex::new(conn),
-                read_conn: None,
+                read_pool: Vec::new(),
             },
             db_path: PathBuf::from(":memory:"),
         })

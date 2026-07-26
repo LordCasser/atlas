@@ -977,8 +977,18 @@ pub fn phase_resolve_and_build(
         None
     };
 
+    // Surface the serial post-passes (callback/decorator detection, edge write)
+    // that run after the parallel loop has already reached 100%.
+    let on_stage = |name: &str| {
+        if let Some(ps_mutex) = progress {
+            if let Ok(mut ps) = ps_mutex.lock() {
+                ps.set_message(name.to_string());
+            }
+        }
+    };
+
     let build_stats = if let Some(ref counter) = edge_progress {
-        builder.build_all_with_progress(&resolved_refs, Some(symbol_map), counter)
+        builder.build_all_with_progress_stages(&resolved_refs, Some(symbol_map), counter, &on_stage)
     } else {
         builder.build_all_with_symbols(&resolved_refs, Some(symbol_map))
     };

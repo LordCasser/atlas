@@ -70,13 +70,26 @@ pub const ALL_WRITE_INDEXES: &[&str] = &[
 
 /// Minimal indexes needed before Phase 7 resolution.
 /// These are the indexes that resolve_all_parallel reads.
+///
+/// `idx_symbols_name` and `idx_callsites_reference` are included because
+/// Phase 7 also runs edge building (`GraphBuilder`), whose callback-pattern
+/// and function-pointer detection query `symbols(name)` and
+/// `callsites(reference_id)` once per candidate edge.  Without them those
+/// lookups degrade to full table scans over multi-million-row tables, which
+/// is the dominant cost of `index full` on large repositories.
 pub const RESOLUTION_INDEXES: &[&str] = &[
     "idx_files_path",
     "idx_symbols_file",
     "idx_symbols_qname",
+    "idx_symbols_name",
     "idx_scopes_file",
     "idx_imports_file",
     "idx_imports_module",
+    "idx_callsites_reference",
+    // Function-pointer resolution walks the dataflow graph for every
+    // Variable-kind call target during edge building (C/C++ heavy repos).
+    "idx_data_nodes_file",
+    "idx_dataflow_edges_target",
 ];
 
 /// Indexes needed for dataflow/CFG summary build (--analysis full only).
@@ -89,9 +102,7 @@ pub const SUMMARY_INDEXES: &[&str] = &[
     "idx_cfg_edges_kind",
     "idx_data_nodes_function",
     "idx_data_nodes_binding",
-    "idx_data_nodes_file",
     "idx_dataflow_edges_source",
-    "idx_dataflow_edges_target",
     "idx_dataflow_edges_kind",
 ];
 
@@ -107,9 +118,8 @@ pub const FINAL_QUERY_INDEXES: &[&str] = &[
     "idx_bindings_file",
     "idx_bindings_function",
     "idx_bindings_symbol",
-    // callsites
+    // callsites (idx_callsites_reference is created with RESOLUTION_INDEXES)
     "idx_callsites_caller",
-    "idx_callsites_reference",
     // fpa
     "idx_fpa_source",
     "idx_fpa_source_field",
@@ -129,10 +139,10 @@ pub const FINAL_QUERY_INDEXES: &[&str] = &[
     "idx_symbol_edges_source",
     "idx_symbol_edges_source_kind",
     "idx_symbol_edges_target",
-    // symbols (non-resolution indexes)
+    // symbols (non-resolution indexes; idx_symbols_name is created with
+    // RESOLUTION_INDEXES because edge building queries symbols by name)
     "idx_symbols_container",
     "idx_symbols_kind",
-    "idx_symbols_name",
 ];
 
 // ---------------------------------------------------------------------------

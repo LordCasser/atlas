@@ -520,6 +520,12 @@ impl IndexPipeline {
         // ── Bulk-load: rebuild final indexes + FTS after resolution ────
         if must_rebuild {
             self.store.create_final_indexes_and_rebuild_fts()?;
+            // Summary indexes are also created before Phase 9 in full mode,
+            // but structural/manifest runs skip that phase entirely.  Without
+            // this they stay dropped until `ensure_required_schema_objects`
+            // repairs them at finalize, which logs a spurious "missing schema
+            // indexes" warning on every single index run.
+            self.store.create_summary_indexes_if_needed()?;
         }
 
         // ── Phase 9: Build summaries (Full mode only) ───────────────────
@@ -552,11 +558,6 @@ impl IndexPipeline {
                     phase: PhaseName::SummaryBuild,
                     total: function_count,
                 });
-
-                // ── Bulk-load: create summary indexes before build ──────
-                if must_rebuild {
-                    self.store.create_summary_indexes_if_needed()?;
-                }
 
                 let on_summary_progress = |completed: u64| {
                     sink.emit(ProgressEvent::ItemProgress {

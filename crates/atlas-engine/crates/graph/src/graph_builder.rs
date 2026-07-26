@@ -54,7 +54,7 @@ impl GraphBuilder {
         resolved: &[(ReferenceUse, ResolvedTarget)],
         symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
     ) -> GraphBuilderStats {
-        self.build_all_inner(resolved, symbol_override, None)
+        self.build_all_inner(resolved, symbol_override, None, None)
     }
 
     /// Build edges with progress reporting via an AtomicU64 counter.
@@ -65,7 +65,24 @@ impl GraphBuilder {
         symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
         progress: &AtomicU64,
     ) -> GraphBuilderStats {
-        self.build_all_inner(resolved, symbol_override, Some(progress))
+        self.build_all_inner(resolved, symbol_override, Some(progress), None)
+    }
+
+    /// Build edges with a progress counter plus a stage-reporting callback.
+    ///
+    /// The counter only covers the parallel edge-creation loop.  Edge building
+    /// continues afterwards with callback detection, decorator detection and a
+    /// single batch insert — none of which advance the counter.  `on_stage` is
+    /// invoked before each of those so the UI can explain why the bar is at
+    /// 100% but the phase has not finished.
+    pub fn build_all_with_progress_stages(
+        &self,
+        resolved: &[(ReferenceUse, ResolvedTarget)],
+        symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
+        progress: &AtomicU64,
+        on_stage: &(dyn Fn(&str) + Sync),
+    ) -> GraphBuilderStats {
+        self.build_all_inner(resolved, symbol_override, Some(progress), Some(on_stage))
     }
 
     fn build_all_inner(
@@ -73,7 +90,13 @@ impl GraphBuilder {
         resolved: &[(ReferenceUse, ResolvedTarget)],
         symbol_override: Option<HashMap<SymbolId, SymbolDef>>,
         progress: Option<&AtomicU64>,
+        on_stage: Option<&(dyn Fn(&str) + Sync)>,
     ) -> GraphBuilderStats {
+        let stage = |name: &str| {
+            if let Some(f) = on_stage {
+                f(name);
+            }
+        };
         let _span = info_span!(target: "atlas_graph", "graph.build_all").entered();
         // Use pre-loaded symbols if provided; otherwise fall back to N×1 DB queries.
         let symbol_cache: HashMap<SymbolId, SymbolDef> = if let Some(override_map) = symbol_override
@@ -96,6 +119,7 @@ impl GraphBuilder {
 
         let warnings: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+        let t_parallel = std::time::Instant::now();
         let edges: Vec<RawEdge> = resolved
             .par_iter()
             .filter_map(|(reference, target)| {
@@ -120,9 +144,20 @@ impl GraphBuilder {
             .flatten()
             .collect();
 
-        let callback_edges = Self::detect_callback_registrations(&edges, &self.store);
+        let parallel_ms = t_parallel.elapsed().as_millis() as u64;
+
+        stage("detecting callbacks");
+        let t_callback = std::time::Instant::now();
+        let callback_edges =
+            Self::detect_callback_registrations(&edges, &self.store, &symbol_cache);
+        let callback_ms = t_callback.elapsed().as_millis() as u64;
+
+        stage("detecting decorators");
+        let t_decorator = std::time::Instant::now();
         let scoped = resolved.iter().collect::<Vec<_>>();
         let decorator_edges = self.detect_decorator_registrations(&scoped);
+        let decorator_ms = t_decorator.elapsed().as_millis() as u64;
+
         let all_edges = edges
             .into_iter()
             .chain(callback_edges)
@@ -133,7 +168,9 @@ impl GraphBuilder {
         let mut warnings: Vec<String> = warnings.into_inner().unwrap_or_default();
 
         // Write edges to store, tracking actual success
+        let t_write = std::time::Instant::now();
         let edges_written = if !all_edges.is_empty() {
+            stage("writing edges");
             match self.store.insert_edges(&all_edges) {
                 Ok(()) => edge_count,
                 Err(e) => {
@@ -146,6 +183,16 @@ impl GraphBuilder {
         } else {
             0
         };
+
+        tracing::info!(
+            target: "atlas_graph",
+            parallel_ms,
+            callback_ms,
+            decorator_ms,
+            write_ms = t_write.elapsed().as_millis() as u64,
+            edges_built = edge_count,
+            "graph.build_all stage timing"
+        );
 
         GraphBuilderStats {
             edges_built: edge_count,
@@ -214,7 +261,8 @@ impl GraphBuilder {
             .collect();
 
         // Post-process: detect callback registrations and create RegistersCallback edges
-        let callback_edges = Self::detect_callback_registrations(&edges, &self.store);
+        let callback_edges =
+            Self::detect_callback_registrations(&edges, &self.store, &symbol_cache);
         // Post-process: detect decorator registrations (Python @decorator patterns)
         let decorator_edges = self.detect_decorator_registrations(&scoped);
         let all_edges: Vec<RawEdge> = edges
@@ -352,9 +400,13 @@ impl GraphBuilder {
 
         edges.push(edge);
 
-        // Also create Contains edges from container symbols during resolution
+        // Also create Contains edges from container symbols during resolution.
+        // Only the container's existence matters, so prefer the pre-loaded
+        // cache and fall back to the store only when it is absent.
         if let Some(container) = target_sym.container {
-            if self.store.find_symbol_by_id(&container)?.is_some() {
+            let container_exists = symbol_cache.is_some_and(|c| c.contains_key(&container))
+                || self.store.find_symbol_by_id(&container)?.is_some();
+            if container_exists {
                 let mut contains_edge = RawEdge::new(
                     EdgeId::generate(
                         &container,
@@ -397,14 +449,13 @@ fn try_resolve_function_pointer(
     store: &Arc<Store>,
     reference: &ReferenceUse,
 ) -> anyhow::Result<Option<SymbolId>> {
-    let fp_start = std::time::Instant::now();
     // 1. Find the CallTarget DataNode at this reference position
-    let file_nodes = store.find_data_nodes_by_file(&reference.file_id)?;
-    let call_target = match file_nodes.iter().find(|n| {
-        n.kind == DataNodeKind::CallTarget
-            && n.range.start_byte == reference.range.start_byte
-            && n.range.end_byte == reference.range.end_byte
-    }) {
+    let call_target = match store.find_data_node_at_range(
+        &reference.file_id,
+        DataNodeKind::CallTarget,
+        reference.range.start_byte,
+        reference.range.end_byte,
+    )? {
         Some(node) => node,
         None => return Ok(None),
     };
@@ -456,11 +507,6 @@ fn try_resolve_function_pointer(
                     for sym in &candidates {
                         if sym.kind == SymbolKind::Function && sym.file_id == reference.file_id {
                             // Found a function match in the same file
-                            tracing::debug!(
-                                target: "atlas::graph",
-                                "function pointer resolution took {:?}",
-                                fp_start.elapsed()
-                            );
                             return Ok(Some(sym.id));
                         }
                     }
@@ -472,11 +518,6 @@ fn try_resolve_function_pointer(
         }
     }
 
-    tracing::debug!(
-        target: "atlas::graph",
-        "function pointer resolution took {:?}",
-        fp_start.elapsed()
-    );
     Ok(None)
 }
 
@@ -1090,7 +1131,11 @@ pub(crate) const CALLBACK_PATTERNS: &[(&str, usize)] = &[
 impl GraphBuilder {
     /// After building standard call edges, scan for callback registration
     /// patterns and create `RegistersCallback` edges.
-    fn detect_callback_registrations(edges: &[RawEdge], store: &Arc<Store>) -> Vec<RawEdge> {
+    fn detect_callback_registrations(
+        edges: &[RawEdge],
+        store: &Arc<Store>,
+        symbol_cache: &HashMap<SymbolId, SymbolDef>,
+    ) -> Vec<RawEdge> {
         let mut result = Vec::new();
 
         for edge in edges {
@@ -1098,15 +1143,20 @@ impl GraphBuilder {
                 continue;
             }
 
-            // Look up callee symbol name
-            let callee_name = match store
-                .find_symbol_by_id(&edge.target)
-                .ok()
-                .flatten()
-                .map(|s| s.name)
-            {
+            // Look up callee symbol name.  The cache covers every resolved
+            // target, so this is a hit on the normal path; the DB fallback
+            // only matters for callers that did not pre-load symbols.
+            let callee_name = match symbol_cache.get(&edge.target).map(|s| s.name.clone()) {
                 Some(name) => name,
-                None => continue,
+                None => match store
+                    .find_symbol_by_id(&edge.target)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.name)
+                {
+                    Some(name) => name,
+                    None => continue,
+                },
             };
 
             // Check if callee matches any callback pattern
@@ -1160,14 +1210,17 @@ impl GraphBuilder {
             };
 
             // Get the file_id of the edge source (registrant function)
-            let registrant_file = match store
-                .find_symbol_by_id(&edge.source)
-                .ok()
-                .flatten()
-                .map(|s| s.file_id)
-            {
+            let registrant_file = match symbol_cache.get(&edge.source).map(|s| s.file_id) {
                 Some(fid) => fid,
-                None => continue,
+                None => match store
+                    .find_symbol_by_id(&edge.source)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.file_id)
+                {
+                    Some(fid) => fid,
+                    None => continue,
+                },
             };
 
             let callback_sym = match candidates

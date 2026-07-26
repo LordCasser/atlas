@@ -229,6 +229,13 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | **P4: COUNT(*) progress load** | Replace `find_unresolved_references()` full Vec materialization with index-only `COUNT(*)` — leverages existing partial index `idx_references_unresolved` | progress_total_load_ms: 39ms → 5ms (−87.2%); large-project impact not yet measured |
 | **P5: shared `get_all_symbols()`** | Single `get_all_symbols()` call shared between `GlobalSymbolIndex::build()` and `GraphBuilder` symbol_override; `ResolutionSession::build_from_symbols()` + `resolve_all_parallel_with_symbols()` API | session_build_ms: 17ms → 8ms (−52.9%); graph_symbol_load_ms: 11ms → 9ms (−18.2%) |
 | **P6: import-scoped S6 pre-filtering** | `GlobalSymbolIndex::find_exact_name_target_in_scope` prioritises candidates from files reachable via the current file's import graph before falling back to global scan; relative imports use importer-aware module resolution and aliases expand before path lookup | 0 correctness regression (identical resolved_refs & edges_built); slight overhead on Rust projects (+22ms context build); expected gain on import-heavy TS/Java monorepos with high-fanout names |
+| **P7: edge-build index timing** | Move `idx_symbols_name`, `idx_callsites_reference`, `idx_data_nodes_file`, `idx_dataflow_edges_target` into `RESOLUTION_INDEXES` so they exist *during* Phase 7 edge building, and pass the pre-loaded `symbol_map` into `detect_callback_registrations` | `--analysis full`: Building edges 158.8s → **11.6s** (**−93%**), wall 167.4s → **20.4s** (−88%). `--analysis structural`: 1.5s → **0.3s** (−80%), wall 4.89s → 3.70s (−24%). Edge count identical in both modes (86,549 / 86,431) |
+| **P8: function-pointer lookup predicate pushdown** | `try_resolve_function_pointer` loaded *every* `data_node` of a file via `find_data_nodes_by_file` and scanned it in Rust to locate one `CallTarget` node. Replaced with `Store::find_data_node_at_range(file_id, kind, start_byte, end_byte)` which pushes the predicate into SQL behind `idx_data_nodes_file` | Measured before: 6,195 calls scanned **27,684,953** rows (avg 4,469/call, 137s aggregate CPU). `--analysis full` parallel edge loop 11,377ms → **1,083ms** (**−90%**), wall 20.4s → **9.43s** (−54%). Edge count and per-kind distribution byte-identical (86,549) |
+| **P9: summary indexes recreated in every mode** | `create_summary_indexes_if_needed()` ran only inside the `produces_dataflow()` branch, so structural/manifest runs left the 9 `SUMMARY_INDEXES` dropped until `ensure_required_schema_objects` repaired them at finalize | Removes the spurious `detected missing schema indexes missing_count=11` warning on every structural index run; no timing change (indexes are cheap on empty/small tables) |
+| **P10: summary build inner loops** | Two independent fixes in `SummaryBuilder::build`: (a) BFS target lookup used `nodes.iter().find(...)`, i.e. a linear scan of the function's node list on every discovered edge — replaced with an up-front `HashMap<DataNodeId, &DataNode>`; (b) edge loading used `find_dataflow_edges_by_sources` whose `IN (?1..?N)` clause recompiles SQL for every distinct node count — replaced with `find_dataflow_edges_by_function`, one static join driving `idx_data_nodes_function` → `idx_dataflow_edges_source` | Measured before: **497,961,662** node-row comparisons in BFS across a redis run; edge-load phase 3,148ms of a 5,360ms `summary_build`. After: BFS scan cost gone, edge load 3,148ms → **2,768ms**, `summary_build` 5,360ms → **4,598ms** (**−14%**). `prepare_cached` on the new join adds only 72ms, confirming the residual 2.7s is real row work, not compilation |
+| **P11: drop the per-reference scope cache (S6)** | Strategy 6 consulted a `Mutex<HashMap<FileId, HashSet<FileId>>>` on *every reference* to learn which files were in import scope. Removed the mutex entirely: the caller now computes `collect_imported_file_ids` once per file and passes `&HashSet<FileId>` down through `resolve_one_core` | TypeScript (2,644 files): the scope lookup itself measured **34.1s** of S6's 94.4s. After: **0s**. `s6_s` 94.44 → **48.18s**, `res_graph` 11,492 → **8,711ms**, total 26,106 → **22,541ms**. Wrapping the cached value in `Arc` first (to skip the clone) changed nothing (34.1 → 35.6s), proving contention — not copying — was the cost |
+| **P12: directory index for proximity fuzzy search** | `fuzzy_search_proximity` scanned every symbol in the project and applied the directory-proximity filter *last*, after length and trigram filters. Added `dir_symbol_ix: HashMap<String, Vec<u32>>` to `GlobalSymbolIndex` and made the directory filter the *first* step, so only nearby symbols are ever examined | Counters showed 43,088 calls surviving **851,681,182** rows after length filtering, 22,498,668 after trigrams, but only **527,997** after the directory filter — the cheapest, most selective predicate ran last. After: `p_fuzzy` 47.3s → **4.90s**, `s6_s` 48.18 → **5.76s**. Candidate indices are re-sorted so `sort_by_key` tie-breaking stays byte-identical to the full linear scan |
+| **P13: SQLite read connection pool** | `StoreReader` held a *single* `Mutex<Connection>` for all SELECTs, so every rayon worker in the parallel resolution phase queued behind one lock. Replaced with `read_pool: Vec<Mutex<Connection>>` sized to `available_parallelism()` (clamped 2..8), selected thread-affinely with `try_lock` probing | TypeScript structural: `s5_s` 48.28 → **17.43s** (−64%), `res_graph` 7,462 → **4,041ms** (−46%), total 21,668 → **18,168ms**. TypeScript full: total 47,871 → **40,094ms** (−16%). redis full: total 21,584 → **19,665ms**. Import resolution had measured 484µs and 614µs per call for two functions doing nothing but indexed lookups — the gap was pure lock queueing (the internal cache mutexes measured 0.04s total) |
 
 ### Rejected Optimizations (verified regression)
 
@@ -242,6 +249,9 @@ Weight-budget chunking replaced the fixed 500-file grouping with a `max_weight` 
 | In-memory symbol pre-load | Avoid DB queries | Neutral (wall clock + higher CPU) | SQLite query is already cached |
 | `has_name` fast-path | Skip hash map lookups | Neutral | Extra lookup cost = saved cost |
 | `find_by_name_refs` clone elimination | Fewer allocations | Marginal (0.2s) | Clone cost is negligible on modern hardware |
+| Extend P6 insert-only to `data_nodes` / `dataflow_edges` | Skip index probe like references/callsites did | Neutral (1643→1656ms, 1612→1650ms on redis) | Conflict probe is already cheap relative to the 15-column row write; P6's win came from `references`/`callsites` row shape, not from the clause itself |
+| `Arc<HashSet<FileId>>` in the S6 scope cache | Avoid cloning the scope set per reference | Neutral/worse (34.1 → 35.6s) | The cost was mutex acquisition, not the clone. Removing the cache outright (P11) was the fix |
+| Extend P6 insert-only to `cfg_nodes` / `cfg_edges` | Same | **Aborted — correctness** | `cfg_node_id` genuinely collides within a batch; plain `INSERT` raises `UNIQUE constraint failed` and forces the whole chunk onto the single-file fallback path (db_write 7.5s → 16.5s) |
 
 **Key pattern**: SQLite's internal prepared statement cache makes per-row `stmt.execute(params![])` extremely efficient. Dynamic SQL construction (building variable-length `INSERT INTO ... VALUES` statements) defeats this cache entirely. This is counter-intuitive for engineers coming from PostgreSQL or MySQL where batching is almost always a win.
 
@@ -556,7 +566,7 @@ On the Elasticsearch 30K-file fresh index, 48 PASSIVE checkpoints all completed 
 
 ### 7. Commit dominates large-scale SQLite writes; reducing write amplification beats tuning commit
 
-On Elasticsearch 30K-file DB write, `commit_ms` accounted for 60.6% of total DB write time (243,856ms / 402,654ms). The largest chunk spent 92.8% of its time in `tx.commit()`. Tuning the commit mechanism itself (PRAGMA cache_spill, transaction mode) was strictly inferior to reducing what gets committed — see §8 and Methodology §10 for the insert-only approach that cut commit_ms by 33.8%.
+On Elasticsearch 30K-file DB write, `commit_ms` accounted for 60.6% of total DB write time (243,856ms / 402,654ms). The largest chunk spent 92.8% of its time in `tx.commit()`. Tuning the commit mechanism itself (PRAGMA cache_spill, transaction mode) was strictly inferior to reducing what gets committed — see §8 and Methodology §13 for the insert-only approach that cut commit_ms by 33.8%.
 
 ### 8. INSERT OR REPLACE has hidden write amplification in bulk-clean-then-write paths
 
@@ -792,10 +802,179 @@ Before starting any performance optimization:
 - [ ] Trust measurements over intuition. If static analysis says "this should
       be faster" but the benchmark disagrees, the benchmark is right.
 
-### 10. INSERT OR REPLACE Is Not Free — Even Without Conflicts
+### 10. Deferred Index Creation Needs Per-Phase, Not Per-Pipeline, Granularity
+
+Dropping all query indexes before bulk write (−27.1%, §6) is correct, but the
+recreate schedule must match what each phase actually queries — not just the
+phase the group is named after.
+
+`RESOLUTION_INDEXES` was sized for `resolve_all_parallel`. But Phase 7 also runs
+`GraphBuilder`, whose callback-pattern detection queries `symbols(name)` and
+`callsites(reference_id)` once per candidate edge, and whose function-pointer
+resolution walks `data_nodes(file_id)` / `dataflow_edges(target)` for every
+`Variable`-kind call target. Those indexes lived in `FINAL_QUERY_INDEXES` (or
+`SUMMARY_INDEXES`), all created *after* Phase 7. Every such lookup was therefore
+a full table scan, giving edge building an effective cost of
+O(edges × table rows).
+
+Measured on Atlas's own 368-file tree with `--analysis full`, where the dataflow
+tables are populated: **edge building took 158.8s; with the indexes present it
+takes 11.6s (−93%)**. The structural-mode gain is only 1.5s → 0.3s because
+`data_nodes` is nearly empty there — a small-repo benchmark in the wrong mode
+would have shown almost nothing while the real workload was 14× slower.
+
+This is the same failure mode as the `+330s` subquery batch DELETE (§6): a
+missing index turning a point lookup into a scan. The difference is that here
+the index *exists in the schema* — it just was not created yet. Schema-level
+index review is not sufficient; the index set must be validated against the
+queries running **in each pipeline window**.
+
+**Symptom to watch for**: a progress phase that reaches 100% and then appears to
+hang. That means the counter's covered work finished but uncounted work
+continues — usually a serial post-processing stage doing unindexed queries.
+
+**Rule**: for every staged-index group, enumerate the queries executed while
+that group is the *only* one present. Any query whose `EXPLAIN QUERY PLAN` shows
+`SCAN` rather than `SEARCH` belongs to an index that must be created earlier.
+
+### 11. Progress Rate Must Use a Sliding Window, Not a Phase Average
+
+A rate computed as `items ÷ phase_elapsed` keeps reporting throughput after the
+counter stops moving: the numerator freezes while the denominator grows, so the
+displayed rate decays hyperbolically. This reads as "slowing down" when the real
+state is "stalled", and it actively hides the stall that most needs attention.
+
+The window must be wide enough to span batch-update intervals (DbWrite and
+Resolution advance in 500-item jumps) but short enough to decay to zero within
+seconds. `RATE_WINDOW = 5s` over `(Instant, counter)` samples satisfies both.
+
+**Rule**: a progress indicator's job is to distinguish "working" from "stuck".
+An average over the whole phase cannot do that by construction.
+
+### 12. An Index Only Helps If the Predicate Reaches SQL
+
+Adding `idx_data_nodes_file` to `RESOLUTION_INDEXES` (§10) made the *file* lookup
+in `try_resolve_function_pointer` an index seek, and edge building dropped from
+158.8s to 11.6s. It looked solved. But 11.4s of the remaining 11.6s was still
+inside that same function, and the query plan was already `SEARCH ... USING
+INDEX`. The index was not the problem — the predicate was.
+
+`find_data_nodes_by_file` returned **every** node of the file; the `kind` and
+byte-range filter then ran in Rust. Instrumenting with two `AtomicU64` counters
+(call count, rows returned) before touching any code showed 6,195 calls pulling
+**27,684,953** rows — 4,469 per call, to select one. Each row also allocated
+several `String`s. Pushing `kind` and the byte range into the `WHERE` clause
+(`find_data_node_at_range`) cut the parallel loop from 11,377ms to 1,083ms.
+
+Note this is *not* the rejected "batch symbol lookup" pattern (§6): that replaced
+N cached point queries with one dynamic-SQL `IN` query and regressed. This
+replaces one over-broad query with one narrow query of the same shape — fewer
+rows crossing the SQLite/Rust boundary, no dynamic SQL.
+
+**Rule**: `EXPLAIN QUERY PLAN` showing `SEARCH` is necessary but not sufficient.
+Also ask how many rows the statement *returns* versus how many the caller uses.
+Count first (`AtomicU64`), then optimize — the counter here pointed at a
+completely different line than the profile-by-intuition guess (callback
+detection, which measured 41ms).
+
+### 13. INSERT OR REPLACE Is Not Free — Even Without Conflicts
 
 SQLite's `INSERT OR REPLACE` performs a B-tree conflict check on every row, and may do a delete-before-insert cycle — even when zero conflicts exist. On a 30K-file bulk write with pre-cleaned data, switching to plain `INSERT` cut commit_ms by 33.8% and slow chunk p95 by 45.7% (see §8 for full data and root cause analysis).
 
 **When this applies**: Only when data has been explicitly pre-cleaned (bulk-clean-then-write, fresh index). Incremental/single-file paths must keep `INSERT OR REPLACE`.
 
 **Implementation pattern**: `replace_on_conflict: bool` parameter — batch path sets `false`, all others `true`. Regression test verifies repeated writes with same data cause no duplication on non-batch paths.
+
+### 14. `IN (?1..?N)` Is Dynamic SQL in Disguise
+
+`find_dataflow_edges_by_sources` looks like an ordinary prepared statement, but
+its placeholder count is derived from the input length, so every distinct input
+size produces a different SQL string.  Called once per function during summary
+building, it defeated SQLite's statement cache exactly the way the rejected
+"Dynamic SQL batch INSERT" experiment did — the anti-pattern was simply hidden
+behind a helper.
+
+The fix is not to batch differently but to express the *intent* in static SQL.
+The caller already knew the real predicate ("edges whose source belongs to this
+function"); passing 98 node ids was an encoding of that predicate, not the
+predicate itself.  A single join recovers it:
+
+```sql
+FROM dataflow_edges e JOIN data_nodes d ON d.data_node_id = e.source
+WHERE d.function_id = ?1
+```
+
+Two lessons generalise:
+
+- **Count placeholders, not queries.** A "one query instead of N" refactor is a
+  regression when the one query is recompiled on each call.  `rg 'format!' ` over
+  SQL construction sites is a cheap way to find these.
+- **Look for the predicate the caller already has.** Whenever a helper takes a
+  `&[Id]`, ask where that slice came from.  If it came from another query with a
+  simple `WHERE`, the two queries usually collapse into one join.
+
+The same pass also removed a linear `nodes.iter().find(...)` inside the BFS.
+Both defects were invisible in profiles at Atlas's own scale (368 files) and only
+surfaced after counting operations on redis — see §5.
+
+---
+
+### 15. A Cache Whose Key Is Coarser Than Its Call Site Belongs to the Caller
+
+Strategy 6 cached "which files are in import scope for file F" behind a mutex,
+then consulted it once per *reference*. But scope is a property of the file, and
+a file has thousands of references — so the cache was hit thousands of times to
+return the same answer, each hit paying for lock acquisition.
+
+The fix is not a faster cache. It is hoisting the computation to the level its
+key already describes: compute it once per file in the caller and pass the
+result down. The mutex disappears, and so does the question of contention.
+
+**Rule**: if a cache key is strictly coarser than the loop that queries it,
+the value should be computed by whoever owns that coarser scope. A cache is
+only warranted when the call pattern genuinely cannot be restructured.
+
+### 16. Order Filters by Selectivity, Not by Convenience
+
+`fuzzy_search_proximity` applied three filters in this order: string length,
+character trigrams, directory proximity. Instrumenting each stage on a
+TypeScript project showed:
+
+| After filter | Surviving rows |
+|---|---|
+| length | 851,681,182 |
+| trigram | 22,498,668 |
+| **directory** | **527,997** |
+
+The directory filter removed 97.7% of what reached it and was also the cheapest
+to evaluate (one hash lookup versus a per-character scan) — yet it ran last,
+because it was written last. Reordering it to the front (backed by a
+`directory → symbol indices` map built once) cut the phase from 47.3s to 4.9s.
+
+**Rule**: measure survivor counts per filter stage before optimizing the filters
+themselves. The fix is often reordering, not rewriting. When reordering changes
+which candidates are considered, re-sort so tie-breaking stays identical —
+correctness first, then speed.
+
+### 17. One Connection Is One Thread, No Matter How Many Workers You Spawn
+
+Two functions in import resolution measured 484µs and 614µs per call while
+doing nothing but primary-key and indexed lookups — two orders of magnitude
+slower than SQLite should be. Their internal cache mutexes measured 0.04s
+total across the whole run, ruling out the obvious suspect.
+
+The cost was one level down: `StoreReader` exposed a single
+`Mutex<Connection>` through `lock_read()`, used by 147 call sites. Every rayon
+worker in the parallel resolution phase serialized on it. The parallelism was
+real; the database access underneath it was not.
+
+SQLite in WAL mode supports many concurrent readers — one connection each. The
+fix is a small pool sized to `available_parallelism()`, clamped because each
+connection carries its own page cache. Slot selection is thread-affine so a
+worker keeps reusing its connection (preserving per-connection prepared-statement
+and page caches), with `try_lock` probing of the other slots before blocking.
+
+**Rule**: when a "parallel" phase scales poorly and the per-call cost is far
+above what the query plan predicts, look for a shared resource one layer below
+the code you are reading. Timing the locks you *can* see is not enough — the
+serializing lock is often inside an abstraction that looks like a plain accessor.

@@ -78,36 +78,87 @@ pub struct WalCheckpointStats {
 // StoreReader — read-only query interface
 // ---------------------------------------------------------------------------
 
-/// Read-only query interface backed by a dedicated SQLite read connection.
+/// Number of SQLite read connections opened for file-backed databases.
 ///
-/// All methods take `&self` and perform only SELECT queries on a separate
-/// connection opened in `query_only` mode.  This allows concurrent reads
-/// during write transactions (WAL mode), avoiding the single-connection
-/// bottleneck.
+/// Sized to the available parallelism so every rayon worker can usually hold
+/// its own connection.  Clamped because each connection carries its own page
+/// cache (`PRAGMA cache_size`), so an unbounded pool would multiply memory.
+pub(crate) fn read_pool_size() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, std::num::NonZeroUsize::get)
+        .clamp(2, 8)
+}
+
+/// Stable per-thread hint used to pick a read-pool slot.
+fn read_slot_hint() -> usize {
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    thread_local! {
+        static SLOT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+    SLOT.with(|slot| match slot.get() {
+        Some(v) => v,
+        None => {
+            let v = NEXT.fetch_add(1, Ordering::Relaxed);
+            slot.set(Some(v));
+            v
+        }
+    })
+}
+
+/// Read-only query interface backed by a pool of dedicated SQLite read
+/// connections.
+///
+/// All methods take `&self` and perform only SELECT queries on separate
+/// connections opened in `query_only` mode.  This allows concurrent reads
+/// during write transactions (WAL mode) and lets parallel readers run
+/// without serializing behind a single connection.
 ///
 /// For mutations, use `Store` which owns the write connection and derefs
 /// to `StoreReader`.
 pub struct StoreReader {
     /// Write connection — all INSERT/UPDATE/DELETE/reference resolution.
     pub(crate) conn: Mutex<Connection>,
-    /// Read connection — all SELECT queries.  For file-backed databases
-    /// this is a second `Connection` opened with `PRAGMA query_only = ON`
-    /// so reads never block writes (WAL mode).  For in-memory databases
-    /// this is `None` and reads fall back to the write connection.
-    pub(crate) read_conn: Option<Mutex<Connection>>,
+    /// Read connection pool — all SELECT queries.  For file-backed databases
+    /// this holds several `Connection`s opened with `PRAGMA query_only = ON`
+    /// so reads never block writes (WAL mode) *and* parallel readers do not
+    /// serialize behind a single mutex.  For in-memory databases this is
+    /// empty and reads fall back to the write connection.
+    ///
+    /// See `docs/performance.md` Methodology §17 — a single read connection
+    /// turns every rayon worker into a queue behind one mutex.
+    pub(crate) read_pool: Vec<Mutex<Connection>>,
 }
 
 impl StoreReader {
-    /// Lock the read connection for SELECT queries.
+    /// Lock a read connection for SELECT queries.
     ///
-    /// For file-backed databases the read connection uses `PRAGMA query_only = ON`
-    /// and runs independently from the write connection.  For in-memory databases
+    /// For file-backed databases the read connections use `PRAGMA query_only = ON`
+    /// and run independently from the write connection.  For in-memory databases
     /// this falls back to the write connection.
+    ///
+    /// Slot selection is thread-affine (each thread keeps the slot it was first
+    /// assigned) so a rayon worker reuses the same connection — preserving
+    /// SQLite's per-connection prepared-statement and page caches.  If that slot
+    /// is busy the remaining slots are probed with `try_lock` before blocking.
     fn lock_read(&self) -> std::sync::MutexGuard<'_, Connection> {
-        match &self.read_conn {
-            Some(rc) => rc.lock().unwrap_or_else(|e| e.into_inner()),
-            None => self.conn.lock().unwrap_or_else(|e| e.into_inner()),
+        let n = self.read_pool.len();
+        if n == 0 {
+            return self.conn.lock().unwrap_or_else(|e| e.into_inner());
         }
+        let home = read_slot_hint() % n;
+        if let Ok(guard) = self.read_pool[home].try_lock() {
+            return guard;
+        }
+        for offset in 1..n {
+            if let Ok(guard) = self.read_pool[(home + offset) % n].try_lock() {
+                return guard;
+            }
+        }
+        self.read_pool[home]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Find a symbol by its deterministic SymbolId.
@@ -1108,6 +1159,12 @@ impl DataflowReader for Store {
         sources: &[DataNodeId],
     ) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_sources(self, sources)
+    }
+    fn find_dataflow_edges_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        Store::find_dataflow_edges_by_function(self, function_id)
     }
     fn find_dataflow_edges_by_file(&self, file_id: &FileId) -> anyhow::Result<Vec<DataFlowEdge>> {
         Store::find_dataflow_edges_by_file(self, file_id)
@@ -2285,6 +2342,126 @@ mod tests {
         let bindings = store.find_bindings_by_file(&file_id).unwrap();
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].name, "x");
+    }
+
+    /// `find_data_node_at_range` must push the kind + byte-range predicate
+    /// into SQL so callers never load a whole file's data nodes just to pick
+    /// one. It must match on all three dimensions (file, kind, exact range).
+    #[test]
+    fn find_data_node_at_range_matches_kind_and_exact_range() {
+        let store = test_store();
+        let file_id = FileId::generate("src/fp.c");
+        let func_range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
+
+        let file_info = FileInfo {
+            file_id,
+            path: "src/fp.c".into(),
+            language: Language::C,
+            content_hash: "abc".into(),
+            status: ParseStatus::Success,
+        };
+        store.upsert_file(&file_info).unwrap();
+
+        let func = test_symbol(file_id, "caller", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: file_info.clone(),
+                symbols: vec![func.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let node_range = |start_byte: u32, end_byte: u32| TextRange {
+            start_byte,
+            end_byte,
+            start_line: 2,
+            start_column: 1,
+            end_line: 2,
+            end_column: 1,
+        };
+
+        // Three nodes in the same file: two call targets at different ranges,
+        // plus a call arg that overlaps one of them exactly.
+        let target_a = node_range(10, 20);
+        let target_b = node_range(30, 40);
+        let data_nodes = vec![
+            DataNode::call_target(
+                DataNodeId::generate(&file_id, Some(&func.id), "call_target", Some("a"), None, 10),
+                file_id,
+                Some(func.id),
+                None,
+                "a",
+                "a",
+                target_a,
+            ),
+            DataNode::call_target(
+                DataNodeId::generate(&file_id, Some(&func.id), "call_target", Some("b"), None, 30),
+                file_id,
+                Some(func.id),
+                None,
+                "b",
+                "b",
+                target_b,
+            ),
+            DataNode::call_arg(
+                DataNodeId::generate(&file_id, Some(&func.id), "call_arg", Some("arg"), None, 10),
+                file_id,
+                Some(func.id),
+                None,
+                Some("arg"),
+                target_a,
+            ),
+        ];
+
+        let unit = types::lazy::AnalysisUnit::from_function(file_id, func.id, func_range);
+        store
+            .replace_dataflow_for_unit(&unit, &data_nodes, &[], &[], &[], &[], &[])
+            .unwrap();
+
+        // Exact range + kind picks the right node, not the overlapping call_arg.
+        let hit = store
+            .find_data_node_at_range(&file_id, DataNodeKind::CallTarget, 10, 20)
+            .unwrap()
+            .expect("call target at 10..20");
+        assert_eq!(hit.name.as_deref(), Some("a"));
+        assert_eq!(hit.kind, DataNodeKind::CallTarget);
+
+        let hit_b = store
+            .find_data_node_at_range(&file_id, DataNodeKind::CallTarget, 30, 40)
+            .unwrap()
+            .expect("call target at 30..40");
+        assert_eq!(hit_b.name.as_deref(), Some("b"));
+
+        // Same range, different kind.
+        let arg = store
+            .find_data_node_at_range(&file_id, DataNodeKind::CallArg, 10, 20)
+            .unwrap()
+            .expect("call arg at 10..20");
+        assert_eq!(arg.name.as_deref(), Some("arg"));
+
+        // A range that no node occupies yields None rather than a near match.
+        assert!(
+            store
+                .find_data_node_at_range(&file_id, DataNodeKind::CallTarget, 10, 21)
+                .unwrap()
+                .is_none()
+        );
+
+        // Another file with the same range must not leak across.
+        let other_file = FileId::generate("src/other.c");
+        assert!(
+            store
+                .find_data_node_at_range(&other_file, DataNodeKind::CallTarget, 10, 20)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

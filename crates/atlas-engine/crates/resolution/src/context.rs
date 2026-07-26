@@ -41,6 +41,11 @@ pub struct GlobalSymbolIndex {
     /// Files under explicit test/spec directories. Project-wide heuristic
     /// fallback must not connect production references to these symbols.
     test_file_ids: HashSet<FileId>,
+    /// Parent directory → indices into `symbols` (ascending) for symbols
+    /// declared in files under that directory. Lets proximity-scoped fuzzy
+    /// search visit only nearby symbols instead of scanning the whole
+    /// project — see docs/performance.md Methodology §16.
+    dir_symbol_ix: HashMap<String, Vec<u32>>,
 
     // ── Per-session caches ──────────────────────────────────────────────
     /// Cached fuzzy-search results keyed by (lower_name, max_distance).
@@ -91,6 +96,18 @@ impl GlobalSymbolIndex {
             }
         }
 
+        // Group symbol indices by their file's parent directory. Indices are
+        // pushed in ascending order, which proximity search relies on to keep
+        // its tie-breaking identical to a full linear scan.
+        let mut dir_symbol_ix: HashMap<String, Vec<u32>> = HashMap::new();
+        for (i, sym) in symbols.iter().enumerate() {
+            if let Some(dir) = file_parent_dir.get(&sym.file_id)
+                && let Ok(ix) = u32::try_from(i)
+            {
+                dir_symbol_ix.entry(dir.clone()).or_default().push(ix);
+            }
+        }
+
         Ok(Self {
             symbols: symbols.to_vec(),
             lower_names,
@@ -98,6 +115,7 @@ impl GlobalSymbolIndex {
             by_id,
             file_parent_dir,
             test_file_ids,
+            dir_symbol_ix,
             fuzzy_cache: Mutex::new(HashMap::new()),
             proximity_cache: Mutex::new(HashMap::new()),
         })
@@ -369,7 +387,11 @@ impl GlobalSymbolIndex {
         max_distance: usize,
         file_id: FileId,
     ) -> Vec<SymbolDef> {
-        let ref_parent = self.file_parent_dir.get(&file_id);
+        // A reference in a file with no parent directory can never satisfy the
+        // proximity predicate, so skip straight to the global search.
+        let Some(ref_parent) = self.file_parent_dir.get(&file_id) else {
+            return self.fuzzy_search(name, max_distance);
+        };
         let lower = name.to_lowercase();
         let name_len = lower.len();
         let min_len = name_len.saturating_sub(max_distance);
@@ -385,15 +407,26 @@ impl GlobalSymbolIndex {
             HashSet::new()
         };
 
-        let mut candidates: Vec<(usize, SymbolDef)> = self
-            .symbols
-            .iter()
-            .enumerate()
-            .filter(|(i, _s)| {
+        // Directory proximity rejects ~98% of the project, so resolve it first
+        // via the pre-built directory index instead of scanning every symbol.
+        // Indices are re-sorted so the candidate order matches a full linear
+        // scan, keeping `sort_by_key`'s stable tie-breaking unchanged.
+        let mut nearby: Vec<u32> = Vec::new();
+        for (dir, ixs) in &self.dir_symbol_ix {
+            if ref_parent == dir || ref_parent.starts_with(dir) || dir.starts_with(ref_parent) {
+                nearby.extend_from_slice(ixs);
+            }
+        }
+        nearby.sort_unstable();
+
+        let mut candidates: Vec<(usize, SymbolDef)> = nearby
+            .into_iter()
+            .map(|i| i as usize)
+            .filter(|i| {
                 let s_len = self.lower_names[*i].len();
                 s_len >= min_len && s_len <= max_len
             })
-            .filter(|(i, _)| {
+            .filter(|i| {
                 if trigrams.is_empty() {
                     return true;
                 }
@@ -402,14 +435,7 @@ impl GlobalSymbolIndex {
                     .windows(3)
                     .any(|w| trigrams.contains(w))
             })
-            .filter(|(_i, s)| {
-                let sym_parent = self.file_parent_dir.get(&s.file_id);
-                match (ref_parent, sym_parent) {
-                    (Some(r), Some(s)) => r == s || r.starts_with(s) || s.starts_with(r),
-                    _ => false,
-                }
-            })
-            .filter_map(|(i, _)| {
+            .filter_map(|i| {
                 types::levenshtein_bounded(&lower, &self.lower_names[i], max_distance)
                     .map(|d| (d, self.symbols[i].clone()))
             })
@@ -688,11 +714,17 @@ mod tests {
             .filter_map(|(file_id, parent)| is_explicit_test_path(parent).then_some(*file_id))
             .collect();
 
-        for sym in &symbols {
+        let mut dir_symbol_ix: HashMap<String, Vec<u32>> = HashMap::new();
+        for (i, sym) in symbols.iter().enumerate() {
             by_id.insert(sym.id, sym.clone());
             let key = sym.name.to_lowercase();
             lower_names.push(key.clone());
             by_name.entry(key).or_default().push(sym.clone());
+            if let Some(dir) = file_parent_dir.get(&sym.file_id)
+                && let Ok(ix) = u32::try_from(i)
+            {
+                dir_symbol_ix.entry(dir.clone()).or_default().push(ix);
+            }
         }
 
         GlobalSymbolIndex {
@@ -702,6 +734,7 @@ mod tests {
             by_id,
             file_parent_dir,
             test_file_ids,
+            dir_symbol_ix,
             fuzzy_cache: Mutex::new(HashMap::new()),
             proximity_cache: Mutex::new(HashMap::new()),
         }

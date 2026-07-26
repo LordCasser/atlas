@@ -189,6 +189,42 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find a data node in a file by kind and exact byte range.
+    ///
+    /// Function-pointer resolution needs exactly one node per call site.
+    /// Loading every node in the file and filtering in Rust re-reads the same
+    /// rows once per call target, which dominates edge building on large
+    /// dataflow-enabled indexes; pushing the predicate into SQL keeps the work
+    /// proportional to the matches instead of the file size.
+    pub fn find_data_node_at_range(
+        &self,
+        file_id: &FileId,
+        kind: DataNodeKind,
+        start_byte: u32,
+        end_byte: u32,
+    ) -> anyhow::Result<Option<DataNode>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(
+            "SELECT data_node_id, file_id, function_id, kind, binding_id, callsite_id,
+                    name, access_path, arg_index,
+                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    range_end_line, range_end_column
+             FROM data_nodes
+             WHERE file_id = ?1 AND kind = ?2
+               AND range_start_byte = ?3 AND range_end_byte = ?4
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(
+            params![file_id, kind.as_str(), start_byte, end_byte],
+            row_to_data_node,
+        )?;
+        match rows.next() {
+            Some(Ok(node)) => Ok(Some(node)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
     /// Quick check: does this file have any pre-built data_nodes?
     ///
     /// Used by MCP handlers to skip lazy dataflow when a full index
@@ -289,6 +325,31 @@ impl Store {
             .map(|id| id as &dyn rusqlite::types::ToSql)
             .collect();
         let rows = stmt.query_map(params.as_slice(), row_to_dataflow_edge)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find all dataflow edges whose source node belongs to the given function.
+    ///
+    /// Equivalent to `find_data_nodes_by_function` followed by
+    /// `find_dataflow_edges_by_sources`, but expressed as a single static SQL
+    /// statement.  The `IN (?1..?N)` form of the latter must build and compile a
+    /// fresh statement for every distinct node count, which dominates summary
+    /// building; this join reuses one prepared statement and drives
+    /// `idx_data_nodes_function` → `idx_dataflow_edges_source`.
+    pub fn find_dataflow_edges_by_function(
+        &self,
+        function_id: &SymbolId,
+    ) -> anyhow::Result<Vec<DataFlowEdge>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare_cached(
+            "SELECT e.dataflow_edge_id, e.source, e.target, e.kind,
+                    e.location_0, e.location_1, e.location_2,
+                    e.location_3, e.location_4, e.location_5, e.confidence
+             FROM dataflow_edges e
+             JOIN data_nodes d ON d.data_node_id = e.source
+             WHERE d.function_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![function_id], row_to_dataflow_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 

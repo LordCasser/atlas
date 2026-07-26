@@ -20,9 +20,17 @@
 //! the Mutex is held only during `start_phase()` / `finish_phase()`, never
 //! during hot-path `increment()` calls.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Sliding window used to compute the displayed items/second rate.
+///
+/// Long enough to span several batch completions (DbWrite/Resolution commit
+/// in 500-item chunks), short enough that a stalled counter decays to zero
+/// within a few seconds instead of drifting down over the whole phase.
+const RATE_WINDOW: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Phase enum
@@ -150,6 +158,10 @@ pub struct ProgressState {
     pub start_time: Instant,
     pub current_rate: Option<f64>, // items per second
 
+    /// Recent `(observed_at, counter_value)` samples used to derive
+    /// `current_rate` over a sliding window.  Reset on every phase change.
+    pub(crate) rate_samples: VecDeque<(Instant, u64)>,
+
     /// Whether we've entered Phase 2 (serial-write) of a phase that
     /// started with Phase 1 (parallel-match).  When true, the TUI
     /// renders a percentage bar instead of a spinner + rate.
@@ -184,6 +196,7 @@ impl ProgressState {
             message: None,
             start_time: Instant::now(),
             current_rate: None,
+            rate_samples: VecDeque::new(),
             phase2_active: false,
         }
     }
@@ -229,6 +242,7 @@ impl ProgressState {
         };
         self.message = None;
         self.current_rate = None;
+        self.rate_samples.clear();
         self.phase2_active = false;
     }
 
@@ -260,6 +274,7 @@ impl ProgressState {
         self.phase2_active = true;
         self.atomic_current.store(0, Ordering::Relaxed);
         self.current_rate = None;
+        self.rate_samples.clear();
     }
 
     pub fn set_message(&mut self, msg: String) {
@@ -274,23 +289,35 @@ impl ProgressState {
         let now = Instant::now();
         let current = self.atomic_current.load(Ordering::Relaxed);
 
-        // Calculate rate (items/s) using per-phase elapsed time rather
-        // than a sliding window.  Sliding-window rate is misleading for
-        // batch-updating phases like DbWrite/Resolution/EdgeBuilding
-        // where the counter jumps by 500+ items at irregular intervals.
-        // Per-phase rate (items ÷ phase elapsed) accurately reflects
-        // actual throughput by including the invisible time between
-        // batch completions.
-        if current > 0 {
-            if let Some(phase_entry) = self.phases.iter().find(|e| e.state.is_running()) {
-                if let PhaseState::Running { started_at, .. } = &phase_entry.state {
-                    let phase_elapsed = now.duration_since(*started_at).as_secs_f64();
-                    if phase_elapsed > 0.5 {
-                        self.current_rate = Some(current as f64 / phase_elapsed);
-                    }
-                }
+        // Calculate rate (items/s) over a sliding window rather than the
+        // whole phase.  A whole-phase average (items ÷ phase elapsed) keeps
+        // reporting throughput long after the counter has stopped moving:
+        // the numerator is frozen while the denominator grows, producing a
+        // slow hyperbolic decay that looks like "inertia" instead of a stall.
+        // The window is wide enough (RATE_WINDOW) to smooth over batch-updating
+        // phases like DbWrite/Resolution/EdgeBuilding, which jump by 500+ items
+        // at irregular intervals, while still decaying to 0 when work stalls.
+        self.rate_samples.push_back((now, current));
+        while let Some(&(t, _)) = self.rate_samples.front() {
+            if now.duration_since(t) > RATE_WINDOW {
+                self.rate_samples.pop_front();
+            } else {
+                break;
             }
         }
+        self.current_rate = match (self.rate_samples.front(), self.rate_samples.back()) {
+            (Some(&(t0, c0)), Some(&(t1, c1))) => {
+                let span = t1.duration_since(t0).as_secs_f64();
+                // Require a minimum span so the first few 200ms ticks don't
+                // produce wildly overstated rates.
+                if span >= 0.5 {
+                    Some(c1.saturating_sub(c0) as f64 / span)
+                } else {
+                    self.current_rate
+                }
+            }
+            _ => self.current_rate,
+        };
 
         // Find the currently running phase
         let current_phase = self
@@ -416,4 +443,78 @@ pub struct CompletedPhase {
     pub phase: ProgressPhase,
     pub elapsed: Duration,
     pub note: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Backdate every timestamp in the rate window so tests do not sleep.
+    fn backdate(state: &mut ProgressState, by: Duration) {
+        for sample in &mut state.rate_samples {
+            sample.0 -= by;
+        }
+    }
+
+    #[test]
+    fn rate_reflects_recent_throughput_not_phase_average() {
+        let mut state = ProgressState::new();
+        state.start_phase(ProgressPhase::EdgeBuilding, None);
+
+        state.set_current(0);
+        state.flush_and_snapshot();
+        backdate(&mut state, Duration::from_secs(1));
+
+        state.set_current(1000);
+        let snap = state.flush_and_snapshot();
+        let rate = snap.rate.expect("rate should be available");
+        assert!(
+            (rate - 1000.0).abs() < 50.0,
+            "expected ~1000 items/s, got {rate}"
+        );
+    }
+
+    #[test]
+    fn stalled_counter_decays_rate_to_zero() {
+        let mut state = ProgressState::new();
+        state.start_phase(ProgressPhase::EdgeBuilding, None);
+
+        // Ramp up to a non-zero rate.
+        state.set_current(0);
+        state.flush_and_snapshot();
+        backdate(&mut state, Duration::from_secs(1));
+        state.set_current(1000);
+        assert!(state.flush_and_snapshot().rate.unwrap() > 0.0);
+
+        // Counter stops advancing: samples still arrive, value never changes.
+        // Once every in-window sample carries the same value the rate is 0,
+        // rather than the old phase-average behaviour that decayed slowly
+        // and made a stalled phase look like it was still making progress.
+        for _ in 0..3 {
+            backdate(&mut state, RATE_WINDOW);
+            state.flush_and_snapshot();
+        }
+        backdate(&mut state, Duration::from_secs(1));
+        let snap = state.flush_and_snapshot();
+        assert_eq!(
+            snap.rate,
+            Some(0.0),
+            "stalled phase should report 0 items/s"
+        );
+    }
+
+    #[test]
+    fn rate_resets_between_phases() {
+        let mut state = ProgressState::new();
+        state.start_phase(ProgressPhase::Resolution, None);
+        state.set_current(0);
+        state.flush_and_snapshot();
+        backdate(&mut state, Duration::from_secs(1));
+        state.set_current(500);
+        state.flush_and_snapshot();
+
+        state.start_phase(ProgressPhase::EdgeBuilding, None);
+        assert!(state.rate_samples.is_empty());
+        assert_eq!(state.current_rate, None);
+    }
 }

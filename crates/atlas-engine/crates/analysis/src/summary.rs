@@ -47,6 +47,11 @@ impl SummaryBuilder {
         function_id: &SymbolId,
         function_range: Option<(u32, u32)>,
     ) -> anyhow::Result<FunctionSummary> {
+        // True when `nodes` was assembled from a file-wide query rather than a
+        // function-scoped one.  In that case the edge query below cannot use
+        // the function-scoped join (it would miss edges whose source node has
+        // no resolved `function_id`) and must fall back to the id list form.
+        let mut nodes_are_file_scoped = false;
         let nodes: Vec<_> = if let Some((start, end)) = function_range {
             // Test path: file-level + byte-range filter (caller provides real
             // function body range from tree-sitter).
@@ -60,6 +65,7 @@ impl SummaryBuilder {
                 }
             };
             let all_nodes = store.find_data_nodes_by_file(&file_id)?;
+            nodes_are_file_scoped = true;
             all_nodes
                 .into_iter()
                 .filter(|n| n.range.start_byte >= start && n.range.end_byte <= end)
@@ -78,6 +84,7 @@ impl SummaryBuilder {
                         None => return Ok(empty_summary(function_id)),
                     }
                 };
+                nodes_are_file_scoped = true;
                 store.find_data_nodes_by_file(&file_id)?
             } else {
                 nodes
@@ -89,12 +96,27 @@ impl SummaryBuilder {
         }
 
         // ── 1. Build adjacency map: source → [(target, kind)]
+        //
+        // `by_id` turns the BFS target lookups below into O(1).  Without it the
+        // traversal scans `nodes` linearly on every discovered edge, which is
+        // O(nodes × edges) per function — 498M row comparisons across a redis
+        // index run.  See docs/performance.md Methodology §14.
+        let by_id: HashMap<DataNodeId, &_> = nodes.iter().map(|n| (n.id, n)).collect();
         let node_ids: HashSet<DataNodeId> = nodes.iter().map(|n| n.id).collect();
-        let source_ids: Vec<DataNodeId> = nodes.iter().map(|n| n.id).collect();
         let mut adj: HashMap<DataNodeId, Vec<(DataNodeId, DataFlowKind)>> = HashMap::new();
         let mut edge_count = 0usize;
 
-        let all_edges = store.find_dataflow_edges_by_sources(&source_ids)?;
+        // Prefer the function-scoped join: it is a single static statement, so
+        // SQLite reuses one prepared statement across every function.  The
+        // `IN (?1..?N)` variant has to compile fresh SQL for each distinct node
+        // count, which dominated summary building.  See docs/performance.md
+        // Methodology §14.
+        let all_edges = if nodes_are_file_scoped {
+            let source_ids: Vec<DataNodeId> = nodes.iter().map(|n| n.id).collect();
+            store.find_dataflow_edges_by_sources(&source_ids)?
+        } else {
+            store.find_dataflow_edges_by_function(function_id)?
+        };
         for edge in &all_edges {
             if node_ids.contains(&edge.target) {
                 adj.entry(edge.source)
@@ -131,11 +153,8 @@ impl SummaryBuilder {
                 if let Some(targets) = adj.get(&current) {
                     for &(target_id, _kind) in targets {
                         if visited.insert(target_id) {
-                            let kind = nodes
-                                .iter()
-                                .find(|n| n.id == target_id)
-                                .map(|n| n.kind)
-                                .unwrap_or(DataNodeKind::Unknown);
+                            let target_node = by_id.get(&target_id).copied();
+                            let kind = target_node.map_or(DataNodeKind::Unknown, |n| n.kind);
 
                             match kind {
                                 DataNodeKind::Return | DataNodeKind::CallReturn => {
@@ -147,9 +166,7 @@ impl SummaryBuilder {
                                     // Record call-arg flow if callsite info available.
                                     // Use stored arg_index from DataNode (populated during
                                     // extraction backfill) instead of deriving positionally.
-                                    if let Some(target_node) =
-                                        nodes.iter().find(|n| n.id == target_id)
-                                    {
+                                    if let Some(target_node) = target_node {
                                         if let Some(cs_id) = target_node.callsite_id {
                                             let arg_idx =
                                                 target_node.arg_index.unwrap_or(0) as usize;
