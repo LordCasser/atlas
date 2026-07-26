@@ -99,18 +99,23 @@ impl Store {
         // level instead of silently corrupting data.  Multiple connections
         // let parallel readers (rayon resolution workers) proceed without
         // serializing behind one mutex.
-        let mut read_pool = Vec::with_capacity(crate::store::read_pool_size());
-        for _ in 0..crate::store::read_pool_size() {
+        //
+        // The page cache is a per-connection allocation, so the budget is
+        // split across the pool instead of granted to each member — otherwise
+        // read-side memory would scale with core count.  mmap_size is a shared
+        // read-only mapping of the same file, so it stays per-connection.
+        let pool_size = crate::store::read_pool_size();
+        let cache_kib = (crate::store::READ_CACHE_BUDGET_KIB / pool_size).max(16 * 1024);
+        let mut read_pool = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
             let rc = Connection::open(db_path)?;
-            rc.execute_batch(
-                r#"
-                PRAGMA query_only = ON;
-                PRAGMA busy_timeout = 10000;
-                PRAGMA cache_size = -65536;
-                PRAGMA temp_store = MEMORY;
-                PRAGMA mmap_size = 268435456;
-                "#,
-            )?;
+            rc.execute_batch(&format!(
+                "PRAGMA query_only = ON;
+                 PRAGMA busy_timeout = 10000;
+                 PRAGMA cache_size = -{cache_kib};
+                 PRAGMA temp_store = MEMORY;
+                 PRAGMA mmap_size = 268435456;"
+            ))?;
             read_pool.push(Mutex::new(rc));
         }
 

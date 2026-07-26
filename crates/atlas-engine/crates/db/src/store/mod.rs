@@ -78,11 +78,17 @@ pub struct WalCheckpointStats {
 // StoreReader — read-only query interface
 // ---------------------------------------------------------------------------
 
+/// Total read-side page cache budget in KiB, split across the read pool.
+///
+/// Matches the single-connection budget the pool replaced, so adding
+/// connections buys parallelism without multiplying memory.
+pub(crate) const READ_CACHE_BUDGET_KIB: usize = 65536;
+
 /// Number of SQLite read connections opened for file-backed databases.
 ///
 /// Sized to the available parallelism so every rayon worker can usually hold
 /// its own connection.  Clamped because each connection carries its own page
-/// cache (`PRAGMA cache_size`), so an unbounded pool would multiply memory.
+/// cache and file descriptor, so an unbounded pool would multiply both.
 pub(crate) fn read_pool_size() -> usize {
     std::thread::available_parallelism()
         .map_or(4, std::num::NonZeroUsize::get)
@@ -142,6 +148,12 @@ impl StoreReader {
     /// assigned) so a rayon worker reuses the same connection — preserving
     /// SQLite's per-connection prepared-statement and page caches.  If that slot
     /// is busy the remaining slots are probed with `try_lock` before blocking.
+    ///
+    /// Callers must still never hold a read guard across another read: with a
+    /// pool that usually finds a free slot instead of deadlocking, so it would
+    /// fail only under contention.  In-memory databases fall through to the
+    /// single write connection and deadlock deterministically, which is what
+    /// the tests exercise.
     fn lock_read(&self) -> std::sync::MutexGuard<'_, Connection> {
         let n = self.read_pool.len();
         if n == 0 {
