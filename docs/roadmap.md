@@ -3,13 +3,20 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current release focus: Atlas 1.6.0
+## 1. Current release focus: Atlas 1.6.1
 
-Workspace version is **1.6.0**. Everything after git tag **`v1.5.5`** is the
-CFG v3 milestone: structured control-transfer/exception/resource facts,
-Schema V3 persistence, aligned Focus/Index/MCP consumers, and cross-language
-real-project regression coverage. Tag **`v1.5.5`** remains sealed; see
-`CHANGELOG.md` §1.6.0.
+Workspace version is **1.6.1**. Everything after git tag **`v1.6.0`** is an
+indexing performance release: per-phase bulk-load index staging, predicate
+pushdown in function-pointer and summary queries, removal of the strategy-6
+scope mutex, directory-first proximity fuzzy search, a pooled SQLite read path,
+and sliding-window progress rates. No MCP tool name, schema, trace envelope,
+SQLite schema version, or extraction semantic changed; index contents are
+identical to 1.6.0. Tag **`v1.6.0`** remains sealed; see `CHANGELOG.md` §1.6.1.
+
+Tag **`v1.5.5`** and earlier remain sealed. The CFG v3 milestone (structured
+control-transfer/exception/resource facts, Schema V3 persistence, aligned
+Focus/Index/MCP consumers, cross-language real-project regression coverage)
+shipped in 1.6.0; see `CHANGELOG.md` §1.6.0.
 
 Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
 
@@ -25,8 +32,8 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
 - Add release notes / changelog entry for the current public version. ✅ Done:
-  `CHANGELOG.md` contains a dedicated 1.6.0 CFG v3 milestone section and keeps
-  the sealed 1.5.x history intact.
+  `CHANGELOG.md` contains a dedicated 1.6.1 indexing-performance section above
+  the sealed 1.6.0 CFG v3 milestone and the sealed 1.5.x history.
 
 ### 1.2 User-facing documentation
 
@@ -115,7 +122,7 @@ the documented rebuild guidance; the local index was deliberately not destroyed
 or silently migrated. Local verification was macOS arm64; Linux and Windows
 coverage remains the responsibility of the gated release matrix.
 
-Path-level verification record:
+Path-level verification record for 1.6.0:
 
 - Impacted paths: full/dataflow CFG extraction, CFG SQLite persistence,
   C# capability text, and the shared Focus/Index readers of persisted CFG facts.
@@ -135,6 +142,47 @@ Path-level verification record:
   stale ignored v2 development DB reported by doctor. No release-gate test
   remains failing. Cleanup-crossing C# goto, computed/PHP goto, and platform
   matrix execution outside macOS arm64 remain residual risks.
+
+✅ Done for 1.6.1: verified on 2026-07-27. Formatting, workspace-wide
+all-target/all-feature `-D warnings` Clippy, and the all-feature workspace test
+suite completed with exit code 0; `target/release/atlas --version` reports 1.6.1
+and `atlas doctor` passes for a freshly indexed checkout. Local verification was
+macOS arm64; Linux and Windows coverage remains the responsibility of the gated
+release matrix.
+
+Path-level verification record for 1.6.1:
+
+- Impacted paths: bulk-load index staging (`db::bulk_schema`), the SQLite read
+  connection path (`db::store::{mod,lifecycle}`), function-pointer and callback
+  edge construction (`graph::graph_builder`), summary dataflow loading
+  (`analysis::summary`, `db::store::dataflow`), reference resolution strategies
+  5/6 (`resolution::{lib,context}`), pipeline phase ordering
+  (`filesync::index_{phases,pipeline_orchestrator}`), and progress rate
+  reporting (`types::progress`).
+- Result equivalence is the release gate, not a side note. Every optimization
+  was A/B'd on a cold `.atlas` against the same checkout and accepted only when
+  the resolution strategy distribution (`s1..s6`, `miss`, `total`), the strategy-6
+  breakdown (`s6_exact`, `s6_fuzzy_prox`, `s6_fuzzy_global`), and `edges_built`
+  were identical item by item. Final row counts were re-read directly with
+  `sqlite3`: `symbol_edges`, `data_nodes`, and `dataflow_edges` match the 1.6.0
+  baseline exactly.
+- Public surfaces: unchanged. No MCP tool name, schema, trace envelope,
+  capability level, confidence value, or SQLite schema version moved. The only
+  new public database API is `Store::find_data_node_at_range` and
+  `DataflowReader::find_dataflow_edges_by_function`, both additive.
+- Adversarial boundaries: the summary path keeps the file-scoped
+  `find_dataflow_edges_by_sources` fallback for units whose nodes carry no
+  resolved `function_id`, so the new function-scoped join is used only where it
+  is provably equivalent. Proximity fuzzy candidates are re-sorted so
+  `sort_by_key` tie-breaking stays byte-identical to the old full linear scan.
+  Read-pool slots fall back to the write connection for in-memory databases,
+  preserving the single-connection reentrancy behaviour that unit tests rely on.
+- Residual risks: the read pool multiplies open connections and page cache per
+  `Store`; the per-connection cache budget is now divided by pool size with a
+  16 MiB floor, but a container with a hard memory cap and many concurrently
+  open projects should be measured. Edge building still has no cancellation
+  checkpoint, so `Ctrl-C` during that phase waits for completion — far less
+  visible now that the phase runs in seconds rather than minutes, but unfixed.
 
 Pre-release TUI/MCP/Focus alignment review:
 

@@ -271,6 +271,21 @@ Release-gate policy:
 - Local verification is macOS arm64 only; Linux and Windows coverage is via the gated release matrix (actionlint is not available locally).
 - When schema is unchanged but extraction semantics change (e.g., ArkUI recovery rewrite), existing `.atlas` DBs must be removed and re-indexed — `doctor` cannot detect this via source hashes alone.
 
+### 2.8.1 性能改动的结果等价门禁
+
+**性能优化不得改变索引结果。** 任何以性能为目的的改动（查询重写、索引时序、
+缓存、并发、批处理）在合入前必须在冷 `.atlas` 上做 A/B，并逐项比对：
+
+- `resolution.summary` 的 `s1..s6`、`miss`、`total`；
+- `s6_breakdown` 的 `s6_exact`、`s6_fuzzy_prox`、`s6_fuzzy_global`；
+- `graph.build_all` 的 `edges_built`；
+- 必要时直接用 `sqlite3` 读 `symbol_edges` / `data_nodes` / `dataflow_edges`
+  的行数。
+
+任何一项不一致即视为回归，无论耗时是否下降。基线与既往被否决的实验记录在
+[`docs/performance.md`](performance.md)；重复一个已被实测否定的方案之前，先读
+该文档的 Rejected Optimizations 表。
+
 ### 2.9 管线等价性测试
 
 同一项目通过不同入口（CLI index、sync、shared `IndexPipeline`）索引后必须产生相同 DB 状态。

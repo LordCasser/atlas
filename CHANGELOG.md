@@ -4,6 +4,84 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [1.6.1] - 2026-07-27
+
+All changes **after tag `v1.6.0`** belong to 1.6.1. This is an indexing
+performance release: no MCP tool names, schemas, trace envelopes, SQLite schema
+version, or extraction semantics changed. Index contents are byte-for-byte
+identical to 1.6.0 — verified by comparing `symbol_edges`, `data_nodes`, and
+`dataflow_edges` row counts plus the full resolution strategy distribution
+(`s1..s6`, `miss`, `s6_exact`/`s6_fuzzy_prox`/`s6_fuzzy_global`) before and
+after every change.
+
+### Indexing performance
+
+- **Bulk-load index staging is now per phase, not per pipeline.** Edge building
+  ran with `idx_symbols_name`, `idx_callsites_reference`, `idx_data_nodes_file`,
+  and `idx_dataflow_edges_target` dropped, so callback/function-pointer
+  resolution degraded to full table scans against million-row tables. Those four
+  indexes moved into the resolution stage. Edge building on a full-analysis run
+  dropped from **158.8s to 11.6s**.
+- **Function-pointer resolution pushes its predicate into SQL.** The C
+  function-pointer path loaded every data node in a file and filtered in Rust —
+  27.7M rows scanned across 6,195 calls. Added
+  `Store::find_data_node_at_range`, which matches file, kind, and byte range in
+  one indexed lookup. The parallel edge loop went from **11.4s to 1.1s**.
+- **Summary building no longer rescans or recompiles.** The dataflow BFS used a
+  linear `nodes.iter().find(...)` per discovered edge (498M row comparisons on
+  redis) and loaded edges through an `IN (?1..?N)` clause that recompiles SQL for
+  every distinct node count. Replaced with an up-front `HashMap` and the static
+  `find_dataflow_edges_by_function` join. `summary_build` **5.36s → 4.60s**.
+- **Strategy 6 no longer takes a mutex per reference.** Import-scope lookup
+  consulted a shared `Mutex<HashMap<FileId, HashSet<FileId>>>` for every
+  reference; 34.1s of a 94.4s strategy-6 phase was pure lock traffic. The scope
+  set is now computed once per file by the caller. `s6_s` **94.4s → 48.2s**.
+- **Proximity fuzzy search filters by directory first.** The directory-proximity
+  predicate rejected 97.7% of candidates but ran *after* length and trigram
+  filtering, so 851M rows were examined to keep 528K. `GlobalSymbolIndex` now
+  carries a directory→symbol index. Proximity fuzzy search **47.3s → 4.90s**.
+- **SQLite reads use a connection pool.** All 145 read call sites shared one
+  `Mutex<Connection>`, serializing every rayon worker in the parallel resolution
+  phase. `StoreReader` now holds `read_pool: Vec<Mutex<Connection>>` sized to
+  `available_parallelism()` clamped to 2..8, selected thread-affinely with
+  `try_lock` probing. The shared 64 MiB read page-cache budget is divided across
+  the pool (floor 16 MiB per connection) so peak memory does not scale with core
+  count.
+- Summary indexes are created whenever bulk-load dropped them, not only on
+  dataflow runs. This removes the `missing schema indexes missing_count=11`
+  warning that structural and manifest runs emitted during finalization.
+
+Measured end to end (release build, cold `.atlas`):
+
+| Workload | 1.6.0 | 1.6.1 |
+| --- | --- | --- |
+| TypeScript monorepo (2,644 files), structural | 26.1s | **18.2s** |
+| TypeScript monorepo (2,644 files), full | 47.9s | **40.1s** |
+| redis (846 files), full | 21.6s | **17.6s** |
+
+### Progress reporting
+
+- Indexing throughput is now a 5-second sliding window instead of a
+  phase-cumulative average. The old formula divided total completed items by
+  total phase elapsed time, so a stalled counter produced a smoothly decaying
+  rate that looked like slow progress instead of a stall.
+- Edge building reports its serial tail stages (`detecting callbacks`,
+  `detecting decorators`, `writing edges`), which previously ran with the
+  progress counter pinned at 100%.
+
+### Documentation
+
+- `docs/performance.md` records the seven optimizations (P7–P13), the rejected
+  experiments, and methodology sections §10–§17 covering per-phase index
+  staging, sliding-window progress, predicate pushdown, `IN (?1..?N)` as
+  disguised dynamic SQL, cache-key placement, filter ordering by selectivity,
+  and connection-per-thread reasoning.
+- `README.md` documents the Grok MCP client configuration.
+
+### Version
+
+- Workspace package version and skill metadata: **1.6.1**.
+
 ## [1.6.0] - 2026-07-22
 
 All changes after tag `v1.5.5` form the CFG v3 milestone. The public MCP V1
