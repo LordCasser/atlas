@@ -16,29 +16,52 @@ use std::sync::Arc;
 // Helpers
 // =========================================================================
 
-fn python_example_root() -> std::path::PathBuf {
+/// Locate the indexed `python_example` corpus.
+///
+/// The corpus lives under `examples/`, which is not version controlled, so a
+/// fresh clone has neither the sources nor the `.atlas` DB built from them.
+/// Returning `None` lets each test skip instead of failing on an environment
+/// gap that says nothing about the code under test.
+fn python_example_root() -> Option<std::path::PathBuf> {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/python_example")
         .canonicalize()
-        .expect("python_example directory not found")
+        .ok()
 }
 
-fn open_python_example_store() -> Arc<Store> {
-    let db_path = python_example_root().join(".atlas/atlas.db");
-    assert!(
-        db_path.exists(),
-        ".atlas DB not found. Run 'atlas index' in examples/python_example first."
-    );
-    Arc::new(Store::open_db(&db_path).expect("Failed to open DB"))
+fn open_python_example_store() -> Option<Arc<Store>> {
+    let db_path = python_example_root()?.join(".atlas/atlas.db");
+    if !db_path.exists() {
+        return None;
+    }
+    Some(Arc::new(
+        Store::open_db(&db_path).expect("Failed to open DB"),
+    ))
 }
 
-fn python_example_router() -> ToolRouter {
-    let store = open_python_example_store();
-    let router = ToolRouter::new_empty(store, python_example_root());
+fn python_example_router() -> Option<ToolRouter> {
+    let store = open_python_example_store()?;
+    let router = ToolRouter::new_empty(store, python_example_root()?);
     router
         .ensure_graph_initialized()
         .expect("Failed to init graph");
-    router
+    Some(router)
+}
+
+/// Bind an indexed-corpus fixture or return early from the test.
+macro_rules! corpus_or_skip {
+    ($expr:expr) => {
+        match $expr {
+            Some(value) => value,
+            None => {
+                eprintln!(
+                    "skipping test: examples/python_example is unavailable or not indexed. \
+                     Populate `examples/` and run `atlas index` there to enable this regression."
+                );
+                return;
+            }
+        }
+    };
 }
 
 fn parse_json(s: &str) -> serde_json::Value {
@@ -63,7 +86,7 @@ fn assert_ok(resp: &serde_json::Value) {
 
 #[test]
 fn list_tools_has_all_categories() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let tools = &router.list_tools().tools;
     assert!(
         tools.len() >= 15,
@@ -83,7 +106,7 @@ fn list_tools_has_all_categories() {
 
 #[test]
 fn status_has_required_fields() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_status();
     assert!(!err, "status error: {s}");
     let r = parse_json(&s);
@@ -120,7 +143,7 @@ fn status_has_required_fields() {
 
 #[test]
 fn search_scope_filters() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "def", "scope": "spiders", "analysis": "manifest"}),
@@ -137,7 +160,7 @@ fn search_scope_filters() {
 
 #[test]
 fn search_nonexistent_returns_zero() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "ZZZNonExistentXYZZY", "scope": ".", "analysis": "manifest"}),
@@ -148,7 +171,7 @@ fn search_nonexistent_returns_zero() {
 
 #[test]
 fn search_empty_query_is_error() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, _err) = router.handle_search(
         &ToolCallContext::empty(),
         &json!({"query": "", "scope": ".", "analysis": "manifest"}),
@@ -207,7 +230,7 @@ fn search_at_prefixed_query_uses_scoped_search_service() {
 
 #[test]
 fn graph_nonexistent_symbol() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) =
         router.handle_callers(&json!({"symbol": "NonExistent_XYZ123", "direction": "incoming"}));
     if err {
@@ -225,7 +248,7 @@ fn graph_nonexistent_symbol() {
 
 #[test]
 fn domain_rules_list_has_rules() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_atlas_domain_rules(&json!({"action": "list"}));
     assert!(!err, "domain_rules error: {s}");
     let r = parse_json(&s);
@@ -238,7 +261,7 @@ fn domain_rules_list_has_rules() {
 
 #[test]
 fn tasks_has_tasks_field() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_tasks(&json!({}));
     assert!(!err, "tasks error: {s}");
     let r = parse_json(&s);
@@ -250,7 +273,7 @@ fn tasks_has_tasks_field() {
 
 #[test]
 fn jobs_has_jobs_field() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, err) = router.handle_jobs();
     assert!(!err, "jobs error: {s}");
     let r = parse_json(&s);
@@ -266,7 +289,7 @@ fn jobs_has_jobs_field() {
 
 #[test]
 fn list_fp_annotations_does_not_panic() {
-    let router = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
     let (s, _) = router.handle_list_fp_annotations(&serde_json::json!({}));
     let r = parse_json(&s);
     assert!(
@@ -283,8 +306,8 @@ fn list_fp_annotations_does_not_panic() {
 fn handlers_no_panic_empty_args() {
     type ReadOnlyHandler<'a> = Box<dyn Fn() -> (String, bool) + 'a>;
 
-    let router = python_example_router();
-    let router2 = python_example_router();
+    let router = corpus_or_skip!(python_example_router());
+    let router2 = corpus_or_skip!(python_example_router());
 
     let read_only: Vec<(&str, ReadOnlyHandler<'_>)> = vec![
         ("status", Box::new(|| router2.handle_status())),
@@ -346,7 +369,7 @@ mod focus_tests {
 
     #[test]
     fn focus_bootstrap_completes_and_prepares_query() {
-        let root = python_example_root();
+        let root = corpus_or_skip!(python_example_root());
         let router = focus_router(&root);
 
         let intent = atlas_engine::QueryIntent::Calls {
@@ -473,7 +496,7 @@ struct MainPage {
     /// underlying DB already has a full index (focus not needed).
     #[test]
     fn focus_analysis_envelope_has_fields() {
-        let router = python_example_router(); // has manifest-indexed symbols
+        let router = corpus_or_skip!(python_example_router()); // has manifest-indexed symbols
 
         let intent = atlas_engine::QueryIntent::Calls {
             symbol_name: "WikipediaSpider".into(),
@@ -510,7 +533,7 @@ struct MainPage {
     /// manifest index.  Focus analysis envelope is optional (full-index DB may skip it).
     #[test]
     fn focus_search_returns_results() {
-        let router = python_example_router(); // has manifest-indexed symbols
+        let router = corpus_or_skip!(python_example_router()); // has manifest-indexed symbols
 
         let intent = atlas_engine::QueryIntent::Search {
             query: "spider".into(),
@@ -542,13 +565,13 @@ struct MainPage {
     /// indexing."
     #[test]
     fn focus_equivalence_vs_full_index() {
-        let root = python_example_root();
+        let root = corpus_or_skip!(python_example_root());
 
         // ── Phase 1: Discover best test symbol from full index ─────────
         // Instead of hardcoding a single symbol, scan multiple candidates
         // and pick one with non-zero callees (outgoing edges are more
         // predictable than incoming callers).
-        let full_store = open_python_example_store(); // full-indexed DB
+        let full_store = corpus_or_skip!(open_python_example_store()); // full-indexed DB
         let full_router = ToolRouter::new_empty(full_store, root.clone());
         full_router
             .ensure_graph_initialized()
@@ -984,7 +1007,7 @@ struct MainPage {
     /// crash or produce unexpected errors.
     #[test]
     fn focus_multiple_queries_stable() {
-        let router = python_example_router(); // has manifest-indexed symbols
+        let router = corpus_or_skip!(python_example_router()); // has manifest-indexed symbols
 
         // Trigger focus bootstrap for one symbol (may be None if full index)
         let intent = atlas_engine::QueryIntent::Calls {

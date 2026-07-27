@@ -27,6 +27,43 @@ use std::sync::Arc;
 // Helpers
 // ────────────────────────────────────────────────────────────────
 
+/// Read a source file from the un-versioned `examples/` corpus.
+///
+/// `examples/` is git-ignored (see `.gitignore`), so a fresh clone does not
+/// have it. These fixtures used to pull the sources in with `include_str!`,
+/// which is expanded at compile time — a missing corpus failed the whole test
+/// crate to *compile* rather than skipping the affected tests. Reading at run
+/// time lets every other fixture in this file still run.
+///
+/// The returned string is leaked so call sites keep the `&'static str` shape
+/// `include_str!` gave them. Test processes are short-lived; this is bounded by
+/// the number of corpus fixtures.
+fn example_source(rel_path: &str) -> Option<&'static str> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples")
+        .join(rel_path);
+    match std::fs::read_to_string(&path) {
+        Ok(source) => Some(Box::leak(source.into_boxed_str())),
+        Err(err) => {
+            eprintln!(
+                "skipping fixture: examples corpus file {rel_path} is unavailable ({err}). \
+                 Populate `examples/` to run real-project regressions."
+            );
+            None
+        }
+    }
+}
+
+/// Bind a corpus source or return early from the calling test.
+macro_rules! example_source_or_skip {
+    ($rel_path:literal) => {
+        match example_source($rel_path) {
+            Some(source) => source,
+            None => return,
+        }
+    };
+}
+
 fn extract_full(
     frontend: &LanguageFrontend,
     file_id: FileId,
@@ -2818,7 +2855,7 @@ fn fx_cfg_python_with_cleanup_exception_persists_handler_continuation() {
 #[test]
 #[cfg(feature = "cangjie")]
 fn fx_cfg_real_cangjie_example_finally_cleanup_is_structured() {
-    let source = include_str!("../../../examples/cangjie_example/src/command_install.cj");
+    let source = example_source_or_skip!("cangjie_example/src/command_install.cj");
     let store = index_files(&[("command_install.cj", source)]);
     let file_id = FileId::generate("command_install.cj");
     let symbol = store
@@ -2865,7 +2902,7 @@ fn fx_cfg_real_cangjie_example_finally_cleanup_is_structured() {
 #[test]
 #[cfg(feature = "cpp")]
 fn fx_cfg_real_jemalloc_cpp_try_catch_persists_exception_edge() {
-    let source = include_str!("../../../examples/redis/deps/jemalloc/src/jemalloc_cpp.cpp");
+    let source = example_source_or_skip!("redis/deps/jemalloc/src/jemalloc_cpp.cpp");
     let store = index_files(&[("jemalloc_cpp.cpp", source)]);
     let file_id = FileId::generate("jemalloc_cpp.cpp");
     let symbol = store
@@ -2911,8 +2948,8 @@ fn fx_cfg_real_jemalloc_cpp_try_catch_persists_exception_edge() {
 #[test]
 #[cfg(feature = "java")]
 fn fx_cfg_real_java_exact_explicit_throw_prunes_later_handler_after_persistence() {
-    let source = include_str!(
-        "../../../examples/elasticsearch/server/src/main/java/org/elasticsearch/rest/action/RestActions.java"
+    let source = example_source_or_skip!(
+        "elasticsearch/server/src/main/java/org/elasticsearch/rest/action/RestActions.java"
     );
     let store = index_files(&[("RestActions.java", source)]);
     let file_id = FileId::generate("RestActions.java");
@@ -2970,9 +3007,8 @@ fn fx_cfg_real_java_exact_explicit_throw_prunes_later_handler_after_persistence(
 #[test]
 #[cfg(feature = "java")]
 fn fx_cfg_real_java_example_return_executes_finally_before_exit() {
-    let source = include_str!(
-        "../../../examples/java_example/brut.j.util/src/main/java/brut/util/BrutIO.java"
-    );
+    let source =
+        example_source_or_skip!("java_example/brut.j.util/src/main/java/brut/util/BrutIO.java");
     let store = index_files(&[("BrutIO.java", source)]);
     let file_id = FileId::generate("BrutIO.java");
     let symbol = store
@@ -3020,9 +3056,8 @@ fn fx_cfg_real_java_example_return_executes_finally_before_exit() {
 fn fx_cfg_real_java_try_with_resources_return_executes_owned_block_exit() {
     use atlas_engine::enums::CallContext;
 
-    let source = include_str!(
-        "../../../examples/java_example/brut.j.xml/src/main/java/brut/xml/XmlUtils.java"
-    );
+    let source =
+        example_source_or_skip!("java_example/brut.j.xml/src/main/java/brut/xml/XmlUtils.java");
     let store = index_files(&[("XmlUtils.java", source)]);
     let file_id = FileId::generate("XmlUtils.java");
     let symbol = store
@@ -3081,8 +3116,8 @@ fn fx_cfg_real_java_try_with_resources_return_executes_owned_block_exit() {
 #[test]
 #[cfg(feature = "java")]
 fn fx_cfg_real_java_labeled_breaks_target_outer_loop_after_persistence() {
-    let source = include_str!(
-        "../../../examples/elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
+    let source = example_source_or_skip!(
+        "elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
     );
     let store = index_files(&[("ESLZ4Compressor.java", source)]);
     let file_id = FileId::generate("ESLZ4Compressor.java");
@@ -3136,8 +3171,8 @@ fn fx_cfg_real_java_labeled_breaks_target_outer_loop_after_persistence() {
 #[test]
 #[cfg(feature = "java")]
 fn fx_cfg_real_java_labeled_continue_targets_outer_loop_after_persistence() {
-    let source = include_str!(
-        "../../../examples/elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
+    let source = example_source_or_skip!(
+        "elasticsearch/libs/lz4/src/main/java/org/elasticsearch/lz4/ESLZ4Compressor.java"
     );
     let store = index_files(&[("ESLZ4Compressor.java", source)]);
     let file_id = FileId::generate("ESLZ4Compressor.java");
@@ -3178,7 +3213,7 @@ fn fx_cfg_real_java_try_with_resources_catch_follows_owned_block_exit() {
     use atlas_engine::enums::CallContext;
 
     let source =
-        include_str!("../../../examples/java_example/brut.j.util/src/main/java/brut/util/Jar.java");
+        example_source_or_skip!("java_example/brut.j.util/src/main/java/brut/util/Jar.java");
     let store = index_files(&[("Jar.java", source)]);
     let file_id = FileId::generate("Jar.java");
     let symbol = store
@@ -3263,9 +3298,8 @@ fn fx_cfg_real_java_try_with_resources_catch_follows_owned_block_exit() {
 #[test]
 #[cfg(feature = "csharp")]
 fn fx_cfg_real_csharp_nested_using_return_executes_both_block_exits() {
-    let source = include_str!(
-        "../../../examples/c_sharp_example/shadowsocks-csharp/Controller/FileManager.cs"
-    );
+    let source =
+        example_source_or_skip!("c_sharp_example/shadowsocks-csharp/Controller/FileManager.cs");
     let store = index_files(&[("FileManager.cs", source)]);
     let file_id = FileId::generate("FileManager.cs");
     let symbol = store
@@ -3360,8 +3394,8 @@ fn fx_cfg_real_csharp_nested_using_return_executes_both_block_exits() {
 #[test]
 #[cfg(feature = "csharp")]
 fn fx_cfg_real_csharp_direct_goto_persists_exact_label_edge() {
-    let source = include_str!(
-        "../../../examples/c_sharp_example/shadowsocks-csharp/Controller/Service/Listener.cs"
+    let source = example_source_or_skip!(
+        "c_sharp_example/shadowsocks-csharp/Controller/Service/Listener.cs"
     );
     let path = "examples/Listener.cs";
     let store = index_files(&[(path, source)]);
@@ -4083,8 +4117,7 @@ class Worker {
 #[test]
 #[cfg(feature = "php")]
 fn fx_cfg_php_real_example_callable_boundaries() {
-    let source =
-        include_str!("../../../examples/rust_example/tests/syntax-tests/source/PHP/test.php");
+    let source = example_source_or_skip!("rust_example/tests/syntax-tests/source/PHP/test.php");
     let files = &[("examples/php_syntax.php", source)];
     let store = index_files(files);
     let file_id = FileId::generate("examples/php_syntax.php");
@@ -4400,7 +4433,7 @@ func unknown(): Unit {}
 #[test]
 #[cfg(feature = "cangjie")]
 fn fx_cfg_real_cangjie_wildcard_suppresses_persisted_no_match_path() {
-    let source = include_str!("../../../examples/cangjie_example/src/stdx/command.cj");
+    let source = example_source_or_skip!("cangjie_example/src/stdx/command.cj");
     let store = index_files(&[("command.cj", source)]);
     let file_id = FileId::generate("command.cj");
     let symbol = store
@@ -4785,7 +4818,7 @@ fn fx_cfg_cpp() {
 #[test]
 #[cfg(feature = "go")]
 fn fx_cfg_real_go_select_persists_only_communication_and_default_paths() {
-    let source = include_str!("../../../examples/go_example/context.go");
+    let source = example_source_or_skip!("go_example/context.go");
     let store = index_files(&[("context.go", source)]);
     let file_id = FileId::generate("context.go");
     let symbol = store
@@ -4837,7 +4870,7 @@ fn fx_cfg_real_go_select_persists_only_communication_and_default_paths() {
 #[test]
 #[cfg(feature = "go")]
 fn fx_cfg_real_go_run_unix_persists_path_sensitive_lifo_defers() {
-    let source = include_str!("../../../examples/go_example/gin.go");
+    let source = example_source_or_skip!("go_example/gin.go");
     let store = index_files(&[("gin.go", source)]);
     let file_id = FileId::generate("gin.go");
     let symbol = store
@@ -5375,7 +5408,7 @@ fn fx_cfg_match_python_capture_pattern_suppresses_persisted_no_match_path() {
 #[test]
 #[cfg(feature = "rust")]
 fn fx_cfg_real_rust_unguarded_wildcard_suppresses_persisted_no_match_path() {
-    let source = include_str!("../../../examples/rust_example/src/less.rs");
+    let source = example_source_or_skip!("rust_example/src/less.rs");
     let store = index_files(&[("less.rs", source)]);
     let file_id = FileId::generate("less.rs");
     let symbol = store
@@ -5413,7 +5446,7 @@ fn fx_cfg_real_rust_unguarded_wildcard_suppresses_persisted_no_match_path() {
 #[test]
 #[cfg(feature = "rust")]
 fn fx_cfg_real_rust_try_operator_persists_success_and_residual_paths() {
-    let source = include_str!("../../../examples/rust_example/src/line_range.rs");
+    let source = example_source_or_skip!("rust_example/src/line_range.rs");
     let store = index_files(&[("line_range.rs", source)]);
     let file_id = FileId::generate("line_range.rs");
     let symbol = store
@@ -5460,7 +5493,7 @@ fn fx_cfg_real_rust_try_operator_persists_success_and_residual_paths() {
 #[test]
 #[cfg(feature = "rust")]
 fn fx_cfg_real_rust_let_else_persists_match_and_loop_break_paths() {
-    let source = include_str!("../../../examples/rust_example/src/controller.rs");
+    let source = example_source_or_skip!("rust_example/src/controller.rs");
     let store = index_files(&[("controller.rs", source)]);
     let file_id = FileId::generate("controller.rs");
     let symbol = store
@@ -5542,7 +5575,7 @@ fn fx_cfg_real_rust_let_else_persists_match_and_loop_break_paths() {
 #[test]
 #[cfg(feature = "rust")]
 fn fx_cfg_real_rust_panic_macro_persists_as_abrupt_match_arm() {
-    let source = include_str!("../../../examples/rust_example/src/vscreen.rs");
+    let source = example_source_or_skip!("rust_example/src/vscreen.rs");
     let store = index_files(&[("vscreen.rs", source)]);
     let file_id = FileId::generate("vscreen.rs");
     let symbol = store
@@ -6209,7 +6242,7 @@ fn fx_cfg_loop_c() {
 #[test]
 #[cfg(feature = "c")]
 fn fx_cfg_real_c_example_non_empty_fallthrough() {
-    let source = include_str!("../../../examples/c_example/src/tool_convert.c");
+    let source = example_source_or_skip!("c_example/src/tool_convert.c");
     let store = index_files(&[("examples/tool_convert.c", source)]);
     let file_id = FileId::generate("examples/tool_convert.c");
     let symbol = store
@@ -6290,7 +6323,7 @@ fn fx_cfg_real_c_example_non_empty_fallthrough() {
 #[test]
 #[cfg(feature = "c")]
 fn fx_cfg_real_redis_cleanup_gotos_persist_exact_label_edges() {
-    let source = include_str!("../../../examples/redis/deps/hdr_histogram/hdr_histogram.c");
+    let source = example_source_or_skip!("redis/deps/hdr_histogram/hdr_histogram.c");
     let path = "examples/hdr_histogram.c";
     let store = index_files(&[(path, source)]);
     let file_id = FileId::generate(path);
@@ -6984,7 +7017,7 @@ end
 #[test]
 #[cfg(feature = "ruby")]
 fn fx_cfg_real_ruby_method_rescue_is_persisted() {
-    let source = include_str!("../../../examples/redis/utils/redis-copy.rb");
+    let source = example_source_or_skip!("redis/utils/redis-copy.rb");
     let store = index_files(&[("redis-copy.rb", source)]);
     let file_id = FileId::generate("redis-copy.rb");
     let symbol = store

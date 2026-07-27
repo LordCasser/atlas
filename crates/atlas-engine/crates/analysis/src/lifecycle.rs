@@ -1631,8 +1631,19 @@ mod tests {
         use tree_sitter::Parser;
         use types::enums::Language;
 
-        let source =
-            include_str!("../../../../../examples/redis/deps/jemalloc/src/jemalloc_cpp.cpp");
+        // `examples/` is git-ignored, so a fresh clone does not have it. Read at
+        // run time and skip: `include_str!` would fail the whole crate to compile.
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../examples/redis/deps/jemalloc/src/jemalloc_cpp.cpp");
+        let Ok(source) = std::fs::read_to_string(&corpus) else {
+            eprintln!(
+                "skipping test: examples corpus file {} is unavailable. \
+                 Populate `examples/` to run real-project regressions.",
+                corpus.display()
+            );
+            return;
+        };
+        let source = source.as_str();
         let source_bytes = source.as_bytes().to_vec();
         let frontend = create_frontend(Language::Cpp).expect("C++ frontend");
         let mut parser = Parser::new();
