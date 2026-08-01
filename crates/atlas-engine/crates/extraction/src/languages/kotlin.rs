@@ -197,12 +197,20 @@ impl LexicalBindingSpec for KotlinAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
+            0.67,
             vec!["name-based binding (no proper shadowing)"],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_kotlin_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn binding_use_query(&self) -> &str {
+        "(simple_identifier) @binding.use"
+    }
+
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        !is_kotlin_declaration_or_property_identifier(node)
     }
 }
 
@@ -212,8 +220,10 @@ impl DataflowSpec for KotlinAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            0.67,
+            vec![
+                "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -246,6 +256,47 @@ fn walk_kotlin_assign_edges(
     edges: &mut Vec<DataFlowEdge>,
 ) {
     let kind = node.kind();
+
+    // when (val subject = initializer): initializer → subject
+    if kind == "when_subject" {
+        let declaration = node
+            .named_children(&mut node.walk())
+            .find(|child| child.kind() == "variable_declaration");
+        let name_node = declaration.and_then(|declaration| {
+            declaration
+                .named_children(&mut declaration.walk())
+                .find(|child| child.kind() == "simple_identifier")
+        });
+        let value_node = node
+            .named_children(&mut node.walk())
+            .find(|child| child.kind() != "variable_declaration");
+        if let (Some(name), Some(value)) = (name_node, value_node) {
+            let name_key = NodePosKey {
+                start_byte: name.start_byte() as u32,
+                end_byte: name.end_byte() as u32,
+                kind: DataNodeKind::Local,
+            };
+            let value_key = NodePosKey {
+                start_byte: value.start_byte() as u32,
+                end_byte: value.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let (Some(&target_id), Some(&source_id)) =
+                (pos_map.get(&name_key), pos_map.get(&value_key))
+            {
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    node_range(name),
+                    0.95,
+                ));
+            }
+        }
+    }
 
     // variable_declaration: val x = expr
     if kind == "variable_declaration" {
@@ -483,6 +534,23 @@ fn kotlin_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
+fn is_kotlin_declaration_or_property_identifier(node: tree_sitter::Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "variable_declaration" | "parameter" | "function_declaration" | "catch_block" => parent
+            .named_children(&mut parent.walk())
+            .find(|child| child.kind() == "simple_identifier")
+            .is_some_and(|name| name.id() == node.id()),
+        "navigation_suffix" | "package_header" | "import_header" => true,
+        _ => crate::languages::shared::is_identifier_decl_or_property(
+            node,
+            &["variable_declaration", "package_header", "import_header"],
+        ),
+    }
+}
+
 fn normalize_kotlin_lexical(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -580,10 +648,7 @@ fn normalize_kotlin_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["import_header", "package_header"],
-            ) {
+            if is_kotlin_declaration_or_property_identifier(node) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -740,6 +805,103 @@ mod tests {
         assert!(
             nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
             "varuse"
+        );
+    }
+
+    #[test]
+    fn test_when_subject_variable_binding_and_initializer_flow() {
+        let source = concat!(
+            "fun dispatch(source: Source): String {\n",
+            "  return when (val result = source.load()) {\n",
+            "    is Success if result.ready -> consume(result)\n",
+            "    result -> echo(result)\n",
+            "    is Failure -> fail(result.error)\n",
+            "    else -> fallback(result)\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("when_subject.kt");
+        let facts = crate::extract_file_with_mode(
+            &kotlin_frontend(),
+            file_id,
+            std::path::Path::new("when_subject.kt"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let result_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "result")
+            .expect("when subject binding");
+        let result_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == result_binding.scope_id)
+            .expect("when subject scope");
+        assert_eq!(result_scope.kind, ScopeKind::Conditional);
+
+        let result_uses: Vec<_> = facts
+            .binding_uses
+            .iter()
+            .filter(|use_| use_.name == "result")
+            .collect();
+        assert!(
+            result_uses.len() >= 5,
+            "declaration, guard, and branch bodies must be binding uses: {result_uses:?}"
+        );
+        assert!(
+            result_uses
+                .iter()
+                .all(|use_| use_.binding_id == Some(result_binding.id))
+        );
+        assert!(
+            result_uses.iter().any(|use_| use_.range.start_line == 3),
+            "an explicit when condition must resolve the subject binding"
+        );
+
+        let target = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("result")
+                    && node.range.start_line == 1
+            })
+            .expect("when subject Local");
+        let initializer = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("source.load()")
+            })
+            .expect("when subject initializer Expr");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == initializer.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts
+                .data_nodes
+                .iter()
+                .filter(|node| {
+                    node.kind == DataNodeKind::VariableUse && node.name.as_deref() == Some("result")
+                })
+                .all(|node| node.range != target.range),
+            "the declaration name must not also be a VariableUse"
+        );
+        assert!(
+            facts
+                .data_nodes
+                .iter()
+                .filter(|node| {
+                    node.kind == DataNodeKind::VariableUse && node.name.as_deref() == Some("result")
+                })
+                .all(|node| node.binding_id == Some(result_binding.id))
         );
     }
 }

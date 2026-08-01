@@ -160,6 +160,17 @@ pub trait LexicalBindingSpec: Send + Sync {
     /// Normalize a lexical capture into a [`BindingDef`], or `None`.
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef>;
 
+    /// Query used to collect lexical identifier use sites after declarations
+    /// have been extracted. Most grammars call this node `identifier`.
+    fn binding_use_query(&self) -> &str {
+        "(identifier) @binding.use"
+    }
+
+    /// Language-specific syntax filter for lexical use captures.
+    fn is_binding_use(&self, _node: tree_sitter::Node<'_>) -> bool {
+        true
+    }
+
     /// Whether repeated declarations of a name in one scope share one binding.
     ///
     /// Most supported languages use declaration identity. Languages such as

@@ -1567,8 +1567,8 @@ mod profiles {
         unsupported: &["scope_aware_binding"],
         limitations: &[
             "name-based binding (no proper shadowing)",
-            "AST-driven local dataflow with language-specific gaps",
-            "extension functions: receiver creates 'this' binding; type-directed resolution not yet done",
+            "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+            "extension receiver binding is not extracted by the pinned grammar; type-directed resolution is not modeled",
         ],
         feature_overrides: &[
             (
@@ -1582,7 +1582,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.67,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1597,7 +1599,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when conditions, guards, and bindings are not dataflow-aware",
+                        "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow is modeled, while smart-cast, type/range projection, and guard control dependencies remain conservative",
                         "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
@@ -3401,8 +3403,8 @@ mod tests {
             p.limitations,
             vec![
                 "name-based binding (no proper shadowing)",
-                "AST-driven local dataflow with language-specific gaps",
-                "extension functions: receiver creates 'this' binding; type-directed resolution not yet done",
+                "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+                "extension receiver binding is not extracted by the pinned grammar; type-directed resolution is not modeled",
             ]
         );
 
@@ -3445,7 +3447,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.67,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3460,7 +3464,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when conditions, guards, and bindings are not dataflow-aware",
+                    "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow is modeled, while smart-cast, type/range projection, and guard control dependencies remain conservative",
                     "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                 ],
             )

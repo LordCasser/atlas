@@ -9,7 +9,7 @@
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
-use atlas_engine::enums::DataNodeKind;
+use atlas_engine::enums::{DataFlowKind, DataNodeKind};
 use atlas_engine::{
     AccessStrategy, FocusMaterialize, FocusRuntime, QueryIntent, Store, layer, status,
 };
@@ -1340,6 +1340,77 @@ fn n5_focus_ruby_case_in_cfg_matches_index_full() {
             .unwrap()
             .is_empty(),
         "unrelated Ruby unit must stay outside the Focus window"
+    );
+}
+
+/// Kotlin `when (val subject = initializer)` must materialize the same
+/// initializer→subject binding flow and guarded sibling CFG through Focus as
+/// through a full Index, without touching unrelated units.
+#[cfg(feature = "kotlin")]
+#[test]
+fn n5_focus_kotlin_when_subject_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "when_subject.kt",
+            "fun dispatch(source: Source): String {\n\
+             \x20 return when (val result = source.load()) {\n\
+             \x20   is Success if result.ready -> consume(result)\n\
+             \x20   result -> echo(result)\n\
+             \x20   is Failure -> fail(result.error)\n\
+             \x20   else -> fallback(result)\n\
+             \x20 }\n\
+             }\n",
+        ),
+        ("peer.kt", "fun unrelated(): Int = 42\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_slice = unit_dataflow_slice(
+        &indexed_store,
+        &symbol_id_by_name(&indexed_store, "dispatch"),
+    );
+    assert!(
+        indexed_slice
+            .nodes
+            .iter()
+            .any(|node| { node.0 == DataNodeKind::Local.as_str() && node.1 == "result" })
+    );
+    assert!(
+        indexed_slice
+            .edges
+            .iter()
+            .any(|edge| edge.2 == DataFlowKind::Assign.as_str())
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let dispatch = symbol_id_by_name(&focused_store, "dispatch");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&dispatch, Some("kotlin-when-subject-parity"))
+        .expect("Focus ensure Kotlin dispatch");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &dispatch),
+        indexed_slice,
+        "Kotlin when-subject dataflow/CFG: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Kotlin unit must stay outside the Focus window"
     );
 }
 

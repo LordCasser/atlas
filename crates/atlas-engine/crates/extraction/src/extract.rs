@@ -27,7 +27,7 @@ use super::cancel::CancelCheck;
 use super::cfg_builder::CfgResult;
 use super::dataflow_builder::{DataFlowBuilder, DataFlowResult};
 use super::error::{ExtractionFailure, ExtractionFailureKind};
-use super::frontend::{Capture, LanguageFrontend, NormalizeCtx};
+use super::frontend::{Capture, LanguageFrontend, LexicalBindingSpec, NormalizeCtx};
 use super::languages::node_range;
 use super::lexical_binder::LexicalBindingResult;
 use super::mode::ExtractionMode;
@@ -504,8 +504,8 @@ pub fn extract_file_with_mode(
     // 8a. Build identifier-use BindingUse records from the AST.
     //
     // The LexicalBinder (step 7a) only creates BindingUse records at
-    // binding *declaration* sites.  This step scans all `(identifier)`
-    // nodes and creates additional BindingUse records for usage sites,
+    // binding *declaration* sites. This step runs the language slot's lexical
+    // use query and creates additional BindingUse records for usage sites,
     // resolved against the lexical binding table via scope-chain-aware
     // name lookup.  Declaration sites are skipped to avoid duplicates.
     //
@@ -513,7 +513,14 @@ pub fn extract_file_with_mode(
     // dataflow context to justify a full AST identifier scan.  Callers
     // receive binding_uses from declaration sites only (from step 7a).
     let reference_binding_uses: Vec<BindingUse> = if mode.produces_reference_binding_uses() {
-        build_reference_binding_uses(&ectx, &bindings, &binding_uses, &scopes).unwrap_or_else(|e| {
+        build_reference_binding_uses(
+            &ectx,
+            frontend.lexical.as_ref(),
+            &bindings,
+            &binding_uses,
+            &scopes,
+        )
+        .unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
                 message: format!("Identifier-use binding scan failed: {e}"),
@@ -1026,25 +1033,26 @@ fn is_manifest_nested_barrier(kind: &str) -> bool {
     )
 }
 
-/// Scan all `(identifier)` nodes in the AST and create [`BindingUse`] records
-/// for usage sites (not declarations).
+/// Scan the language's lexical-use nodes and create [`BindingUse`] records for
+/// usage sites (not declarations).
 ///
 /// The LexicalBinder only creates `BindingUse` records at binding *declaration*
-/// sites.  This function fills the gap by capturing every identifier node,
-/// resolving it against the lexical binding table via scope-chain-aware name
-/// lookup, and creating a `BindingUse` record.  Declaration-site identifiers
-/// (those whose range is contained by a `BindingDef` range) are skipped to
-/// avoid duplicates.
+/// sites. This function fills the gap by capturing each node selected by the
+/// language's lexical-use query, resolving it against the lexical binding table
+/// via scope-chain-aware name lookup, and creating a `BindingUse` record.
+/// Declaration-site identifiers (those whose range is contained by a
+/// `BindingDef` range) are skipped to avoid duplicates.
 fn build_reference_binding_uses(
     ctx: &ExtractionCtx<'_>,
+    lexical_spec: &dyn LexicalBindingSpec,
     bindings: &[BindingDef],
     declaration_uses: &[BindingUse],
     scopes: &[ScopeDef],
 ) -> Result<Vec<BindingUse>> {
-    // Capture every identifier node in the tree
+    // Capture every language-specific identifier node in the tree.
     let captures = super::query_helpers::collect_captures(
         ctx.ts_lang,
-        "(identifier) @binding.use",
+        lexical_spec.binding_use_query(),
         ctx.root,
         ctx.source_bytes(),
         "binding_uses",
@@ -1079,6 +1087,10 @@ fn build_reference_binding_uses(
 
     for (_capture_name, node) in captures {
         let range = node_range(node);
+
+        if !lexical_spec.is_binding_use(node) {
+            continue;
+        }
 
         // Pattern class/value/keyword syntax is not a lexical variable use.
         // Capture identifiers are already represented by declaration uses.

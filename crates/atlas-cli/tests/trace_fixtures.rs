@@ -7274,6 +7274,89 @@ fn fx_cfg_when_kotlin() {
 }
 
 #[test]
+#[cfg(feature = "kotlin")]
+fn fx_kotlin_when_subject_binding_persists_and_traces_from_initializer() {
+    let source = r#"fun dispatch(source: Source): String {
+    return when (val result = source.load()) {
+        is Success if result.ready -> consume(result)
+        result -> echo(result)
+        is Failure -> fail(result.error)
+        else -> fallback(result)
+    }
+}
+"#;
+    let store = index_files(&[("when_subject.kt", source)]);
+    let file_id = FileId::generate("when_subject.kt");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("Kotlin bindings");
+    let result_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "result")
+        .expect("persisted when subject binding");
+    let result_uses = store
+        .find_binding_uses_by_binding(&result_binding.id)
+        .expect("persisted when subject uses");
+    assert!(
+        result_uses.len() >= 5,
+        "declaration, condition, guard, and bodies must share the subject binding"
+    );
+    assert!(
+        result_uses.iter().any(|use_| use_.range.start_line == 3),
+        "persisted explicit condition must resolve the subject binding"
+    );
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let target = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("result")
+                && node.range.start_line == 1
+        })
+        .expect("persisted when subject Local");
+    let initializer = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("source.load()")
+        })
+        .expect("persisted when subject initializer");
+    let edges = store
+        .find_dataflow_edges_by_source(&initializer.id)
+        .expect("when subject edges");
+    assert!(
+        edges
+            .iter()
+            .any(|edge| { edge.target == target.id && edge.kind == DataFlowKind::Assign })
+    );
+
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("result")
+                && node.range.start_line == 2
+                && node.range.start_column > 30
+        })
+        .expect("consume(result) use");
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert!(
+        response.ok,
+        "Kotlin when subject trace failed: {response:?}"
+    );
+    assert_envelope_ok(&response, "kotlin");
+    let path = response.result.expect("Kotlin when subject trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "source");
+}
+
+#[test]
 #[cfg(feature = "ruby")]
 fn fx_cfg_case_ruby() {
     let files = &[(

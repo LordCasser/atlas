@@ -27,6 +27,12 @@
   (variable_declaration
     (simple_identifier) @df.assign_target))
 
+;; --- when subject declaration: when (val x = expr) ---
+(when_subject
+  (variable_declaration
+    (simple_identifier) @df.assign_target)
+  (_) @df.assign_value)
+
 ;; --- Assignment: x = expr ---
 ;; tree-sitter-kotlin `assignment` has children.multiple (no named fields),
 ;; so `(_) @df.assign_value` does not compile inside this node.
