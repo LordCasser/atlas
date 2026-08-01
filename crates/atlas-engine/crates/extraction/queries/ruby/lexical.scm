@@ -24,3 +24,8 @@
 ;; --- For-loop variable (for x in ...) ---
 (for
   pattern: (identifier) @lexical.local)
+
+;; Pattern identifiers are broad captures filtered by the adapter. Ruby's
+;; grammar uses the same identifier node for captures and pinned value reads.
+(identifier) @lexical.pattern
+(hash_key_symbol) @lexical.pattern

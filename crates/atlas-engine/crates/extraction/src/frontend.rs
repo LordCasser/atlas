@@ -25,7 +25,7 @@ use crate::extraction_ctx::ExtractionCtx;
 use types::bindings::BindingDef;
 use types::capability::{FeatureMatrix, FeatureSupport, LanguageCapabilityProfile};
 use types::dataflow::{DataFlowEdge, DataNode};
-use types::enums::Language;
+use types::enums::{Language, ScopeKind};
 use types::ids::{DataNodeId, FileId};
 use types::structs::{ImportDef, ReferenceUse, ScopeDef, SymbolDef};
 
@@ -168,6 +168,16 @@ pub trait LexicalBindingSpec: Send + Sync {
     /// declarations.
     fn coalesce_same_scope_bindings(&self) -> bool {
         false
+    }
+
+    /// Whether a structural scope also introduces a lexical namespace.
+    ///
+    /// Scope facts describe both source structure and name lookup boundaries.
+    /// Those concepts are not identical in every language: for example, Ruby
+    /// conditionals and loops are structural scopes but share their enclosing
+    /// local-variable namespace.
+    fn is_lexical_scope(&self, _kind: ScopeKind) -> bool {
+        true
     }
 }
 

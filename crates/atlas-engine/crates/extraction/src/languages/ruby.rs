@@ -14,8 +14,13 @@
 //!   method calls are not modeled as virtual callsites.  `yield(args)` does
 //!   not create dataflow edges to the calling context.  This means dataflow
 //!   tracing stops at block boundaries and yield is treated as a sink.
+//! - **Pattern projection**: `case/in` capture targets receive the whole match
+//!   subject conservatively. Array/hash element projection and post-match
+//!   path-definedness are not modeled.
 
 use crate::languages::{node_range, node_text};
+use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
+use std::collections::HashMap;
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
@@ -199,12 +204,29 @@ impl LexicalBindingSpec for RubyAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.45,
-            vec!["name-based binding (no proper shadowing)"],
+            0.65,
+            vec![
+                "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_ruby_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn coalesce_same_scope_bindings(&self) -> bool {
+        true
+    }
+
+    fn is_lexical_scope(&self, kind: ScopeKind) -> bool {
+        matches!(
+            kind,
+            ScopeKind::File
+                | ScopeKind::Module
+                | ScopeKind::Class
+                | ScopeKind::Method
+                | ScopeKind::Block
+        )
     }
 }
 
@@ -214,11 +236,12 @@ impl DataflowSpec for RubyAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
+            0.65,
             vec![
                 "implicit return is approximate (body_statement last-child heuristic)",
                 "method calls and field access share `call` node; attr_reader not resolved",
                 "dynamic methods / method_missing not resolved",
+                "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             ],
         )
     }
@@ -228,6 +251,97 @@ impl DataflowSpec for RubyAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_ruby_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_ruby_case_match_edges(ctx.root, pos_map, edges);
+        Ok(())
+    }
+}
+
+fn walk_ruby_case_match_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "case_match"
+        && let Some(subject) = node.child_by_field_name("value")
+    {
+        let subject_key = NodePosKey {
+            start_byte: subject.start_byte() as u32,
+            end_byte: subject.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&subject_key) {
+            let mut cursor = node.walk();
+            for clause in node
+                .named_children(&mut cursor)
+                .filter(|child| child.kind() == "in_clause")
+            {
+                let Some(pattern) = clause.child_by_field_name("pattern") else {
+                    continue;
+                };
+                let mut targets = Vec::new();
+                collect_ruby_pattern_binding_nodes(pattern, &mut targets);
+                for target in targets {
+                    let target_key = NodePosKey {
+                        start_byte: target.start_byte() as u32,
+                        end_byte: target.end_byte() as u32,
+                        kind: DataNodeKind::Local,
+                    };
+                    let Some(&target_id) = pos_map.get(&target_key) else {
+                        continue;
+                    };
+                    if edges.iter().any(|edge| {
+                        edge.source == source_id
+                            && edge.target == target_id
+                            && edge.kind == DataFlowKind::Assign
+                    }) {
+                        continue;
+                    }
+                    let edge_id = DataFlowEdgeId::generate(
+                        &source_id,
+                        &target_id,
+                        DataFlowKind::Assign.as_str(),
+                    );
+                    edges.push(DataFlowEdge::new(
+                        edge_id,
+                        source_id,
+                        target_id,
+                        DataFlowKind::Assign,
+                        node_range(target),
+                        0.75,
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_ruby_case_match_edges(child, pos_map, edges);
+    }
+}
+
+fn collect_ruby_pattern_binding_nodes<'tree>(
+    node: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_ruby_pattern_binding_node(node) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_ruby_pattern_binding_nodes(child, bindings);
     }
 }
 
@@ -375,8 +489,56 @@ fn ruby_binding_kind(capture_name: &str) -> Option<BindingKind> {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
     }
+}
+
+/// Return the enclosing `in_clause` pattern when `node` is pattern syntax.
+/// Guards and bodies are children of the same clause, so ancestor kind alone
+/// is not sufficient to classify captures.
+fn ruby_enclosing_pattern(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    std::iter::successors(node.parent(), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == "in_clause")
+        .and_then(|clause| clause.child_by_field_name("pattern"))
+        .filter(|pattern| {
+            pattern.start_byte() <= node.start_byte() && pattern.end_byte() >= node.end_byte()
+        })
+}
+
+fn is_ruby_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    ruby_enclosing_pattern(node).is_some()
+}
+
+/// Select Ruby pattern nodes that write local variables. Pinned variables are
+/// value reads, and hash keys bind only when their value sub-pattern is absent.
+fn is_ruby_pattern_binding_node(node: tree_sitter::Node<'_>) -> bool {
+    if !is_ruby_pattern_syntax(node) {
+        return false;
+    }
+
+    match node.kind() {
+        "hash_key_symbol" => node.parent().is_some_and(|parent| {
+            parent.kind() == "keyword_pattern"
+                && parent
+                    .child_by_field_name("key")
+                    .is_some_and(|key| key.id() == node.id())
+                && parent.child_by_field_name("value").is_none()
+        }),
+        "identifier" => !std::iter::successors(node.parent(), |current| current.parent())
+            .take_while(|ancestor| ancestor.kind() != "in_clause")
+            .any(|ancestor| {
+                matches!(
+                    ancestor.kind(),
+                    "variable_reference_pattern" | "expression_reference_pattern"
+                )
+            }),
+        _ => false,
+    }
+}
+
+fn ruby_pattern_binding_name(node: tree_sitter::Node<'_>, source: &str) -> Option<String> {
+    node_text(node, source).map(|name| name.trim_end_matches(':').to_string())
 }
 
 fn normalize_ruby_lexical(
@@ -386,7 +548,14 @@ fn normalize_ruby_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = ruby_binding_kind(capture_name)?;
-    let name = node_text(node, source)?;
+    if capture_name == "lexical.pattern" && !is_ruby_pattern_binding_node(node) {
+        return None;
+    }
+    let name = if capture_name == "lexical.pattern" {
+        ruby_pattern_binding_name(node, source)?
+    } else {
+        node_text(node, source)?
+    };
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
 }
@@ -403,6 +572,27 @@ fn normalize_ruby_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.pattern_target" => {
+            if !is_ruby_pattern_binding_node(node) {
+                return (None, None);
+            }
+            let Some(text) = ruby_pattern_binding_name(node, source) else {
+                return (None, None);
+            };
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "local",
+                Some(&text),
+                Some(&text),
+                range.start_byte,
+            );
+            (
+                Some(DataNode::local(node_id, file_id, None, None, &text, range)),
+                None,
+            )
+        }
+        "df.match_subject" => make_df_assign_value(file_id, node, source, range, &["call"]),
         "df.assign_target" => {
             // Differentiate by AST node kind: identifier → Local,
             // instance_variable (@x) → Field, class_variable (@@x) → Field,
@@ -592,6 +782,9 @@ fn normalize_ruby_dataflow_builder(
             )
         }
         "df.identifier_use" => {
+            if is_ruby_pattern_binding_node(node) {
+                return (None, None);
+            }
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
                 &["class", "module", "method"],
@@ -764,5 +957,185 @@ mod tests {
             "should have Return DataNode for implicit return (clean)"
         );
         assert!(has_expr, "should have Expr DataNode for assignment values");
+    }
+
+    #[test]
+    fn test_case_match_pattern_bindings_and_subject_flow() {
+        let source = concat!(
+            "def dispatch(input, expected)\n",
+            "  user = fallback\n",
+            "  case input\n",
+            "  in {user:, role: String, meta: {id: uid}, tags: [first, *rest]} => whole if allowed?(user, uid)\n",
+            "    consume(user, uid, first, rest, whole)\n",
+            "  in ^expected\n",
+            "    pinned(expected)\n",
+            "  end\n",
+            "  use(user)\n",
+            "end\n",
+        );
+        let file_id = FileId::generate("case_match.rb");
+        let facts = crate::extract_file_with_mode(
+            &ruby_frontend(),
+            file_id,
+            std::path::Path::new("case_match.rb"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let binding_names: Vec<_> = facts
+            .bindings
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect();
+        for expected in ["input", "expected", "user", "uid", "first", "rest", "whole"] {
+            assert!(
+                binding_names.contains(&expected),
+                "missing binding {expected}"
+            );
+        }
+        for rejected in ["role", "String", "allowed", "consume", "pinned"] {
+            assert!(
+                !binding_names.contains(&rejected),
+                "value/key/call syntax must not bind {rejected}"
+            );
+        }
+        assert_eq!(
+            facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "user")
+                .count(),
+            1,
+            "assignment and case capture share the method-local binding"
+        );
+
+        let user_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "user")
+            .unwrap();
+        let user_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == user_binding.scope_id)
+            .unwrap();
+        assert_eq!(user_scope.kind, ScopeKind::Method);
+        assert!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.name == "user")
+                .all(|use_| use_.binding_id == Some(user_binding.id))
+        );
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == 2
+            })
+            .expect("case subject expression");
+        for name in ["user", "uid", "first", "rest", "whole"] {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == 3
+                })
+                .unwrap_or_else(|| panic!("missing pattern target {name}"));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+        assert!(!facts.data_nodes.iter().any(|node| {
+            node.kind == DataNodeKind::Local
+                && matches!(node.name.as_deref(), Some("role" | "expected"))
+                && node.range.start_line >= 3
+        }));
+        assert!(
+            facts
+                .scopes
+                .iter()
+                .any(|scope| scope.kind == ScopeKind::Conditional),
+            "case/in remains visible as structural scope"
+        );
+    }
+
+    #[test]
+    fn test_structural_control_scopes_share_ruby_local_namespace() {
+        let source = concat!(
+            "def scopes(flag)\n",
+            "  begin\n",
+            "    from_begin = 1\n",
+            "  end\n",
+            "  if flag\n",
+            "    from_if = 2\n",
+            "  end\n",
+            "  while flag\n",
+            "    from_loop = 3\n",
+            "    break\n",
+            "  end\n",
+            "  1.times do\n",
+            "    from_block = 4\n",
+            "  end\n",
+            "end\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &ruby_frontend(),
+            FileId::generate("scopes.rb"),
+            std::path::Path::new("scopes.rb"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        for name in ["from_begin", "from_if", "from_loop"] {
+            let binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding.scope_id)
+                .unwrap();
+            assert_eq!(scope.kind, ScopeKind::Method, "{name} must be method-local");
+        }
+
+        let block_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "from_block")
+            .expect("block-local binding");
+        let block_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == block_binding.scope_id)
+            .unwrap();
+        assert_eq!(block_scope.kind, ScopeKind::Block);
+        assert!(
+            facts
+                .scopes
+                .iter()
+                .any(|scope| scope.kind == ScopeKind::Conditional)
+        );
+        assert!(
+            facts
+                .scopes
+                .iter()
+                .any(|scope| scope.kind == ScopeKind::Loop)
+        );
     }
 }

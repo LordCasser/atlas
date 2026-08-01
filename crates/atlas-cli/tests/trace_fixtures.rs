@@ -1972,6 +1972,103 @@ fn fx_py_match_capture_bindings_persist_and_trace_from_subject() {
     assert_source_name(&path, "value");
 }
 
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_ruby_case_match_bindings_persist_and_trace_from_subject() {
+    let source = r#"def dispatch(input, expected)
+  user = fallback
+  case input
+  in {user:, role: String, meta: {id: uid}, tags: [first, *rest]} => whole if ready?(user, uid)
+    consume(whole)
+  in ^expected
+    pinned(expected)
+  end
+  use(user)
+end
+"#;
+    let store = index_files(&[("case_match.rb", source)]);
+    let file_id = FileId::generate("case_match.rb");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Ruby bindings");
+
+    for name in ["user", "uid", "first", "rest", "whole"] {
+        let matches: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "capture {name:?} must have one method-local binding identity"
+        );
+    }
+    for syntax_name in ["role", "String", "ready", "consume", "pinned"] {
+        assert!(
+            bindings.iter().all(|binding| binding.name != syntax_name),
+            "pattern value/key/call syntax {syntax_name:?} is not a capture binding"
+        );
+    }
+
+    let expected_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "expected")
+        .expect("expected parameter binding");
+    let expected_uses = store
+        .find_binding_uses_by_binding(&expected_binding.id)
+        .expect("expected binding uses");
+    assert!(
+        expected_uses.len() >= 3,
+        "parameter, pin read, and body read must share the existing binding"
+    );
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("input")
+                && node.range.start_line == 2
+        })
+        .expect("case subject Expr");
+    let edge_sources = data_nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let edges = store
+        .find_dataflow_edges_by_sources(&edge_sources)
+        .expect("persisted dataflow edges");
+    for name in ["user", "uid", "first", "rest", "whole"] {
+        let target = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == 3
+            })
+            .unwrap_or_else(|| panic!("missing persisted pattern target {name}"));
+        assert!(edges.iter().any(|edge| {
+            edge.source == subject.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+    }
+
+    let sink = data_nodes
+        .iter()
+        .filter(|node| node.name.as_deref() == Some("whole"))
+        .next_back()
+        .expect("body whole use");
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "ruby");
+    let path = response.result.expect("Ruby pattern binding trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "input");
+}
+
 // ────────────────────────────────────────────────────────────────
 // Python: Destructuring / tuple unpacking dataflow
 // ────────────────────────────────────────────────────────────────

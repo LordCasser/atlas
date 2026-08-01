@@ -28,5 +28,3 @@
 (until) @scope.loop
 
 (for) @scope.loop
-
-(begin) @scope.block

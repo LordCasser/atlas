@@ -47,6 +47,12 @@
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
 
+;; --- case/in subject and pattern writes ---
+(case_match
+  value: (_) @df.match_subject)
+(identifier) @df.pattern_target
+(hash_key_symbol) @df.pattern_target
+
 ;; ── Ruby dataflow additions (§2.12) ──────────────────────────
 
 ;; Implicit return: last expression in method body

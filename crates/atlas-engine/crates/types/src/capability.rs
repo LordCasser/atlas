@@ -1483,8 +1483,8 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "name-based binding (no proper shadowing)",
-            "AST-driven local dataflow with language-specific gaps",
+            "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+            "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             "dynamic methods (method_missing / define_method) not yet verified",
             "block/yield implicit calls documented but not yet implemented",
         ],
@@ -1493,21 +1493,27 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                    ],
                 ),
             ),
             (
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
+                    ],
                 ),
             ),
             (
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                    ],
                 ),
             ),
             (
@@ -1515,7 +1521,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "CFG body traversal for configured branch/loop plus classic case/when and case/in sibling traversal implemented; case/in without either an else or an unguarded syntax-irrefutable capture raises through a Throw path, and case/in does not consume an enclosing loop's break; lexical while/until/for and modifier while/until loops are modeled, with plain modifiers checking before the body and begin-body modifiers entering once before the first condition; next, redo, and break resolve to the modifier loop condition, body entry, and join respectively; modeled block-resource redo restarts the current body entry through dedicated Redo edges; rescue-owned retry restarts the begin dispatch through dedicated Retry edges after nested ensure/resource cleanup while bypassing the same rescued begin's ensure; lifecycle conservatively clears branch context at restart targets because lexical owner identity is not persisted; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; ordinary iterator/callback block bodies, cleanup-vs-body exception replacement precedence, and case/in pattern binding/deconstruction dataflow are not modeled",
+                        "CFG body traversal for configured branch/loop plus classic case/when and case/in sibling traversal implemented; case/in without either an else or an unguarded syntax-irrefutable capture raises through a Throw path, and case/in does not consume an enclosing loop's break; lexical while/until/for and modifier while/until loops are modeled, with plain modifiers checking before the body and begin-body modifiers entering once before the first condition; next, redo, and break resolve to the modifier loop condition, body entry, and join respectively; modeled block-resource redo restarts the current body entry through dedicated Redo edges; rescue-owned retry restarts the begin dispatch through dedicated Retry edges after nested ensure/resource cleanup while bypassing the same rescued begin's ensure; lifecycle conservatively clears branch context at restart targets because lexical owner identity is not persisted; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; ordinary iterator/callback block bodies and cleanup-vs-body exception replacement precedence remain conservative",
                     ],
                 ),
             ),
@@ -3285,8 +3291,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "name-based binding (no proper shadowing)",
-                "AST-driven local dataflow with language-specific gaps",
+                "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                 "dynamic methods (method_missing / define_method) not yet verified",
                 "block/yield implicit calls documented but not yet implemented",
             ]
@@ -3324,21 +3330,27 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "method/module/class local namespace identity; block assignment to an existing outer local remains conservative"
+                ],
             )
         );
         assert_eq!(
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive"
+                ],
             )
         );
         assert_eq!(
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "method/module/class local namespace identity; block assignment to an existing outer local remains conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3346,7 +3358,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "CFG body traversal for configured branch/loop plus classic case/when and case/in sibling traversal implemented; case/in without either an else or an unguarded syntax-irrefutable capture raises through a Throw path, and case/in does not consume an enclosing loop's break; lexical while/until/for and modifier while/until loops are modeled, with plain modifiers checking before the body and begin-body modifiers entering once before the first condition; next, redo, and break resolve to the modifier loop condition, body entry, and join respectively; modeled block-resource redo restarts the current body entry through dedicated Redo edges; rescue-owned retry restarts the begin dispatch through dedicated Retry edges after nested ensure/resource cleanup while bypassing the same rescued begin's ensure; lifecycle conservatively clears branch context at restart targets because lexical owner identity is not persisted; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; ordinary iterator/callback block bodies, cleanup-vs-body exception replacement precedence, and case/in pattern binding/deconstruction dataflow are not modeled"
+                    "CFG body traversal for configured branch/loop plus classic case/when and case/in sibling traversal implemented; case/in without either an else or an unguarded syntax-irrefutable capture raises through a Throw path, and case/in does not consume an enclosing loop's break; lexical while/until/for and modifier while/until loops are modeled, with plain modifiers checking before the body and begin-body modifiers entering once before the first condition; next, redo, and break resolve to the modifier loop condition, body entry, and join respectively; modeled block-resource redo restarts the current body entry through dedicated Redo edges; rescue-owned retry restarts the begin dispatch through dedicated Retry edges after nested ensure/resource cleanup while bypassing the same rescued begin's ensure; lifecycle conservatively clears branch context at restart targets because lexical owner identity is not persisted; method-body and nested begin/rescue/else/ensure use exception edges and path-isolated ensure clones; block-managed resources use owner-matched path-isolated exits with deterministic LIFO cleanup, block-level break/next resume after the yielding call, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing rescue/ensure; ordinary iterator/callback block bodies and cleanup-vs-body exception replacement precedence remain conservative"
                 ],
             )
         );
