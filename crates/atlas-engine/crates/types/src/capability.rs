@@ -631,12 +631,9 @@ mod profiles {
     }
 
     // ---- Python (DataflowInterproc) ---------------------------------------------
-    // NOTE: Golden fixtures fx21 (ArgToParam), fx22 (ReturnToCall),
-    //       fx_py_shadow (shadowing precision), and fx_py_destructure
-    //       (tuple unpacking) exist.
-    //       Confidence raised from 0.65 to 0.72: scope-chain-aware binding
-    //       resolution (resolve_bindings_to_nodes) correctly handles Python
-    //       shadowing as verified by fx_py_shadow.  CFG support added (P7).
+    // NOTE: Golden fixtures cover ArgToParam, ReturnToCall, function and
+    //       comprehension namespace identity, tuple unpacking, and structural
+    //       pattern captures through SQLite and trace.
 
     const PY_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "python",
@@ -654,19 +651,22 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
-            "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
-            "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
-            "assignment LHS binding with scope-chain resolution",
+            "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative",
+            "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
+            "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
         ],
         feature_overrides: &[
             (
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["assignment LHS binding with scope-chain resolution"],
+                    &[
+                        "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
+                    ],
                 ),
             ),
             (
@@ -674,7 +674,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
+                        "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
                     ],
                 ),
             ),
@@ -683,7 +683,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
+                        "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative",
                     ],
                 ),
             ),
@@ -692,7 +692,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred, and patterns, guards, and bindings are not dataflow-aware",
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred",
                         "try/except/finally continuations and with-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; __exit__ suppression, exception-type selection, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
@@ -2089,19 +2089,20 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
 
         // unsupported_features
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
 
         // limitations
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes",
-                "AST-driven local dataflow; destructuring and control-flow not yet path-verified",
-                "assignment LHS binding with scope-chain resolution",
+                "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative",
+                "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
+                "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
             ]
         );
 
@@ -2137,7 +2138,9 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["assignment LHS binding with scope-chain resolution"],
+                vec![
+                    "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2145,7 +2148,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "AST-driven local dataflow; destructuring and control-flow not yet path-verified"
+                    "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive"
                 ],
             )
         );
@@ -2154,7 +2157,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "scope-chain-aware use-def with binding_id grouping; edge cases in nested dynamic scopes"
+                    "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative"
                 ],
             )
         );
@@ -2164,7 +2167,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred, and patterns, guards, and bindings are not dataflow-aware",
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; unguarded syntax-irrefutable wildcard/capture/as/group/or cases suppress the synthetic no-match path; guarded and sequence/mapping/class/value/type-driven exhaustiveness is not inferred",
                     "try/except/finally continuations and with-statement normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; __exit__ suppression, exception-type selection, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
                 ],
             )

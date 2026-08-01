@@ -8,6 +8,8 @@ use crate::languages::shared::{
     make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
+use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
+use std::collections::HashMap;
 use types::*;
 
 use crate::frontend::{
@@ -121,9 +123,10 @@ fn normalize_py_scope(
         "scope.file" => ScopeKind::File,
         "scope.function" => ScopeKind::Function,
         "scope.class" => ScopeKind::Class,
-        "scope.block" => ScopeKind::Block,
-        "scope.conditional" => ScopeKind::Conditional,
-        "scope.loop" => ScopeKind::Loop,
+        // ScopeKind has no language-specific comprehension variant. Block is
+        // the closest existing representation of Python's implicit isolated
+        // comprehension namespace.
+        "scope.comprehension" => ScopeKind::Block,
         _ => return None,
     };
     let range = node_range(node);
@@ -133,6 +136,9 @@ fn normalize_py_scope(
 
 /// Check if an identifier is a declaration name or property name in Python AST.
 fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
+    if is_py_pattern_binding_identifier(node) {
+        return true;
+    }
     let parent = match node.parent() {
         Some(p) => p,
         None => return false,
@@ -159,6 +165,50 @@ fn is_py_identifier_declaration(node: tree_sitter::Node) -> bool {
     }
 }
 
+/// Whether an identifier occurs anywhere inside a structural match pattern.
+/// Guards and case bodies are siblings of `case_pattern`, so they remain
+/// ordinary variable-use sites.
+pub(crate) fn is_py_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    std::iter::successors(node.parent(), |current| current.parent())
+        .any(|ancestor| ancestor.kind() == "case_pattern")
+}
+
+/// Select only identifiers that bind names in Python structural patterns.
+/// Broad query captures are filtered here because the grammar represents both
+/// capture patterns (`name`) and value patterns (`Color.RED`) as dotted names.
+fn is_py_pattern_binding_identifier(node: tree_sitter::Node<'_>) -> bool {
+    if node.kind() != "identifier" || !is_py_pattern_syntax(node) {
+        return false;
+    }
+
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "as_pattern" | "splat_pattern" => true,
+        "dotted_name" if parent.named_child_count() == 1 => {
+            let Some(container) = parent.parent() else {
+                return false;
+            };
+            if container.kind() == "class_pattern" {
+                return false;
+            }
+            if container.kind() == "dict_pattern" {
+                for index in 0..container.child_count() {
+                    if container
+                        .child(index as u32)
+                        .is_some_and(|child| child.id() == parent.id())
+                    {
+                        return container.field_name_for_child(index as u32) != Some("key");
+                    }
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 fn normalize_py_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -172,7 +222,15 @@ fn normalize_py_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.pattern_target" => {
+            if is_py_pattern_binding_identifier(node) {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
         "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call"]),
+        "df.match_subject" => make_df_assign_value(file_id, node, source, range, &["call"]),
         "df.return_value" => {
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -290,7 +348,7 @@ fn normalize_py_dataflow_builder(
         }
         "df.identifier_use" => {
             // Skip identifiers that are declaration names or property names
-            if is_py_identifier_declaration(node) {
+            if is_py_identifier_declaration(node) || is_py_pattern_syntax(node) {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -397,14 +455,18 @@ impl LexicalBindingSpec for PythonAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
+            0.72,
             vec![
-                "scope-chain-aware binding with shadowing support; assignment LHS treated as definition",
+                "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
             ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_py_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn coalesce_same_scope_bindings(&self) -> bool {
+        true
     }
 }
 
@@ -414,8 +476,10 @@ impl DataflowSpec for PythonAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
-            vec!["Dataflow extraction for Python is experimental"],
+            0.72,
+            vec![
+                "match subjects flow conservatively to capture/as/star bindings; structural projection and post-match path-definedness remain path-insensitive",
+            ],
         )
     }
     fn normalize(
@@ -424,6 +488,114 @@ impl DataflowSpec for PythonAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_py_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_py_match_edges(ctx.root, pos_map, edges);
+        Ok(())
+    }
+}
+
+fn walk_py_match_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "match_statement" {
+        let mut subjects = Vec::new();
+        for index in 0..node.child_count() {
+            if node.field_name_for_child(index as u32) == Some("subject") {
+                if let Some(subject) = node.child(index as u32) {
+                    subjects.push(subject);
+                }
+            }
+        }
+
+        if let Some(body) = node.child_by_field_name("body") {
+            for index in 0..body.named_child_count() {
+                let Some(case_clause) = body.named_child(index as u32) else {
+                    continue;
+                };
+                if case_clause.kind() != "case_clause" {
+                    continue;
+                }
+                let Some(pattern) = (0..case_clause.named_child_count())
+                    .filter_map(|child_index| case_clause.named_child(child_index as u32))
+                    .find(|child| child.kind() == "case_pattern")
+                else {
+                    continue;
+                };
+                let mut targets = Vec::new();
+                collect_py_pattern_binding_identifiers(pattern, &mut targets);
+                for subject in &subjects {
+                    let subject_key = NodePosKey {
+                        start_byte: subject.start_byte() as u32,
+                        end_byte: subject.end_byte() as u32,
+                        kind: DataNodeKind::Expr,
+                    };
+                    let Some(&source_id) = pos_map.get(&subject_key) else {
+                        continue;
+                    };
+                    for target in &targets {
+                        let target_key = NodePosKey {
+                            start_byte: target.start_byte() as u32,
+                            end_byte: target.end_byte() as u32,
+                            kind: DataNodeKind::Local,
+                        };
+                        let Some(&target_id) = pos_map.get(&target_key) else {
+                            continue;
+                        };
+                        if edges.iter().any(|edge| {
+                            edge.source == source_id
+                                && edge.target == target_id
+                                && edge.kind == DataFlowKind::Assign
+                        }) {
+                            continue;
+                        }
+                        let edge_id = DataFlowEdgeId::generate(
+                            &source_id,
+                            &target_id,
+                            DataFlowKind::Assign.as_str(),
+                        );
+                        edges.push(DataFlowEdge::new(
+                            edge_id,
+                            source_id,
+                            target_id,
+                            DataFlowKind::Assign,
+                            node_range(*target),
+                            0.75,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_py_match_edges(child, pos_map, edges);
+    }
+}
+
+fn collect_py_pattern_binding_identifiers<'tree>(
+    node: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_py_pattern_binding_identifier(node) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_py_pattern_binding_identifiers(child, bindings);
     }
 }
 
@@ -636,19 +808,13 @@ fn py_binding_kind(capture_name: &str) -> Option<BindingKind> {
         "lexical.local" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
         "lexical.import_alias" => Some(BindingKind::ImportAlias),
+        "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
     }
 }
 
 /// Normalize a Python lexical capture into a [`BindingDef`].
 ///
-/// **Known limitation**: every assignment LHS is treated as a new binding
-/// definition.  For repeated assignments to the same name in one scope
-/// (`x = a; x = b`), the second assignment creates a separate BindingDef
-/// rather than being recognised as a rebind of the existing variable.  This
-/// means scope-aware use-def may over‑approximate for dynamically‑typed
-/// reassignment chains.  Fixing this requires per‑name deduplication in the
-/// lexical binder.
 fn normalize_py_lexical(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -656,6 +822,9 @@ fn normalize_py_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = py_binding_kind(capture_name)?;
+    if capture_name == "lexical.pattern" && !is_py_pattern_binding_identifier(node) {
+        return None;
+    }
     let name = node_text(node, source)?;
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))

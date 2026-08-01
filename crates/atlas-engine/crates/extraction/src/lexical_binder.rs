@@ -7,15 +7,15 @@
 //!
 //! - Runs the adapter's `lexical_query()` to find binding definition sites.
 //! - Resolves scope containment for each binding (innermost enclosing scope).
-//! - Creates one [`BindingUse`] per binding definition (declaration-as-use for dataflow).
-//! - Does NOT scan standalone identifier references or resolve shadowing.
+//! - Optionally coalesces repeated same-scope sites when the language uses
+//!   namespace identity rather than declaration identity.
+//! - Creates one [`BindingUse`] per declaration/write site for dataflow.
+//! - Does NOT scan standalone identifier references; that happens downstream.
 //! - Does NOT resolve `function_id` or `symbol_id` — those are filled by post-extraction
 //!   steps (scope tree, SemanticBinder).
 //!
 //! # Current limitations (not yet implemented)
 //!
-//! - Identifier-use scanning (every variable reference as a BindingUse).
-//! - Shadowing resolution across scope chains.
 //! - Per-function grouping (function_id always None).
 //!
 //! # Invariants
@@ -27,6 +27,7 @@
 
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{Capture, LexicalBindingSpec};
+use std::collections::HashMap;
 use types::bindings::{BindingDef, BindingUse};
 use types::ids::{BindingId, BindingUseId};
 use types::{ScopeDef, SymbolDef};
@@ -60,7 +61,7 @@ impl LexicalBinder {
     ///
     /// Runs the adapter's `lexical_query()`, normalizes captures into
     /// `BindingDef` structs, resolves scope containment, and creates
-    /// one `BindingUse` per binding definition.
+    /// one `BindingUse` per captured binding site.
     pub(crate) fn extract(
         lexical_spec: &dyn LexicalBindingSpec,
         ctx: &ExtractionCtx<'_>,
@@ -123,14 +124,29 @@ impl LexicalBinder {
             );
         }
 
-        // For each binding definition, also create a BindingUse at the same point
-        // (binding definitions are also uses — e.g., a parameter declaration is also
-        // a use site for the purpose of dataflow).
+        // Some languages have namespace identity rather than declaration
+        // identity. Preserve every declaration as a use/write event, but keep
+        // one canonical BindingDef for each (scope, name).
+        bindings.sort_by_key(|binding| binding.range.start_byte);
+        let mut canonical_ids = HashMap::new();
+        if lexical_spec.coalesce_same_scope_bindings() {
+            for binding in &bindings {
+                canonical_ids
+                    .entry((binding.scope_id, binding.name.clone()))
+                    .or_insert(binding.id);
+            }
+        }
+
+        // For each raw binding site, create a BindingUse at the same point.
         let mut uses: Vec<BindingUse> = Vec::new();
         for binding in &bindings {
+            let binding_id = canonical_ids
+                .get(&(binding.scope_id, binding.name.clone()))
+                .copied()
+                .unwrap_or(binding.id);
             let use_id = BindingUseId::generate(
                 &ctx.file_id,
-                Some(&binding.id),
+                Some(&binding_id),
                 None::<&types::ids::ReferenceId>,
                 &binding.name,
                 binding.range.start_byte,
@@ -139,10 +155,18 @@ impl LexicalBinder {
                 id: use_id,
                 file_id: ctx.file_id,
                 scope_id: binding.scope_id,
-                binding_id: Some(binding.id),
+                binding_id: Some(binding_id),
                 reference_id: None,
                 name: binding.name.clone(),
                 range: binding.range,
+            });
+        }
+
+        if lexical_spec.coalesce_same_scope_bindings() {
+            bindings.retain(|binding| {
+                canonical_ids
+                    .get(&(binding.scope_id, binding.name.clone()))
+                    .is_some_and(|id| *id == binding.id)
             });
         }
 

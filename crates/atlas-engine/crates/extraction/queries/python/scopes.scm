@@ -1,5 +1,5 @@
-; Python scopes query
-; Captures containment scopes: module, functions, classes, methods, blocks
+; Python lexical namespaces. Ordinary statement blocks do not introduce a
+; scope; comprehensions do have an isolated implicit namespace in Python 3.
 
 (module) @scope.file
 
@@ -9,13 +9,7 @@
 
 (class_definition) @scope.class
 
-(block) @scope.block
-
-; Conditional scopes
-(if_statement) @scope.conditional
-(try_statement) @scope.conditional
-(with_statement) @scope.conditional
-
-; Loop scopes
-(for_statement) @scope.loop
-(while_statement) @scope.loop
+(list_comprehension) @scope.comprehension
+(dictionary_comprehension) @scope.comprehension
+(set_comprehension) @scope.comprehension
+(generator_expression) @scope.comprehension

@@ -4213,6 +4213,16 @@ fn vfy_python_shadowing_inner_scope_independent() {
         "Python shadowing should create at least 2 Local nodes for x, got {}",
         locals_named_x.len()
     );
+    let x_bindings: Vec<_> = facts
+        .bindings
+        .iter()
+        .filter(|binding| binding.name == "x")
+        .collect();
+    assert_eq!(x_bindings.len(), 2, "each function owns one x binding");
+    assert_ne!(
+        x_bindings[0].scope_id, x_bindings[1].scope_id,
+        "nested functions must keep independent local namespaces"
+    );
     let all_ids: Vec<_> = nodes.iter().map(|n| n.id).collect();
     let edges = store
         .find_dataflow_edges_by_sources(&all_ids)
@@ -4220,6 +4230,42 @@ fn vfy_python_shadowing_inner_scope_independent() {
     assert!(
         !edges.is_empty(),
         "Python shadowing should produce dataflow edges"
+    );
+}
+
+/// Python: comprehension targets live in an isolated implicit namespace.
+#[cfg(feature = "python")]
+#[test]
+fn vfy_python_comprehension_binding_isolated_from_function_local() {
+    let file_id = FileId::generate("comprehension.py");
+    let source = "def f(xs):\n    x = 'outer'\n    values = [x for x in xs]\n    return x\n";
+    let frontend = create_frontend(Language::Python).unwrap();
+    let facts = extract_full(
+        &frontend,
+        file_id,
+        Path::new("comprehension.py"),
+        source,
+        "h",
+    )
+    .expect("extract");
+
+    let x_bindings: Vec<_> = facts
+        .bindings
+        .iter()
+        .filter(|binding| binding.name == "x")
+        .collect();
+    assert_eq!(
+        x_bindings.len(),
+        2,
+        "function assignment and comprehension target need distinct bindings"
+    );
+    assert_ne!(x_bindings[0].scope_id, x_bindings[1].scope_id);
+    assert!(
+        facts
+            .scopes
+            .iter()
+            .any(|scope| scope.kind == atlas_engine::enums::ScopeKind::Block),
+        "comprehension must retain an isolated implicit scope"
     );
 }
 

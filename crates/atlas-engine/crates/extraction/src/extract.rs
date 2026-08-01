@@ -513,7 +513,7 @@ pub fn extract_file_with_mode(
     // dataflow context to justify a full AST identifier scan.  Callers
     // receive binding_uses from declaration sites only (from step 7a).
     let reference_binding_uses: Vec<BindingUse> = if mode.produces_reference_binding_uses() {
-        build_reference_binding_uses(&ectx, &bindings, &scopes).unwrap_or_else(|e| {
+        build_reference_binding_uses(&ectx, &bindings, &binding_uses, &scopes).unwrap_or_else(|e| {
             diagnostics.push(ExtractDiagnostic {
                 level: DiagnosticLevel::Warning,
                 message: format!("Identifier-use binding scan failed: {e}"),
@@ -1038,6 +1038,7 @@ fn is_manifest_nested_barrier(kind: &str) -> bool {
 fn build_reference_binding_uses(
     ctx: &ExtractionCtx<'_>,
     bindings: &[BindingDef],
+    declaration_uses: &[BindingUse],
     scopes: &[ScopeDef],
 ) -> Result<Vec<BindingUse>> {
     // Capture every identifier node in the tree
@@ -1072,12 +1073,19 @@ fn build_reference_binding_uses(
         scopes.iter().map(|s| (s.id, s.parent_id)).collect();
 
     // Collect binding declaration ranges (for filtering out decl sites)
-    let binding_ranges: Vec<TextRange> = bindings.iter().map(|b| b.range).collect();
+    let binding_ranges: Vec<TextRange> = declaration_uses.iter().map(|use_| use_.range).collect();
 
     let mut uses: Vec<BindingUse> = Vec::new();
 
     for (_capture_name, node) in captures {
         let range = node_range(node);
+
+        // Pattern class/value/keyword syntax is not a lexical variable use.
+        // Capture identifiers are already represented by declaration uses.
+        if ctx.language == Language::Python && super::languages::python::is_py_pattern_syntax(node)
+        {
+            continue;
+        }
 
         // Skip declaration sites — these are already handled by LexicalBinder
         if binding_ranges

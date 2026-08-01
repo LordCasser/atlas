@@ -83,3 +83,13 @@
 (assignment
   left: (attribute) @df.assign_field_target
   right: (_) @df.assign_value)
+
+;; --- Structural pattern matching ---
+(match_statement
+  subject: (_) @df.match_subject)
+(dotted_name
+  (identifier) @df.pattern_target)
+(as_pattern
+  (identifier) @df.pattern_target)
+(splat_pattern
+  (identifier) @df.pattern_target)

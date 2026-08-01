@@ -14,18 +14,6 @@
     {
       "name": "Function#0",
       "kind": "function"
-    },
-    {
-      "name": "Block#34",
-      "kind": "block"
-    },
-    {
-      "name": "Loop#34",
-      "kind": "loop"
-    },
-    {
-      "name": "Block#55",
-      "kind": "block"
     }
   ],
   "cfg_nodes": [

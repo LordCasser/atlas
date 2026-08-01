@@ -24,22 +24,6 @@
     {
       "name": "Function#0",
       "kind": "function"
-    },
-    {
-      "name": "Block#32",
-      "kind": "block"
-    },
-    {
-      "name": "Conditional#32",
-      "kind": "conditional"
-    },
-    {
-      "name": "Block#50",
-      "kind": "block"
-    },
-    {
-      "name": "Block#81",
-      "kind": "block"
     }
   ],
   "callsites": [

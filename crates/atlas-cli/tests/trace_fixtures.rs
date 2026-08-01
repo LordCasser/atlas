@@ -1794,26 +1794,23 @@ def fx_py_return_to_call_process():
 }
 
 // ────────────────────────────────────────────────────────────────
-// Python: Shadowing precision — inner scope x shadows outer x
+// Python: function-scoped assignment identity
 // ────────────────────────────────────────────────────────────────
 
-/// FX_PY_SHADOW: When `x` is shadowed in a nested scope (if_statement), the
-/// trace from `result` (which uses the inner `x`) must reach the inner `x`
-/// without conflating the outer `x`.  This proves that scope-chain-aware
-/// binding resolution (`resolve_bindings_to_nodes` in dataflow_builder.rs)
-/// works correctly for Python.
+/// Python blocks do not introduce lexical scopes. Assignments to `x` before
+/// and inside an `if` are writes to the same function-local binding.
 #[test]
 #[cfg(feature = "python")]
-fn fx_py_shadow() {
+fn fx_py_block_assignment_reuses_function_local_binding() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "shadow.py",
         r#"def shadow_test():
-    x = "outer"            # outer x in function scope
+    x = "outer"
     if True:
-        x = "inner"        # inner x in conditional scope — shadows outer
-        result = x         # uses inner x, NOT outer x
-    return result          # <-- trace point
+        x = "inner"
+        result = x
+    return result
 "#,
     )];
     let store = index_files(files);
@@ -1822,25 +1819,21 @@ fn fx_py_shadow() {
     let engine = TraceEngine::new(store.clone());
     let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
 
-    // Collect the two Local/assign_target nodes named "x" — first is outer, second is inner
     let x_local_nodes: Vec<_> = data_nodes
         .iter()
         .filter(|n| n.kind == DataNodeKind::Local && n.name.as_deref() == Some("x"))
         .collect();
     assert!(
         x_local_nodes.len() >= 2,
-        "expected >=2 Local 'x' nodes (outer + inner), got {}",
+        "expected both assignment events for function-local x, got {}",
         x_local_nodes.len()
     );
-    let outer_x = x_local_nodes[0];
-    let inner_x = x_local_nodes[1];
-
-    // Verify the two x bindings have different binding_ids (shadowing works)
-    assert!(
-        outer_x.binding_id != inner_x.binding_id,
-        "outer x (binding={:?}) and inner x (binding={:?}) must have distinct binding_ids",
-        outer_x.binding_id,
-        inner_x.binding_id
+    let binding_ids: std::collections::HashSet<_> =
+        x_local_nodes.iter().map(|node| node.binding_id).collect();
+    assert_eq!(
+        binding_ids.len(),
+        1,
+        "Python if blocks must not create a second lexical x binding: {binding_ids:?}"
     );
 
     // Trace from result
@@ -1856,25 +1849,127 @@ fn fx_py_shadow() {
     let path = resp.result.expect("trace path must exist");
     assert!(!path.steps.is_empty(), "backward slice must have steps");
 
-    // ── CRITICAL: inner x must appear in the trace path ──
-    let inner_in_path = path
-        .steps
-        .iter()
-        .any(|step| step.from_node_id == inner_x.id || step.to_node_id == inner_x.id);
     assert!(
-        inner_in_path,
-        "inner 'x' must be in the trace path (result uses inner x)"
+        x_local_nodes.iter().any(|local| path
+            .steps
+            .iter()
+            .any(|step| { step.from_node_id == local.id || step.to_node_id == local.id })),
+        "trace must cross a function-local x assignment"
+    );
+}
+
+#[test]
+#[cfg(feature = "python")]
+fn fx_py_match_capture_bindings_persist_and_trace_from_subject() {
+    let source = r#"def dispatch(value):
+    match value:
+        case Point(x, y=alias) if ready(x, alias):
+            return consume(alias)
+        case {"key": item, **rest}:
+            return consume(item)
+        case [head, *tail] as whole:
+            return consume(whole)
+        case Left(shared) | Right(shared):
+            return consume(shared)
+        case Color.RED:
+            return constant()
+"#;
+    let store = index_files(&[("match_bindings.py", source)]);
+    let file_id = FileId::generate("match_bindings.py");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Python bindings");
+    let expected = [
+        "x", "alias", "item", "rest", "head", "tail", "whole", "shared",
+    ];
+
+    for name in expected {
+        let matches: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "capture {name:?} must have one function-local binding identity"
+        );
+    }
+    for syntax_name in ["Point", "y", "Left", "Right", "Color", "RED"] {
+        assert!(
+            bindings.iter().all(|binding| binding.name != syntax_name),
+            "pattern type/value/keyword name {syntax_name:?} is not a capture binding"
+        );
+    }
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let subject = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("value"))
+        .expect("match subject Expr");
+    let edge_sources = data_nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let edges = store
+        .find_dataflow_edges_by_sources(&edge_sources)
+        .expect("persisted dataflow edges");
+
+    for name in expected {
+        let capture_events: Vec<_> = data_nodes
+            .iter()
+            .filter(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
+            .collect();
+        assert!(
+            !capture_events.is_empty(),
+            "missing Local event for capture {name}"
+        );
+        assert!(
+            capture_events.iter().all(|capture| {
+                edges.iter().any(|edge| {
+                    edge.source == subject.id
+                        && edge.target == capture.id
+                        && edge.kind == DataFlowKind::Assign
+                })
+            }),
+            "every {name} capture event must receive the match subject"
+        );
+    }
+    assert_eq!(
+        data_nodes
+            .iter()
+            .filter(
+                |node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("shared")
+            )
+            .count(),
+        2,
+        "both valid OR alternatives are assignment events for one binding"
     );
 
-    // ── CRITICAL: outer x must NOT appear in the trace path ──
-    let violation = path
-        .steps
+    let alias_binding = bindings
         .iter()
-        .any(|step| step.from_node_id == outer_x.id || step.to_node_id == outer_x.id);
+        .find(|binding| binding.name == "alias")
+        .expect("alias binding");
+    let alias_uses = store
+        .find_binding_uses_by_binding(&alias_binding.id)
+        .expect("alias binding uses");
     assert!(
-        !violation,
-        "shadowing violation: outer 'x' must NOT be in inner trace path"
+        alias_uses.len() >= 3,
+        "alias declaration, guard use, and body use must share one binding"
     );
+
+    let sink = data_nodes
+        .iter()
+        .filter(|node| node.name.as_deref() == Some("alias"))
+        .next_back()
+        .expect("body alias use");
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "python");
+    let path = response.result.expect("pattern binding trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "value");
 }
 
 // ────────────────────────────────────────────────────────────────

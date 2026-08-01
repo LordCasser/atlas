@@ -22,6 +22,8 @@
 ;; --- Loop targets ---
 (for_statement
   left: (identifier) @lexical.local)
+(for_in_clause
+  left: (identifier) @lexical.local)
 
 ;; --- With statement alias (with open(f) as x) ---
 (with_item
@@ -40,3 +42,13 @@
   (identifier) @lexical.local)
 (tuple_pattern
   (identifier) @lexical.local)
+
+;; --- Structural pattern matching captures ---
+;; The adapter filters class/value/keyword names from these broad grammar
+;; shapes, retaining only capture, `as`, and star/rest binding identifiers.
+(dotted_name
+  (identifier) @lexical.pattern)
+(as_pattern
+  (identifier) @lexical.pattern)
+(splat_pattern
+  (identifier) @lexical.pattern)

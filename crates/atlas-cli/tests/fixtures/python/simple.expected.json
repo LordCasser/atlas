@@ -77,40 +77,16 @@
       "kind": "class"
     },
     {
-      "name": "Block#147",
-      "kind": "block"
-    },
-    {
       "name": "Function#147",
       "kind": "function"
-    },
-    {
-      "name": "Block#197",
-      "kind": "block"
     },
     {
       "name": "Function#241",
       "kind": "function"
     },
     {
-      "name": "Block#285",
-      "kind": "block"
-    },
-    {
       "name": "Function#361",
       "kind": "function"
-    },
-    {
-      "name": "Block#377",
-      "kind": "block"
-    },
-    {
-      "name": "Conditional#464",
-      "kind": "conditional"
-    },
-    {
-      "name": "Block#495",
-      "kind": "block"
     }
   ],
   "callsites": [

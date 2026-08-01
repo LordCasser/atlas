@@ -159,6 +159,16 @@ pub trait LexicalBindingSpec: Send + Sync {
     fn capability(&self) -> FeatureSupport;
     /// Normalize a lexical capture into a [`BindingDef`], or `None`.
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef>;
+
+    /// Whether repeated declarations of a name in one scope share one binding.
+    ///
+    /// Most supported languages use declaration identity. Languages such as
+    /// Python instead use one local namespace per function/module/class, where
+    /// assignment sites are writes to an existing name rather than shadowing
+    /// declarations.
+    fn coalesce_same_scope_bindings(&self) -> bool {
+        false
+    }
 }
 
 /// Dataflow extraction spec.
