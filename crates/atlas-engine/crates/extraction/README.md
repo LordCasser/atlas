@@ -74,6 +74,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   wildcards. Guards remain non-exhaustive; Rust/Cangjie binding patterns,
   Python structural projection/post-match path-definedness, range and
   type-driven exhaustiveness are not inferred.
+- Ruby `case ... in` lowers `in_clause` siblings without fall-through. A
+  refutable case with no `else` emits the language-required implicit Throw
+  path; direct unguarded capture/wildcard patterns suppress it. Pattern
+  binding/deconstruction dataflow remains conservative. Python/Rust/Kotlin/
+  Cangjie/Ruby sibling constructs propagate `break` to their enclosing loop
+  instead of consuming it as a switch exit.
 - Rust `?` nodes retain their ordinary success successor and an additional
   residual return-to-Exit continuation. Header expressions on `if`, `match`,
   and loops follow the same rule; `?` inside a nested closure or async block

@@ -16,6 +16,11 @@ All notable changes to Atlas will be documented in this file.
   bodies are pre-test, while `begin ... end while/until` bodies execute once
   before the first condition. `next`, `redo`, and `break` retain their distinct
   condition/body/join targets, and Focus CFG edges match full Index facts.
+- Lower Ruby `case ... in` as non-fall-through sibling paths. Refutable cases
+  without `else` retain the implicit `NoMatchingPatternError` as a `Throw`
+  path, while an unguarded capture is syntax-irrefutable. Ruby, Python, Rust,
+  Kotlin, and Cangjie match-like constructs no longer consume an enclosing
+  loop's `break` as though they were C-style switches.
 - Persist rescue-owned `Retry` edges back to the protected begin dispatch.
   Nested ensure/resource cleanup runs before retry, while the ensure belonging
   to the retried begin is bypassed until that begin eventually completes.
