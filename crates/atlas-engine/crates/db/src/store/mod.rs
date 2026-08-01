@@ -1971,6 +1971,79 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_callsite_is_absent_from_resolved_lookups() {
+        let store = test_store();
+        let file_id = FileId::generate("src/unresolved.ts");
+        let caller = test_symbol(file_id, "caller", SymbolKind::Function);
+        let caller_id = caller.id;
+        let range = TextRange {
+            start_byte: 10,
+            end_byte: 18,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 9,
+        };
+        let reference_id = ReferenceId::generate(
+            &file_id,
+            Some(&caller_id),
+            range.start_byte,
+            range.end_byte,
+            "external",
+            ReferenceKind::Call,
+        );
+        let callsite_id = CallsiteId::generate(&reference_id, Some(&caller_id), range.start_byte);
+        let facts = FileFacts {
+            file: FileInfo {
+                file_id,
+                path: "src/unresolved.ts".into(),
+                language: Language::TypeScript,
+                content_hash: "hash".into(),
+                status: ParseStatus::Success,
+            },
+            symbols: vec![caller],
+            references: vec![ReferenceUse {
+                id: reference_id,
+                file_id,
+                source_symbol: Some(caller_id),
+                scope_id: None,
+                kind: ReferenceKind::Call,
+                text: "external()".into(),
+                name: "external".into(),
+                receiver: None,
+                arity: Some(0),
+                range,
+                binding_id: None,
+                resolved: None,
+            }],
+            callsites: vec![Callsite {
+                id: callsite_id,
+                reference_id: Some(reference_id),
+                caller: caller_id,
+                receiver: None,
+                args: vec![],
+                range,
+                callee_range: Some(range),
+            }],
+            ..Default::default()
+        };
+        store.insert_file_facts(&facts).unwrap();
+
+        assert!(
+            store
+                .find_resolved_callsites_by_id(&callsite_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .find_resolved_callsite_by_reference_id(&reference_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn insert_file_facts_handles_child_before_parent_order() {
         let store = test_store();
         let file_id = FileId::generate("src/nested.c");

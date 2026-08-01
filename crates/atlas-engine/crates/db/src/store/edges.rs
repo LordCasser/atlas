@@ -648,7 +648,8 @@ impl Store {
                     r.resolved_symbol_id
              FROM callsites cs
              JOIN \"references\" r ON r.reference_id = cs.reference_id
-             WHERE cs.callsite_id = ?1",
+             WHERE cs.callsite_id = ?1
+               AND r.resolved_symbol_id IS NOT NULL",
         )?;
         let rows = stmt.query_map(params![callsite_id], |row| {
             let cs = row_to_callsite(row)?;
@@ -676,7 +677,8 @@ impl Store {
                     r.resolved_symbol_id
              FROM callsites cs
              JOIN \"references\" r ON r.reference_id = cs.reference_id
-             WHERE cs.reference_id = ?1",
+             WHERE cs.reference_id = ?1
+               AND r.resolved_symbol_id IS NOT NULL",
         )?;
         let mut rows = stmt.query_map(params![ref_id], |row| {
             let cs = row_to_callsite(row)?;
