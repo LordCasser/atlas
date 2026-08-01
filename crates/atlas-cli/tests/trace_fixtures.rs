@@ -7222,6 +7222,92 @@ end
 
 #[test]
 #[cfg(feature = "ruby")]
+fn fx_cfg_ruby_case_in_persists_no_match_throw_and_outer_loop_break() {
+    let source = r#"def dispatch(active, command)
+  while active
+    case command
+    in {kind: "stop"}
+      break
+    in [head, *tail]
+      consume(head)
+    end
+    after_case()
+  end
+  after_loop()
+end
+"#;
+    let store = index_files(&[("cfg_case_in.rb", source)]);
+    let file_id = FileId::generate("cfg_case_in.rb");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("Ruby case/in symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "dispatch" && symbol.kind == SymbolKind::Method)
+        .expect("missing Ruby dispatch method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("Ruby case/in CFG nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let branch = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Branch)
+        .expect("Ruby case/in Branch");
+    let implicit_throw = nodes
+        .iter()
+        .find(|node| node.kind == CfgNodeKind::Throw)
+        .expect("Ruby case/in implicit no-match Throw");
+    let break_id = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "break");
+    let after_case =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after_case()");
+    let after_loop =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "after_loop()");
+    let case_join = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Join
+                && edges.iter().any(|edge| {
+                    edge.source == node.id
+                        && edge.target == after_case
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+        })
+        .expect("Ruby case/in Join");
+    let loop_join = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::Join
+                && edges.iter().any(|edge| {
+                    edge.source == node.id
+                        && edge.target == after_loop
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+        })
+        .expect("Ruby loop Join");
+
+    assert!(edges.iter().any(|edge| {
+        edge.source == branch.id
+            && edge.target == implicit_throw.id
+            && edge.kind == CfgEdgeKind::CaseBranch
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == break_id && edge.target == loop_join.id && edge.kind == CfgEdgeKind::Break
+    }));
+    assert!(!edges.iter().any(|edge| {
+        edge.source == break_id && edge.target == case_join.id && edge.kind == CfgEdgeKind::Break
+    }));
+
+    let scopes = store
+        .find_scopes_by_file(&file_id)
+        .expect("Ruby case/in scopes");
+    assert!(
+        scopes
+            .iter()
+            .any(|scope| scope.kind == atlas_engine::enums::ScopeKind::Conditional)
+    );
+}
+
+#[test]
+#[cfg(feature = "ruby")]
 fn fx_cfg_loop_break_and_next_ruby_are_persisted_as_control_transfers() {
     let files = &[(
         "cfg_loop.rb",

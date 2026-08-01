@@ -296,10 +296,9 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
             return_kinds: &["return"],
             throw_kinds: &["raise"],
             stmt_kinds: &["call", "assignment", "break", "next"],
-            // Classic `case`/`when` has no fall-through. Ruby 2.7+ `case ... in`
-            // pattern matching remains a separate, explicit boundary.
-            switch_kinds: &["case"],
-            case_kinds: &["when", "else"],
+            // Neither classic `case`/`when` nor `case`/`in` falls through.
+            switch_kinds: &["case", "case_match"],
+            case_kinds: &["when", "in_clause", "else"],
         },
     }
 }
@@ -2104,8 +2103,8 @@ impl CfgContext<'_> {
     /// Java arrow rules and non-C sibling constructs do not. Go switch cases
     /// fall through only when they end in `fallthrough`; select communication
     /// cases never fall through. An unlabeled `break` is queued while walking
-    /// the case and resolved to this construct's Join, so nested conditional
-    /// breaks do not accidentally enter the next case.
+    /// the case: switch-like constructs consume it at their Join, while
+    /// match-like constructs leave it for an enclosing loop or labeled block.
     ///
     /// Returns the index after the switch statement.
     fn walk_switch(&mut self, children: &[Node], idx: usize, start_byte: u32) -> usize {
@@ -2185,20 +2184,23 @@ impl CfgContext<'_> {
             }
         }
 
-        // Resolve breaks owned by this switch. Breaks inside nested loops or
-        // switches have already been drained by the nested construct.
-        let pending_breaks = self.pending_break_node_ids.split_off(break_start);
-        for (break_id, target) in pending_breaks {
-            match target {
-                ControlTransferTarget::Depth(1) => {
-                    self.add_edge(&break_id, &join_id, CfgEdgeKind::Break);
+        // Only language constructs with switch-style break ownership consume
+        // pending breaks. Pattern/branch constructs in Python, Rust, Kotlin,
+        // Cangjie, and Ruby leave them for an enclosing loop or labeled block.
+        if self.switch_owns_break() {
+            let pending_breaks = self.pending_break_node_ids.split_off(break_start);
+            for (break_id, target) in pending_breaks {
+                match target {
+                    ControlTransferTarget::Depth(1) => {
+                        self.add_edge(&break_id, &join_id, CfgEdgeKind::Break);
+                    }
+                    ControlTransferTarget::Depth(depth) => self
+                        .pending_break_node_ids
+                        .push((break_id, ControlTransferTarget::Depth(depth - 1))),
+                    ControlTransferTarget::Label(label) => self
+                        .pending_break_node_ids
+                        .push((break_id, ControlTransferTarget::Label(label))),
                 }
-                ControlTransferTarget::Depth(depth) => self
-                    .pending_break_node_ids
-                    .push((break_id, ControlTransferTarget::Depth(depth - 1))),
-                ControlTransferTarget::Label(label) => self
-                    .pending_break_node_ids
-                    .push((break_id, ControlTransferTarget::Label(label))),
             }
         }
         // PHP counts a switch as one level for `continue N`; `continue 1`
@@ -2230,7 +2232,21 @@ impl CfgContext<'_> {
             .iter()
             .any(|clause| self.is_default_case_clause(clause));
         if !is_go_select && !has_default {
-            direct_case_targets.push(join_id);
+            if self.is_ruby() && switch_node.kind() == "case_match" {
+                // Ruby `case ... in` is exhaustive: unlike classic `case`, a
+                // missing match without `else` raises NoMatchingPatternError.
+                // Exact exception identity remains outside the CFG schema.
+                let no_match_id = self.add_node(
+                    CfgNodeKind::Throw,
+                    switch_node.end_byte() as u32,
+                    Some(switch_node),
+                );
+                self.terminal_node_ids
+                    .push((no_match_id, CfgNodeKind::Throw));
+                direct_case_targets.push(no_match_id);
+            } else {
+                direct_case_targets.push(join_id);
+            }
         }
         for target in direct_case_targets {
             if !self.edges.iter().any(|edge| {
@@ -2851,6 +2867,21 @@ impl CfgContext<'_> {
         }
     }
 
+    fn switch_owns_break(&self) -> bool {
+        matches!(
+            self.language,
+            Language::TypeScript
+                | Language::JavaScript
+                | Language::ArkTS
+                | Language::Java
+                | Language::C
+                | Language::Cpp
+                | Language::Go
+                | Language::CSharp
+                | Language::Php
+        )
+    }
+
     fn is_default_case_clause(&self, clause: &Node) -> bool {
         // Treat only syntactically proven catch-all arms as defaults. Python
         // also has syntax-only irrefutable capture/as/group/OR patterns. Rust
@@ -2896,6 +2927,12 @@ impl CfgContext<'_> {
                 .and_then(|text| text.split_once("=>"))
                 .and_then(|(label, _)| label.trim().strip_prefix("case"))
                 .is_some_and(|pattern| pattern.trim() == "_"),
+            "in_clause" if self.language == Language::Ruby => {
+                clause.child_by_field_name("guard").is_none()
+                    && clause
+                        .child_by_field_name("pattern")
+                        .is_some_and(Self::ruby_pattern_is_irrefutable)
+            }
             "case_statement" if matches!(self.language, Language::C | Language::Cpp) => {
                 clause.child_by_field_name("value").is_none()
             }
@@ -2905,6 +2942,29 @@ impl CfgContext<'_> {
             "when_entry" => clause
                 .utf8_text(self.source)
                 .is_ok_and(|text| text.trim_start().starts_with("else")),
+            _ => false,
+        }
+    }
+
+    /// Ruby's unpinned local-variable pattern always captures and therefore
+    /// matches any subject. Parenthesized/as/alternative forms inherit that
+    /// property from their contained pattern. Structural and pinned patterns
+    /// remain refutable without runtime type/value knowledge.
+    fn ruby_pattern_is_irrefutable(pattern: Node<'_>) -> bool {
+        match pattern.kind() {
+            "identifier" => true,
+            "as_pattern" => pattern
+                .child_by_field_name("value")
+                .is_some_and(Self::ruby_pattern_is_irrefutable),
+            "parenthesized_pattern" => pattern
+                .named_child(0)
+                .is_some_and(Self::ruby_pattern_is_irrefutable),
+            "alternative_pattern" => {
+                let mut cursor = pattern.walk();
+                pattern
+                    .named_children(&mut cursor)
+                    .any(Self::ruby_pattern_is_irrefutable)
+            }
             _ => false,
         }
     }
@@ -7141,6 +7201,224 @@ function dispatch($x) {
                     .count(),
                 2,
                 "refutable/guarded pattern {pattern:?} must retain synthetic no-match"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_case_in_has_sibling_paths_and_implicit_no_match_throw() {
+        let source = r#"def dispatch(value)
+  case value
+  in [head, *tail]
+    consume(head)
+  in {kind: "ready"}
+    ready()
+  end
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let branch = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Branch)
+            .expect("Ruby case/in Branch");
+        let consume =
+            cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "consume(head)");
+        let ready = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "ready()");
+        let implicit_throw = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Throw)
+            .expect("case/in without an exhaustive arm raises on no match");
+        let exit = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Exit)
+            .expect("method Exit");
+
+        for target in [consume, ready, implicit_throw.id] {
+            assert!(has_cfg_edge(
+                &result,
+                branch.id,
+                target,
+                CfgEdgeKind::CaseBranch
+            ));
+        }
+        assert!(has_cfg_edge(
+            &result,
+            implicit_throw.id,
+            exit.id,
+            CfgEdgeKind::Normal
+        ));
+    }
+
+    #[test]
+    fn test_ruby_case_in_irrefutable_capture_suppresses_only_unguarded_no_match() {
+        for (pattern, expect_throw) in [("value", false), ("_", false), ("value if ready", true)] {
+            let source = format!(
+                "def dispatch(input)\n  case input\n  in {pattern}\n    consume(input)\n  end\nend\n"
+            );
+            let result = build_cfg_for_first_fn(Language::Ruby, &source);
+            assert_eq!(
+                result
+                    .nodes
+                    .iter()
+                    .any(|node| node.kind == CfgNodeKind::Throw),
+                expect_throw,
+                "pattern {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ruby_case_in_implicit_no_match_throw_reaches_rescue() {
+        let source = r#"def dispatch(value)
+  begin
+    case value
+    in 0
+      zero()
+    end
+  rescue NoMatchingPatternError
+    recover()
+  end
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let implicit_throw = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Throw)
+            .expect("case/in implicit no-match Throw");
+        let recover = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "recover()");
+
+        assert!(has_cfg_edge(
+            &result,
+            implicit_throw.id,
+            recover,
+            CfgEdgeKind::Exception
+        ));
+    }
+
+    #[test]
+    fn test_non_break_owning_sibling_constructs_propagate_break_to_enclosing_loop() {
+        let fixtures = [
+            (
+                Language::Ruby,
+                r#"def run(active, value)
+  while active
+    case value
+    when 0
+      break
+    else
+      work()
+    end
+    after_case()
+  end
+  after_loop()
+end
+"#,
+                "after_case()",
+                "after_loop()",
+            ),
+            (
+                Language::Python,
+                r#"def run(active, value):
+    while active:
+        match value:
+            case 0:
+                break
+            case _:
+                work()
+        after_match()
+    after_loop()
+"#,
+                "after_match()",
+                "after_loop()",
+            ),
+            (
+                Language::Rust,
+                r#"fn run(active: bool, value: i32) {
+    while active {
+        match value {
+            0 => break,
+            _ => work(),
+        }
+        after_match();
+    }
+    after_loop();
+}
+"#,
+                "after_match();",
+                "after_loop();",
+            ),
+            (
+                Language::Kotlin,
+                r#"fun run(active: Boolean, value: Int) {
+    while (active) {
+        when (value) {
+            0 -> break
+            else -> work()
+        }
+        afterWhen()
+    }
+    afterLoop()
+}
+"#,
+                "afterWhen()",
+                "afterLoop()",
+            ),
+            (
+                Language::Cangjie,
+                r#"func run(value: Int64): Unit {
+    while (isReady()) {
+        match (value) {
+            case 0 => break
+            case _ => work()
+        }
+        afterMatch()
+    }
+    afterLoop()
+}
+"#,
+                "afterMatch()",
+                "afterLoop()",
+            ),
+        ];
+
+        for (language, source, after_sibling_text, after_loop_text) in fixtures {
+            let result = build_cfg_for_first_fn(language, source);
+            let break_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "break");
+            let after_sibling =
+                cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, after_sibling_text);
+            let after_loop =
+                cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, after_loop_text);
+            let sibling_join = result
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.kind == CfgNodeKind::Join
+                        && has_cfg_edge(&result, node.id, after_sibling, CfgEdgeKind::Normal)
+                })
+                .unwrap_or_else(|| panic!("{language:?} sibling Join"));
+            let loop_join = result
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.kind == CfgNodeKind::Join
+                        && has_cfg_edge(&result, node.id, after_loop, CfgEdgeKind::Normal)
+                })
+                .unwrap_or_else(|| panic!("{language:?} loop Join"));
+
+            assert_ne!(sibling_join.id, loop_join.id, "{language:?}");
+            assert!(
+                has_cfg_edge(&result, break_id, loop_join.id, CfgEdgeKind::Break),
+                "{language:?} break must leave the enclosing loop"
+            );
+            assert!(
+                !has_cfg_edge(&result, break_id, sibling_join.id, CfgEdgeKind::Break),
+                "{language:?} match/case/when must not consume loop break"
             );
         }
     }

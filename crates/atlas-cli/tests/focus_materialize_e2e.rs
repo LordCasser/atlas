@@ -1281,6 +1281,68 @@ fn n5_focus_ruby_modifier_cfg_matches_index_full() {
     );
 }
 
+/// Ruby case/in must retain its implicit no-match Throw and outer-loop break
+/// target identically across full Index and Focus on-demand dataflow.
+#[cfg(feature = "ruby")]
+#[test]
+fn n5_focus_ruby_case_in_cfg_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "case_in.rb",
+            "def dispatch(active, value)\n\
+             \x20 while active\n\
+             \x20   case value\n\
+             \x20   in {kind: \"stop\"}\n\
+             \x20     break\n\
+             \x20   in [head, *tail]\n\
+             \x20     consume(head)\n\
+             \x20   end\n\
+             \x20   after_case()\n\
+             \x20 end\n\
+             \x20 after_loop()\n\
+             end\n",
+        ),
+        ("peer.rb", "def unrelated\n  42\nend\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_slice = unit_dataflow_slice(
+        &indexed_store,
+        &symbol_id_by_name(&indexed_store, "dispatch"),
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let dispatch = symbol_id_by_name(&focused_store, "dispatch");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&dispatch, Some("ruby-case-in-parity"))
+        .expect("Focus ensure Ruby dispatch");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &dispatch),
+        indexed_slice,
+        "Ruby case/in dataflow/CFG edges: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_cfg_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Ruby unit must stay outside the Focus window"
+    );
+}
+
 /// N5 dataflow with planner call expansion: ensure(useAdd) also builds callee
 /// `add`; both units match Index full; peer stays empty.
 #[test]

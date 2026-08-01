@@ -21,6 +21,8 @@
 
 (case) @scope.conditional
 
+(case_match) @scope.conditional
+
 (while) @scope.loop
 
 (until) @scope.loop
