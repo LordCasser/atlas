@@ -424,7 +424,10 @@ Conventions:
 - Atlas performs best-effort semantic analysis, not compiler-grade type checking.
 - C/C++ preprocessing is not expanded; include analysis is based on indexed directives and paths.
 - Java classpath, Maven, and Gradle resolution are not fully modeled.
-- Python dynamic runtime constructs and generated symbols are outside the static extraction model.
+- Python match capture/`as`/star bindings are traced conservatively from the
+  subject through guard/body uses; structural projection, post-match
+  path-definedness, dynamic runtime constructs, and generated symbols remain
+  outside the precise static model.
 - TypeScript barrel/re-export chains use best-effort name fallback rather than a full export graph.
 - Dataflow and trace precision varies by language; inspect `atlas doctor` or trace capability metadata before relying on a trace result.
 - MCP uses scoped focus extraction for local investigations; run `atlas sync` or `atlas index` outside MCP only when you want a refreshed project-wide cache.

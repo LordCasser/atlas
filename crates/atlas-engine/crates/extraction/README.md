@@ -66,11 +66,14 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   path. Computed goto, C# `goto case/default`, cross-scope C++ destruction, and
   grammar-hidden labels remain explicit boundaries.
 - Python unguarded syntax-irrefutable wildcard, capture, `as`, grouping, and OR
-  match arms suppress the impossible synthetic no-match path. Rust and Cangjie
-  currently do so only for direct unguarded wildcards. Guards remain
-  non-exhaustive; Rust/Cangjie binding patterns, Python sequence/mapping/class/
-  value patterns, range and type-driven exhaustiveness, and guard/binding
-  dataflow are not inferred.
+  match arms suppress the impossible synthetic no-match path. Capture, `as`,
+  and star/rest identifiers share the enclosing Python namespace and receive
+  conservative subject-to-binding dataflow through guard/body uses. Ordinary
+  statement blocks do not create Python lexical scopes; comprehensions remain
+  isolated. Rust and Cangjie currently recognize only direct unguarded
+  wildcards. Guards remain non-exhaustive; Rust/Cangjie binding patterns,
+  Python structural projection/post-match path-definedness, range and
+  type-driven exhaustiveness are not inferred.
 - Rust `?` nodes retain their ordinary success successor and an additional
   residual return-to-Exit continuation. Header expressions on `if`, `match`,
   and loops follow the same rule; `?` inside a nested closure or async block

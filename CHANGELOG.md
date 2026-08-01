@@ -156,6 +156,10 @@ SQLite Schema V3 and require rebuilding an older `.atlas/atlas.db`.
 
 ### Language precision
 
+- Align Python lexical facts with Python namespaces: ordinary statement blocks
+  no longer create shadow scopes, repeated writes share one binding identity,
+  comprehensions remain isolated, and structural match capture/`as`/star
+  bindings receive conservative subject-flow edges through guard/body uses.
 - Go switch/select preserves blocking semantics; bounded path-sensitive defer
   stacks execute registered calls in LIFO order on normal exits.
 - Rust `?` retains success plus residual-return paths; `let-else` separates the
