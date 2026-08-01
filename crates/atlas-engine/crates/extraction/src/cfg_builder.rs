@@ -24,8 +24,9 @@
 //!   resources with owner-matched path-isolated BlockExit nodes
 //! - lexically resolved labeled break/continue for Java, JS/TS/ArkTS, Go,
 //!   Rust, and Kotlin, including transfer through finally/managed cleanup
-//! - direct same-function goto/label edges for C, C++, Go, and C#, including
-//!   C# exits that execute intervening finally/using cleanup regions
+//! - direct same-function goto/label edges for C, C++, Go, C#, and PHP;
+//!   C# exits execute intervening finally/using cleanup, while PHP exits
+//!   execute intervening finally regions and reject loop/switch entry
 //! - bounded path-sensitive Go defer registration with LIFO execution on
 //!   normal function exits
 //! - Rust `?` success and residual-return paths, bounded by nested closure and
@@ -36,7 +37,7 @@
 //!
 //! # NOT supported (deferred)
 //! - async/await
-//! - computed/PHP goto, C# goto case/default, and labels that the selected
+//! - computed goto, C# goto case/default, and labels that the selected
 //!   tree-sitter grammar does not expose as a lexical control target
 //! - resolved/inherited catch-type selection and implicit exceptions from
 //!   ordinary statements (Java/C#/PHP only apply an ordered exact-match cutoff
@@ -341,7 +342,9 @@ struct CfgContext<'a> {
     /// abrupt statements so later label entries are still materialized. Such
     /// nodes stay disconnected unless a resolved goto makes them reachable.
     /// C# routes exits through finally/using cleanup and rejects jumps into a
-    /// nested lexical/cleanup region or out of a finally clause.
+    /// nested lexical/cleanup region or out of a finally clause. PHP routes
+    /// exits through finally, rejects loop/switch entry, and keeps finally
+    /// clauses closed to jumps in either direction.
     can_resolve_direct_goto: bool,
     /// Non-zero while lowering a path-isolated clone of one AST region.
     node_instance: u32,
@@ -368,6 +371,7 @@ enum ControlTransferTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DirectGotoRegionKind {
     LexicalBlock,
+    LoopOrSwitch,
     TryFinally,
     Using,
     FinallyClause,
@@ -811,7 +815,7 @@ impl CfgContext<'_> {
     fn supports_direct_goto(language: Language) -> bool {
         matches!(
             language,
-            Language::C | Language::Cpp | Language::Go | Language::CSharp
+            Language::C | Language::Cpp | Language::Go | Language::CSharp | Language::Php
         )
     }
 
@@ -832,6 +836,8 @@ impl CfgContext<'_> {
                     | "lambda_expression"
                     | "anonymous_method_expression"
                     | "func_literal"
+                    | "anonymous_function_creation_expression"
+                    | "arrow_function"
             ) {
                 continue;
             }
@@ -1560,6 +1566,12 @@ impl CfgContext<'_> {
                     continue;
                 }
                 break;
+            } else if self.language == Language::Php && kind == "named_label_statement" {
+                let node_start = self.nodes.len();
+                self.emit_stmt(CfgNodeKind::Join, stmt_range.start_byte, &stmt);
+                let label = self.direct_goto_label(stmt);
+                self.record_direct_goto_label(label, stmt, node_start);
+                i += 1;
             } else if kind == "labeled_statement" {
                 self.walk_labeled_statement(stmt, stmt_range.start_byte);
                 i += 1;
@@ -2228,11 +2240,12 @@ impl CfgContext<'_> {
         let break_start = checkpoint.break_len;
         let continue_start = checkpoint.continue_len;
         let goto_start = checkpoint.goto_len;
-        let goto_region = (self.language == Language::CSharp && finally_clause.is_some())
-            .then_some(DirectGotoRegion {
-                kind: DirectGotoRegionKind::TryFinally,
-                node_id: try_node.id(),
-            });
+        let goto_region = (matches!(self.language, Language::CSharp | Language::Php)
+            && finally_clause.is_some())
+        .then_some(DirectGotoRegion {
+            kind: DirectGotoRegionKind::TryFinally,
+            node_id: try_node.id(),
+        });
 
         let dispatch_id = if catch_clauses.is_empty() {
             None
@@ -2919,7 +2932,9 @@ impl CfgContext<'_> {
     }
 
     fn direct_goto_label(&self, node: Node<'_>) -> Option<String> {
-        if !Self::supports_direct_goto(self.language) || node.kind() != "labeled_statement" {
+        let is_label = node.kind() == "labeled_statement"
+            || (self.language == Language::Php && node.kind() == "named_label_statement");
+        if !Self::supports_direct_goto(self.language) || !is_label {
             return None;
         }
         let mut cursor = node.walk();
@@ -2937,18 +2952,21 @@ impl CfgContext<'_> {
 
     fn is_direct_goto_label_node(&self, node: Node<'_>) -> bool {
         matches!(node.kind(), "statement_identifier" | "label_name")
-            || self.language == Language::CSharp && node.kind() == "identifier"
+            || (self.language == Language::CSharp && node.kind() == "identifier")
+            || (self.language == Language::Php && node.kind() == "name")
     }
 
     fn collect_direct_goto_label_regions(&mut self, root: Node<'_>) {
-        if self.language != Language::CSharp || !self.can_resolve_direct_goto {
+        if !matches!(self.language, Language::CSharp | Language::Php)
+            || !self.can_resolve_direct_goto
+        {
             return;
         }
         let mut pending = Vec::new();
         let mut cursor = root.walk();
         pending.extend(root.named_children(&mut cursor));
         while let Some(node) = pending.pop() {
-            if node.kind() == "labeled_statement"
+            if matches!(node.kind(), "labeled_statement" | "named_label_statement")
                 && let Some(label) = self.direct_goto_label(node)
             {
                 let regions = self.direct_goto_regions(node);
@@ -2959,7 +2977,12 @@ impl CfgContext<'_> {
             }
             if matches!(
                 node.kind(),
-                "local_function_statement" | "lambda_expression" | "anonymous_method_expression"
+                "function_definition"
+                    | "local_function_statement"
+                    | "lambda_expression"
+                    | "anonymous_method_expression"
+                    | "anonymous_function_creation_expression"
+                    | "arrow_function"
             ) {
                 continue;
             }
@@ -2969,18 +2992,36 @@ impl CfgContext<'_> {
     }
 
     fn direct_goto_regions(&self, node: Node<'_>) -> Vec<DirectGotoRegion> {
-        if self.language != Language::CSharp {
+        if !matches!(self.language, Language::CSharp | Language::Php) {
             return Vec::new();
         }
         let mut regions = Vec::new();
         let mut ancestor = node.parent();
         while let Some(current) = ancestor {
-            let kind = match current.kind() {
-                "block" => Some(DirectGotoRegionKind::LexicalBlock),
-                "using_statement" => Some(DirectGotoRegionKind::Using),
-                "finally_clause" => Some(DirectGotoRegionKind::FinallyClause),
-                "try_statement" if Self::csharp_try_has_finally(current) => {
-                    Some(DirectGotoRegionKind::TryFinally)
+            let kind = match self.language {
+                Language::CSharp => match current.kind() {
+                    "block" => Some(DirectGotoRegionKind::LexicalBlock),
+                    "using_statement" => Some(DirectGotoRegionKind::Using),
+                    "finally_clause" => Some(DirectGotoRegionKind::FinallyClause),
+                    "try_statement" if Self::try_has_finally(current) => {
+                        Some(DirectGotoRegionKind::TryFinally)
+                    }
+                    _ => None,
+                },
+                Language::Php => {
+                    if self.config.loop_kinds.contains(&current.kind())
+                        || self.config.switch_kinds.contains(&current.kind())
+                    {
+                        Some(DirectGotoRegionKind::LoopOrSwitch)
+                    } else {
+                        match current.kind() {
+                            "finally_clause" => Some(DirectGotoRegionKind::FinallyClause),
+                            "try_statement" if Self::try_has_finally(current) => {
+                                Some(DirectGotoRegionKind::TryFinally)
+                            }
+                            _ => None,
+                        }
+                    }
                 }
                 _ => None,
             };
@@ -2995,7 +3036,7 @@ impl CfgContext<'_> {
         regions
     }
 
-    fn csharp_try_has_finally(node: Node<'_>) -> bool {
+    fn try_has_finally(node: Node<'_>) -> bool {
         let mut cursor = node.walk();
         node.named_children(&mut cursor)
             .any(|child| child.kind() == "finally_clause")
@@ -3006,16 +3047,31 @@ impl CfgContext<'_> {
         source_regions: &[DirectGotoRegion],
         target_regions: &[DirectGotoRegion],
     ) -> bool {
-        if self.language != Language::CSharp {
-            return true;
+        match self.language {
+            Language::CSharp => {
+                target_regions
+                    .iter()
+                    .all(|region| source_regions.contains(region))
+                    && source_regions.iter().all(|region| {
+                        region.kind != DirectGotoRegionKind::FinallyClause
+                            || target_regions.contains(region)
+                    })
+            }
+            Language::Php => {
+                let target_entries_are_legal = target_regions.iter().all(|region| {
+                    region.kind != DirectGotoRegionKind::LoopOrSwitch
+                        || source_regions.contains(region)
+                });
+                let same_finally_clauses = source_regions
+                    .iter()
+                    .filter(|region| region.kind == DirectGotoRegionKind::FinallyClause)
+                    .eq(target_regions
+                        .iter()
+                        .filter(|region| region.kind == DirectGotoRegionKind::FinallyClause));
+                target_entries_are_legal && same_finally_clauses
+            }
+            _ => true,
         }
-        target_regions
-            .iter()
-            .all(|region| source_regions.contains(region))
-            && source_regions.iter().all(|region| {
-                region.kind != DirectGotoRegionKind::FinallyClause
-                    || target_regions.contains(region)
-            })
     }
 
     fn direct_goto_exits_region(
@@ -4932,6 +4988,304 @@ Retry:
                 "{language:?} backward goto must create a direct cycle to the label entry"
             );
         }
+    }
+
+    #[test]
+    fn test_php_direct_goto_targets_the_standalone_label() {
+        let source = r#"<?php
+function run() {
+    goto done;
+    skipped();
+done:
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto done;");
+        let skipped = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "skipped();");
+        let label = cfg_node_id_for_text(&result, source, CfgNodeKind::Join, "done:");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(has_cfg_edge(&result, goto_id, label, CfgEdgeKind::Goto));
+        assert!(has_cfg_edge(&result, label, finish, CfgEdgeKind::Normal));
+        assert!(!cfg_reaches(&result, goto_id, skipped));
+    }
+
+    #[test]
+    fn test_php_goto_may_enter_an_ordinary_block_but_not_a_loop_or_switch() {
+        let ordinary_block = r#"<?php
+function run($ready) {
+    goto inside;
+    if ($ready) {
+inside:
+        finish();
+    }
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, ordinary_block);
+        let goto_id = cfg_node_id_for_text(
+            &result,
+            ordinary_block,
+            CfgNodeKind::Statement,
+            "goto inside;",
+        );
+        let label = cfg_node_id_for_text(&result, ordinary_block, CfgNodeKind::Join, "inside:");
+        assert!(has_cfg_edge(&result, goto_id, label, CfgEdgeKind::Goto));
+
+        let loop_body = r#"<?php
+function run($ready) {
+    goto inside;
+    while ($ready) {
+inside:
+        finish();
+    }
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, loop_body);
+        let goto_id =
+            cfg_node_id_for_text(&result, loop_body, CfgNodeKind::Statement, "goto inside;");
+        let finish = cfg_node_id_for_text(&result, loop_body, CfgNodeKind::Statement, "finish();");
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, finish));
+
+        let switch_body = r#"<?php
+function run($value) {
+    goto inside;
+    switch ($value) {
+        case 1:
+inside:
+            finish();
+    }
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, switch_body);
+        let goto_id =
+            cfg_node_id_for_text(&result, switch_body, CfgNodeKind::Statement, "goto inside;");
+        let finish =
+            cfg_node_id_for_text(&result, switch_body, CfgNodeKind::Statement, "finish();");
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, finish));
+
+        let exit_loop = r#"<?php
+function run($ready) {
+    while ($ready) {
+        goto done;
+    }
+done:
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, exit_loop);
+        let goto_id =
+            cfg_node_id_for_text(&result, exit_loop, CfgNodeKind::Statement, "goto done;");
+        let label = cfg_node_id_for_text(&result, exit_loop, CfgNodeKind::Join, "done:");
+        assert!(has_cfg_edge(&result, goto_id, label, CfgEdgeKind::Goto));
+    }
+
+    #[test]
+    fn test_php_goto_exits_nested_finally_regions_inner_to_outer() {
+        let source = r#"<?php
+function run() {
+    try {
+        try {
+            goto done;
+        } finally {
+            inner_cleanup();
+        }
+    } finally {
+        outer_cleanup();
+    }
+done:
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto done;");
+        let label = cfg_node_id_for_text(&result, source, CfgNodeKind::Join, "done:");
+        let inner = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "inner_cleanup();")
+                    && has_cfg_edge(&result, goto_id, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("goto continuation must execute inner finally first");
+        let outer = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "outer_cleanup();")
+                    && has_cfg_edge(&result, inner, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("goto continuation must execute outer finally second");
+
+        assert!(has_cfg_edge(&result, outer, label, CfgEdgeKind::Goto));
+    }
+
+    #[test]
+    fn test_php_goto_may_enter_catch_and_still_executes_finally() {
+        let source = r#"<?php
+function run() {
+    goto recovered;
+    try {
+        work();
+    } catch (RuntimeException $error) {
+recovered:
+        recover();
+    } finally {
+        cleanup();
+    }
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, source);
+        let goto_id =
+            cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto recovered;");
+        let label = cfg_node_id_for_text(&result, source, CfgNodeKind::Join, "recovered:");
+        let recover = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "recover();");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+        let cleanup = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "cleanup();")
+                    && has_cfg_edge(&result, recover, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("catch path must execute finally");
+
+        assert!(has_cfg_edge(&result, goto_id, label, CfgEdgeKind::Goto));
+        assert!(has_cfg_edge(&result, label, recover, CfgEdgeKind::Normal));
+        assert!(cfg_reaches(&result, cleanup, finish));
+    }
+
+    #[test]
+    fn test_php_goto_cannot_cross_a_finally_clause_boundary() {
+        let leaving = r#"<?php
+function run() {
+    try {
+        work();
+    } finally {
+        goto done;
+    }
+done:
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, leaving);
+        let goto_id = cfg_node_id_for_text(&result, leaving, CfgNodeKind::Statement, "goto done;");
+        let finish = cfg_node_id_for_text(&result, leaving, CfgNodeKind::Statement, "finish();");
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, finish));
+
+        let entering = r#"<?php
+function run() {
+    goto inside;
+    try {
+        work();
+    } finally {
+inside:
+        cleanup();
+    }
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, entering);
+        let goto_id =
+            cfg_node_id_for_text(&result, entering, CfgNodeKind::Statement, "goto inside;");
+        let cleanup = cfg_node_id_for_text(&result, entering, CfgNodeKind::Statement, "cleanup();");
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, cleanup));
+    }
+
+    #[test]
+    fn test_php_goto_within_finally_keeps_cloned_paths_isolated() {
+        let source = r#"<?php
+function run($stop) {
+    try {
+        if ($stop) return;
+        work();
+    } finally {
+        goto within;
+        skipped();
+within:
+        cleanup();
+    }
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, source);
+        let goto_ids: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "goto within;")
+            })
+            .map(|node| node.id)
+            .collect();
+        assert_eq!(goto_ids.len(), 2, "normal and return finally clones");
+
+        let mut targets = HashSet::new();
+        for goto_id in goto_ids {
+            let target = result
+                .edges
+                .iter()
+                .find(|edge| edge.source == goto_id && edge.kind == CfgEdgeKind::Goto)
+                .map(|edge| edge.target)
+                .expect("goto must resolve within its finally clone");
+            assert!(result.nodes.iter().any(|node| {
+                node.id == target
+                    && node.kind == CfgNodeKind::Join
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "within:")
+            }));
+            targets.insert(target);
+        }
+        assert_eq!(
+            targets.len(),
+            2,
+            "each finally clone must retain its own label target"
+        );
+    }
+
+    #[test]
+    fn test_php_abrupt_finally_overrides_outgoing_goto() {
+        let source = r#"<?php
+function run() {
+    try {
+        goto done;
+    } finally {
+        throw new RuntimeException("stop");
+    }
+done:
+    finish();
+}
+"#;
+        let result = build_cfg_for_first_fn(Language::Php, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto done;");
+        let finally_throw = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Throw)
+            .map(|node| node.id)
+            .expect("finally throw terminal");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(cfg_reaches(&result, goto_id, finally_throw));
+        assert!(!cfg_reaches(&result, goto_id, finish));
     }
 
     #[test]

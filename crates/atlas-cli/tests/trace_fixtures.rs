@@ -4193,6 +4193,76 @@ class Worker {
 
 #[test]
 #[cfg(feature = "php")]
+fn fx_cfg_php_nested_finally_goto_persists_inner_to_outer_route() {
+    let source = r#"<?php
+function run() {
+    try {
+        try {
+            goto done;
+        } finally {
+            inner_cleanup();
+        }
+    } finally {
+        outer_cleanup();
+    }
+done:
+    finish();
+}
+"#;
+    let path = "nested_finally_goto.php";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("synthetic PHP symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "run" && symbol.kind == SymbolKind::Function)
+        .expect("run function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("run CFG nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let goto_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "goto done;");
+    let label = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Join, "done:");
+    let inner =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "inner_cleanup();")
+            .into_iter()
+            .find(|node_id| {
+                edges.iter().any(|edge| {
+                    edge.source == goto_id
+                        && edge.target == *node_id
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+            })
+            .expect("goto continuation must execute persisted inner finally");
+    let outer =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "outer_cleanup();")
+            .into_iter()
+            .find(|node_id| {
+                edges.iter().any(|edge| {
+                    edge.source == inner
+                        && edge.target == *node_id
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+            })
+            .expect("goto continuation must execute persisted outer finally");
+
+    assert!(!edges.iter().any(|edge| {
+        edge.source == goto_id && edge.target == label && edge.kind == CfgEdgeKind::Goto
+    }));
+    let final_edge = edges
+        .iter()
+        .find(|edge| edge.source == outer && edge.target == label && edge.kind == CfgEdgeKind::Goto)
+        .expect("outer finally tail must retain the goto continuation kind");
+    assert_eq!(
+        final_edge.id,
+        CfgEdge::new(&outer, &label, CfgEdgeKind::Goto).id
+    );
+}
+
+#[test]
+#[cfg(feature = "php")]
 fn fx_cfg_php_real_example_callable_boundaries() {
     let source = example_source_or_skip!("rust_example/tests/syntax-tests/source/PHP/test.php");
     let files = &[("examples/php_syntax.php", source)];
