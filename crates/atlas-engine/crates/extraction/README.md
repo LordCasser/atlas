@@ -54,14 +54,17 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   and identical `(source, target, kind)` paths collapse to one deterministic
   edge. `break` and `continue` are persisted as dedicated CFG edges. Exact
   lexical labels resolve for Java, JS/TS/ArkTS, Go, Rust, and Kotlin and remain
-  attached while crossing finally or managed cleanup. C/C++/Go direct
+  attached while crossing finally or managed cleanup. C/C++/Go/C#/PHP direct
   same-function goto/label pairs use dedicated `Goto` edges. C# goto exits run
   intervening using `BlockExit` and path-isolated finally clones from inner to
-  outer before the final `Goto` edge. Jumps into nested lexical/cleanup regions
-  and jumps out of a finally clause are rejected; unresolved or non-direct
-  targets terminate the local best-effort path. Computed/PHP goto, C# `goto
-  case/default`, cross-scope C++ destruction, and grammar-hidden labels remain
-  explicit boundaries.
+  outer before the final `Goto` edge; jumps into nested lexical/cleanup regions
+  and jumps out of a finally clause are rejected. PHP labels are standalone
+  `Join` targets; goto exits run intervening path-isolated finally clones from
+  inner to outer, entry into loop/switch and crossing either direction over a
+  finally-clause boundary are rejected, while entry into an ordinary block is
+  allowed. Unresolved or non-direct targets terminate the local best-effort
+  path. Computed goto, C# `goto case/default`, cross-scope C++ destruction, and
+  grammar-hidden labels remain explicit boundaries.
 - Python unguarded syntax-irrefutable wildcard, capture, `as`, grouping, and OR
   match arms suppress the impossible synthetic no-match path. Rust and Cangjie
   currently do so only for direct unguarded wildcards. Guards remain
@@ -97,7 +100,7 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   handler; earlier handlers remain alternatives because inheritance is not
   resolved. Resolved/inherited catch selection, thrown variables and guarded or
   implicit exceptions, cleanup exception suppression or replacement and exact
-  exception identity, Ruby retry/redo, computed/PHP goto, C# `goto
+  exception identity, Ruby retry/redo, computed goto, C# `goto
   case/default`, C++ cross-scope destruction on goto, and grammar-hidden labels
   remain explicit boundaries.
   Managed cleanup effects are emitted in deterministic LIFO order; Java

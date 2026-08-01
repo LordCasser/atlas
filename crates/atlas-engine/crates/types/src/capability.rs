@@ -1406,7 +1406,7 @@ mod profiles {
             "AST-driven local dataflow with language-specific gaps",
             "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
             "namespace aliases resolved at reference resolution layer",
-            "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+            "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
         ],
         feature_overrides: &[
             (
@@ -1435,7 +1435,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                        "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, direct same-function label goto with inner-to-outer finally execution, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
             ),
@@ -3180,7 +3180,7 @@ mod tests {
                 "AST-driven local dataflow with language-specific gaps",
                 "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
                 "namespace aliases resolved at reference resolution layer",
-                "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
+                "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
             ]
         );
 
@@ -3238,7 +3238,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; inherited or aliased catch types, thrown variables, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries"
+                    "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented with path-isolated normal and abrupt continuations, throw/return terminals, C-family fall-through, numeric break/continue nesting, direct same-function label goto with inner-to-outer finally execution, and an ordered syntactic exact-match handler cutoff for direct object-created explicit throws; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries"
                 ],
             )
         );

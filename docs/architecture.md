@@ -661,9 +661,9 @@ LanguageCapabilityProfile
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG；lifecycle goto 清除不可证明的 branch context；cross-scope destruction、模板/重载/ADL、catch-type selection、implicit exception 不建模 |
 | ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback 仍是显式边界 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
-| C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；无 finally/using cleanup ownership 的 direct same-function `Goto`；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
+| C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct same-function `Goto` 退出按内到外执行 using/finally cleanup，非法 region crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
 | Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` arm 抑制 synthetic no-match；macro resolution/unwind 与 guarded/复杂 pattern 保守；Drop 仅为 function-exit effect heuristic，不是 path-sensitive lexical RAII |
-| PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
+| PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 inner-to-outer finally continuation）、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；loop/switch entry 与 finally-clause crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
 | Ruby | DataflowInterproc | ✓ (classic `case`/`when` + `rescue/else/ensure` + block resource) | 0.65 | ✓ (ArgToParam + ReturnToCall) | method-body/nested ensure isolated continuation CFG；resource-block `break/next` 清理后恢复 yielding call 后继；`retry/redo`、`case ... in` 未建模；yield 仍为 best-effort |
 | Kotlin | DataflowInterproc | ✓ (branch/loop/`when`) | 0.67 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `.use` normal/abrupt continuation CFG，cleanup 为确定性 LIFO；extension receiver 与 `when` condition/guard/binding dataflow 为 best-effort |
 | Cangjie | DataflowInterproc | ✓ (branch/loop/`match`) | 0.65 | ✓ (ArgToParam + ReturnToCall, verified) | subject/conditionless match 的 direct unguarded wildcard 抑制 synthetic no-match；guarded/复杂 pattern 与 binding 保守；try/catch/finally continuation CFG |
@@ -711,11 +711,13 @@ unqualified builtin `panic!`/`unreachable!`/`todo!`/`unimplemented!` 保持 abru
 `catch_unwind` 或 macro shadowing/re-export resolution。注释类 AST extra 在 statement dispatch 前
 过滤，不能成为可执行 CFG entity。
 
-Direct goto 继续复用 pending target 与持久化 `Goto` edge，不增加 label IR。C/C++/Go
-解析 grammar-visible 的同函数标签；C# 仅在整个函数不含 `finally_clause` 或
-`using_statement` 时启用解析，避免在没有 cleanup-region ownership 的情况下直连绕过清理。
-`goto case/default` 与 cleanup-crossing goto 只作为本地 abrupt terminal，不猜测目标。标签与
-正文之间的 comment extra 在选择 executable entry 时会被跳过。
+Direct goto 继续复用 pending target 与持久化 `Goto` edge，不增加新的持久化类型。C/C++/Go
+解析 grammar-visible 的同函数标签；C# 的退出 continuation 按内到外经过 `using` BlockExit 与
+path-isolated finally clone，禁止跳入更深的 lexical/cleanup region 或跳出 finally clause。PHP 的
+standalone `named_label_statement` 复用现有 Join 作为精确 target；跳出 try 时按内到外执行 finally，
+禁止跳入 loop/switch 或跨 finally-clause 边界，但允许跳入普通 block。`goto case/default`、computed
+或 unknown target 只作为本地 abrupt terminal，不猜测目标。标签与正文之间的 comment extra 在
+选择 executable entry 时会被跳过。
 
 符号源码范围是抽取事实，不由展示层猜测。函数/方法使用 enclosing callable
 scope；C/C++ 的 class/struct/interface/enum 使用完整 defining scope（包括成员和闭合
@@ -729,8 +731,8 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 可靠判定的抽取语义变化，才应提升 schema/extractor revision 并要求重索引。
 
 已知限制：
-- CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed/PHP goto、C# `goto case/default`/cleanup-crossing goto、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
-- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue 与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 仅在函数没有 finally/using cleanup ownership 时复用该语义，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确类型匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby `retry/redo`、computed/PHP goto、C# `goto case/default`/cleanup-crossing goto、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
+- CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed goto、C# `goto case/default`、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
+- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue、direct same-function goto（含 finally continuation）与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go/C#/PHP 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 与 PHP 各自执行语言规定的 cleanup 并拒绝非法 region crossing，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确类型匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby `retry/redo`、computed goto、C# `goto case/default`、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
 - 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
   `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 

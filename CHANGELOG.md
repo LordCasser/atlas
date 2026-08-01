@@ -6,6 +6,18 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### PHP control flow
+
+- Resolve direct same-function PHP `goto` to standalone label `Join` targets
+  through deterministic persisted `Goto` edges.
+- Execute every intervening path-isolated `finally` clone from inner to outer;
+  abrupt finally completion overrides the pending goto continuation.
+- Match PHP's region rules: ordinary-block entry and loop/switch exit are
+  allowed, loop/switch entry and either-direction finally-clause crossing are
+  rejected. Add adversarial extraction coverage and an inline
+  extraction→SQLite-persistence fixture without changing the schema or public
+  MCP contract.
+
 ### C# control flow
 
 - Route direct `goto` exits through every intervening `using` `BlockExit` and
