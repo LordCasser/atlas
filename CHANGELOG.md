@@ -4,6 +4,19 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### C# control flow
+
+- Route direct `goto` exits through every intervening `using` `BlockExit` and
+  path-isolated `finally` clone from inner to outer before emitting the final
+  `Goto` edge. Same-region jumps do not execute cleanup early.
+- Reject jumps into nested lexical/cleanup regions and jumps out of a `finally`
+  clause without guessing a target edge. `goto case/default` remains deferred.
+- Add extraction-level adversarial coverage and an inline
+  extraction→SQLite-persistence fixture for nested cleanup-crossing goto. No
+  SQLite schema or public MCP contract changed.
+
 ## [1.6.1] - 2026-07-27
 
 All changes **after tag `v1.6.0`** belong to 1.6.1. This is an indexing

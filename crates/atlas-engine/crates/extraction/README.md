@@ -55,12 +55,13 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   edge. `break` and `continue` are persisted as dedicated CFG edges. Exact
   lexical labels resolve for Java, JS/TS/ArkTS, Go, Rust, and Kotlin and remain
   attached while crossing finally or managed cleanup. C/C++/Go direct
-  same-function goto/label pairs use dedicated `Goto` edges. C# uses the same
-  edge only when the function has no finally/using cleanup ownership;
-  unresolved or non-direct targets terminate the local best-effort path.
-  Computed/PHP goto, C# `goto case/default` and cleanup-crossing goto,
-  cross-scope C++ destruction, and grammar-hidden labels remain explicit
-  boundaries.
+  same-function goto/label pairs use dedicated `Goto` edges. C# goto exits run
+  intervening using `BlockExit` and path-isolated finally clones from inner to
+  outer before the final `Goto` edge. Jumps into nested lexical/cleanup regions
+  and jumps out of a finally clause are rejected; unresolved or non-direct
+  targets terminate the local best-effort path. Computed/PHP goto, C# `goto
+  case/default`, cross-scope C++ destruction, and grammar-hidden labels remain
+  explicit boundaries.
 - Python unguarded syntax-irrefutable wildcard, capture, `as`, grouping, and OR
   match arms suppress the impossible synthetic no-match path. Rust and Cangjie
   currently do so only for direct unguarded wildcards. Guards remain
@@ -97,8 +98,8 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   resolved. Resolved/inherited catch selection, thrown variables and guarded or
   implicit exceptions, cleanup exception suppression or replacement and exact
   exception identity, Ruby retry/redo, computed/PHP goto, C# `goto
-  case/default` and cleanup-crossing goto, C++ cross-scope destruction on
-  goto, and grammar-hidden labels remain explicit boundaries.
+  case/default`, C++ cross-scope destruction on goto, and grammar-hidden labels
+  remain explicit boundaries.
   Managed cleanup effects are emitted in deterministic LIFO order; Java
   try-with-resources runs its owner-matched exits before catch/finally.
   Go defer registration is part of a bounded CFG × runtime-stack expansion:
