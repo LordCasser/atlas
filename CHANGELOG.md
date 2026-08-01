@@ -21,6 +21,11 @@ All notable changes to Atlas will be documented in this file.
   path, while an unguarded capture is syntax-irrefutable. Ruby, Python, Rust,
   Kotlin, and Cangjie match-like constructs no longer consume an enclosing
   loop's `break` as though they were C-style switches.
+- Bind Ruby `case ... in` bare、key-only、`=>` and array/hash-rest captures in
+  the enclosing local namespace and conservatively flow the whole match subject
+  to each capture. Guards and bodies resolve the same binding identity；pins
+  remain reads. Structural projection and post-match path-definedness stay
+  explicit precision boundaries.
 - Persist rescue-owned `Retry` edges back to the protected begin dispatch.
   Nested ensure/resource cleanup runs before retry, while the ensure belonging
   to the retried begin is bypassed until that begin eventually completes.
