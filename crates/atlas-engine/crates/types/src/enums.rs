@@ -1232,6 +1232,11 @@ pub enum CfgEdgeKind {
     Break,
     /// An unlabeled continue to the innermost loop header.
     Continue,
+    /// Restart the current Ruby loop/block iteration at its body entry without
+    /// re-evaluating the loop condition or iterator arguments.
+    Redo,
+    /// Restart the Ruby begin body owned by the active rescue clause.
+    Retry,
     /// A direct lexical jump to a named label in the same function.
     Goto,
     /// Enter a dynamically registered deferred-call execution at function exit.
@@ -1250,6 +1255,8 @@ impl CfgEdgeKind {
             Self::LoopBack => "loop_back",
             Self::Break => "break",
             Self::Continue => "continue",
+            Self::Redo => "redo",
+            Self::Retry => "retry",
             Self::Goto => "goto",
             Self::Defer => "defer",
             Self::Exception => "exception",
@@ -1266,6 +1273,8 @@ impl CfgEdgeKind {
             "loop_back" => Some(Self::LoopBack),
             "break" => Some(Self::Break),
             "continue" => Some(Self::Continue),
+            "redo" => Some(Self::Redo),
+            "retry" => Some(Self::Retry),
             "goto" => Some(Self::Goto),
             "defer" => Some(Self::Defer),
             "exception" => Some(Self::Exception),
@@ -1585,6 +1594,8 @@ mod tests {
             CfgEdgeKind::LoopBack,
             CfgEdgeKind::Break,
             CfgEdgeKind::Continue,
+            CfgEdgeKind::Redo,
+            CfgEdgeKind::Retry,
             CfgEdgeKind::Goto,
             CfgEdgeKind::Defer,
             CfgEdgeKind::Exception,

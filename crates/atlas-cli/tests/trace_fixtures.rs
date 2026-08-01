@@ -7293,3 +7293,92 @@ end
             && matches!(edge.kind, CfgEdgeKind::Break | CfgEdgeKind::Continue)
     }));
 }
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_ruby_retry_and_redo_persist_exact_edges() {
+    let source = r#"def redo_loop(again)
+  while ready?
+    work()
+    redo if again
+    tail()
+  end
+end
+
+def retry_load(again)
+  begin
+    load()
+  rescue
+    begin
+      retry if again
+    ensure
+      inner_cleanup()
+    end
+  ensure
+    outer_cleanup()
+  end
+end
+"#;
+    let store = index_files(&[("retry_redo.rb", source)]);
+    let file_id = FileId::generate("retry_redo.rb");
+    let symbols = store
+        .find_symbols_by_file(&file_id)
+        .expect("Ruby retry/redo symbols");
+
+    let redo_fn = symbols
+        .iter()
+        .find(|symbol| symbol.name == "redo_loop" && symbol.kind == SymbolKind::Method)
+        .expect("redo_loop method");
+    let redo_nodes = store
+        .find_cfg_nodes_by_function(&redo_fn.id)
+        .expect("redo_loop CFG nodes");
+    let redo_edges = persisted_cfg_edges(&store, &redo_nodes);
+    let redo = persisted_cfg_node_id_for_text(&redo_nodes, source, CfgNodeKind::Statement, "redo");
+    let work =
+        persisted_cfg_node_id_for_text(&redo_nodes, source, CfgNodeKind::Statement, "work()");
+    let redo_edge = redo_edges
+        .iter()
+        .find(|edge| edge.source == redo && edge.target == work && edge.kind == CfgEdgeKind::Redo)
+        .expect("persisted redo must target current body entry");
+    assert_eq!(
+        redo_edge.id,
+        CfgEdge::new(&redo, &work, CfgEdgeKind::Redo).id
+    );
+
+    let retry_fn = symbols
+        .iter()
+        .find(|symbol| symbol.name == "retry_load" && symbol.kind == SymbolKind::Method)
+        .expect("retry_load method");
+    let retry_nodes = store
+        .find_cfg_nodes_by_function(&retry_fn.id)
+        .expect("retry_load CFG nodes");
+    let retry_edges = persisted_cfg_edges(&store, &retry_nodes);
+    let retry =
+        persisted_cfg_node_id_for_text(&retry_nodes, source, CfgNodeKind::Statement, "retry");
+    let inner_cleanup = persisted_cfg_node_ids_for_text(
+        &retry_nodes,
+        source,
+        CfgNodeKind::Statement,
+        "inner_cleanup()",
+    )
+    .into_iter()
+    .find(|cleanup| {
+        retry_edges.iter().any(|edge| {
+            edge.source == retry && edge.target == *cleanup && edge.kind == CfgEdgeKind::Normal
+        })
+    })
+    .expect("persisted retry must execute nested ensure");
+    let retry_edge = retry_edges
+        .iter()
+        .find(|edge| edge.source == inner_cleanup && edge.kind == CfgEdgeKind::Retry)
+        .expect("nested ensure tail must retain retry continuation");
+    assert!(
+        retry_nodes
+            .iter()
+            .any(|node| node.id == retry_edge.target && node.kind == CfgNodeKind::Branch)
+    );
+    assert_eq!(
+        retry_edge.id,
+        CfgEdge::new(&inner_cleanup, &retry_edge.target, CfgEdgeKind::Retry).id
+    );
+}

@@ -508,6 +508,14 @@ impl FieldLifecycleEngine {
                             CfgEdgeKind::Continue => {
                                 unwind_context_for_loop(&mut next_ctx, &graph, edge.target);
                             }
+                            CfgEdgeKind::Redo | CfgEdgeKind::Retry => {
+                                // Ruby restarts abandon the current iteration
+                                // or rescue path. CFG facts do not persist the
+                                // lexical owner needed to prove which outer
+                                // frames survive, so retaining any frame could
+                                // publish a false path condition.
+                                next_ctx.clear();
+                            }
                             CfgEdgeKind::Goto => {
                                 // A goto may bypass any number of branch joins
                                 // or enter a different arm. Without retaining
@@ -1441,6 +1449,51 @@ mod tests {
             target_transition.branch_frames.is_empty(),
             "a goto may bypass any active lexical branch joins"
         );
+    }
+
+    #[test]
+    fn ruby_restart_edges_clear_abandoned_branch_frames() {
+        for restart_kind in [CfgEdgeKind::Redo, CfgEdgeKind::Retry] {
+            let fid = test_fid();
+            let entry = CfgNode::entry(&fid);
+            let exit = CfgNode::exit(&fid);
+            let branch = make_node(Vec::new(), 1, CfgNodeKind::Branch, 10);
+            let restart = make_node(Vec::new(), 2, CfgNodeKind::Statement, 20);
+            let join = make_node(Vec::new(), 3, CfgNodeKind::Join, 11);
+            let target_id = CfgNodeId::generate(&fid, "test", 30);
+            let target = make_stmt_node(vec![se_store(target_id, 0, "ptr")], 4, 30);
+            let nodes = vec![
+                entry.clone(),
+                branch.clone(),
+                restart.clone(),
+                join.clone(),
+                target.clone(),
+                exit.clone(),
+            ];
+            let edges = vec![
+                CfgEdge::new(&entry.id, &branch.id, CfgEdgeKind::Normal),
+                CfgEdge::new(&branch.id, &restart.id, CfgEdgeKind::TrueBranch),
+                CfgEdge::new(&branch.id, &join.id, CfgEdgeKind::FalseBranch),
+                CfgEdge::new(&restart.id, &target.id, restart_kind),
+                CfgEdge::new(&target.id, &exit.id, CfgEdgeKind::Normal),
+            ];
+
+            let result = FieldLifecycleEngine::analyze_field_lifecycle(
+                &nodes,
+                &edges,
+                "ptr",
+                &OwnershipRules::default(),
+            );
+            let target_transition = result
+                .transitions
+                .iter()
+                .find(|transition| transition.node_line == 4)
+                .expect("restart target transition");
+            assert!(
+                target_transition.branch_frames.is_empty(),
+                "{restart_kind:?} must abandon the source branch context"
+            );
+        }
     }
 
     #[test]

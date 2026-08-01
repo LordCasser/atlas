@@ -5,7 +5,7 @@
 //! Walks the tree-sitter AST of a function body and produces:
 //! - [`CfgNode`]s: Entry, Statement, Branch, Loop, Return, Throw, Join, Exit
 //! - [`CfgEdge`]s: Normal, TrueBranch, FalseBranch, CaseBranch, LoopBack,
-//!   Break, Continue, Goto, Defer, Exception
+//!   Break, Continue, Redo, Retry, Goto, Defer, Exception
 //!
 //! # Supported constructs (TypeScript)
 //!
@@ -20,6 +20,8 @@
 //!   continuations (Exception edges and deterministic finally clones)
 //! - Ruby method-body and nested begin/rescue/else/ensure regions through the
 //!   same path-isolated continuation lowering
+//! - Ruby `redo` for lexical loops and modeled block resources, plus
+//!   rescue-owned `retry`, including nested ensure/resource cleanup
 //! - Java try-with-resources, C# using, Python with, Kotlin use, and Ruby block
 //!   resources with owner-matched path-isolated BlockExit nodes
 //! - lexically resolved labeled break/continue for Java, JS/TS/ArkTS, Go,
@@ -43,7 +45,7 @@
 //!   ordinary statements (Java/C#/PHP only apply an ordered exact-match cutoff
 //!   for direct object-created explicit throws)
 //! - cleanup exception suppression/replacement and exact exception identity
-//! - Ruby `retry`/`redo`
+//! - Ruby postfix while/until loops and ordinary iterator/callback block bodies
 //! - Go defer stacks that can grow through a loop, over-budget defer-state
 //!   expansion, and panic/recover unwinding
 //! - Rust macro shadowing/re-exports, custom never-return macros, panic unwind,
@@ -289,7 +291,7 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
         },
         Language::Ruby => CfgLanguageConfig {
             block_kinds: &["body_statement", "do", "then"],
-            if_kinds: &["if", "unless", "elsif"],
+            if_kinds: &["if", "unless", "elsif", "if_modifier", "unless_modifier"],
             loop_kinds: &["while", "until", "for"],
             return_kinds: &["return"],
             throw_kinds: &["raise"],
@@ -331,6 +333,12 @@ struct CfgContext<'a> {
     /// controls and path-isolated cleanup clones until their owner is reached.
     pending_break_node_ids: Vec<(types::ids::CfgNodeId, ControlTransferTarget)>,
     pending_continue_node_ids: Vec<(types::ids::CfgNodeId, ControlTransferTarget)>,
+    /// Ruby `redo` restarts the innermost modeled loop/block body, while
+    /// `retry` restarts the begin body owned by the enclosing rescue. Both
+    /// remain pending across nested ensure/resource cleanup until that lexical
+    /// owner is lowered.
+    pending_redo_node_ids: Vec<types::ids::CfgNodeId>,
+    pending_retry_node_ids: Vec<types::ids::CfgNodeId>,
     /// Direct goto sources and label entries are collected independently of
     /// lexical order, then resolved once the whole function body has been
     /// walked. This supports both forward and backward jumps without a
@@ -406,6 +414,8 @@ struct CfgCheckpoint {
     terminal_len: usize,
     break_len: usize,
     continue_len: usize,
+    redo_len: usize,
+    retry_len: usize,
     goto_len: usize,
     prev_node_id: Option<types::ids::CfgNodeId>,
     node_instance: u32,
@@ -447,6 +457,8 @@ impl CfgBuilder {
             terminal_node_ids: Vec::new(),
             pending_break_node_ids: Vec::new(),
             pending_continue_node_ids: Vec::new(),
+            pending_redo_node_ids: Vec::new(),
+            pending_retry_node_ids: Vec::new(),
             pending_goto_node_ids: Vec::new(),
             goto_label_targets: Vec::new(),
             direct_goto_label_regions: HashMap::new(),
@@ -854,6 +866,8 @@ impl CfgContext<'_> {
             terminal_len: self.terminal_node_ids.len(),
             break_len: self.pending_break_node_ids.len(),
             continue_len: self.pending_continue_node_ids.len(),
+            redo_len: self.pending_redo_node_ids.len(),
+            retry_len: self.pending_retry_node_ids.len(),
             goto_len: self.pending_goto_node_ids.len(),
             prev_node_id: self.prev_node_id,
             node_instance: self.node_instance,
@@ -870,6 +884,8 @@ impl CfgContext<'_> {
         self.pending_break_node_ids.truncate(checkpoint.break_len);
         self.pending_continue_node_ids
             .truncate(checkpoint.continue_len);
+        self.pending_redo_node_ids.truncate(checkpoint.redo_len);
+        self.pending_retry_node_ids.truncate(checkpoint.retry_len);
         self.pending_goto_node_ids.truncate(checkpoint.goto_len);
         self.prev_node_id = checkpoint.prev_node_id;
         self.node_instance = checkpoint.node_instance;
@@ -1031,7 +1047,7 @@ impl CfgContext<'_> {
 
     /// Route every completion of one managed-resource body through a distinct
     /// BlockExit. Reusing one exit node would let return/throw/break/continue/
-    /// goto continuations cross into the normal successor. A Ruby block-level
+    /// retry/goto continuations cross into the normal successor. A Ruby block-level
     /// break/next exits the yielding call, so those isolated exits converge
     /// into the call's normal successor rather than escaping an outer loop.
     /// Every completion that is not already Throw also records a conservative
@@ -1048,6 +1064,7 @@ impl CfgContext<'_> {
         let terminal_start = checkpoint.terminal_len;
         let break_start = checkpoint.break_len;
         let continue_start = checkpoint.continue_len;
+        let retry_start = checkpoint.retry_len;
         let goto_start = checkpoint.goto_len;
         let exiting_goto_count = goto_region.map_or(0, |region| {
             self.pending_goto_node_ids[goto_start..]
@@ -1059,6 +1076,7 @@ impl CfgContext<'_> {
             + (self.terminal_node_ids.len() - terminal_start)
             + (self.pending_break_node_ids.len() - break_start)
             + (self.pending_continue_node_ids.len() - continue_start)
+            + (self.pending_retry_node_ids.len() - retry_start)
             + exiting_goto_count;
         if clone_count > MAX_PATH_ISOLATED_CLONES_PER_REGION {
             return false;
@@ -1068,6 +1086,7 @@ impl CfgContext<'_> {
         let pending_terminals = self.terminal_node_ids.split_off(terminal_start);
         let pending_breaks = self.pending_break_node_ids.split_off(break_start);
         let pending_continues = self.pending_continue_node_ids.split_off(continue_start);
+        let pending_retries = self.pending_retry_node_ids.split_off(retry_start);
         let pending_gotos = self.pending_goto_node_ids.split_off(goto_start);
 
         let normal_exit = normal_tail.map(|tail| {
@@ -1116,6 +1135,13 @@ impl CfgContext<'_> {
             } else {
                 self.pending_continue_node_ids.push((block_exit, target));
             }
+        }
+        for retry_id in pending_retries {
+            let block_exit =
+                self.append_managed_block_exit(retry_id, scope_start_byte, scope_end_byte, context);
+            self.terminal_node_ids
+                .push((block_exit, CfgNodeKind::Throw));
+            self.pending_retry_node_ids.push(block_exit);
         }
         for mut pending in pending_gotos {
             if goto_region.is_some_and(|region| self.direct_goto_exits_region(&pending, region)) {
@@ -1566,6 +1592,20 @@ impl CfgContext<'_> {
                     continue;
                 }
                 break;
+            } else if self.is_ruby() && abrupt_stmt.kind() == "redo" {
+                let range = node_text_range(&abrupt_stmt, self.source);
+                let node_id =
+                    self.emit_stmt(CfgNodeKind::Statement, range.start_byte, &abrupt_stmt);
+                self.prev_node_id.take();
+                self.pending_redo_node_ids.push(node_id);
+                break;
+            } else if self.is_ruby() && abrupt_stmt.kind() == "retry" {
+                let range = node_text_range(&abrupt_stmt, self.source);
+                let node_id =
+                    self.emit_stmt(CfgNodeKind::Statement, range.start_byte, &abrupt_stmt);
+                self.prev_node_id.take();
+                self.pending_retry_node_ids.push(node_id);
+                break;
             } else if self.language == Language::Php && kind == "named_label_statement" {
                 let node_start = self.nodes.len();
                 self.emit_stmt(CfgNodeKind::Join, stmt_range.start_byte, &stmt);
@@ -1614,7 +1654,12 @@ impl CfgContext<'_> {
                 // Mark the resource call, then route every block completion
                 // through an owner-bound BlockExit.
                 let checkpoint = self.checkpoint();
-                self.emit_managed_resource(&stmt, CallContext::RubyBlock, stmt_range.start_byte);
+                let resource_id = self.emit_managed_resource(
+                    &stmt,
+                    CallContext::RubyBlock,
+                    stmt_range.start_byte,
+                );
+                let body_edge_start = self.edges.len();
                 // Walk the block body (find do_block/block child → body_statement)
                 let mut child_cursor = stmt.walk();
                 for child in stmt.named_children(&mut child_cursor) {
@@ -1628,6 +1673,11 @@ impl CfgContext<'_> {
                         break;
                     }
                 }
+                let body_entry = self.edges[body_edge_start..]
+                    .iter()
+                    .find(|edge| edge.source == resource_id)
+                    .map(|edge| edge.target);
+                self.resolve_ruby_redos(body_entry, checkpoint.redo_len);
 
                 if !self.finish_managed_scope(
                     stmt_range.start_byte,
@@ -1894,6 +1944,17 @@ impl CfgContext<'_> {
     /// Returns the index after the if_statement.
     fn walk_if(&mut self, children: &[Node], idx: usize, start_byte: u32) -> usize {
         let if_node = &children[idx];
+        let consequence_kind =
+            if self.is_ruby() && matches!(if_node.kind(), "unless" | "unless_modifier") {
+                CfgEdgeKind::FalseBranch
+            } else {
+                CfgEdgeKind::TrueBranch
+            };
+        let alternative_kind = if consequence_kind == CfgEdgeKind::TrueBranch {
+            CfgEdgeKind::FalseBranch
+        } else {
+            CfgEdgeKind::TrueBranch
+        };
 
         // 1. Create Branch node, connect from previous
         let branch_id = self.add_node(CfgNodeKind::Branch, start_byte, Some(if_node));
@@ -1921,16 +1982,16 @@ impl CfgContext<'_> {
             self.walk_branch_body(cons);
             // Fix first edge: Branch→first node of consequence to TrueBranch
             if self.edges.len() > saved_edge_count {
-                self.retag_edge(saved_edge_count, CfgEdgeKind::TrueBranch);
+                self.retag_edge(saved_edge_count, consequence_kind);
                 self.prev_node_id.take()
             } else {
                 // Empty consequence block still has a valid true path.
-                direct_join_edges.push((branch_id, CfgEdgeKind::TrueBranch));
+                direct_join_edges.push((branch_id, consequence_kind));
                 self.prev_node_id.take();
                 None
             }
         } else {
-            direct_join_edges.push((branch_id, CfgEdgeKind::TrueBranch));
+            direct_join_edges.push((branch_id, consequence_kind));
             None
         };
 
@@ -1998,15 +2059,15 @@ impl CfgContext<'_> {
             self.walk_branch_body(alt);
             // Fix first edge: Branch→first node of alternative to FalseBranch
             if self.edges.len() > saved_edge_count {
-                self.retag_edge(saved_edge_count, CfgEdgeKind::FalseBranch);
+                self.retag_edge(saved_edge_count, alternative_kind);
                 self.prev_node_id.take()
             } else {
-                direct_join_edges.push((branch_id, CfgEdgeKind::FalseBranch));
+                direct_join_edges.push((branch_id, alternative_kind));
                 self.prev_node_id.take();
                 None
             }
         } else {
-            direct_join_edges.push((branch_id, CfgEdgeKind::FalseBranch));
+            direct_join_edges.push((branch_id, alternative_kind));
             None
         };
 
@@ -2239,6 +2300,8 @@ impl CfgContext<'_> {
         let terminal_start = checkpoint.terminal_len;
         let break_start = checkpoint.break_len;
         let continue_start = checkpoint.continue_len;
+        let redo_start = checkpoint.redo_len;
+        let retry_start = checkpoint.retry_len;
         let goto_start = checkpoint.goto_len;
         let goto_region = (matches!(self.language, Language::CSharp | Language::Php)
             && finally_clause.is_some())
@@ -2345,10 +2408,12 @@ impl CfgContext<'_> {
 
         let mut catch_tails = Vec::new();
         let mut catch_paths = Vec::new();
+        let mut owned_retries = Vec::new();
         let mut has_empty_catch = false;
         for clause in &catch_clauses {
             let dispatch_id = dispatch_id.expect("catch clauses require dispatch");
             let saved_edge_count = self.edges.len();
+            let catch_retry_start = self.pending_retry_node_ids.len();
             self.prev_node_id = Some(dispatch_id);
             let catch_body = if is_ruby_try_region && clause.kind() == "rescue" {
                 clause.child_by_field_name("body")
@@ -2358,6 +2423,7 @@ impl CfgContext<'_> {
             if let Some(body) = catch_body {
                 self.walk_branch_body(body);
             }
+            owned_retries.extend(self.pending_retry_node_ids.split_off(catch_retry_start));
 
             if self.edges.len() > saved_edge_count {
                 self.retag_edge(saved_edge_count, CfgEdgeKind::Exception);
@@ -2371,6 +2437,11 @@ impl CfgContext<'_> {
                 catch_paths.push((*clause, None));
                 has_empty_catch = true;
                 self.prev_node_id.take();
+            }
+        }
+        if let Some(dispatch_id) = dispatch_id {
+            for retry_id in owned_retries {
+                self.add_edge(&retry_id, &dispatch_id, CfgEdgeKind::Retry);
             }
         }
 
@@ -2427,6 +2498,8 @@ impl CfgContext<'_> {
             + (self.terminal_node_ids.len() - terminal_start)
             + (self.pending_break_node_ids.len() - break_start)
             + (self.pending_continue_node_ids.len() - continue_start)
+            + (self.pending_redo_node_ids.len() - redo_start)
+            + (self.pending_retry_node_ids.len() - retry_start)
             + goto_region.map_or(0, |region| {
                 self.pending_goto_node_ids[goto_start..]
                     .iter()
@@ -2445,6 +2518,8 @@ impl CfgContext<'_> {
             let pending_terminals = self.terminal_node_ids.split_off(terminal_start);
             let pending_breaks = self.pending_break_node_ids.split_off(break_start);
             let pending_continues = self.pending_continue_node_ids.split_off(continue_start);
+            let pending_redos = self.pending_redo_node_ids.split_off(redo_start);
+            let pending_retries = self.pending_retry_node_ids.split_off(retry_start);
             let pending_gotos = self.pending_goto_node_ids.split_off(goto_start);
 
             if let Some(tail) = normal_tail
@@ -2472,6 +2547,16 @@ impl CfgContext<'_> {
             for (continue_id, target) in pending_continues {
                 if let Some(tail) = self.walk_finally_clone(continue_id, finally_body) {
                     self.pending_continue_node_ids.push((tail, target));
+                }
+            }
+            for redo_id in pending_redos {
+                if let Some(tail) = self.walk_finally_clone(redo_id, finally_body) {
+                    self.pending_redo_node_ids.push(tail);
+                }
+            }
+            for retry_id in pending_retries {
+                if let Some(tail) = self.walk_finally_clone(retry_id, finally_body) {
+                    self.pending_retry_node_ids.push(tail);
                 }
             }
             for mut pending in pending_gotos {
@@ -3158,6 +3243,16 @@ impl CfgContext<'_> {
         self.prev_node_id = Some(join_id);
     }
 
+    fn resolve_ruby_redos(&mut self, body_entry: Option<CfgNodeId>, redo_start: usize) {
+        let pending_redos = self.pending_redo_node_ids.split_off(redo_start);
+        let Some(body_entry) = body_entry else {
+            return;
+        };
+        for redo_id in pending_redos {
+            self.add_edge(&redo_id, &body_entry, CfgEdgeKind::Redo);
+        }
+    }
+
     fn labeled_statement_parts<'a>(&self, node: Node<'a>) -> Option<(String, Node<'a>)> {
         let mut cursor = node.walk();
         let named: Vec<_> = node.named_children(&mut cursor).collect();
@@ -3217,6 +3312,7 @@ impl CfgContext<'_> {
         let loop_node = &children[idx];
         let break_start = self.pending_break_node_ids.len();
         let continue_start = self.pending_continue_node_ids.len();
+        let redo_start = self.pending_redo_node_ids.len();
 
         // 1. Create Loop node, connect from previous
         let loop_id = self.add_node(CfgNodeKind::Loop, start_byte, Some(loop_node));
@@ -3226,6 +3322,7 @@ impl CfgContext<'_> {
 
         // 2. Find and walk the loop body
         let body = find_loop_body(*loop_node, self.config.block_kinds);
+        let body_edge_start = self.edges.len();
 
         let body_last = if let Some(body) = body {
             self.prev_node_id = Some(loop_id);
@@ -3242,6 +3339,11 @@ impl CfgContext<'_> {
         } else {
             None
         };
+        let body_entry = self.edges[body_edge_start..]
+            .iter()
+            .find(|edge| edge.source == loop_id)
+            .map(|edge| edge.target);
+        self.resolve_ruby_redos(body_entry, redo_start);
 
         // 3. LoopBack edge: last body node → Loop (if body didn't end with return/throw)
         if let Some(ref last) = body_last {
@@ -3411,6 +3513,12 @@ fn find_if_branches<'a>(
     node: Node<'a>,
     block_kinds: &[&str],
 ) -> (Option<Node<'a>>, Option<Node<'a>>) {
+    // Ruby postfix conditionals keep their executable statement in a named
+    // `body` field rather than a block/consequence child.
+    if matches!(node.kind(), "if_modifier" | "unless_modifier") {
+        return (node.child_by_field_name("body"), None);
+    }
+
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
 
@@ -7853,6 +7961,281 @@ end
             block_exits.contains(&edge.source)
                 && matches!(edge.kind, CfgEdgeKind::Break | CfgEdgeKind::Continue)
         }));
+    }
+
+    #[test]
+    fn test_ruby_redo_restarts_the_current_loop_body_without_rechecking_condition() {
+        let source = r#"def run(done)
+  while ready?
+    work()
+    redo unless done
+    tail()
+  end
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let redo = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "redo");
+        let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "work()");
+        let loop_id = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("while loop");
+
+        assert!(has_cfg_edge(&result, redo, work, CfgEdgeKind::Redo));
+        assert!(
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.target == redo && edge.kind == CfgEdgeKind::FalseBranch })
+        );
+        assert!(!has_cfg_edge(&result, redo, loop_id, CfgEdgeKind::Continue));
+        assert_eq!(
+            result
+                .edges
+                .iter()
+                .filter(|edge| edge.source == redo)
+                .count(),
+            1,
+            "redo is an abrupt transfer with no lexical fallthrough"
+        );
+    }
+
+    #[test]
+    fn test_ruby_redo_executes_inner_ensure_before_restarting_loop_body() {
+        let source = r#"def run(again)
+  while ready?
+    begin
+      redo if again
+    ensure
+      cleanup()
+    end
+    tail()
+  end
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let redo = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "redo");
+        let loop_id = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("while loop");
+        let body_entry = result
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.source == loop_id
+                    && result
+                        .nodes
+                        .iter()
+                        .any(|node| node.id == edge.target && node.kind != CfgNodeKind::Join)
+            })
+            .map(|edge| edge.target)
+            .expect("loop body entry");
+        let cleanup = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "cleanup()")
+                    && has_cfg_edge(&result, redo, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("redo continuation must execute ensure");
+
+        assert!(has_cfg_edge(
+            &result,
+            cleanup,
+            body_entry,
+            CfgEdgeKind::Redo
+        ));
+        assert!(!has_cfg_edge(&result, redo, body_entry, CfgEdgeKind::Redo));
+    }
+
+    #[test]
+    fn test_ruby_abrupt_ensure_overrides_redo() {
+        let source = r#"def run
+  while ready?
+    begin
+      redo
+    ensure
+      return 1
+    end
+    tail()
+  end
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let redo = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "redo");
+        let ensure_return = cfg_node_id_for_text(&result, source, CfgNodeKind::Return, "return 1");
+        let tail = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "tail()");
+
+        assert!(has_cfg_edge(
+            &result,
+            redo,
+            ensure_return,
+            CfgEdgeKind::Normal
+        ));
+        assert!(
+            !result
+                .edges
+                .iter()
+                .any(|edge| edge.kind == CfgEdgeKind::Redo)
+        );
+        assert!(!cfg_reaches(&result, redo, tail));
+    }
+
+    #[test]
+    fn test_ruby_retry_restarts_rescued_begin_without_running_its_ensure_first() {
+        let source = r#"def run(again)
+  begin
+    load()
+  rescue
+    recover()
+    retry if again
+  ensure
+    cleanup()
+  end
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let retry = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "retry");
+        let outgoing: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|edge| edge.source == retry)
+            .collect();
+
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].kind, CfgEdgeKind::Retry);
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|node| node.id == outgoing[0].target && node.kind == CfgNodeKind::Branch)
+        );
+    }
+
+    #[test]
+    fn test_ruby_retry_executes_nested_ensure_but_bypasses_the_rescued_ensure() {
+        let source = r#"def run
+  begin
+    load()
+    raise Error
+  rescue
+    begin
+      retry
+    ensure
+      inner_cleanup()
+    end
+  ensure
+    outer_cleanup()
+  end
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let retry = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "retry");
+        let inner_cleanup = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "inner_cleanup()")
+                    && has_cfg_edge(&result, retry, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("nested ensure on retry path");
+        let restart = result
+            .edges
+            .iter()
+            .find(|edge| edge.source == inner_cleanup && edge.kind == CfgEdgeKind::Retry)
+            .expect("nested ensure tail must restart rescued begin");
+
+        assert!(
+            result
+                .nodes
+                .iter()
+                .any(|node| node.id == restart.target && node.kind == CfgNodeKind::Branch)
+        );
+        assert!(!result.edges.iter().any(|edge| {
+            edge.source == inner_cleanup
+                && edge.kind == CfgEdgeKind::Normal
+                && result.nodes.iter().any(|node| {
+                    node.id == edge.target
+                        && source
+                            .get(
+                                node.stmt_range.start_byte as usize
+                                    ..node.stmt_range.end_byte as usize,
+                            )
+                            .is_some_and(|text| text == "outer_cleanup()")
+                })
+        }));
+    }
+
+    #[test]
+    fn test_ruby_resource_block_redo_stays_inside_but_retry_runs_cleanup() {
+        let redo_source = r#"def run(again)
+  File.open('data.txt') do |resource|
+    work(resource)
+    redo if again
+    tail(resource)
+  end
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, redo_source);
+        let redo = cfg_node_id_for_text(&result, redo_source, CfgNodeKind::Statement, "redo");
+        let work = cfg_node_id_for_text(
+            &result,
+            redo_source,
+            CfgNodeKind::Statement,
+            "work(resource)",
+        );
+        assert!(has_cfg_edge(&result, redo, work, CfgEdgeKind::Redo));
+        assert!(result.edges.iter().all(|edge| {
+            edge.source != redo
+                || !result
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == edge.target && node.kind == CfgNodeKind::BlockExit)
+        }));
+
+        let retry_source = r#"def run
+  begin
+    load()
+  rescue
+    File.open('data.txt') do |resource|
+      retry
+    end
+  end
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, retry_source);
+        let retry = cfg_node_id_for_text(&result, retry_source, CfgNodeKind::Statement, "retry");
+        let block_exit = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::BlockExit
+                    && has_cfg_edge(&result, retry, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("retry must run resource cleanup");
+        assert!(
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == block_exit && edge.kind == CfgEdgeKind::Retry })
+        );
     }
 
     #[test]
