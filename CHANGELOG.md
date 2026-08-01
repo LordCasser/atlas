@@ -6,6 +6,20 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### Ruby control flow
+
+- Persist dedicated `Redo` edges from lexical while/until/for and modeled
+  resource blocks to the current body entry without reevaluating the loop
+  condition or yielding call. Ruby postfix `if`/`unless` bodies now participate
+  in CFG lowering with the correct condition-edge polarity.
+- Persist rescue-owned `Retry` edges back to the protected begin dispatch.
+  Nested ensure/resource cleanup runs before retry, while the ensure belonging
+  to the retried begin is bypassed until that begin eventually completes.
+  Abrupt cleanup still overrides the incoming continuation.
+- Add adversarial extraction and extraction→SQLite persistence coverage without
+  changing the database schema or MCP/TUI response contracts. Ordinary
+  iterator/callback blocks and postfix while/until loops remain explicit gaps.
+
 ### PHP control flow
 
 - Resolve direct same-function PHP `goto` to standalone label `Join` targets

@@ -664,7 +664,7 @@ LanguageCapabilityProfile
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct same-function `Goto` 退出按内到外执行 using/finally cleanup，非法 region crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
 | Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` arm 抑制 synthetic no-match；macro resolution/unwind 与 guarded/复杂 pattern 保守；Drop 仅为 function-exit effect heuristic，不是 path-sensitive lexical RAII |
 | PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 inner-to-outer finally continuation）、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；loop/switch entry 与 finally-clause crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
-| Ruby | DataflowInterproc | ✓ (classic `case`/`when` + `rescue/else/ensure` + block resource) | 0.65 | ✓ (ArgToParam + ReturnToCall) | method-body/nested ensure isolated continuation CFG；resource-block `break/next` 清理后恢复 yielding call 后继；`retry/redo`、`case ... in` 未建模；yield 仍为 best-effort |
+| Ruby | DataflowInterproc | ✓ (classic `case`/`when` + `rescue/else/ensure` + block resource + `retry/redo`) | 0.65 | ✓ (ArgToParam + ReturnToCall) | lexical while/until/for 与 modeled resource-block `redo` 通过 `Redo` edge 回到本轮 body entry；rescue-owned `retry` 在 nested ensure/resource cleanup 后通过 `Retry` edge 回到 begin dispatch，但不提前执行同一 rescued begin 的 ensure；ordinary iterator/callback block、postfix while/until、`case ... in` 未建模；yield 仍为 best-effort |
 | Kotlin | DataflowInterproc | ✓ (branch/loop/`when`) | 0.67 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `.use` normal/abrupt continuation CFG，cleanup 为确定性 LIFO；extension receiver 与 `when` condition/guard/binding dataflow 为 best-effort |
 | Cangjie | DataflowInterproc | ✓ (branch/loop/`match`) | 0.65 | ✓ (ArgToParam + ReturnToCall, verified) | subject/conditionless match 的 direct unguarded wildcard 抑制 synthetic no-match；guarded/复杂 pattern 与 binding 保守；try/catch/finally continuation CFG |
 
@@ -702,6 +702,13 @@ edge retag 都必须同步重算 ID。空 switch/match/select arm 不制造伪 S
 `break`/`continue` 的内部 pending target 是 depth 或 exact lexical label，不扩展持久化 IR；
 Java、JS/TS/ArkTS、Go、Rust、Kotlin 的 grammar-visible label 可跨 finally/managed cleanup 后
 再由目标 loop/block 消费，未知标签不得误连到最近的控制结构。
+Ruby `redo`/`retry` 使用独立持久化 edge kind，因为它们的目标分别是当前 body entry 和
+rescue 所属 begin dispatch，不能等同于重新求值 loop header 的 `Continue` 或绕过 cleanup 的
+普通跳转。`redo` 在 lexical while/until/for 和已建模的 block resource 内由最近 owner 消费；
+`retry` 在最近 rescue 消费。内层 ensure/resource cleanup 先 path-isolated lowering，再保留原
+continuation；同一被 retry 的 begin 自身 ensure 在重试前不执行。
+由于 CFG 尚未持久化 Ruby restart 的 lexical owner identity，lifecycle consumer 在
+`Redo`/`Retry` target 保守清空 branch context，避免把已放弃路径的条件误报为仍然有效。
 Rust `?` 同样复用 terminal continuation：包含它的 Statement 或 control header 保留 success
 后继，并额外登记 residual return-to-Exit；递归扫描在 closure、async block 与 nested function
 边界停止，避免把嵌套 callable 的退出错误归给外层函数。Rust `let-else` 使用 value-range
@@ -732,7 +739,7 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 
 已知限制：
 - CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed goto、C# `goto case/default`、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
-- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue、direct same-function goto（含 finally continuation）与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go/C#/PHP 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 与 PHP 各自执行语言规定的 cleanup 并拒绝非法 region crossing，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确类型匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby `retry/redo`、computed goto、C# `goto case/default`、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
+- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue、direct same-function goto（含 finally continuation）与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go/C#/PHP 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 与 PHP 各自执行语言规定的 cleanup 并拒绝非法 region crossing，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；guarded 与 type-driven pattern exhaustiveness 继续保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Ruby lexical-loop/resource-block `redo` 与 rescue-owned `retry` 分别持久化为 `Redo`/`Retry` edge，并与 nested cleanup 组合。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；更早 handler 因继承未知而保留。更深的 pattern/guard/binding、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby ordinary iterator/callback block 与 postfix while/until、computed goto、C# `goto case/default`、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
 - 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
   `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 

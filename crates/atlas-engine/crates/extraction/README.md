@@ -86,8 +86,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
 - JavaScript/TypeScript/ArkTS, Java, C#, PHP, Python, Kotlin, Cangjie, and Ruby
   lower try/catch/except/finally-style regions with path-isolated finally/ensure
   clones. Ruby covers method-body and nested begin/rescue/else/ensure. Normal,
-  return, throw, break, and continue continuations cannot cross into one another;
-  nested throws resume the enclosing handler path. One try region is capped at
+  return, throw, break, continue, redo, and retry continuations cannot cross
+  into one another; nested throws resume the enclosing handler path. Ruby
+  lexical-loop and modeled block-resource `redo` restart the current body entry
+  without reevaluating the loop condition or iterator call. Rescue-owned
+  `retry` restarts the protected begin dispatch, after nested ensure/resource
+  cleanup but before the same rescued begin's ensure. One try region is capped at
   64 clones and falls back atomically to an opaque Statement when over budget.
   Java try-with-resources, C# using, Python with, Kotlin use, and Ruby block
   resources route normal and abrupt completions through owner-matched,
@@ -100,7 +104,8 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   handler; earlier handlers remain alternatives because inheritance is not
   resolved. Resolved/inherited catch selection, thrown variables and guarded or
   implicit exceptions, cleanup exception suppression or replacement and exact
-  exception identity, Ruby retry/redo, computed goto, C# `goto
+  exception identity, Ruby postfix while/until and ordinary iterator/callback
+  block bodies, computed goto, C# `goto
   case/default`, C++ cross-scope destruction on goto, and grammar-hidden labels
   remain explicit boundaries.
   Managed cleanup effects are emitted in deterministic LIFO order; Java
