@@ -24,8 +24,8 @@
 //!   resources with owner-matched path-isolated BlockExit nodes
 //! - lexically resolved labeled break/continue for Java, JS/TS/ArkTS, Go,
 //!   Rust, and Kotlin, including transfer through finally/managed cleanup
-//! - direct same-function goto/label edges for C, C++, Go, and C# functions
-//!   that do not require finally/using cleanup-region ownership
+//! - direct same-function goto/label edges for C, C++, Go, and C#, including
+//!   C# exits that execute intervening finally/using cleanup regions
 //! - bounded path-sensitive Go defer registration with LIFO execution on
 //!   normal function exits
 //! - Rust `?` success and residual-return paths, bounded by nested closure and
@@ -36,9 +36,8 @@
 //!
 //! # NOT supported (deferred)
 //! - async/await
-//! - computed/PHP goto, C# goto case/default or goto requiring finally/using
-//!   cleanup-region ownership, and labels that the selected tree-sitter
-//!   grammar does not expose as a lexical control target
+//! - computed/PHP goto, C# goto case/default, and labels that the selected
+//!   tree-sitter grammar does not expose as a lexical control target
 //! - resolved/inherited catch-type selection and implicit exceptions from
 //!   ordinary statements (Java/C#/PHP only apply an ordered exact-match cutoff
 //!   for direct object-created explicit throws)
@@ -335,13 +334,14 @@ struct CfgContext<'a> {
     /// lexical order, then resolved once the whole function body has been
     /// walked. This supports both forward and backward jumps without a
     /// synthetic label node.
-    pending_goto_node_ids: Vec<(types::ids::CfgNodeId, String)>,
-    goto_label_targets: Vec<(String, types::ids::CfgNodeId)>,
+    pending_goto_node_ids: Vec<PendingDirectGoto>,
+    goto_label_targets: Vec<DirectGotoLabelTarget>,
+    direct_goto_label_regions: HashMap<String, Vec<Vec<DirectGotoRegion>>>,
     /// A function with safely resolvable direct goto must keep scanning after
     /// abrupt statements so later label entries are still materialized. Such
     /// nodes stay disconnected unless a resolved goto makes them reachable.
-    /// C# disables resolution when finally/using cleanup ownership would be
-    /// required; those goto statements remain conservative abrupt terminals.
+    /// C# routes exits through finally/using cleanup and rejects jumps into a
+    /// nested lexical/cleanup region or out of a finally clause.
     can_resolve_direct_goto: bool,
     /// Non-zero while lowering a path-isolated clone of one AST region.
     node_instance: u32,
@@ -365,6 +365,36 @@ enum ControlTransferTarget {
     Label(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectGotoRegionKind {
+    LexicalBlock,
+    TryFinally,
+    Using,
+    FinallyClause,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirectGotoRegion {
+    kind: DirectGotoRegionKind,
+    node_id: usize,
+}
+
+#[derive(Clone, Debug)]
+struct PendingDirectGoto {
+    source: CfgNodeId,
+    label: String,
+    source_regions: Vec<DirectGotoRegion>,
+    target_instance: u32,
+}
+
+#[derive(Clone, Debug)]
+struct DirectGotoLabelTarget {
+    label: String,
+    target: CfgNodeId,
+    target_regions: Vec<DirectGotoRegion>,
+    instance: u32,
+}
+
 #[derive(Clone, Copy)]
 struct CfgCheckpoint {
     nodes_len: usize,
@@ -372,6 +402,7 @@ struct CfgCheckpoint {
     terminal_len: usize,
     break_len: usize,
     continue_len: usize,
+    goto_len: usize,
     prev_node_id: Option<types::ids::CfgNodeId>,
     node_instance: u32,
     next_node_instance: u32,
@@ -391,9 +422,7 @@ impl CfgBuilder {
     ) -> CfgResult {
         let config = cfg_config(language);
         let can_resolve_direct_goto = CfgContext::supports_direct_goto(language)
-            && CfgContext::contains_direct_goto(function_node)
-            && !(language == Language::CSharp
-                && CfgContext::contains_csharp_goto_cleanup(function_node));
+            && CfgContext::contains_direct_goto(function_node);
 
         // Detect React cleanup arrow: an arrow_function that is the direct
         // child of a return_statement (e.g., `return () => cleanup()`).
@@ -416,6 +445,7 @@ impl CfgBuilder {
             pending_continue_node_ids: Vec::new(),
             pending_goto_node_ids: Vec::new(),
             goto_label_targets: Vec::new(),
+            direct_goto_label_regions: HashMap::new(),
             can_resolve_direct_goto,
             node_instance: 0,
             next_node_instance: 1,
@@ -428,6 +458,7 @@ impl CfgBuilder {
                 CallContext::None
             },
         };
+        ctx.collect_direct_goto_label_regions(function_node);
 
         // 1. Create Entry node
         let entry_id = ctx.add_node(CfgNodeKind::Entry, 0, None);
@@ -810,27 +841,6 @@ impl CfgContext<'_> {
         false
     }
 
-    fn contains_csharp_goto_cleanup(root: Node<'_>) -> bool {
-        let mut pending = Vec::new();
-        let mut cursor = root.walk();
-        pending.extend(root.named_children(&mut cursor));
-
-        while let Some(node) = pending.pop() {
-            if matches!(node.kind(), "finally_clause" | "using_statement") {
-                return true;
-            }
-            if matches!(
-                node.kind(),
-                "local_function_statement" | "lambda_expression" | "anonymous_method_expression"
-            ) {
-                continue;
-            }
-            let mut cursor = node.walk();
-            pending.extend(node.named_children(&mut cursor));
-        }
-        false
-    }
-
     fn checkpoint(&self) -> CfgCheckpoint {
         CfgCheckpoint {
             nodes_len: self.nodes.len(),
@@ -838,6 +848,7 @@ impl CfgContext<'_> {
             terminal_len: self.terminal_node_ids.len(),
             break_len: self.pending_break_node_ids.len(),
             continue_len: self.pending_continue_node_ids.len(),
+            goto_len: self.pending_goto_node_ids.len(),
             prev_node_id: self.prev_node_id,
             node_instance: self.node_instance,
             next_node_instance: self.next_node_instance,
@@ -853,6 +864,7 @@ impl CfgContext<'_> {
         self.pending_break_node_ids.truncate(checkpoint.break_len);
         self.pending_continue_node_ids
             .truncate(checkpoint.continue_len);
+        self.pending_goto_node_ids.truncate(checkpoint.goto_len);
         self.prev_node_id = checkpoint.prev_node_id;
         self.node_instance = checkpoint.node_instance;
         self.next_node_instance = checkpoint.next_node_instance;
@@ -1012,8 +1024,8 @@ impl CfgContext<'_> {
     }
 
     /// Route every completion of one managed-resource body through a distinct
-    /// BlockExit. Reusing one exit node would let return/throw/break/continue
-    /// continuations cross into the normal successor. A Ruby block-level
+    /// BlockExit. Reusing one exit node would let return/throw/break/continue/
+    /// goto continuations cross into the normal successor. A Ruby block-level
     /// break/next exits the yielding call, so those isolated exits converge
     /// into the call's normal successor rather than escaping an outer loop.
     /// Every completion that is not already Throw also records a conservative
@@ -1024,14 +1036,24 @@ impl CfgContext<'_> {
         scope_start_byte: u32,
         scope_end_byte: u32,
         context: CallContext,
-        terminal_start: usize,
-        break_start: usize,
-        continue_start: usize,
+        checkpoint: CfgCheckpoint,
+        goto_region: Option<DirectGotoRegion>,
     ) -> bool {
+        let terminal_start = checkpoint.terminal_len;
+        let break_start = checkpoint.break_len;
+        let continue_start = checkpoint.continue_len;
+        let goto_start = checkpoint.goto_len;
+        let exiting_goto_count = goto_region.map_or(0, |region| {
+            self.pending_goto_node_ids[goto_start..]
+                .iter()
+                .filter(|pending| self.direct_goto_exits_region(pending, region))
+                .count()
+        });
         let clone_count = usize::from(self.prev_node_id.is_some())
             + (self.terminal_node_ids.len() - terminal_start)
             + (self.pending_break_node_ids.len() - break_start)
-            + (self.pending_continue_node_ids.len() - continue_start);
+            + (self.pending_continue_node_ids.len() - continue_start)
+            + exiting_goto_count;
         if clone_count > MAX_PATH_ISOLATED_CLONES_PER_REGION {
             return false;
         }
@@ -1040,6 +1062,7 @@ impl CfgContext<'_> {
         let pending_terminals = self.terminal_node_ids.split_off(terminal_start);
         let pending_breaks = self.pending_break_node_ids.split_off(break_start);
         let pending_continues = self.pending_continue_node_ids.split_off(continue_start);
+        let pending_gotos = self.pending_goto_node_ids.split_off(goto_start);
 
         let normal_exit = normal_tail.map(|tail| {
             self.append_managed_block_exit(tail, scope_start_byte, scope_end_byte, context)
@@ -1087,6 +1110,19 @@ impl CfgContext<'_> {
             } else {
                 self.pending_continue_node_ids.push((block_exit, target));
             }
+        }
+        for mut pending in pending_gotos {
+            if goto_region.is_some_and(|region| self.direct_goto_exits_region(&pending, region)) {
+                pending.source = self.append_managed_block_exit(
+                    pending.source,
+                    scope_start_byte,
+                    scope_end_byte,
+                    context,
+                );
+                self.terminal_node_ids
+                    .push((pending.source, CfgNodeKind::Throw));
+            }
+            self.pending_goto_node_ids.push(pending);
         }
         if context == CallContext::RubyBlock && normal_exits.len() > 1 {
             let join_id = self.add_node(CfgNodeKind::Join, scope_end_byte, None);
@@ -1486,7 +1522,12 @@ impl CfgContext<'_> {
                 if self.can_resolve_direct_goto
                     && let Some(target) = self.direct_goto_target(abrupt_stmt)
                 {
-                    self.pending_goto_node_ids.push((node_id, target));
+                    self.pending_goto_node_ids.push(PendingDirectGoto {
+                        source: node_id,
+                        label: target,
+                        source_regions: self.direct_goto_regions(abrupt_stmt),
+                        target_instance: self.node_instance,
+                    });
                 }
                 if self.can_resolve_direct_goto {
                     i += 1;
@@ -1562,10 +1603,6 @@ impl CfgContext<'_> {
                 // through an owner-bound BlockExit.
                 let checkpoint = self.checkpoint();
                 self.emit_managed_resource(&stmt, CallContext::RubyBlock, stmt_range.start_byte);
-                let terminal_start = self.terminal_node_ids.len();
-                let break_start = self.pending_break_node_ids.len();
-                let continue_start = self.pending_continue_node_ids.len();
-
                 // Walk the block body (find do_block/block child → body_statement)
                 let mut child_cursor = stmt.walk();
                 for child in stmt.named_children(&mut child_cursor) {
@@ -1584,9 +1621,8 @@ impl CfgContext<'_> {
                     stmt_range.start_byte,
                     stmt.end_byte() as u32,
                     CallContext::RubyBlock,
-                    terminal_start,
-                    break_start,
-                    continue_start,
+                    checkpoint,
+                    None,
                 ) {
                     self.rollback_to(checkpoint);
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -1602,10 +1638,6 @@ impl CfgContext<'_> {
                 // Kotlin `.use {}` block-managed resource: File(...).use { ... }
                 let checkpoint = self.checkpoint();
                 self.emit_managed_resource(&stmt, CallContext::KotlinUse, stmt_range.start_byte);
-                let terminal_start = self.terminal_node_ids.len();
-                let break_start = self.pending_break_node_ids.len();
-                let continue_start = self.pending_continue_node_ids.len();
-
                 // Walk the lambda body (recursively find lambda_literal → function_body/statements)
                 if let Some(lambda) = self.find_lambda_literal(&stmt) {
                     if let Some(body) = find_function_body(lambda, self.config.block_kinds) {
@@ -1620,9 +1652,8 @@ impl CfgContext<'_> {
                     stmt_range.start_byte,
                     stmt.end_byte() as u32,
                     CallContext::KotlinUse,
-                    terminal_start,
-                    break_start,
-                    continue_start,
+                    checkpoint,
+                    None,
                 ) {
                     self.rollback_to(checkpoint);
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -1719,9 +1750,6 @@ impl CfgContext<'_> {
                     }
                     self.emit_managed_resource(gc, CallContext::CSharpUsing, stmt_range.start_byte);
                 }
-                let terminal_start = self.terminal_node_ids.len();
-                let break_start = self.pending_break_node_ids.len();
-                let continue_start = self.pending_continue_node_ids.len();
                 if let Some(body) = body {
                     self.walk_branch_body(body);
                 }
@@ -1729,9 +1757,11 @@ impl CfgContext<'_> {
                     stmt_range.start_byte,
                     stmt.end_byte() as u32,
                     CallContext::CSharpUsing,
-                    terminal_start,
-                    break_start,
-                    continue_start,
+                    checkpoint,
+                    Some(DirectGotoRegion {
+                        kind: DirectGotoRegionKind::Using,
+                        node_id: stmt.id(),
+                    }),
                 ) {
                     self.rollback_to(checkpoint);
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -1756,9 +1786,6 @@ impl CfgContext<'_> {
                         );
                     }
                 }
-                let terminal_start = self.terminal_node_ids.len();
-                let break_start = self.pending_break_node_ids.len();
-                let continue_start = self.pending_continue_node_ids.len();
                 if let Some(body) = stmt.child_by_field_name("body") {
                     self.walk_branch_body(body);
                 }
@@ -1766,9 +1793,8 @@ impl CfgContext<'_> {
                     stmt_range.start_byte,
                     stmt.end_byte() as u32,
                     CallContext::PythonWith,
-                    terminal_start,
-                    break_start,
-                    continue_start,
+                    checkpoint,
+                    None,
                 ) {
                     self.rollback_to(checkpoint);
                     self.emit_stmt(CfgNodeKind::Statement, stmt_range.start_byte, &stmt);
@@ -2201,6 +2227,12 @@ impl CfgContext<'_> {
         let terminal_start = checkpoint.terminal_len;
         let break_start = checkpoint.break_len;
         let continue_start = checkpoint.continue_len;
+        let goto_start = checkpoint.goto_len;
+        let goto_region = (self.language == Language::CSharp && finally_clause.is_some())
+            .then_some(DirectGotoRegion {
+                kind: DirectGotoRegionKind::TryFinally,
+                node_id: try_node.id(),
+            });
 
         let dispatch_id = if catch_clauses.is_empty() {
             None
@@ -2251,9 +2283,8 @@ impl CfgContext<'_> {
                 start_byte,
                 try_body.end_byte() as u32,
                 CallContext::JavaTryWith,
-                terminal_start,
-                break_start,
-                continue_start,
+                checkpoint,
+                None,
             )
         {
             self.rollback_to(checkpoint);
@@ -2382,7 +2413,13 @@ impl CfgContext<'_> {
             + direct_join_edges.len()
             + (self.terminal_node_ids.len() - terminal_start)
             + (self.pending_break_node_ids.len() - break_start)
-            + (self.pending_continue_node_ids.len() - continue_start);
+            + (self.pending_continue_node_ids.len() - continue_start)
+            + goto_region.map_or(0, |region| {
+                self.pending_goto_node_ids[goto_start..]
+                    .iter()
+                    .filter(|pending| self.direct_goto_exits_region(pending, region))
+                    .count()
+            });
         if finally_body.is_some() && finally_clone_count > MAX_PATH_ISOLATED_CLONES_PER_REGION {
             self.rollback_to(checkpoint);
             self.emit_stmt(CfgNodeKind::Statement, start_byte, &try_node);
@@ -2395,6 +2432,7 @@ impl CfgContext<'_> {
             let pending_terminals = self.terminal_node_ids.split_off(terminal_start);
             let pending_breaks = self.pending_break_node_ids.split_off(break_start);
             let pending_continues = self.pending_continue_node_ids.split_off(continue_start);
+            let pending_gotos = self.pending_goto_node_ids.split_off(goto_start);
 
             if let Some(tail) = normal_tail
                 && dispatch_id != Some(tail)
@@ -2422,6 +2460,16 @@ impl CfgContext<'_> {
                 if let Some(tail) = self.walk_finally_clone(continue_id, finally_body) {
                     self.pending_continue_node_ids.push((tail, target));
                 }
+            }
+            for mut pending in pending_gotos {
+                if goto_region.is_some_and(|region| self.direct_goto_exits_region(&pending, region))
+                {
+                    let Some(tail) = self.walk_finally_clone(pending.source, finally_body) else {
+                        continue;
+                    };
+                    pending.source = tail;
+                }
+                self.pending_goto_node_ids.push(pending);
             }
         } else {
             if let Some(tail) = normal_tail
@@ -2837,20 +2885,20 @@ impl CfgContext<'_> {
         let node_start = self.nodes.len();
         let Some((label, body)) = self.labeled_statement_parts(node) else {
             self.emit_stmt(CfgNodeKind::Statement, start_byte, &node);
-            self.record_direct_goto_label(direct_goto_label, node_start);
+            self.record_direct_goto_label(direct_goto_label, node, node_start);
             return;
         };
 
         if self.config.loop_kinds.contains(&body.kind()) {
             self.walk_loop_with_labels(&[body], 0, start_byte, &[label]);
-            self.record_direct_goto_label(direct_goto_label, node_start);
+            self.record_direct_goto_label(direct_goto_label, node, node_start);
             return;
         }
 
         let break_start = self.pending_break_node_ids.len();
         self.walk_stmt_list(&[body]);
         self.resolve_labeled_breaks(&label, node.end_byte() as u32, break_start);
-        self.record_direct_goto_label(direct_goto_label, node_start);
+        self.record_direct_goto_label(direct_goto_label, node, node_start);
     }
 
     fn direct_goto_target(&self, node: Node<'_>) -> Option<String> {
@@ -2892,25 +2940,137 @@ impl CfgContext<'_> {
             || self.language == Language::CSharp && node.kind() == "identifier"
     }
 
-    fn record_direct_goto_label(&mut self, label: Option<String>, node_start: usize) {
+    fn collect_direct_goto_label_regions(&mut self, root: Node<'_>) {
+        if self.language != Language::CSharp || !self.can_resolve_direct_goto {
+            return;
+        }
+        let mut pending = Vec::new();
+        let mut cursor = root.walk();
+        pending.extend(root.named_children(&mut cursor));
+        while let Some(node) = pending.pop() {
+            if node.kind() == "labeled_statement"
+                && let Some(label) = self.direct_goto_label(node)
+            {
+                let regions = self.direct_goto_regions(node);
+                self.direct_goto_label_regions
+                    .entry(label)
+                    .or_default()
+                    .push(regions);
+            }
+            if matches!(
+                node.kind(),
+                "local_function_statement" | "lambda_expression" | "anonymous_method_expression"
+            ) {
+                continue;
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+    }
+
+    fn direct_goto_regions(&self, node: Node<'_>) -> Vec<DirectGotoRegion> {
+        if self.language != Language::CSharp {
+            return Vec::new();
+        }
+        let mut regions = Vec::new();
+        let mut ancestor = node.parent();
+        while let Some(current) = ancestor {
+            let kind = match current.kind() {
+                "block" => Some(DirectGotoRegionKind::LexicalBlock),
+                "using_statement" => Some(DirectGotoRegionKind::Using),
+                "finally_clause" => Some(DirectGotoRegionKind::FinallyClause),
+                "try_statement" if Self::csharp_try_has_finally(current) => {
+                    Some(DirectGotoRegionKind::TryFinally)
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                regions.push(DirectGotoRegion {
+                    kind,
+                    node_id: current.id(),
+                });
+            }
+            ancestor = current.parent();
+        }
+        regions
+    }
+
+    fn csharp_try_has_finally(node: Node<'_>) -> bool {
+        let mut cursor = node.walk();
+        node.named_children(&mut cursor)
+            .any(|child| child.kind() == "finally_clause")
+    }
+
+    fn direct_goto_target_is_legal(
+        &self,
+        source_regions: &[DirectGotoRegion],
+        target_regions: &[DirectGotoRegion],
+    ) -> bool {
+        if self.language != Language::CSharp {
+            return true;
+        }
+        target_regions
+            .iter()
+            .all(|region| source_regions.contains(region))
+            && source_regions.iter().all(|region| {
+                region.kind != DirectGotoRegionKind::FinallyClause
+                    || target_regions.contains(region)
+            })
+    }
+
+    fn direct_goto_exits_region(
+        &self,
+        pending: &PendingDirectGoto,
+        region: DirectGotoRegion,
+    ) -> bool {
+        pending.source_regions.contains(&region)
+            && self
+                .direct_goto_label_regions
+                .get(&pending.label)
+                .is_some_and(|targets| {
+                    !targets.is_empty()
+                        && targets
+                            .iter()
+                            .all(|target_regions| !target_regions.contains(&region))
+                })
+    }
+
+    fn record_direct_goto_label(
+        &mut self,
+        label: Option<String>,
+        node: Node<'_>,
+        node_start: usize,
+    ) {
         let Some(label) = label else {
             return;
         };
-        if let Some(entry) = self.nodes.get(node_start) {
-            self.goto_label_targets.push((label, entry.id));
+        if let Some(target) = self.nodes.get(node_start).map(|entry| entry.id) {
+            self.goto_label_targets.push(DirectGotoLabelTarget {
+                label,
+                target,
+                target_regions: self.direct_goto_regions(node),
+                instance: self.node_instance,
+            });
         }
     }
 
     fn resolve_direct_gotos(&mut self) {
         let pending = std::mem::take(&mut self.pending_goto_node_ids);
-        for (source, label) in pending {
+        for pending in pending {
             if let Some(target) = self
                 .goto_label_targets
                 .iter()
-                .find(|(candidate, _)| candidate == &label)
-                .map(|(_, target)| *target)
+                .find(|candidate| {
+                    candidate.label == pending.label
+                        && candidate.instance == pending.target_instance
+                        && self.direct_goto_target_is_legal(
+                            &pending.source_regions,
+                            &candidate.target_regions,
+                        )
+                })
+                .map(|candidate| candidate.target)
             {
-                self.add_edge(&source, &target, CfgEdgeKind::Goto);
+                self.add_edge(&pending.source, &target, CfgEdgeKind::Goto);
             }
         }
     }
@@ -4865,7 +5025,7 @@ cleanup:
     }
 
     #[test]
-    fn test_csharp_goto_does_not_bypass_a_finally_region() {
+    fn test_csharp_goto_exits_through_a_finally_region() {
         let source = r#"class T {
   void Run() {
     try {
@@ -4879,16 +5039,38 @@ cleanup:
         let result = build_cfg_for_first_fn(Language::CSharp, source);
         let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
         let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+        let cleanup = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "cleanup();");
 
-        assert!(
-            !has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto),
-            "without cleanup-region ownership, C# goto must not bypass finally"
-        );
-        assert!(!cfg_reaches(&result, goto_id, finish));
+        assert!(!has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto));
+        assert!(has_cfg_edge(&result, goto_id, cleanup, CfgEdgeKind::Normal));
+        assert!(has_cfg_edge(&result, cleanup, finish, CfgEdgeKind::Goto));
+        assert!(cfg_reaches(&result, goto_id, finish));
     }
 
     #[test]
-    fn test_csharp_goto_does_not_bypass_a_using_region() {
+    fn test_csharp_abrupt_finally_overrides_outgoing_goto() {
+        let source = r#"class T {
+  int Run() {
+    try {
+      goto Done;
+    } finally {
+      return 1;
+    }
+    Done: return 2;
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finally_return =
+            cfg_node_id_for_text(&result, source, CfgNodeKind::Return, "return 1;");
+        let target_return = cfg_node_id_for_text(&result, source, CfgNodeKind::Return, "return 2;");
+
+        assert!(cfg_reaches(&result, goto_id, finally_return));
+        assert!(!cfg_reaches(&result, goto_id, target_return));
+    }
+
+    #[test]
+    fn test_csharp_goto_exits_through_a_using_region() {
         let source = r#"class T {
   void Run() {
     using (Resource resource = Open()) {
@@ -4900,9 +5082,213 @@ cleanup:
         let result = build_cfg_for_first_fn(Language::CSharp, source);
         let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
         let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+        let block_exit = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::BlockExit && node.call_context == CallContext::CSharpUsing
+            })
+            .expect("goto must execute the using cleanup");
 
         assert!(!has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto));
+        assert!(has_cfg_edge(
+            &result,
+            goto_id,
+            block_exit.id,
+            CfgEdgeKind::Normal
+        ));
+        assert!(has_cfg_edge(
+            &result,
+            block_exit.id,
+            finish,
+            CfgEdgeKind::Goto
+        ));
+        assert!(cfg_reaches(&result, goto_id, finish));
+    }
+
+    #[test]
+    fn test_csharp_goto_within_a_using_region_does_not_cleanup_early() {
+        let source = r#"class T {
+  void Run() {
+    using (Resource resource = Open()) {
+      goto Done;
+      skipped();
+      Done: finish();
+    }
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto));
+        assert!(result.edges.iter().all(|edge| {
+            edge.source != goto_id
+                || !result
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == edge.target && node.kind == CfgNodeKind::BlockExit)
+        }));
+    }
+
+    #[test]
+    fn test_csharp_goto_exits_nested_cleanup_regions_inner_to_outer() {
+        let source = r#"class T {
+  void Run() {
+    try {
+      using (Resource resource = Open()) {
+        goto Done;
+      }
+    } finally {
+      cleanup();
+    }
+    Done: finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+        let using_exit = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::BlockExit && node.call_context == CallContext::CSharpUsing
+            })
+            .expect("inner using cleanup");
+        let cleanup = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "cleanup();")
+                    && has_cfg_edge(&result, node.id, finish, CfgEdgeKind::Goto)
+            })
+            .map(|node| node.id)
+            .expect("outer finally cleanup on the goto continuation");
+
+        assert!(has_cfg_edge(
+            &result,
+            goto_id,
+            using_exit.id,
+            CfgEdgeKind::Normal
+        ));
+        assert!(has_cfg_edge(
+            &result,
+            using_exit.id,
+            cleanup,
+            CfgEdgeKind::Normal
+        ));
+        assert!(has_cfg_edge(&result, cleanup, finish, CfgEdgeKind::Goto));
+    }
+
+    #[test]
+    fn test_csharp_goto_cannot_enter_a_using_region() {
+        let source = r#"class T {
+  void Run() {
+    goto Inside;
+    using (Resource resource = Open()) {
+      Inside: finish();
+    }
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Inside;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
         assert!(!cfg_reaches(&result, goto_id, finish));
+    }
+
+    #[test]
+    fn test_csharp_goto_cannot_leave_a_finally_clause() {
+        let source = r#"class T {
+  void Run() {
+    try {
+      work();
+    } finally {
+      goto Done;
+    }
+    Done: finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(result.edges.iter().all(|edge| edge.source != goto_id));
+        assert!(!cfg_reaches(&result, goto_id, finish));
+    }
+
+    #[test]
+    fn test_csharp_goto_within_finally_keeps_cloned_paths_isolated() {
+        let source = r#"class T {
+  void Run(bool stop) {
+    try {
+      if (stop) return;
+      work();
+    } finally {
+      goto Within;
+      skipped();
+      Within: cleanup();
+    }
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_ids: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "goto Within;")
+            })
+            .map(|node| node.id)
+            .collect();
+        assert_eq!(goto_ids.len(), 2, "normal and return finally clones");
+
+        let mut targets = HashSet::new();
+        for goto_id in goto_ids {
+            let target = result
+                .edges
+                .iter()
+                .find(|edge| edge.source == goto_id && edge.kind == CfgEdgeKind::Goto)
+                .map(|edge| edge.target)
+                .expect("goto must resolve within its finally clone");
+            assert!(result.nodes.iter().any(|node| {
+                node.id == target
+                    && node.kind == CfgNodeKind::Statement
+                    && source
+                        .get(node.stmt_range.start_byte as usize..node.stmt_range.end_byte as usize)
+                        .is_some_and(|text| text == "cleanup();")
+            }));
+            targets.insert(target);
+        }
+        assert_eq!(
+            targets.len(),
+            2,
+            "each finally clone must retain its own label target"
+        );
+    }
+
+    #[test]
+    fn test_csharp_direct_goto_resolves_with_unrelated_cleanup_regions() {
+        let source = r#"class T {
+  void Run(bool skip) {
+    if (skip) goto Done;
+    using (Resource resource = Open()) {
+      work();
+    }
+    Done: finish();
+  }
+}"#;
+        let result = build_cfg_for_first_fn(Language::CSharp, source);
+        let goto_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "goto Done;");
+        let finish = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "finish();");
+
+        assert!(has_cfg_edge(&result, goto_id, finish, CfgEdgeKind::Goto));
     }
 
     #[test]

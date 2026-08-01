@@ -3393,6 +3393,83 @@ fn fx_cfg_real_csharp_nested_using_return_executes_both_block_exits() {
 
 #[test]
 #[cfg(feature = "csharp")]
+fn fx_cfg_csharp_cleanup_crossing_goto_persists_inner_to_outer_route() {
+    let source = r#"class T {
+  void Run() {
+    try {
+      using (Resource resource = Open()) {
+        goto Done;
+      }
+    } finally {
+      cleanup();
+    }
+    Done: finish();
+  }
+}"#;
+    let path = "cleanup_goto.cs";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("synthetic C# symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "Run" && symbol.kind == SymbolKind::Method)
+        .expect("T.Run method");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("T.Run CFG nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let goto_id =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "goto Done;");
+    let finish =
+        persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "finish();");
+    let using_exit = nodes
+        .iter()
+        .find(|node| {
+            node.kind == CfgNodeKind::BlockExit
+                && node.call_context == CallContext::CSharpUsing
+                && edges.iter().any(|edge| {
+                    edge.source == goto_id
+                        && edge.target == node.id
+                        && edge.kind == CfgEdgeKind::Normal
+                })
+        })
+        .expect("goto must first execute persisted using cleanup");
+    let finally_cleanup =
+        persisted_cfg_node_ids_for_text(&nodes, source, CfgNodeKind::Statement, "cleanup();")
+            .into_iter()
+            .find(|cleanup| {
+                edges.iter().any(|edge| {
+                    edge.source == using_exit.id
+                        && edge.target == *cleanup
+                        && edge.kind == CfgEdgeKind::Normal
+                }) && edges.iter().any(|edge| {
+                    edge.source == *cleanup
+                        && edge.target == finish
+                        && edge.kind == CfgEdgeKind::Goto
+                })
+            })
+            .expect("persisted goto continuation must execute outer finally");
+
+    assert!(!edges.iter().any(|edge| {
+        edge.source == goto_id && edge.target == finish && edge.kind == CfgEdgeKind::Goto
+    }));
+    let final_edge = edges
+        .iter()
+        .find(|edge| {
+            edge.source == finally_cleanup
+                && edge.target == finish
+                && edge.kind == CfgEdgeKind::Goto
+        })
+        .expect("finally tail must retain the goto continuation kind");
+    assert_eq!(
+        final_edge.id,
+        CfgEdge::new(&finally_cleanup, &finish, CfgEdgeKind::Goto).id
+    );
+}
+
+#[test]
+#[cfg(feature = "csharp")]
 fn fx_cfg_real_csharp_direct_goto_persists_exact_label_edge() {
     let source = example_source_or_skip!(
         "c_sharp_example/shadowsocks-csharp/Controller/Service/Listener.cs"
