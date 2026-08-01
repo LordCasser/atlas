@@ -107,8 +107,8 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   handler; earlier handlers remain alternatives because inheritance is not
   resolved. Resolved/inherited catch selection, thrown variables and guarded or
   implicit exceptions, cleanup exception suppression or replacement and exact
-  exception identity, Ruby postfix while/until and ordinary iterator/callback
-  block bodies, computed goto, C# `goto
+  exception identity, Ruby ordinary iterator/callback block bodies, computed
+  goto, C# `goto
   case/default`, C++ cross-scope destruction on goto, and grammar-hidden labels
   remain explicit boundaries.
   Managed cleanup effects are emitted in deterministic LIFO order; Java

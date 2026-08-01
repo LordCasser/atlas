@@ -12,13 +12,17 @@ All notable changes to Atlas will be documented in this file.
   resource blocks to the current body entry without reevaluating the loop
   condition or yielding call. Ruby postfix `if`/`unless` bodies now participate
   in CFG lowering with the correct condition-edge polarity.
+- Lower postfix while/until with language-accurate entry order: plain modifier
+  bodies are pre-test, while `begin ... end while/until` bodies execute once
+  before the first condition. `next`, `redo`, and `break` retain their distinct
+  condition/body/join targets, and Focus CFG edges match full Index facts.
 - Persist rescue-owned `Retry` edges back to the protected begin dispatch.
   Nested ensure/resource cleanup runs before retry, while the ensure belonging
   to the retried begin is bypassed until that begin eventually completes.
   Abrupt cleanup still overrides the incoming continuation.
 - Add adversarial extraction and extraction→SQLite persistence coverage without
   changing the database schema or MCP/TUI response contracts. Ordinary
-  iterator/callback blocks and postfix while/until loops remain explicit gaps.
+  iterator/callback blocks remain an explicit gap.
 
 ### PHP control flow
 
