@@ -939,11 +939,15 @@ fn neighborhood_edges(store: &Store, path_suffixes: &[&str]) -> NeighborhoodEdge
 /// Node keys omit `arg_index`: Focus materialize (LazyDataflow) remaps callsite
 /// ids after extract but does not always backfill arg_index the same way as
 /// Index full; kind/name/range already identify the argument nodes.
+type CfgNodeKey = (String, u32, u32);
+type CfgEdgeKey = (CfgNodeKey, CfgNodeKey, String);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnitDataflowSlice {
     nodes: Vec<(String, String, u32, u32)>, // kind, name, start, end
     edges: Vec<(usize, usize, String)>,     // indices into sorted nodes + kind
-    cfg_nodes: Vec<(String, u32, u32)>,     // kind, start, end
+    cfg_nodes: Vec<CfgNodeKey>,             // kind, start, end
+    cfg_edges: Vec<CfgEdgeKey>,
 }
 
 fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDataflowSlice {
@@ -992,10 +996,16 @@ fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDat
     edges.sort();
     edges.dedup();
 
-    let mut cfg_nodes: Vec<_> = store
-        .find_cfg_nodes_by_function(fn_id)
-        .unwrap()
-        .into_iter()
+    let raw_cfg_nodes = store.find_cfg_nodes_by_function(fn_id).unwrap();
+    let cfg_key_of = |node: &atlas_engine::CfgNode| {
+        (
+            node.kind.as_str().to_string(),
+            node.stmt_range.start_byte,
+            node.stmt_range.end_byte,
+        )
+    };
+    let mut cfg_nodes: Vec<_> = raw_cfg_nodes
+        .iter()
         .map(|c| {
             (
                 c.kind.as_str().to_string(),
@@ -1006,10 +1016,29 @@ fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDat
         .collect();
     cfg_nodes.sort();
 
+    let cfg_node_keys: std::collections::HashMap<_, _> = raw_cfg_nodes
+        .iter()
+        .map(|node| (node.id, cfg_key_of(node)))
+        .collect();
+    let mut cfg_edges: Vec<_> = store
+        .find_cfg_edges_by_function(fn_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|edge| {
+            Some((
+                cfg_node_keys.get(&edge.source)?.clone(),
+                cfg_node_keys.get(&edge.target)?.clone(),
+                edge.kind.as_str().to_string(),
+            ))
+        })
+        .collect();
+    cfg_edges.sort();
+
     UnitDataflowSlice {
         nodes,
         edges,
         cfg_nodes,
+        cfg_edges,
     }
 }
 
@@ -1193,6 +1222,62 @@ fn n5_focus_dataflow_unit_matches_index_full() {
             .unwrap()
             .is_empty(),
         "unrelated unit must remain without dataflow on Focus path"
+    );
+}
+
+/// Ruby modifier-loop CFG must be identical whether the unit comes from a full
+/// Index or Focus on-demand materialization. This protects the pre-test vs
+/// `begin ... end` post-test entry ordering across both product paths.
+#[cfg(feature = "ruby")]
+#[test]
+fn n5_focus_ruby_modifier_cfg_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "modifier.rb",
+            "def run(ready, done)\n\
+             \x20 work() while ready\n\
+             \x20 begin\n\
+             \x20   work()\n\
+             \x20 end until done\n\
+             \x20 after()\n\
+             end\n",
+        ),
+        ("peer.rb", "def unrelated\n  42\nend\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_slice =
+        unit_dataflow_slice(&indexed_store, &symbol_id_by_name(&indexed_store, "run"));
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let run = symbol_id_by_name(&focused_store, "run");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&run, Some("ruby-modifier-parity"))
+        .expect("Focus ensure Ruby run");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &run),
+        indexed_slice,
+        "Ruby modifier-loop dataflow/CFG edges: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_cfg_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Ruby unit must stay outside the Focus window"
     );
 }
 

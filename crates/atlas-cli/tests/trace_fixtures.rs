@@ -7477,3 +7477,68 @@ end
         CfgEdge::new(&inner_cleanup, &retry_edge.target, CfgEdgeKind::Retry).id
     );
 }
+
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_cfg_ruby_modifier_loops_persist_pretest_and_posttest_entry_order() {
+    let source = r#"def pretest(ready)
+  work() while ready
+  after()
+end
+
+def posttest(done)
+  begin
+    work()
+  end until done
+  after()
+end
+"#;
+    let store = index_files(&[("modifier_loops.rb", source)]);
+    let file_id = FileId::generate("modifier_loops.rb");
+    let symbols = store
+        .find_symbols_by_file(&file_id)
+        .expect("Ruby modifier-loop symbols");
+
+    for (name, post_test) in [("pretest", false), ("posttest", true)] {
+        let function = symbols
+            .iter()
+            .find(|symbol| symbol.name == name && symbol.kind == SymbolKind::Method)
+            .unwrap_or_else(|| panic!("missing {name} method"));
+        let nodes = store
+            .find_cfg_nodes_by_function(&function.id)
+            .unwrap_or_else(|error| panic!("{name} CFG nodes: {error}"));
+        let edges = persisted_cfg_edges(&store, &nodes);
+        let entry = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Entry)
+            .map(|node| node.id)
+            .expect("method entry");
+        let loop_id = nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("modifier Loop node");
+        let work = persisted_cfg_node_id_for_text(&nodes, source, CfgNodeKind::Statement, "work()");
+
+        assert!(edges.iter().any(|edge| {
+            edge.source == work && edge.target == loop_id && edge.kind == CfgEdgeKind::LoopBack
+        }));
+        assert!(edges.iter().any(|edge| {
+            edge.source == loop_id && edge.target == work && edge.kind == CfgEdgeKind::Normal
+        }));
+        assert_eq!(
+            edges.iter().any(|edge| {
+                edge.source == entry && edge.target == work && edge.kind == CfgEdgeKind::Normal
+            }),
+            post_test,
+            "only begin-body modifier loops execute before the first condition"
+        );
+        assert_eq!(
+            edges.iter().any(|edge| {
+                edge.source == entry && edge.target == loop_id && edge.kind == CfgEdgeKind::Normal
+            }),
+            !post_test,
+            "plain modifier loops must test before entering the body"
+        );
+    }
+}

@@ -45,7 +45,7 @@
 //!   ordinary statements (Java/C#/PHP only apply an ordered exact-match cutoff
 //!   for direct object-created explicit throws)
 //! - cleanup exception suppression/replacement and exact exception identity
-//! - Ruby postfix while/until loops and ordinary iterator/callback block bodies
+//! - Ruby ordinary iterator/callback block bodies
 //! - Go defer stacks that can grow through a loop, over-budget defer-state
 //!   expansion, and panic/recover unwinding
 //! - Rust macro shadowing/re-exports, custom never-return macros, panic unwind,
@@ -292,7 +292,7 @@ fn cfg_config(lang: Language) -> CfgLanguageConfig {
         Language::Ruby => CfgLanguageConfig {
             block_kinds: &["body_statement", "do", "then"],
             if_kinds: &["if", "unless", "elsif", "if_modifier", "unless_modifier"],
-            loop_kinds: &["while", "until", "for"],
+            loop_kinds: &["while", "until", "for", "while_modifier", "until_modifier"],
             return_kinds: &["return"],
             throw_kinds: &["raise"],
             stmt_kinds: &["call", "assignment", "break", "next"],
@@ -3314,18 +3314,32 @@ impl CfgContext<'_> {
         let continue_start = self.pending_continue_node_ids.len();
         let redo_start = self.pending_redo_node_ids.len();
 
+        let body = find_loop_body(*loop_node, self.config.block_kinds);
+        // Ruby's ordinary modifier form (`work while condition`) is pre-test,
+        // but a `begin ... end while/until condition` body is explicitly
+        // post-test. Both share one grammar node kind, so body shape determines
+        // whether the incoming edge bypasses the first condition check.
+        let ruby_post_test = self.is_ruby()
+            && matches!(loop_node.kind(), "while_modifier" | "until_modifier")
+            && body.is_some_and(|body| body.kind() == "begin");
+        let incoming = self.prev_node_id.take();
+
         // 1. Create Loop node, connect from previous
         let loop_id = self.add_node(CfgNodeKind::Loop, start_byte, Some(loop_node));
-        if let Some(prev) = self.prev_node_id.take() {
+        if !ruby_post_test && let Some(prev) = incoming {
             self.add_edge(&prev, &loop_id, CfgEdgeKind::Normal);
         }
 
         // 2. Find and walk the loop body
-        let body = find_loop_body(*loop_node, self.config.block_kinds);
         let body_edge_start = self.edges.len();
+        let body_node_start = self.nodes.len();
 
         let body_last = if let Some(body) = body {
-            self.prev_node_id = Some(loop_id);
+            self.prev_node_id = if ruby_post_test {
+                incoming
+            } else {
+                Some(loop_id)
+            };
 
             if self.config.block_kinds.contains(&body.kind()) {
                 let body_range = node_text_range(&body, self.source);
@@ -3335,14 +3349,30 @@ impl CfgContext<'_> {
                 self.walk_single_statement_body(body);
             }
 
-            self.prev_node_id.take()
+            if ruby_post_test && self.nodes.len() == body_node_start {
+                self.prev_node_id.take();
+                None
+            } else {
+                self.prev_node_id.take()
+            }
         } else {
             None
         };
-        let body_entry = self.edges[body_edge_start..]
-            .iter()
-            .find(|edge| edge.source == loop_id)
-            .map(|edge| edge.target);
+        let body_entry = if ruby_post_test {
+            self.nodes.get(body_node_start).map(|node| node.id)
+        } else {
+            self.edges[body_edge_start..]
+                .iter()
+                .find(|edge| edge.source == loop_id)
+                .map(|edge| edge.target)
+        };
+        if ruby_post_test {
+            if let Some(body_entry) = body_entry {
+                self.add_edge(&loop_id, &body_entry, CfgEdgeKind::Normal);
+            } else if let Some(prev) = incoming {
+                self.add_edge(&prev, &loop_id, CfgEdgeKind::Normal);
+            }
+        }
         self.resolve_ruby_redos(body_entry, redo_start);
 
         // 3. LoopBack edge: last body node → Loop (if body didn't end with return/throw)
@@ -3803,6 +3833,10 @@ fn handler_guarantees_exact_type(
 /// Looks for a child matching `block_kinds` first; if none found, returns
 /// the last named child (single-statement body like `while (x) doSomething();`).
 fn find_loop_body<'a>(node: Node<'a>, block_kinds: &[&str]) -> Option<Node<'a>> {
+    if matches!(node.kind(), "while_modifier" | "until_modifier") {
+        return node.child_by_field_name("body");
+    }
+
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
 
@@ -8000,6 +8034,136 @@ end
                 .count(),
             1,
             "redo is an abrupt transfer with no lexical fallthrough"
+        );
+    }
+
+    #[test]
+    fn test_ruby_modifier_loop_checks_condition_before_plain_body() {
+        let source = r#"def run(ready)
+  work() while ready
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let entry = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Entry)
+            .map(|node| node.id)
+            .expect("method entry");
+        let loop_id = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("modifier while loop");
+        let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "work()");
+        let after = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "after()");
+        let join = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Join
+                    && has_cfg_edge(&result, loop_id, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("modifier loop join");
+
+        assert!(has_cfg_edge(&result, entry, loop_id, CfgEdgeKind::Normal));
+        assert!(has_cfg_edge(&result, loop_id, work, CfgEdgeKind::Normal));
+        assert!(has_cfg_edge(&result, work, loop_id, CfgEdgeKind::LoopBack));
+        assert!(has_cfg_edge(&result, join, after, CfgEdgeKind::Normal));
+        assert!(!has_cfg_edge(&result, entry, work, CfgEdgeKind::Normal));
+    }
+
+    #[test]
+    fn test_ruby_begin_modifier_loop_executes_body_before_first_condition() {
+        let source = r#"def run(done)
+  begin
+    work()
+  end until done
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let entry = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Entry)
+            .map(|node| node.id)
+            .expect("method entry");
+        let loop_id = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("post-test until loop");
+        let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "work()");
+        let after = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "after()");
+        let join = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Join
+                    && has_cfg_edge(&result, loop_id, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("modifier loop join");
+
+        assert!(has_cfg_edge(&result, entry, work, CfgEdgeKind::Normal));
+        assert!(has_cfg_edge(&result, work, loop_id, CfgEdgeKind::LoopBack));
+        assert!(has_cfg_edge(&result, loop_id, work, CfgEdgeKind::Normal));
+        assert!(has_cfg_edge(&result, join, after, CfgEdgeKind::Normal));
+        assert!(!has_cfg_edge(&result, entry, loop_id, CfgEdgeKind::Normal));
+    }
+
+    #[test]
+    fn test_ruby_begin_modifier_loop_resolves_next_redo_and_break() {
+        let source = r#"def run(skip, again, stop)
+  begin
+    work()
+    next if skip
+    redo if again
+    break if stop
+    tail()
+  end while ready?
+  after()
+end
+"#;
+        let result = build_cfg_for_first_fn(Language::Ruby, source);
+        let loop_id = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Loop)
+            .map(|node| node.id)
+            .expect("post-test while loop");
+        let work = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "work()");
+        let next = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "next");
+        let redo = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "redo");
+        let break_id = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "break");
+        let tail = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "tail()");
+        let join = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == CfgNodeKind::Join
+                    && has_cfg_edge(&result, loop_id, node.id, CfgEdgeKind::Normal)
+            })
+            .map(|node| node.id)
+            .expect("modifier loop join");
+
+        assert!(has_cfg_edge(&result, next, loop_id, CfgEdgeKind::Continue));
+        assert!(has_cfg_edge(&result, redo, work, CfgEdgeKind::Redo));
+        assert!(has_cfg_edge(&result, break_id, join, CfgEdgeKind::Break));
+        assert!(has_cfg_edge(&result, tail, loop_id, CfgEdgeKind::LoopBack));
+        assert_eq!(
+            result
+                .edges
+                .iter()
+                .filter(|edge| edge.source == redo)
+                .count(),
+            1,
+            "redo must restart the body without checking the condition"
         );
     }
 
