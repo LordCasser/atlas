@@ -6,6 +6,18 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### Kotlin dataflow
+
+- Model `when (val V = E)` as initializer-to-subject assignment dataflow and
+  resolve condition, guard, and body uses to the same scoped binding identity.
+  Extraction, SQLite trace, and Focus-vs-full-Index parity fixtures cover the
+  boundary; smart-cast, type/range condition projection, and guard control
+  dependencies remain conservative.
+- Treat unresolved callsites as absent from resolved-callsite lookups instead
+  of decoding nullable symbol IDs as query errors. Trace consumers therefore
+  retain the same success envelope when a Kotlin initializer calls an external
+  symbol.
+
 ### Ruby control flow
 
 - Persist dedicated `Redo` edges from lexical while/until/for and modeled
