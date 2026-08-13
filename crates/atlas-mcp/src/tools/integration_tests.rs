@@ -128,12 +128,13 @@ fn status_has_required_fields() {
         Some(1),
         "status.server.tool_contract_version must lock the MCP V1 contract"
     );
-    assert!(
+    assert_eq!(
         server
             .get("compiled_features")
             .and_then(|v| v.as_array())
-            .is_some_and(|features| !features.is_empty()),
-        "status.server.compiled_features must be a non-empty array"
+            .map(Vec::len),
+        Some(atlas_engine::Language::enabled_languages().len()),
+        "status.server.compiled_features must match the engine feature set"
     );
 }
 

@@ -595,3 +595,20 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 依赖方向单向（子模块 → 父共享 API，无反向依赖）。所有 `handler_purity` 测试持续绿色。
 
 **后续**：无剩余 handler 拆分任务。`mod.rs` 核心编排（dispatch / prepare / refresh）是 `ToolRouter` 的固有职责，不属 god-file 债。
+
+### 10.5 2026-08 架构复核后的剩余风险
+
+- **CFG 语法策略仍过度集中**：共享 lowering 核心拥有 Entry/Exit、确定性 ID、
+  continuation 和 path-isolated cleanup 是正确边界；但 `CfgLanguageConfig` 和多个
+  `Language` 分支仍使新语言需修改 mega-builder。长期目标是把 grammar vocabulary
+  和语言 policy 收回 per-language frontend CFG slot，共享核只保留图不变式；
+  不新建 Function IR。该迁移必须以 14 语言 golden + persisted + Focus/Index
+  parity 为前置，不做无验证的机械拆文件。
+- **Linux post-extract 是项目语义，不是 C grammar**：当前它在唯一 extraction
+  入口中统一运行，已消除 Index/Focus 漂移；但未来 Corpus 支持非 Linux C
+  family 前，必须把 project-semantic augmentation 变为显式 caller policy/profile，
+  不得把 Linux 规则偷渡成通用 blob extraction 语义。
+- **Incremental sync 的正确性基线是 O(project files) hash scan**：这比相对 HEAD 的
+  `git status` 更准确，能识别 clean checkout/pull/commit 后 DB 与磁盘不同。若实测证明
+  成为瓶颈，只能引入可校验 inventory/mtime 快路径，最终仍以 raw content hash
+  与 SQLite 为权威，不回退到 Git worktree status。

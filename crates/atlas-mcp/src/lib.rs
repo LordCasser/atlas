@@ -25,6 +25,8 @@ use self::tools::ToolRouter;
 pub mod protocol;
 pub mod tools;
 
+const MAX_CONCURRENT_TOOL_CALLS: usize = 4;
+
 // Re-export for integration tests and diagnostics
 pub use protocol::Tool;
 pub use tools::make_all_tools;
@@ -81,19 +83,22 @@ impl McpServer {
 
 /// `rmcp` service adapter around Atlas' tool router.
 struct AtlasMcpService {
-    router: ToolRouter,
+    router: Arc<ToolRouter>,
+    blocking_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AtlasMcpService {
     fn new(store: Arc<Store>, project_root: std::path::PathBuf) -> Self {
         Self {
-            router: ToolRouter::new_empty(store, project_root),
+            router: Arc::new(ToolRouter::new_empty(store, project_root)),
+            blocking_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TOOL_CALLS)),
         }
     }
 
     fn new_unopened() -> Self {
         Self {
-            router: ToolRouter::new_unopened(),
+            router: Arc::new(ToolRouter::new_unopened()),
+            blocking_gate: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TOOL_CALLS)),
         }
     }
 
@@ -177,6 +182,8 @@ impl ServerHandler for AtlasMcpService {
         let tool_name = request.name.to_string();
         let progress_token = request.progress_token();
         let has_progress_token = progress_token.is_some();
+        let router = Arc::clone(&self.router);
+        let blocking_gate = Arc::clone(&self.blocking_gate);
 
         let args = request
             .arguments
@@ -214,7 +221,25 @@ impl ServerHandler for AtlasMcpService {
                 (tools::ToolCallContext::empty(), None)
             };
 
-            let tool_result = self.router.call_tool(&ctx, &tool_name, &args);
+            let blocking_ctx = ctx.clone();
+            let blocking_tool_name = tool_name.clone();
+            let blocking_permit = blocking_gate.acquire_owned().await.map_err(|error| {
+                rmcp::ErrorData::internal_error(
+                    "Atlas tool gate closed",
+                    Some(serde_json::json!({ "detail": error.to_string() })),
+                )
+            })?;
+            let tool_result = tokio::task::spawn_blocking(move || {
+                let _blocking_permit = blocking_permit;
+                router.call_tool(&blocking_ctx, &blocking_tool_name, &args)
+            })
+            .await
+            .map_err(|error| {
+                rmcp::ErrorData::internal_error(
+                    "Atlas tool worker failed",
+                    Some(serde_json::json!({ "detail": error.to_string() })),
+                )
+            })?;
             let tool_error = tool_result.is_error.unwrap_or(false);
             let duration_ms = start.elapsed().as_millis() as u64;
             let _span = tracing::info_span!(
@@ -246,6 +271,15 @@ mod tests {
     #[test]
     fn unopened_server_can_be_constructed() {
         let _server = super::McpServer::new_unopened();
+    }
+
+    #[test]
+    fn tool_calls_have_a_fixed_blocking_concurrency_bound() {
+        let service = super::AtlasMcpService::new_unopened();
+        assert_eq!(
+            service.blocking_gate.available_permits(),
+            super::MAX_CONCURRENT_TOOL_CALLS
+        );
     }
 
     #[test]

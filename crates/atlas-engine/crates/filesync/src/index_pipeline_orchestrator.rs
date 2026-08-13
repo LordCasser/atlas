@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use db::{
     FullRebuildGuard, KEY_GRAPH_GENERATION, KEY_RESOLUTION_CONFIG_HASH, KEY_RESOLUTION_GENERATION,
     PipelineGrade, Store,
@@ -127,10 +127,6 @@ impl IndexPipeline {
         });
         stats.phases.discovery_ms = _p_t0.elapsed().as_millis() as u64;
         last_phase = PhaseName::Discovery;
-
-        if discovered.is_empty() {
-            return Ok(stats);
-        }
 
         // ── Phase 2: HashCheck ──────────────────────────────────────────
         let _p_t0 = Instant::now();
@@ -446,7 +442,7 @@ impl IndexPipeline {
                             "sync.progress_total_load"
                         );
                     })
-                    .unwrap_or(0);
+                    .context("Failed to count unresolved references")?;
 
                 sink.emit(ProgressEvent::PhaseStarted {
                     phase: PhaseName::Resolution,
@@ -548,7 +544,10 @@ impl IndexPipeline {
                 });
             } else {
                 // Get function count for progress total
-                let all_symbols = self.store.get_all_symbols().unwrap_or_default();
+                let all_symbols = self
+                    .store
+                    .get_all_symbols()
+                    .context("Failed to load functions for summary planning")?;
                 let function_count = all_symbols
                     .iter()
                     .filter(|s| s.kind == SymbolKind::Function)

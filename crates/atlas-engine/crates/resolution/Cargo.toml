@@ -6,9 +6,9 @@ description = "Atlas reference resolution — import resolver, name matching, pa
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
-search = { path = "../search" }
+search = { path = "../search", default-features = false }
 anyhow = "1"
 blake3 = "1"
 rayon = "1"
@@ -16,7 +16,7 @@ serde_json = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-extraction = { path = "../extraction", features = ["typescript", "cpp"] }
+extraction = { path = "../extraction", default-features = false, features = ["typescript", "cpp"] }
 graph = { path = "../graph" }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

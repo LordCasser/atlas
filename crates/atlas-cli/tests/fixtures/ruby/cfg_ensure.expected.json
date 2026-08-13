@@ -50,10 +50,6 @@
       "kind": "method"
     },
     {
-      "name": "Block#30",
-      "kind": "block"
-    },
-    {
       "name": "Conditional#40",
       "kind": "conditional"
     },

@@ -111,6 +111,7 @@ mod zero_language_build {
     /// In a zero-language build, no frontend should be creatable.
     #[test]
     fn no_frontends_available() {
+        assert!(atlas_engine::Language::enabled_languages().is_empty());
         assert!(
             atlas_engine::create_frontend(atlas_engine::Language::TypeScript).is_none(),
             "TypeScript frontend should NOT be available without language features"
@@ -135,6 +136,60 @@ mod zero_language_build {
             "Zero-language build should have no compiled-in language capabilities, got {}",
             caps.len()
         );
+    }
+}
+
+#[cfg(all(feature = "javascript", not(feature = "typescript")))]
+mod javascript_without_typescript {
+    #[test]
+    fn shared_grammar_does_not_enable_typescript_language() {
+        let enabled = atlas_engine::Language::enabled_languages();
+        assert!(enabled.contains(&atlas_engine::Language::JavaScript));
+        assert!(!enabled.contains(&atlas_engine::Language::TypeScript));
+        assert!(atlas_engine::create_frontend(atlas_engine::Language::JavaScript).is_some());
+        assert!(atlas_engine::create_frontend(atlas_engine::Language::TypeScript).is_none());
+
+        let source = "function run() { target(); }";
+        let facts = atlas_engine::extract_file_with_mode(
+            &atlas_engine::create_frontend(atlas_engine::Language::JavaScript).unwrap(),
+            atlas_engine::FileId::generate("isolation.js"),
+            std::path::Path::new("isolation.js"),
+            source,
+            &workspace_hash(source),
+            atlas_engine::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        assert!(!facts.callsites.is_empty());
+    }
+
+    fn workspace_hash(source: &str) -> String {
+        blake3::hash(source.as_bytes()).to_hex().to_string()
+    }
+}
+
+#[cfg(all(feature = "arkts", not(feature = "typescript")))]
+mod arkts_without_typescript {
+    #[test]
+    fn shared_grammar_does_not_enable_typescript_language() {
+        let enabled = atlas_engine::Language::enabled_languages();
+        assert!(enabled.contains(&atlas_engine::Language::ArkTS));
+        assert!(!enabled.contains(&atlas_engine::Language::TypeScript));
+        assert!(atlas_engine::create_frontend(atlas_engine::Language::ArkTS).is_some());
+        assert!(atlas_engine::create_frontend(atlas_engine::Language::TypeScript).is_none());
+
+        let source = "function run() { target(); }";
+        let facts = atlas_engine::extract_file_with_mode(
+            &atlas_engine::create_frontend(atlas_engine::Language::ArkTS).unwrap(),
+            atlas_engine::FileId::generate("isolation.ets"),
+            std::path::Path::new("isolation.ets"),
+            source,
+            &blake3::hash(source.as_bytes()).to_hex().to_string(),
+            atlas_engine::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        assert!(!facts.callsites.is_empty());
     }
 }
 
@@ -187,13 +242,16 @@ mod cangjie_build {
 
 #[cfg(not(feature = "cangjie"))]
 mod cangjie_disabled {
-    /// When cangjie is NOT enabled, `lang:cj` should NOT be recognized.
+    /// Persisted language identities remain parseable even when their
+    /// discovery/frontend feature is disabled.
     #[test]
-    fn lang_cj_not_recognized_without_cangjie() {
+    fn lang_cj_identity_remains_parseable_without_frontend() {
         let query = atlas_engine::parse_query("lang:cj");
         assert_eq!(
-            query.language, None,
-            "lang:cj should NOT resolve when cangjie feature is disabled"
+            query.language,
+            Some(atlas_engine::Language::Cangjie),
+            "lang:cj remains a stable stored-language filter"
         );
+        assert!(atlas_engine::create_frontend(atlas_engine::Language::Cangjie).is_none());
     }
 }

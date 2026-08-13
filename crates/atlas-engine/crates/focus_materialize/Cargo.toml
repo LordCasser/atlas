@@ -6,9 +6,9 @@ description = "Focus materialize: on-demand dataflow (internal) — planner, loa
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
-extraction = { path = "../extraction" }
+extraction = { path = "../extraction", default-features = false }
 workspace = { path = "../workspace" }
 anyhow = "1"
 tracing = "0.1"

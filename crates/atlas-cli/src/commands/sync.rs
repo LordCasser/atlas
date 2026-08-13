@@ -7,7 +7,6 @@ use atlas_engine::guard_against_precision_downgrade;
 use atlas_engine::progress::ProgressState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// RAII guard that sets `done` to `true` on drop, guaranteeing the spinner
 /// exits even if the worker thread encounters an error.
@@ -29,63 +28,27 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
 
     let engine = atlas_engine::SyncEngine::with_mode(ctx.store.clone(), root.clone(), mode);
 
-    // Detect and report changes for display / early-return only.
-    // IncrementalPipeline::sync() re-detects after FileLock acquisition
-    // so the pre-check here has a benign TOCTOU window — at worst the
-    // CLI prints slightly outdated change counts and the pipeline
-    // no-ops on clean state.
-    let changed = engine.detect_changes()?;
-    // P2: path alias config changes are independent of file changes.
-    // Even when no files changed, a tsconfig.json update requires
-    // invalidation + re-resolution.
-    let path_alias_changed = atlas_engine::PathAliasConfig::has_changed(&ctx.store, &root)?;
-    if changed.is_empty() && !path_alias_changed {
-        println!("No changes detected.");
-        return Ok(());
-    }
-
-    println!("Changes detected:");
-    if !changed.added.is_empty() {
-        println!("  Added ({})", changed.added.len());
-    }
-    if !changed.modified.is_empty() {
-        println!("  Modified ({})", changed.modified.len());
-    }
-    if !changed.deleted.is_empty() {
-        println!("  Deleted ({})", changed.deleted.len());
-    }
-
     // ── Progress for sync ───────────────────────────────────────────────
     let progress_state = Arc::new(Mutex::new(ProgressState::new()));
     let done = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
+    crate::tui::progress::install_ctrlc_handler(Arc::clone(&stop_flag));
 
     let ps = progress_state.clone();
     let done_clone = done.clone();
     let stop_w = stop_flag.clone();
-
-    // Clone store for thread (ctx owns the Arc)
-    let store_for_thread = ctx.store.clone();
 
     // Run sync in background thread with progress
     let handle = std::thread::spawn(move || -> Result<_> {
         let _done = DoneGuard(done_clone);
         let sink = CliProgressSink { progress: ps };
         let mut interrupted = || stop_w.load(Ordering::SeqCst);
-        let stats = engine.sync(&sink, &mut interrupted)?;
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .to_string();
-        store_for_thread.set_metadata("last_sync_time", &now)?;
-
-        Ok(stats)
+        engine.sync(&sink, &mut interrupted)
     });
 
     // Start TUI (or text fallback if non-TTY), same progress contract as index.
-    let _ = crate::tui::progress::run_progress_loop(progress_state.clone(), &done, &stop_flag);
+    let was_interrupted =
+        crate::tui::progress::run_progress_loop(progress_state.clone(), &done, &stop_flag);
 
     let worker_result = match handle.join() {
         Ok(Ok(stats)) => Ok(stats),
@@ -99,6 +62,11 @@ pub fn run_with_options(project: &str, analysis: &str, force_reindex: bool) -> R
             Err(anyhow::anyhow!("Sync worker panicked: {msg}"))
         }
     };
+
+    if was_interrupted {
+        crate::tui::progress::print_interrupted(&progress_state.lock().unwrap());
+        return Err(anyhow::anyhow!("Interrupted"));
+    }
 
     let stats = worker_result?;
 

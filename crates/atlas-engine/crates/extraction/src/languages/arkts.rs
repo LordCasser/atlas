@@ -45,7 +45,7 @@ const ARKTS_SCOPES_QUERY: &str = concat!(
     "\n(class) @scope.class\n"
 );
 
-/// ArkTS adapter — delegates to TypeScript internally.
+/// ArkTS frontend slots backed by the shared TypeScript-family grammar.
 pub(crate) struct ArkTsAdapter;
 
 // ---------------------------------------------------------------------------

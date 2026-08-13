@@ -48,87 +48,101 @@ impl LanguageRegistry {
 
     // --- internal ---
 
-    fn register(&mut self, lang: tree_sitter::Language, atlas_lang: Language) {
-        self.grammars.insert(atlas_lang, lang);
-    }
-
     fn load_grammar(&mut self, lang: Language) -> Result<()> {
         match lang {
             #[cfg(feature = "typescript")]
-            Language::TypeScript | Language::JavaScript => {
+            Language::TypeScript => {
                 let ts_lang: tree_sitter::Language =
                     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-                self.register(ts_lang.clone(), Language::TypeScript);
-                self.register(ts_lang, Language::JavaScript);
+                self.grammars.insert(Language::TypeScript, ts_lang);
+                Ok(())
+            }
+            #[cfg(feature = "javascript")]
+            Language::JavaScript => {
+                let ts_lang: tree_sitter::Language =
+                    tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+                self.grammars.insert(Language::JavaScript, ts_lang);
+                Ok(())
             }
             #[cfg(feature = "python")]
             Language::Python => {
                 let lang: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
-                self.register(lang, Language::Python);
+                self.grammars.insert(Language::Python, lang);
+                Ok(())
             }
             #[cfg(feature = "java")]
             Language::Java => {
                 let lang: tree_sitter::Language = tree_sitter_java::LANGUAGE.into();
-                self.register(lang, Language::Java);
+                self.grammars.insert(Language::Java, lang);
+                Ok(())
             }
             #[cfg(feature = "c")]
             Language::C => {
                 let lang: tree_sitter::Language = tree_sitter_c::LANGUAGE.into();
-                self.register(lang, Language::C);
+                self.grammars.insert(Language::C, lang);
+                Ok(())
             }
             #[cfg(feature = "cpp")]
             Language::Cpp => {
                 let lang: tree_sitter::Language = tree_sitter_cpp::LANGUAGE.into();
-                self.register(lang, Language::Cpp);
+                self.grammars.insert(Language::Cpp, lang);
+                Ok(())
             }
             #[cfg(feature = "arkts")]
             Language::ArkTS => {
                 // ArkTS uses TypeScript grammar -> same crate
                 let lang: tree_sitter::Language =
                     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
-                self.register(lang, Language::ArkTS);
+                self.grammars.insert(Language::ArkTS, lang);
+                Ok(())
             }
             #[cfg(feature = "cangjie")]
             Language::Cangjie => {
                 let lang: tree_sitter::Language = tree_sitter_cangjie::LANGUAGE.into();
-                self.register(lang, Language::Cangjie);
+                self.grammars.insert(Language::Cangjie, lang);
+                Ok(())
             }
             #[cfg(feature = "go")]
             Language::Go => {
                 let lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
-                self.register(lang, Language::Go);
+                self.grammars.insert(Language::Go, lang);
+                Ok(())
             }
             #[cfg(feature = "csharp")]
             Language::CSharp => {
                 let lang: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
-                self.register(lang, Language::CSharp);
+                self.grammars.insert(Language::CSharp, lang);
+                Ok(())
             }
             #[cfg(feature = "rust")]
             Language::Rust => {
                 let lang: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-                self.register(lang, Language::Rust);
+                self.grammars.insert(Language::Rust, lang);
+                Ok(())
             }
             #[cfg(feature = "php")]
             Language::Php => {
                 let lang: tree_sitter::Language = tree_sitter_php::LANGUAGE_PHP.into();
-                self.register(lang, Language::Php);
+                self.grammars.insert(Language::Php, lang);
+                Ok(())
             }
             #[cfg(feature = "ruby")]
             Language::Ruby => {
                 let lang: tree_sitter::Language = tree_sitter_ruby::LANGUAGE.into();
-                self.register(lang, Language::Ruby);
+                self.grammars.insert(Language::Ruby, lang);
+                Ok(())
             }
             #[cfg(feature = "kotlin")]
             Language::Kotlin => {
                 let lang: tree_sitter::Language = tree_sitter_kotlin::LANGUAGE.into();
-                self.register(lang, Language::Kotlin);
+                self.grammars.insert(Language::Kotlin, lang);
+                Ok(())
             }
             #[allow(unreachable_patterns)]
             _ => {
                 bail!("Language {lang:?} not enabled (missing feature flag or not yet implemented)",)
             }
         }
-        Ok(())
     }
 }
 
@@ -245,16 +259,16 @@ mod tests {
         assert!(registry.has(Language::TypeScript));
     }
 
-    #[cfg(feature = "typescript")]
+    #[cfg(feature = "javascript")]
     #[test]
     fn test_load_javascript() {
         // JavaScript uses TypeScript grammar — must be loadable independently
         let registry = LanguageRegistry::new(&[Language::JavaScript]).unwrap();
         assert!(registry.has(Language::JavaScript));
-        assert!(registry.has(Language::TypeScript));
+        assert!(!registry.has(Language::TypeScript));
     }
 
-    #[cfg(feature = "typescript")]
+    #[cfg(all(feature = "typescript", feature = "javascript"))]
     #[test]
     fn test_load_typescript_javascript_both() {
         let registry =

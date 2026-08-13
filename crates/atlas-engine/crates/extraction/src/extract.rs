@@ -189,6 +189,7 @@ pub fn extract_file_with_mode(
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
         retain_manifest_top_level_symbols(&mut symbols, declaration_root);
+        #[cfg(feature = "arkts")]
         if language == Language::ArkTS {
             let mut decorations = Vec::new();
             crate::languages::arkts::arkts_decorator_fallback(
@@ -255,6 +256,7 @@ pub fn extract_file_with_mode(
     //     errors swallow @Decorator nodes into giant call_expressions, causing
     //     the query to miss them. Scan the source for @Identifier and
     //     @Identifier(...) patterns not already captured.
+    #[cfg(feature = "arkts")]
     if mode.produces_references() && language == Language::ArkTS {
         crate::languages::arkts::arkts_decorator_fallback(source, root, file_id, &mut references);
     }
@@ -338,6 +340,7 @@ pub fn extract_file_with_mode(
             }
         }
     }
+    #[cfg(feature = "arkts")]
     if matches!(mode, ExtractionMode::ResolutionSymbols) && language == Language::ArkTS {
         let mut decorations = Vec::new();
         crate::languages::arkts::arkts_decorator_fallback(source, root, file_id, &mut decorations);
@@ -345,6 +348,8 @@ pub fn extract_file_with_mode(
     } else {
         extend_decorated_symbol_ranges(&mut symbols, &references, source);
     }
+    #[cfg(not(feature = "arkts"))]
+    extend_decorated_symbol_ranges(&mut symbols, &references, source);
 
     // ResolutionSymbols mode: return after symbols + imports + scopes + scope_tree.
     // Dependencies only need to be resolution targets, not full structural extraction.
@@ -1094,6 +1099,7 @@ fn build_reference_binding_uses(
 
         // Pattern class/value/keyword syntax is not a lexical variable use.
         // Capture identifiers are already represented by declaration uses.
+        #[cfg(feature = "python")]
         if ctx.language == Language::Python && super::languages::python::is_py_pattern_syntax(node)
         {
             continue;
@@ -1604,10 +1610,11 @@ mod tests {
     #[test]
     fn manifest_mode_keeps_top_level_boundary_for_all_available_languages() {
         let cases = manifest_boundary_cases();
+        let available = available_languages();
         let case_languages: HashSet<_> = cases.iter().map(|case| case.language).collect();
-        for language in available_languages() {
+        for language in &available {
             assert!(
-                case_languages.contains(&language),
+                case_languages.contains(language),
                 "missing manifest boundary fixture for {}",
                 language.as_str()
             );
@@ -1681,10 +1688,7 @@ mod tests {
                 );
             }
         }
-        assert!(
-            checked > 0,
-            "expected at least one available language fixture"
-        );
+        assert_eq!(checked, available.len());
     }
 
     #[cfg(feature = "c")]

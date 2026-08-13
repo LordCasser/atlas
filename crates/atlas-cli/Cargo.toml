@@ -13,8 +13,8 @@ name = "atlas"
 path = "src/main.rs"
 
 [dependencies]
-atlas-engine = { path = "../atlas-engine" }
-atlas-mcp = { path = "../atlas-mcp" }
+atlas-engine = { path = "../atlas-engine", default-features = false }
+atlas-mcp = { path = "../atlas-mcp", default-features = false }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
@@ -33,17 +33,17 @@ tempfile = "3"
 [features]
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 mcp = ["dep:tokio"]
-typescript = ["atlas-engine/typescript"]
-javascript = ["atlas-engine/javascript"]
-python = ["atlas-engine/python"]
-java = ["atlas-engine/java"]
-c = ["atlas-engine/c"]
-cpp = ["atlas-engine/cpp"]
-arkts = ["atlas-engine/arkts"]
-cangjie = ["atlas-engine/cangjie"]
-go = ["atlas-engine/go"]
-csharp = ["atlas-engine/csharp"]
-rust = ["atlas-engine/rust"]
-php = ["atlas-engine/php"]
-ruby = ["atlas-engine/ruby"]
-kotlin = ["atlas-engine/kotlin"]
+typescript = ["atlas-engine/typescript", "atlas-mcp/typescript"]
+javascript = ["atlas-engine/javascript", "atlas-mcp/javascript"]
+python = ["atlas-engine/python", "atlas-mcp/python"]
+java = ["atlas-engine/java", "atlas-mcp/java"]
+c = ["atlas-engine/c", "atlas-mcp/c"]
+cpp = ["atlas-engine/cpp", "atlas-mcp/cpp"]
+arkts = ["atlas-engine/arkts", "atlas-mcp/arkts"]
+cangjie = ["atlas-engine/cangjie", "atlas-mcp/cangjie"]
+go = ["atlas-engine/go", "atlas-mcp/go"]
+csharp = ["atlas-engine/csharp", "atlas-mcp/csharp"]
+rust = ["atlas-engine/rust", "atlas-mcp/rust"]
+php = ["atlas-engine/php", "atlas-mcp/php"]
+ruby = ["atlas-engine/ruby", "atlas-mcp/ruby"]
+kotlin = ["atlas-engine/kotlin", "atlas-mcp/kotlin"]

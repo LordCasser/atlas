@@ -3003,6 +3003,70 @@ mod tests {
     }
 
     #[test]
+    fn unit_capability_mask_aggregates_every_derived_layer() {
+        let store = test_store();
+        let file = test_file();
+        store.upsert_file(&file).unwrap();
+        let unit_id = [7u8; 16];
+
+        for (layer, bit) in [
+            ("dataflow", FactCoverage::DATAFLOW),
+            ("cfg", FactCoverage::CFG),
+        ] {
+            store
+                .upsert_unit_extraction_state(&UnitExtractionStateRecord {
+                    file_id: file.file_id,
+                    unit_id,
+                    layer: layer.into(),
+                    content_hash: file.content_hash.clone(),
+                    status: "complete".into(),
+                    node_count: None,
+                    edge_count: None,
+                    budget_exceeded: false,
+                    capability_mask: FactCoverage::from_bits(bit),
+                    built_at: String::new(),
+                })
+                .unwrap();
+        }
+
+        let mask = store
+            .get_capability_mask_for_unit(&file.file_id, &unit_id)
+            .unwrap();
+        assert!(mask.has(FactCoverage::DATAFLOW));
+        assert!(mask.has(FactCoverage::CFG));
+        assert!(
+            store.get_capability_mask(&file.file_id).unwrap().is_zero(),
+            "unit materialization must not promote the whole file"
+        );
+    }
+
+    #[test]
+    fn file_capability_mask_excludes_stale_layers() {
+        let store = test_store();
+        let mut file = test_file();
+        store.upsert_file(&file).unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file.file_id,
+                "dataflow",
+                &file.content_hash,
+                "complete",
+                FactCoverage::from_bits(FactCoverage::DATAFLOW),
+            )
+            .unwrap();
+        assert!(
+            store
+                .get_capability_mask(&file.file_id)
+                .unwrap()
+                .has(FactCoverage::DATAFLOW)
+        );
+
+        file.content_hash = "new-content".into();
+        store.upsert_file(&file).unwrap();
+        assert!(store.get_capability_mask(&file.file_id).unwrap().is_zero());
+    }
+
+    #[test]
     fn derive_capability_with_edges_returns_call_edges_bit() {
         let store = test_store();
         let file_id = FileId::generate("src/example.ts");

@@ -1,8 +1,8 @@
 //! Incremental sync engine: detect changes, re-extract, re-resolve, reload graph.
 //!
-//! Change detection uses git status as the primary strategy, with a DB content-hash
-//! fallback for non-git projects. Both paths compare against the single source of truth
-//! in `files.content_hash`.
+//! Change detection compares the current source inventory with the persisted
+//! `files.content_hash` baseline. Git state is intentionally irrelevant: HEAD
+//! is not the same authority as the last successful Atlas index or sync.
 
 pub mod cleanup;
 pub mod detector;

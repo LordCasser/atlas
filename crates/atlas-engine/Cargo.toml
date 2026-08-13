@@ -9,18 +9,18 @@ homepage = "https://github.com/LordCasser/atlas"
 documentation = "https://github.com/LordCasser/atlas#readme"
 
 [dependencies]
-types = { path = "crates/types" }
+types = { path = "crates/types", default-features = false }
 workspace = { path = "crates/workspace" }
 db = { path = "crates/db" }
-extraction = { path = "crates/extraction" }
+extraction = { path = "crates/extraction", default-features = false }
 resolution = { path = "crates/resolution" }
 graph = { path = "crates/graph" }
-analysis = { path = "crates/analysis" }
+analysis = { path = "crates/analysis", default-features = false }
 domain-rules = { path = "crates/domain_rules" }
-search = { path = "crates/search" }
+search = { path = "crates/search", default-features = false }
 context = { path = "crates/context" }
 filesync = { path = "crates/filesync" }
-focus_materialize = { path = "crates/focus_materialize" }
+focus_materialize = { path = "crates/focus_materialize", default-features = false }
 dossier = { path = "crates/dossier" }
 anyhow = "1"
 blake3 = "1"
@@ -44,8 +44,8 @@ python = ["types/python", "extraction/python", "analysis/python"]
 java = ["types/java", "extraction/java", "analysis/java"]
 c = ["types/c", "extraction/c"]
 cpp = ["types/cpp", "extraction/cpp"]
-arkts = ["typescript", "types/arkts", "extraction/arkts", "focus_materialize/arkts"]
-cangjie = ["types/cangjie", "extraction/cangjie", "focus_materialize/cangjie", "search/cangjie"]
+arkts = ["types/arkts", "extraction/arkts", "focus_materialize/arkts"]
+cangjie = ["types/cangjie", "extraction/cangjie", "focus_materialize/cangjie"]
 go = ["types/go", "extraction/go"]
 csharp = ["types/csharp", "extraction/csharp", "analysis/csharp"]
 rust = ["types/rust", "extraction/rust"]

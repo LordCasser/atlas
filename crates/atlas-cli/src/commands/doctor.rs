@@ -96,7 +96,7 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     check_lang("C", cfg!(feature = "c"));
     check_lang("C++", cfg!(feature = "cpp"));
     check_lang("ArkTS", cfg!(feature = "arkts"));
-    check_experimental_lang("Cangjie", cfg!(feature = "cangjie"));
+    check_lang("Cangjie", cfg!(feature = "cangjie"));
 
     // Post-MVP languages
     check_lang("Go", cfg!(feature = "go"));
@@ -142,14 +142,6 @@ fn check_lang(name: &str, enabled: bool) {
         println!("    [OK]    {name}");
     } else {
         println!("    [WARN]  {name} (not compiled in)");
-    }
-}
-
-fn check_experimental_lang(name: &str, enabled: bool) {
-    if enabled {
-        println!("    [OK]    {name} (experimental)");
-    } else {
-        println!("    [SKIP]  {name} (experimental opt-in)");
     }
 }
 
@@ -213,51 +205,11 @@ fn print_capabilities() {
     }
 }
 
-fn compiled_features() -> Vec<&'static str> {
-    let mut features = Vec::new();
-    if cfg!(feature = "typescript") {
-        features.push("typescript");
-    }
-    if cfg!(feature = "javascript") {
-        features.push("javascript");
-    }
-    if cfg!(feature = "python") {
-        features.push("python");
-    }
-    if cfg!(feature = "java") {
-        features.push("java");
-    }
-    if cfg!(feature = "c") {
-        features.push("c");
-    }
-    if cfg!(feature = "cpp") {
-        features.push("cpp");
-    }
-    if cfg!(feature = "arkts") {
-        features.push("arkts");
-    }
-    if cfg!(feature = "go") {
-        features.push("go");
-    }
-    if cfg!(feature = "csharp") {
-        features.push("csharp");
-    }
-    if cfg!(feature = "rust") {
-        features.push("rust");
-    }
-    if cfg!(feature = "php") {
-        features.push("php");
-    }
-    if cfg!(feature = "ruby") {
-        features.push("ruby");
-    }
-    if cfg!(feature = "kotlin") {
-        features.push("kotlin");
-    }
-    if cfg!(feature = "cangjie") {
-        features.push("cangjie");
-    }
-    features
+fn compiled_features() -> Vec<String> {
+    LanguageCapabilityProfile::all_compiled()
+        .into_iter()
+        .map(|profile| profile.language)
+        .collect()
 }
 
 #[cfg(test)]

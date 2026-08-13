@@ -12,6 +12,9 @@ Falls back to filesystem traversal when no Git repository is found.
 ### detector
 
 Content-hash based dirty file detection. Compares stored `content_hash` in the database with `blake3(file_contents)` on disk.
+Git status is not a change authority: it is relative to `HEAD`, not to the last
+Atlas database state. Incremental sync therefore compares the canonical discovered
+file set and raw content hashes directly with SQLite; Git is used only by discovery.
 
 ### dirty
 

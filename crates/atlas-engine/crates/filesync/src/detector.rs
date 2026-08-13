@@ -1,10 +1,9 @@
-//! File change detection using git status (primary) or DB content-hash fallback.
+//! File change detection against the content hashes persisted by the last
+//! successful index or sync.
 
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use types::Language;
 
 use crate::discovery::DiscoveryConfig;
 
@@ -12,21 +11,6 @@ use crate::discovery::DiscoveryConfig;
 fn compute_blake3_hex(path: &Path) -> anyhow::Result<String> {
     let content = std::fs::read(path)?;
     Ok(workspace::file_content_hash(&content))
-}
-
-/// What happened to a file between the last index and now.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChangeKind {
-    Added,
-    Modified,
-    Deleted,
-}
-
-/// A single changed file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileChange {
-    pub path: PathBuf,
-    pub kind: ChangeKind,
 }
 
 /// All changes detected in the project since last index.
@@ -47,101 +31,9 @@ impl ChangedFiles {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Git-based detection (primary)
-// ---------------------------------------------------------------------------
-
-/// Detect file changes using `git status --porcelain`.
-/// Returns `None` if the project is not a git repository (or git is unavailable).
-pub fn detect_git_changes(root: &Path) -> Option<ChangedFiles> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain", "-u"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut changes = ChangedFiles::default();
-
-    for line in stdout.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let (status, path) = parse_porcelain_line(line);
-        let full_path = root.join(path);
-        match status {
-            PorcelainStatus::Added if is_supported_source_path(Path::new(path)) => {
-                changes.added.push(full_path)
-            }
-            PorcelainStatus::Modified if is_supported_source_path(Path::new(path)) => {
-                changes.modified.push(full_path)
-            }
-            PorcelainStatus::Deleted if is_supported_source_path(Path::new(path)) => {
-                changes.deleted.push(full_path)
-            }
-            PorcelainStatus::Renamed(new_path) => {
-                // Old file data must be cleaned, new file must be indexed
-                if is_supported_source_path(Path::new(path)) {
-                    changes.deleted.push(full_path);
-                }
-                if is_supported_source_path(Path::new(&new_path)) {
-                    changes.added.push(root.join(new_path));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Some(changes)
-}
-
-pub(crate) fn is_supported_source_path(path: &Path) -> bool {
-    Language::from_path(path).is_some()
-}
-
-#[derive(Debug)]
-enum PorcelainStatus {
-    Added,
-    Modified,
-    Deleted,
-    Renamed(String), // new path after rename
-}
-
-/// Parse a single git status --porcelain line (e.g. " M src/main.rs" or "?? newfile").
-fn parse_porcelain_line(line: &str) -> (PorcelainStatus, &str) {
-    let status = &line[..2];
-    let path = line[3..].trim();
-
-    match status {
-        "??" => (PorcelainStatus::Added, path),
-        "A " | " A" | "AM" | "AD" => (PorcelainStatus::Added, path),
-        " M" | "M " | "MM" | "CM" => (PorcelainStatus::Modified, path),
-        "D " | " D" | "DM" | "RD" => (PorcelainStatus::Deleted, path),
-        "R " => {
-            if let Some((old_path, new_path)) = path.split_once(" -> ") {
-                (
-                    PorcelainStatus::Renamed(new_path.trim().to_string()),
-                    old_path.trim(),
-                )
-            } else {
-                (PorcelainStatus::Modified, path)
-            }
-        }
-        _ => (PorcelainStatus::Modified, path),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DB hash-based detection (fallback when git is unavailable)
-// ---------------------------------------------------------------------------
-
 /// Detect changes by comparing current file content hashes against DB-stored hashes.
 /// Uses `files.content_hash` in the SQLite store as the single source of truth.
-pub fn detect_db_hash_changes(root: &Path, store: &db::Store) -> Result<ChangedFiles> {
+pub fn detect_changes(root: &Path, store: &db::Store) -> Result<ChangedFiles> {
     let mut changes = ChangedFiles::default();
 
     // 1. Use the same discovery logic as normal index (atlasignore, gitignore,
@@ -157,7 +49,7 @@ pub fn detect_db_hash_changes(root: &Path, store: &db::Store) -> Result<ChangedF
     }
 
     // 2. Get previously indexed file hashes from the DB
-    let db_files = store.list_files().unwrap_or_default();
+    let db_files = store.list_files()?;
     let db_hashes: HashMap<String, String> = db_files
         .iter()
         .map(|f| (f.path.clone(), f.content_hash.clone()))
@@ -190,34 +82,7 @@ pub fn detect_db_hash_changes(root: &Path, store: &db::Store) -> Result<ChangedF
 mod tests {
     use super::*;
     use std::fs;
-
-    #[test]
-    fn test_parse_porcelain_added() {
-        let (status, path) = parse_porcelain_line("?? new_file.ts");
-        assert!(matches!(status, PorcelainStatus::Added));
-        assert_eq!(path, "new_file.ts");
-    }
-
-    #[test]
-    fn test_parse_porcelain_modified() {
-        let (status, path) = parse_porcelain_line(" M src/main.py");
-        assert!(matches!(status, PorcelainStatus::Modified));
-        assert_eq!(path, "src/main.py");
-    }
-
-    #[test]
-    fn test_parse_porcelain_deleted() {
-        let (status, path) = parse_porcelain_line(" D old.rs");
-        assert!(matches!(status, PorcelainStatus::Deleted));
-        assert_eq!(path, "old.rs");
-    }
-
-    #[test]
-    fn test_parse_porcelain_added_staged() {
-        let (status, path) = parse_porcelain_line("A  staged.ts");
-        assert!(matches!(status, PorcelainStatus::Added));
-        assert_eq!(path, "staged.ts");
-    }
+    use std::process::Command;
 
     #[test]
     fn test_changed_files_stats() {
@@ -231,28 +96,75 @@ mod tests {
     }
 
     #[test]
-    fn clean_git_repository_does_not_fall_back_to_hash_scan() {
+    fn clean_git_worktree_is_compared_with_the_indexed_hash() {
+        use types::{FileId, FileInfo, Language, ParseStatus};
+
         let dir = tempfile::tempdir().unwrap();
-        let status = Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(dir.path())
-            .status()
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let path = dir.path().join("main.ts");
+        fs::write(&path, "export const version = 2;\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["add", "main.ts"])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Atlas Test",
+                    "-c",
+                    "user.email=atlas@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "current tree",
+                ])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout
+                .is_empty(),
+            "fixture must have a clean worktree"
+        );
+
+        let store = db::Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        store
+            .upsert_file(&FileInfo {
+                file_id: FileId::generate("main.ts"),
+                path: "main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: workspace::file_content_hash(b"export const version = 1;\n"),
+                status: ParseStatus::Success,
+            })
             .unwrap();
-        assert!(status.success());
 
-        let changes = detect_git_changes(dir.path()).expect("git status should be authoritative");
-        assert!(changes.is_empty());
+        let changes = detect_changes(dir.path(), &store).unwrap();
+        assert_eq!(changes.modified, vec![path]);
     }
 
     #[test]
-    fn unsupported_paths_are_not_source_paths() {
-        assert!(is_supported_source_path(Path::new("src/main.ts")));
-        assert!(!is_supported_source_path(Path::new("README.md")));
-        assert!(!is_supported_source_path(Path::new("tsconfig.json")));
-    }
-
-    #[test]
-    fn test_detect_db_hash_changes_tempdir() {
+    fn test_detect_changes_tempdir() {
         use db::Store;
         use extraction::create_frontend;
         use extraction::{ExtractionMode, extract_file_with_mode};
@@ -264,7 +176,7 @@ mod tests {
         store.init_schema().unwrap();
 
         // First detection: empty DB → no changes
-        let changes = detect_db_hash_changes(dir.path(), &store).unwrap();
+        let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.total(), 0, "empty project + empty DB → no changes");
 
         // Create a new .ts file on disk
@@ -272,7 +184,7 @@ mod tests {
         fs::write(&file_path, b"const x = 1;").unwrap();
 
         // Should detect as added (on disk but not in DB)
-        let changes = detect_db_hash_changes(dir.path(), &store).unwrap();
+        let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.added.len(), 1);
         assert!(changes.added[0].ends_with("new.ts"));
         assert_eq!(changes.modified.len(), 0);
@@ -297,18 +209,18 @@ mod tests {
         store.insert_file_facts(&facts).unwrap();
 
         // After indexing: DB hash matches disk hash → no changes
-        let changes = detect_db_hash_changes(dir.path(), &store).unwrap();
+        let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.total(), 0, "indexed file matches → no changes");
 
         // Modify the file (content hash differs)
         fs::write(&file_path, b"const y = 2;").unwrap();
-        let changes = detect_db_hash_changes(dir.path(), &store).unwrap();
+        let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.modified.len(), 1);
         assert!(changes.modified[0].ends_with("new.ts"));
 
         // Delete the file (on disk gone, still in DB)
         fs::remove_file(&file_path).unwrap();
-        let changes = detect_db_hash_changes(dir.path(), &store).unwrap();
+        let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.deleted.len(), 1);
         assert!(changes.deleted[0].ends_with("new.ts"));
     }

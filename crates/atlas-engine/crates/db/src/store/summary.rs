@@ -135,11 +135,6 @@ impl SummaryStore {
             ..Default::default()
         };
 
-        if total == 0 {
-            stats.elapsed_ms = start.elapsed().as_millis() as u64;
-            return Ok(stats);
-        }
-
         // ── Phase 1: Build summaries WITHOUT holding the write lock ─────
         //
         // We must NOT hold store.lock() while calling build_fn because
@@ -153,17 +148,16 @@ impl SummaryStore {
         // without any nested lock_read() calls.
         let mut results: Vec<(SymbolId, FunctionSummary)> = Vec::with_capacity(total);
         for (idx, sym) in function_symbols.iter().enumerate() {
-            match build_fn(store, &sym.id) {
-                Ok(summary) => {
-                    if summary.is_empty() {
-                        stats.functions_skipped += 1;
-                    } else {
-                        results.push((sym.id, summary));
-                    }
-                }
-                Err(_) => {
-                    stats.functions_skipped += 1;
-                }
+            let summary = build_fn(store, &sym.id).map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to build summary for {}: {error:#}",
+                    sym.qualified_name
+                )
+            })?;
+            if summary.is_empty() {
+                stats.functions_skipped += 1;
+            } else {
+                results.push((sym.id, summary));
             }
             // Report progress every 100 functions or on the last one
             if idx % 100 == 0 || idx + 1 == total {
@@ -178,15 +172,16 @@ impl SummaryStore {
         // Now we hold the write lock exclusively for persistence — no
         // nested store reads happen inside write_one_summary, so there
         // is no risk of reentrant locking.
-        if !results.is_empty() {
-            let conn = store.lock();
-            let tx = conn.unchecked_transaction()?;
-            for (id, summary) in &results {
-                write_one_summary(&tx, id, summary, &mut stats)?;
-                stats.functions_summarized += 1;
-            }
-            tx.commit()?;
+        // A full build is a replacement, not an upsert: summaries that
+        // became empty must not retain rows from an older extraction.
+        let conn = store.lock();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM function_summaries", [])?;
+        for (id, summary) in &results {
+            write_one_summary(&tx, id, summary, &mut stats)?;
+            stats.functions_summarized += 1;
         }
+        tx.commit()?;
 
         stats.elapsed_ms = start.elapsed().as_millis() as u64;
         Ok(stats)
@@ -194,8 +189,9 @@ impl SummaryStore {
 
     /// Build (or rebuild) the summary for a **single** function.
     ///
-    /// Invalidates any existing summary rows for this function first, then
-    /// computes a new summary via `build_fn` and persists it.
+    /// Computes a new summary via `build_fn`, then atomically replaces any
+    /// existing rows for this function. Builder failure leaves persistence
+    /// untouched; an empty summary removes any previous rows.
     pub fn build_for_function<F>(
         store: &Store,
         function_id: &SymbolId,
@@ -204,18 +200,18 @@ impl SummaryStore {
     where
         F: Fn(&dyn TraceStore, &SymbolId) -> anyhow::Result<FunctionSummary>,
     {
-        // Invalidate existing data first
-        Self::invalidate_function(store, function_id)?;
-
         let summary = build_fn(store, function_id)?;
-        if summary.is_empty() {
-            return Ok(summary);
-        }
 
         let conn = store.lock();
         let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM function_summaries WHERE function_id = ?1",
+            params![function_id],
+        )?;
         let mut _stats = SummaryBuildStats::default();
-        write_one_summary(&tx, function_id, &summary, &mut _stats)?;
+        if !summary.is_empty() {
+            write_one_summary(&tx, function_id, &summary, &mut _stats)?;
+        }
         tx.commit()?;
 
         Ok(summary)
@@ -223,25 +219,11 @@ impl SummaryStore {
 
     // ── Invalidation ─────────────────────────────────────────────────────
 
-    /// Delete all summary rows for a function from all 4 tables.
+    /// Delete all summary rows for a function.
     ///
-    /// The `function_summaries` row deletion cascades to the other 3 tables
-    /// via `ON DELETE CASCADE`, but we also explicitly delete from all 4
-    /// tables to be safe.
+    /// The schema owns dependent-row cleanup through `ON DELETE CASCADE`.
     pub fn invalidate_function(store: &Store, function_id: &SymbolId) -> anyhow::Result<()> {
         let conn = store.lock();
-        conn.execute(
-            "DELETE FROM summary_call_arg_sources WHERE function_id = ?1",
-            params![function_id],
-        )?;
-        conn.execute(
-            "DELETE FROM summary_return_sources WHERE function_id = ?1",
-            params![function_id],
-        )?;
-        conn.execute(
-            "DELETE FROM summary_param_reaches WHERE function_id = ?1",
-            params![function_id],
-        )?;
         conn.execute(
             "DELETE FROM function_summaries WHERE function_id = ?1",
             params![function_id],
@@ -273,8 +255,7 @@ impl SummaryStore {
                     row.get::<_, String>(1)?,
                 ))
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -652,6 +633,26 @@ mod tests {
         let arg_rows = SummaryStore::query_call_arg_sources(&store, &arg_node_id)?;
         assert!(!arg_rows.is_empty(), "should have call_arg_source rows");
 
+        // Computing the replacement precedes invalidation: a builder error
+        // must leave the last complete summary intact.
+        let error = SummaryStore::build_for_function(&store, &function_id, |_, _| {
+            Err(anyhow::anyhow!("synthetic builder failure"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("synthetic builder failure"));
+        assert!(
+            !SummaryStore::query_param_reaches(&store, &param_id)?.is_empty(),
+            "builder failure must not destroy the previous summary"
+        );
+
+        // A successful empty replacement, in contrast, removes stale rows.
+        let mut empty = summary.clone();
+        empty.param_flows.clear();
+        empty.return_flows.clear();
+        empty.call_arg_flows.clear();
+        SummaryStore::build_for_function(&store, &function_id, |_, _| Ok(empty.clone()))?;
+        assert!(SummaryStore::query_param_reaches(&store, &param_id)?.is_empty());
+
         Ok(())
     }
 
@@ -839,6 +840,43 @@ mod tests {
         let summary_a = test_summary(&fn_a.id, &file_id);
         let rows = SummaryStore::query_param_reaches(&store, &summary_a.param_flows[0].param_id)?;
         assert!(!rows.is_empty(), "fnA should have param_reach rows");
+
+        // Full rebuild is also all-or-nothing with respect to computation.
+        let summary_b = test_summary(&fn_b.id, &file_id);
+        let error = SummaryStore::build_all(
+            &store,
+            |_s, fid| {
+                if *fid == fn_b.id {
+                    Err(anyhow::anyhow!("synthetic builder failure"))
+                } else {
+                    Ok(test_summary(fid, &file_id))
+                }
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fnB"));
+        assert!(
+            !SummaryStore::query_param_reaches(&store, &summary_b.param_flows[0].param_id)?
+                .is_empty(),
+            "failed full rebuild must preserve the previous complete set"
+        );
+
+        // Successful empty results replace, rather than retain, old rows.
+        let empty_stats = SummaryStore::build_all(
+            &store,
+            |_s, fid| {
+                let mut summary = test_summary(fid, &file_id);
+                summary.param_flows.clear();
+                summary.return_flows.clear();
+                summary.call_arg_flows.clear();
+                Ok(summary)
+            },
+            None,
+        )?;
+        assert_eq!(empty_stats.functions_summarized, 0);
+        assert_eq!(empty_stats.functions_skipped, 2);
+        assert!(SummaryStore::files_with_summaries(&store)?.is_empty());
 
         Ok(())
     }

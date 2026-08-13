@@ -25,4 +25,9 @@ The high-level `Engine` owns the user-facing trace path and triggers **Focus mat
 
 Raw `analysis::TraceEngine` only reads facts already present in the store. CLI and MCP should use facade/services and shared filesync/Focus orchestration rather than rebuilding extraction, resolution, graph, or trace pipelines in entry-point code.
 
+`Engine::extract_file_with_mode` accepts a project-relative `SourcePath` and derives
+Atlas' path-based `FileId`. Blob/version consumers must call the lower-level
+`extraction::extract_file_with_mode` with a caller-owned identity; this keeps the
+future Corpus blob model out of the single-workspace facade.
+
 For detailed architecture, see [`../../docs/architecture.md`](../../docs/architecture.md) §2.1.1 / §7.1 / §10.1.11.

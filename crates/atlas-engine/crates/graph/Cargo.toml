@@ -6,7 +6,7 @@ description = "Atlas knowledge graph engine — BFS/DFS traversal, callers/calle
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
 anyhow = "1"
 rayon = "1"
@@ -14,7 +14,7 @@ serde_json = "1"
 tracing = "0.1"
 
 [dev-dependencies]
-extraction = { path = "../extraction", features = ["typescript", "c"] }
+extraction = { path = "../extraction", default-features = false, features = ["typescript", "c"] }
 resolution = { path = "../resolution" }
 tempfile = "3"
 blake3 = "1"

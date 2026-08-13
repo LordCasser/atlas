@@ -491,9 +491,11 @@ pub fn cangjie_callsite_extractor() -> GenericCallsiteExtractor {
 pub fn create_extractor(lang: types::enums::Language) -> Box<dyn CallsiteExtractorSpec> {
     match lang {
         #[cfg(feature = "typescript")]
-        types::enums::Language::TypeScript
-        | types::enums::Language::JavaScript
-        | types::enums::Language::ArkTS => Box::new(ts_callsite_extractor()),
+        types::enums::Language::TypeScript => Box::new(ts_callsite_extractor()),
+        #[cfg(feature = "javascript")]
+        types::enums::Language::JavaScript => Box::new(ts_callsite_extractor()),
+        #[cfg(feature = "arkts")]
+        types::enums::Language::ArkTS => Box::new(ts_callsite_extractor()),
         #[cfg(feature = "python")]
         types::enums::Language::Python => Box::new(python_callsite_extractor()),
         #[cfg(feature = "java")]

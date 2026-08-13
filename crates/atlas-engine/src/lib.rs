@@ -13,12 +13,12 @@
 //! # Usage
 //!
 //! ```ignore
-//! use atlas_engine::Engine;
+//! use atlas_engine::{Engine, SourcePath};
 //!
 //! let engine = Engine::open_in_memory()?;
 //! let source = atlas_engine::decode_source(b"function f() {}");
 //! engine.extract_file_with_mode(
-//!     std::path::Path::new("test.ts"),
+//!     &SourcePath::from_relative("test.ts"),
 //!     &source,
 //!     atlas_engine::Language::TypeScript,
 //!     atlas_engine::ExtractionMode::Full,
@@ -296,20 +296,24 @@ impl Engine {
     ///
     /// [`SourceText::file_hash`] preserves the raw file identity while
     /// [`SourceText::text`] provides the decoded UTF-8 parser input.
+    /// The path is project-relative because Atlas file identity is path-based.
+    /// Blob/version-oriented consumers such as Atlas Corpus must call the
+    /// lower-level extraction API with their own [`FileId`].
     pub fn extract_file_with_mode(
         &self,
-        path: &Path,
+        path: &SourcePath,
         source: &SourceText,
         language: Language,
         mode: extraction::ExtractionMode,
     ) -> anyhow::Result<FileFacts> {
         let frontend = extraction::create_frontend(language)
             .ok_or_else(|| anyhow::anyhow!("Language frontend not available for {language:?}"))?;
-        let file_id = FileId::generate(path.to_string_lossy().as_ref());
+        let file_id = FileId::generate(path.as_str());
+        let parser_path = Path::new(path.as_str());
         let facts = extraction::extract_file_with_mode(
             &frontend,
             file_id,
-            path,
+            parser_path,
             &source.text,
             &source.file_hash,
             mode,
@@ -612,13 +616,9 @@ mod tests {
     }
 
     #[test]
-    fn engine_all_capabilities_not_empty() {
+    fn engine_capabilities_match_enabled_languages() {
         let caps = Engine::all_capabilities();
-        // At minimum, typescript should be in the default features
-        assert!(
-            !caps.is_empty(),
-            "all_capabilities should return at least one profile with default features"
-        );
+        assert_eq!(caps.len(), Language::enabled_languages().len());
     }
 
     #[test]
@@ -647,11 +647,11 @@ mod tests {
         let source = decode_source(
             b"function add(a: number, b: number) {\n  return a + b;\n}\nadd(1, 2);\n",
         );
-        let file_path = Path::new("test.ts");
+        let file_path = SourcePath::from_relative("test.ts");
 
         let facts = engine
             .extract_file_with_mode(
-                file_path,
+                &file_path,
                 &source,
                 Language::TypeScript,
                 extraction::ExtractionMode::Full,
@@ -679,7 +679,7 @@ mod tests {
 
         let facts = engine
             .extract_file_with_mode(
-                Path::new("legacy.ts"),
+                &SourcePath::from_relative("legacy.ts"),
                 &source,
                 Language::TypeScript,
                 extraction::ExtractionMode::Structural,

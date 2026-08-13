@@ -6,7 +6,7 @@ description = "Atlas code extraction engine — tree-sitter parsing, symbol extr
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 anyhow = "1"
 rayon = "1"
 regex = "1"
@@ -39,12 +39,12 @@ tempfile = "3"
 default = ["typescript", "javascript", "python", "java", "c", "cpp", "arkts", "cangjie", "go", "csharp", "rust", "php", "ruby", "kotlin"]
 
 typescript = ["dep:tree-sitter-typescript", "types/typescript"]
-javascript = ["typescript", "dep:tree-sitter-typescript"]  # JS uses TS grammar + adapter
+javascript = ["dep:tree-sitter-typescript", "types/javascript"]  # JS shares the grammar/helpers, not the TS language feature
 python = ["dep:tree-sitter-python", "types/python"]
 java = ["dep:tree-sitter-java", "types/java"]
 c = ["dep:tree-sitter-c", "types/c"]
 cpp = ["dep:tree-sitter-cpp", "types/cpp"]
-arkts = ["typescript", "types/arkts"]  # ArkTS uses TS grammar + own capability profile
+arkts = ["dep:tree-sitter-typescript", "types/arkts"]  # ArkTS shares the grammar/helpers, not the TS language feature
 cangjie = ["dep:tree-sitter-cangjie", "types/cangjie"]
 go = ["dep:tree-sitter-go", "types/go"]
 csharp = ["dep:tree-sitter-c-sharp", "types/csharp"]

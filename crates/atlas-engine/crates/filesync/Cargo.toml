@@ -6,10 +6,10 @@ description = "Atlas file watcher and incremental sync engine"
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
-analysis = { path = "../analysis" }
-extraction = { path = "../extraction" }
+analysis = { path = "../analysis", default-features = false }
+extraction = { path = "../extraction", default-features = false }
 graph = { path = "../graph" }
 resolution = { path = "../resolution" }
 workspace = { path = "../workspace" }
@@ -21,7 +21,7 @@ tracing = "0.1"
 notify = { version = "7", optional = true }
 
 [dev-dependencies]
-extraction = { path = "../extraction", features = ["typescript", "python"] }
+extraction = { path = "../extraction", default-features = false, features = ["typescript", "python"] }
 encoding_rs = "0.8"
 tempfile = "3"
 

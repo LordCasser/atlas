@@ -6,12 +6,12 @@
 //!
 //! Both paths filter by language support and optional `.atlasignore` patterns.
 
-use crate::detector::is_supported_source_path;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+use types::Language;
 
 /// Configuration for file discovery.
 #[derive(Debug, Clone, Default)]
@@ -20,6 +20,10 @@ pub struct DiscoveryConfig {
     pub include_patterns: Vec<String>,
     /// Exclude files matching these glob patterns.
     pub exclude_patterns: Vec<String>,
+}
+
+fn is_supported_source_path(path: &Path) -> bool {
+    Language::from_path(path).is_some()
 }
 
 /// Discover all source files in a project root.

@@ -272,8 +272,8 @@ mod tests {
     /// Regression: double-detect must not skip invalidation.
     ///
     /// Before the two-phase split, the first detect wrote metadata, so the
-    /// second detect always saw "no change" — breaking `sync` which calls
-    /// `detect_changes()` for display before `sync()` for execution.
+    /// second detect always saw "no change" — breaking callers that inspect
+    /// configuration before the sync pipeline performs invalidation.
     #[test]
     fn double_detect_still_reports_change() {
         let (store, tmp) = setup();

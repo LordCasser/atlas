@@ -15,7 +15,7 @@ use atlas_engine::FileLock;
 use atlas_engine::guard_against_precision_downgrade;
 use atlas_engine::progress::ProgressState;
 use atlas_engine::{IndexPipeline, IndexPipelineOptions};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub fn run(
@@ -55,22 +55,7 @@ pub fn run_with_options(
     let done_flag = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
-    // ── Ctrl+C handler ──
-    // First press: graceful shutdown (stop_flag → pipeline exits cleanly).
-    // Second press: immediate exit (terminal may be stuck; OS-level kill).
-    let stop = stop_flag.clone();
-    let press_count = Arc::new(AtomicU64::new(0));
-    let pc = press_count.clone();
-    if let Err(e) = ctrlc::set_handler(move || {
-        let n = pc.fetch_add(1, Ordering::SeqCst);
-        stop.store(true, Ordering::SeqCst);
-        if n >= 1 {
-            // Second press — exit immediately.
-            std::process::exit(1);
-        }
-    }) {
-        eprintln!("warning: could not install Ctrl+C handler: {e}");
-    }
+    crate::tui::progress::install_ctrlc_handler(Arc::clone(&stop_flag));
 
     // ── Clone state for worker ──
     let ps_worker = progress_state.clone();

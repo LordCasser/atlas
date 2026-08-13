@@ -1,37 +1,41 @@
-//! Shared helpers for language adapters.
+//! Shared helpers for language frontends.
 //!
 //! ## SymbolDefBuilder
-//! Eliminates ~60% code duplication across adapters by standardizing the
-//! `SymbolDef` construction pattern. Every adapter's `normalize_definition`
+//! Eliminates repeated construction code across frontends by standardizing the
+//! `SymbolDef` construction pattern. Every frontend's definition normalizer
 //! follows the same flow: (1) determine kind, (2) compute qualified name,
 //! (3) optionally extract signature/exported/name_range, (4) build.
 //!
 //! The builder handles step (4) — SymbolId generation and default field
-//! population — so adapters only express what varies.
+//! population — so frontends only express what varies.
 //!
 //! ## make_binding_def
-//! Reduces boilerplate in language adapters' dataflow normalize functions.
-//! All adapters construct `BindingDef` with the same pattern: generate a
+//! Reduces boilerplate in language frontends' dataflow normalize functions.
+//! All frontends construct `BindingDef` with the same pattern: generate a
 //! deterministic `ScopeId` and `BindingId`, then fill in default fields
 //! (`function_id: None`, `symbol_id: None`). The helper centralizes this
-//! so adapters only need to provide `file_id`, `kind`, `name`, and `range`.
+//! so frontends only need to provide `file_id`, `kind`, `name`, and `range`.
 //!
 //! ## Dataflow dispatch helpers
 //! Several dataflow dispatch arms are identical across all (or nearly all)
-//! language adapters. The `make_df_*` functions extract these patterns so
-//! adapters only need a single call per arm. Each helper returns
+//! language frontends. The `make_df_*` functions extract these patterns so
+//! frontends only need a single call per arm. Each helper returns
 //! `(Option<DataNode>, Option<DataFlowEdge>)` matching the dataflow
 //! normalize function signature.
 //!
-//! - `make_df_parameter`: `"df.parameter"` arm — identical in all 12 adapters.
-//! - `make_df_assign_target`: `"df.assign_target"` arm — identical in 11/12
-//!   adapters (Ruby has language-specific dispatch on node kind).
-//! - `make_df_return_value`: `"df.return_value"` arm — identical in 11/12
-//!   adapters (Python uses `DataNode::return_()`, Cangjie has extra
+//! - `make_df_parameter`: shared `"df.parameter"` normalization.
+//! - `make_df_assign_target`: shared `"df.assign_target"` normalization
+//!   (Ruby has language-specific dispatch on node kind).
+//! - `make_df_return_value`: shared `"df.return_value"` normalization
+//!   (Python uses `DataNode::return_()`, Cangjie has extra
 //!   callsite_id logic). Both are skipped.
-//! - `make_df_assign_field_target`: `"df.assign_field_target"` arm — identical
-//!   in 10 adapters that have this arm (Cangjie and Rust lack this arm;
+//! - `make_df_assign_field_target`: shared `"df.assign_field_target"` arm
+//!   (Cangjie and Rust lack this arm;
 //!   TypeScript is functionally identical with `name == text`).
+
+// Cargo can compile any subset of frontends. Helpers used only by a disabled
+// frontend are intentionally dormant in that build.
+#![allow(dead_code)]
 
 use types::*;
 
@@ -307,7 +311,7 @@ pub fn leading_parenthesized(text: &str) -> Option<&str> {
 
 /// Construct a parameter DataNode and return it as `(Some(dn), None)`.
 ///
-/// Used by all 12 language adapters for the `"df.parameter"` dataflow
+/// Used by language frontends for the `"df.parameter"` dataflow
 /// dispatch arm. Extracts the node text as the parameter name.
 pub fn make_df_parameter(
     file_id: FileId,
@@ -334,7 +338,7 @@ pub fn make_df_parameter(
 /// Construct a local-variable DataNode for `"df.assign_target"` and return
 /// it as `(Some(dn), None)`.
 ///
-/// Used by 11/12 language adapters (Ruby is excluded because it has
+/// Used by most language frontends (Ruby is excluded because it has
 /// language-specific dispatch on node kind for instance/class/global variables).
 pub fn make_df_assign_target(
     file_id: FileId,
@@ -361,7 +365,7 @@ pub fn make_df_assign_target(
 /// Construct a Return DataNode for `"df.return_value"` and return it as
 /// `(Some(dn), None)`.
 ///
-/// Used by 11/12 language adapters. **Not used** by:
+/// Used by most language frontends. **Not used** by:
 /// - Python: uses `DataNode::return_()` (no text/name, different ID gen).
 /// - Cangjie: has extra callsite_id logic and walks to the expression child.
 ///
@@ -476,7 +480,7 @@ pub fn make_df_receiver_or_literal(
 /// `find_call_expression` with per-language `call_kinds`. The resulting
 /// callsite_id is set on the DataNode for call-graph linking.
 ///
-/// Used by 11 of 12 language adapters for the `"df.assign_value"` arm.
+/// Shared by language frontends for the `"df.assign_value"` arm.
 /// Cangjie is excluded because it uses a custom `find_call_expression_cangjie`
 /// helper.
 pub fn make_df_assign_value(
@@ -521,7 +525,7 @@ pub fn make_df_assign_value(
 /// `find_call_expression` with per-language `call_kinds`. The resulting
 /// callsite_id is set on the DataNode for call-graph linking.
 ///
-/// Used by 10 of 12 language adapters for the `"df.call_arg"` arm.
+/// Shared by language frontends for the `"df.call_arg"` arm.
 /// PHP is excluded because it strips sigils from the text.
 /// Cangjie is excluded because it uses a custom `find_call_expression_cangjie`
 /// helper.

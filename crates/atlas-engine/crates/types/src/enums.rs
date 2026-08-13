@@ -1,21 +1,18 @@
 //! Atlas core enums: Language, SymbolKind, EdgeKind, ReferenceKind, ImportKind,
 //! ScopeKind, Visibility, ResolutionStrategy, Provenance, ResolutionStatus, ParseStatus.
 //!
-//! Severely trimmed from 22+ languages / 12 edge kinds to the MVP language set
-//! plus feature-gated post-MVP and experimental languages.
+//! Severely trimmed from 22+ languages / 12 edge kinds to the supported set.
 
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// Language — MVP languages plus feature-gated post-MVP/experimental languages
+// Language — stable identity plus feature-gated discovery
 // ---------------------------------------------------------------------------
 
 /// Languages known to Atlas.
 ///
-/// Cangjie is available behind `#[cfg(feature = "cangjie")]` and is compiled by default.
-///
-/// Go, C#, Rust, PHP, Ruby, and Kotlin are now at DataflowInterproc capability level
-/// and are compiled by default.
+/// Variants are stable persisted identities. Cargo features control discovery
+/// and frontend availability, not whether a stored language can be represented.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
@@ -84,8 +81,11 @@ impl Language {
     /// Detect language from file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
+            #[cfg(feature = "typescript")]
             "ts" | "mts" | "cts" | "tsx" => Some(Self::TypeScript),
+            #[cfg(feature = "javascript")]
             "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
+            #[cfg(feature = "python")]
             "py" | "pyi" | "pyx" => Some(Self::Python),
             #[cfg(feature = "java")]
             "java" => Some(Self::Java),
@@ -123,9 +123,13 @@ impl Language {
     /// All file extensions (without dot) for enabled discovery languages.
     pub fn all_extensions() -> Vec<&'static str> {
         #[allow(unused_mut)]
-        let mut extensions = vec![
-            "ts", "mts", "cts", "tsx", "js", "mjs", "cjs", "jsx", "py", "pyi", "pyx",
-        ];
+        let mut extensions = Vec::new();
+        #[cfg(feature = "typescript")]
+        extensions.extend(["ts", "mts", "cts", "tsx"]);
+        #[cfg(feature = "javascript")]
+        extensions.extend(["js", "mjs", "cjs", "jsx"]);
+        #[cfg(feature = "python")]
+        extensions.extend(["py", "pyi", "pyx"]);
         #[cfg(feature = "java")]
         extensions.extend(["java"]);
         #[cfg(feature = "c")]
@@ -179,10 +183,21 @@ impl Language {
     /// discovered and extracted.  The returned set is static — it is
     /// determined at compile time by Cargo feature flags.
     ///
-    /// TypeScript, JavaScript, and Python are always enabled.
     pub fn enabled_languages() -> Vec<Language> {
         #[allow(unused_mut)]
-        let mut langs = vec![Language::TypeScript, Language::JavaScript, Language::Python];
+        let mut langs = Vec::new();
+        #[cfg(feature = "typescript")]
+        {
+            langs.push(Language::TypeScript);
+        }
+        #[cfg(feature = "javascript")]
+        {
+            langs.push(Language::JavaScript);
+        }
+        #[cfg(feature = "python")]
+        {
+            langs.push(Language::Python);
+        }
         #[cfg(feature = "java")]
         {
             langs.push(Language::Java);
@@ -1317,7 +1332,10 @@ mod tests {
 
     #[test]
     fn test_language_from_extension() {
+        #[cfg(feature = "typescript")]
         assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
+        #[cfg(not(feature = "typescript"))]
+        assert_eq!(Language::from_extension("ts"), None);
         #[cfg(feature = "arkts")]
         assert_eq!(Language::from_extension("ets"), Some(Language::ArkTS));
         #[cfg(not(feature = "arkts"))]
@@ -1358,8 +1376,14 @@ mod tests {
     }
 
     #[test]
-    fn test_language_mvp_only() {
-        // Non-MVP languages MUST NOT be recognized when feature is off
+    fn disabled_languages_are_not_discovered() {
+        // Disabled languages must not participate in source discovery.
+        #[cfg(not(feature = "typescript"))]
+        assert_eq!(Language::from_extension("ts"), None);
+        #[cfg(not(feature = "javascript"))]
+        assert_eq!(Language::from_extension("js"), None);
+        #[cfg(not(feature = "python"))]
+        assert_eq!(Language::from_extension("py"), None);
         #[cfg(not(feature = "go"))]
         assert_eq!(Language::from_extension("go"), None);
         #[cfg(not(feature = "csharp"))]
@@ -1382,8 +1406,11 @@ mod tests {
     #[test]
     fn enabled_languages_includes_defaults() {
         let langs = Language::enabled_languages();
+        #[cfg(feature = "typescript")]
         assert!(langs.contains(&Language::TypeScript));
+        #[cfg(feature = "javascript")]
         assert!(langs.contains(&Language::JavaScript));
+        #[cfg(feature = "python")]
         assert!(langs.contains(&Language::Python));
     }
 

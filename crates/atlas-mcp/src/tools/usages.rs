@@ -72,15 +72,16 @@ impl ToolRouter {
             Err(e) => return (format!("Failed to query usages: {e}"), true),
         };
 
-        let shown = refs.iter().take(limit.min(100));
-        let usages: Vec<_> = shown
+        let usages = refs
+            .iter()
+            .take(limit.min(100))
             .map(|r| {
                 let mask = self
                     .project()
                     .store
                     .get_capability_mask(&r.file_id)
-                    .unwrap_or_default();
-                json!({
+                    .map_err(|error| format!("Failed to query usage capability: {error}"))?;
+                Ok(json!({
                     "text": r.text,
                     "kind": r.kind.as_str(),
                     "file": self.project().store_query_runtime.resolve_file_path(&r.file_id),
@@ -88,9 +89,13 @@ impl ToolRouter {
                     "column": r.range.start_column + 1,
                     "evidence_level": mask.best_capability_name(),
                     "source_capability": mask.bits(),
-                })
+                }))
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>();
+        let usages = match usages {
+            Ok(usages) => usages,
+            Err(error) => return (error, true),
+        };
 
         let resp = json!({
             "symbol": symbol_display,

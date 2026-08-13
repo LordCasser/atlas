@@ -440,6 +440,39 @@ fn incremental_pipeline_detects_deleted_files() {
     );
 }
 
+/// A full re-index must converge to an empty database when the project's last
+/// source file is deleted.  An empty discovery result is still a valid
+/// authoritative snapshot: stale facts must be removed and finalization must
+/// restore the index commit marker.
+#[test]
+fn full_index_reconciles_database_when_project_becomes_empty() {
+    let project = tempfile::tempdir().unwrap();
+    let source_path = project.path().join("only.ts");
+    std::fs::write(&source_path, "export const only = 1;\n").unwrap();
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+
+    let options = IndexPipelineOptions::new(ExtractionMode::Manifest);
+    run_index_pipeline(&store, project.path(), options.clone()).unwrap();
+    assert_eq!(store.count_files().unwrap(), 1);
+    assert!(store.get_metadata("last_index_time").unwrap().is_some());
+
+    std::fs::remove_file(source_path).unwrap();
+
+    let stats = run_index_pipeline(&store, project.path(), options).unwrap();
+
+    assert_eq!(stats.discovered, 0);
+    assert_eq!(store.count_files().unwrap(), 0);
+    assert_eq!(store.count_symbols().unwrap(), 0);
+    assert!(store.count_file_extraction_state().unwrap().is_empty());
+    assert!(store.get_metadata("last_index_time").unwrap().is_some());
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("manifest".into())
+    );
+}
+
 // ── Test 5: path alias config change ───────────────────────────────────────
 
 /// After an initial full index, changing tsconfig.json (PathAliasConfig)
@@ -739,6 +772,52 @@ export function multiply(a: number, b: number): number {\n\
         snap_a.symbol_count > 0,
         "expected at least one symbol in Full mode"
     );
+}
+
+/// When fewer than 30% of files change, incremental Full mode takes the
+/// scoped summary path. Rebuilt summaries must restore the same persistent
+/// capability proof as a full summary build.
+#[test]
+fn scoped_incremental_summary_rebuild_restores_capability_state() {
+    use filesync::cleanup::source_file_id;
+    use types::structs::FactCoverage;
+
+    let project = tempfile::tempdir().unwrap();
+    create_ts_project(project.path());
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    run_index_pipeline(
+        &store,
+        project.path(),
+        IndexPipelineOptions::new(ExtractionMode::Full),
+    )
+    .unwrap();
+
+    let math_file = source_file_id(Path::new("math.ts")).unwrap();
+    assert!(
+        store
+            .get_capability_mask(&math_file)
+            .unwrap()
+            .has(FactCoverage::SUMMARIES)
+    );
+
+    modify_math_file(project.path());
+    let pipeline = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Full,
+    );
+    pipeline.sync(&NoopSink, &mut || false).unwrap();
+
+    assert!(
+        store
+            .get_capability_mask(&math_file)
+            .unwrap()
+            .has(FactCoverage::SUMMARIES),
+        "scoped summary rebuild must restore the summaries capability bit"
+    );
+    assert!(store.get_metadata("last_sync_time").unwrap().is_some());
 }
 
 // ── Test 8: index pipeline path alias no-op skip fix ────────────────────────

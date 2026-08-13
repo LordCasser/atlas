@@ -13,6 +13,7 @@ use crate::languages::shared::{
 };
 use crate::languages::{node_range, node_text};
 
+#[cfg(feature = "typescript")]
 use crate::frontend::{
     Capture, DataflowSpec, ImportExtractorSpec, LanguageFrontend, LexicalBindingSpec, NormalizeCtx,
     ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
@@ -26,12 +27,14 @@ use types::*;
 
 /// TypeScript frontend spec that implements every slot trait (ParserSpec
 /// through DataflowSpec).
+#[cfg(feature = "typescript")]
 pub(crate) struct TypeScriptFrontendSpec;
 
 // ---------------------------------------------------------------------------
 // Slot trait implementations — each calls the private normalize_ts_* helpers.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "typescript")]
 impl ParserSpec for TypeScriptFrontendSpec {
     fn language(&self) -> Language {
         Language::TypeScript
@@ -41,6 +44,7 @@ impl ParserSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl SymbolExtractorSpec for TypeScriptFrontendSpec {
     fn definition_query(&self) -> &str {
         include_str!("../../queries/typescript/definitions.scm")
@@ -62,6 +66,7 @@ impl SymbolExtractorSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl ReferenceExtractorSpec for TypeScriptFrontendSpec {
     fn reference_query(&self) -> &str {
         include_str!("../../queries/typescript/references.scm")
@@ -74,6 +79,7 @@ impl ReferenceExtractorSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl ImportExtractorSpec for TypeScriptFrontendSpec {
     fn import_query(&self) -> &str {
         include_str!("../../queries/typescript/imports.scm")
@@ -86,6 +92,7 @@ impl ImportExtractorSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl ScopeExtractorSpec for TypeScriptFrontendSpec {
     fn scope_query(&self) -> &str {
         include_str!("../../queries/typescript/scopes.scm")
@@ -98,6 +105,7 @@ impl ScopeExtractorSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl LexicalBindingSpec for TypeScriptFrontendSpec {
     fn lexical_query(&self) -> &str {
         include_str!("../../queries/typescript/lexical.scm")
@@ -113,6 +121,7 @@ impl LexicalBindingSpec for TypeScriptFrontendSpec {
     }
 }
 
+#[cfg(feature = "typescript")]
 impl DataflowSpec for TypeScriptFrontendSpec {
     fn dataflow_builder_query(&self) -> &str {
         include_str!("../../queries/typescript/dataflow_builder.scm")
@@ -563,6 +572,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
 /// Construct a [`LanguageFrontend`] directly from TypeScript-specific slot
 /// implementations — no adapter wrapper needed.
 /// This is the canonical TypeScript frontend factory.
+#[cfg(feature = "typescript")]
 pub fn typescript_frontend() -> LanguageFrontend {
     use crate::callsite_spec::create_extractor;
     use crate::frontend::FrontendParts;
@@ -947,7 +957,7 @@ fn extract_require_module_from_variable_declarator(
     String::new()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "typescript"))]
 mod tests {
     use super::*;
 

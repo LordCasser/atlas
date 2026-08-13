@@ -24,6 +24,7 @@ use crate::index_phases::{
     phase_build_summaries, phase_cleanup_file_ids, phase_cleanup_stale,
     phase_commit_path_alias_config, phase_extract_parallel_cancellable, phase_init_frontends,
     phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
+    record_summaries_extraction_state,
 };
 use crate::progress::{PhaseName, ProgressEvent, ProgressSink};
 use crate::sync_engine::SyncStats;
@@ -68,11 +69,8 @@ impl IncrementalPipeline {
         }
         sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
-        let changed = match crate::detector::detect_git_changes(&self.project_root) {
-            Some(changes) => changes,
-            None => crate::detector::detect_db_hash_changes(&self.project_root, &self.store)
-                .context("Failed to detect changes via DB hash comparison")?,
-        };
+        let changed = crate::detector::detect_changes(&self.project_root, &self.store)
+            .context("Failed to detect changes against indexed content hashes")?;
 
         sink.emit(ProgressEvent::PhaseFinished {
             phase,
@@ -160,10 +158,11 @@ impl IncrementalPipeline {
         }
 
         if !modified_rel.is_empty() {
-            let modified_file_ids: Vec<_> = modified_rel
+            let modified_file_ids = modified_rel
                 .iter()
-                .filter_map(|p| source_file_id(p).ok())
-                .collect();
+                .map(|p| source_file_id(p))
+                .collect::<Result<Vec<_>>>()
+                .context("Failed to derive source identity for modified-file cleanup")?;
             if !modified_file_ids.is_empty() {
                 phase_cleanup_file_ids(&self.store, &modified_file_ids).map_err(|e| {
                     sink.emit(ProgressEvent::Warning {
@@ -349,25 +348,20 @@ impl IncrementalPipeline {
                 return Ok(stats);
             }
 
-            // Get unresolved count for progress total (materializes full Vec).
-            // NOTE: resolve_all_parallel calls find_unresolved_references()
-            // again internally — for large projects this doubles memory/time.
             let t_count = Instant::now();
             let unresolved_total = self
                 .store
-                .find_unresolved_references()
-                .map(|refs| {
-                    let count = refs.len() as u64;
+                .count_unresolved_references()
+                .inspect(|&count| {
                     let elapsed_ms = t_count.elapsed().as_millis() as u64;
                     tracing::info!(
                         target: "atlas_sync",
                         progress_total_load_ms = elapsed_ms,
                         unresolved_refs = count,
-                        "sync.progress_total_load (duplicate materialization)"
+                        "sync.progress_total_load"
                     );
-                    count
                 })
-                .unwrap_or(0);
+                .context("Failed to count unresolved references")?;
             sink.emit(ProgressEvent::PhaseStarted {
                 phase,
                 total: unresolved_total,
@@ -412,12 +406,13 @@ impl IncrementalPipeline {
             }
             sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
-            if let Err(e) = phase_materialize_annotations(&self.store) {
+            phase_materialize_annotations(&self.store).map_err(|e| {
                 sink.emit(ProgressEvent::Warning {
                     phase,
                     message: format!("Failed to materialize annotations: {e:#}"),
                 });
-            }
+                e
+            })?;
 
             sink.emit(ProgressEvent::PhaseFinished {
                 phase,
@@ -435,10 +430,13 @@ impl IncrementalPipeline {
                 return Ok(stats);
             }
 
-            let total_indexed = self.store.count_files().unwrap_or(0);
+            let total_indexed = self
+                .store
+                .count_files()
+                .context("Failed to count indexed files for summary planning")?;
             let changed_count = changed.modified.len() + changed.added.len();
 
-            if total_indexed == 0 || (changed_count as f64) > 0.3 * (total_indexed as f64) {
+            if total_indexed == 0 || (changed_count as f64) >= 0.3 * (total_indexed as f64) {
                 // ≥30% changed — full rebuild is more efficient
                 sink.emit(ProgressEvent::Warning {
                     phase,
@@ -448,7 +446,10 @@ impl IncrementalPipeline {
                 });
 
                 // Get function count for progress total
-                let all_symbols = self.store.get_all_symbols().unwrap_or_default();
+                let all_symbols = self
+                    .store
+                    .get_all_symbols()
+                    .context("Failed to load functions for summary planning")?;
                 let function_count = all_symbols
                     .iter()
                     .filter(|s| s.kind == SymbolKind::Function)
@@ -490,41 +491,53 @@ impl IncrementalPipeline {
 
                 let changed_file_ids: Vec<types::FileId> = changed_rel
                     .iter()
-                    .filter_map(|p| source_file_id(p).ok())
-                    .collect();
+                    .map(|p| source_file_id(p))
+                    .collect::<Result<Vec<_>>>()
+                    .context("Failed to derive source identity for summary rebuild")?;
 
                 let mut updated = 0usize;
                 let mut skipped = 0usize;
 
                 if !changed_file_ids.is_empty() {
-                    if let Ok(symbols) = self.store.find_symbols_by_files(&changed_file_ids) {
-                        let function_symbols: Vec<_> = symbols
-                            .iter()
-                            .filter(|s| s.kind == SymbolKind::Function)
-                            .collect();
+                    let symbols = self
+                        .store
+                        .find_symbols_by_files(&changed_file_ids)
+                        .context("Failed to load changed functions for summary rebuild")?;
+                    let function_symbols: Vec<_> = symbols
+                        .iter()
+                        .filter(|s| s.kind == SymbolKind::Function)
+                        .collect();
 
-                        for sym in &function_symbols {
-                            match SummaryStore::build_for_function(
-                                &self.store,
-                                &sym.id,
-                                |s, fid| SummaryBuilder::build(s, fid, None),
-                            ) {
-                                Ok(s) if !s.is_empty() => updated += 1,
-                                Ok(_) => skipped += 1,
-                                Err(e) => {
-                                    skipped += 1;
-                                    sink.emit(ProgressEvent::Warning {
-                                        phase,
-                                        message: format!(
-                                            "Failed to build summary for {}: {:#}",
-                                            sym.qualified_name, e
-                                        ),
-                                    });
-                                }
-                            }
+                    for sym in &function_symbols {
+                        let summary =
+                            SummaryStore::build_for_function(&self.store, &sym.id, |s, fid| {
+                                SummaryBuilder::build(s, fid, None)
+                            })
+                            .map_err(|error| {
+                                sink.emit(ProgressEvent::Warning {
+                                    phase,
+                                    message: format!(
+                                        "Failed to build summary for {}: {error:#}",
+                                        sym.qualified_name
+                                    ),
+                                });
+                                error
+                            })?;
+                        if summary.is_empty() {
+                            skipped += 1;
+                        } else {
+                            updated += 1;
                         }
                     }
                 }
+
+                record_summaries_extraction_state(&self.store).map_err(|e| {
+                    sink.emit(ProgressEvent::Warning {
+                        phase,
+                        message: format!("Failed to record summary capability state: {e:#}"),
+                    });
+                    e
+                })?;
 
                 stats.summaries_updated = updated;
                 stats.summaries_skipped = skipped;
@@ -532,8 +545,8 @@ impl IncrementalPipeline {
                 sink.emit(ProgressEvent::PhaseFinished {
                     phase,
                     succeeded: updated as u64,
-                    failed: skipped as u64,
-                    detail: Some(format!("{updated} updated, {skipped} skipped / empty")),
+                    failed: 0,
+                    detail: Some(format!("{updated} updated, {skipped} empty")),
                 });
             }
         }
@@ -553,6 +566,21 @@ impl IncrementalPipeline {
             });
             e
         })?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+        self.store
+            .set_metadata("last_sync_time", &now)
+            .map_err(|e| {
+                sink.emit(ProgressEvent::Warning {
+                    phase,
+                    message: format!("Failed to commit sync metadata: {e:#}"),
+                });
+                e
+            })?;
 
         sink.emit(ProgressEvent::PhaseFinished {
             phase,

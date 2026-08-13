@@ -629,30 +629,8 @@ mod tests {
     ///   claim that category as supported.
     /// - Specific checks: dataflow, lexical, scopes.
     #[test]
-    #[allow(clippy::vec_init_then_push)]
     fn test_capability_profile_matches_slot_capabilities() {
-        let mut languages: Vec<Language> = Vec::new();
-        #[cfg(feature = "typescript")]
-        languages.push(Language::TypeScript);
-        #[cfg(feature = "javascript")]
-        languages.push(Language::JavaScript);
-        #[cfg(feature = "python")]
-        languages.push(Language::Python);
-        #[cfg(feature = "java")]
-        languages.push(Language::Java);
-        #[cfg(feature = "c")]
-        languages.push(Language::C);
-        #[cfg(feature = "cpp")]
-        languages.push(Language::Cpp);
-        #[cfg(feature = "arkts")]
-        languages.push(Language::ArkTS);
-        #[cfg(feature = "cangjie")]
-        languages.push(Language::Cangjie);
-
-        assert!(
-            !languages.is_empty(),
-            "expected at least one language feature enabled"
-        );
+        let languages = crate::languages::available_languages();
 
         for lang in languages {
             let frontend = crate::languages::create_frontend(lang)
@@ -691,38 +669,12 @@ mod tests {
     ///
     /// The derived profile comes from slot trait implementations (ground truth).
     /// The static profile is a documentation snapshot that may lag behind.
-    /// A feature that the derived profile claims as supported MUST also be
-    /// supported in the static profile; the reverse is NOT required
-    /// (static may claim supported features that the slots haven't caught up to).
+    /// A feature that the static profile claims as supported MUST therefore be
+    /// backed by the corresponding slot implementation. The reverse is not
+    /// required: an implemented slot may be absent from a stale static profile.
     #[test]
-    #[allow(clippy::vec_init_then_push)]
     fn test_auto_derived_profile_matches_static() {
-        let mut languages: Vec<Language> = Vec::new();
-        #[cfg(feature = "typescript")]
-        languages.push(Language::TypeScript);
-        #[cfg(feature = "javascript")]
-        languages.push(Language::JavaScript);
-        #[cfg(feature = "python")]
-        languages.push(Language::Python);
-        #[cfg(feature = "java")]
-        languages.push(Language::Java);
-        #[cfg(feature = "c")]
-        languages.push(Language::C);
-        #[cfg(feature = "cpp")]
-        languages.push(Language::Cpp);
-        #[cfg(feature = "arkts")]
-        languages.push(Language::ArkTS);
-        #[cfg(feature = "go")]
-        languages.push(Language::Go);
-        #[cfg(feature = "csharp")]
-        languages.push(Language::CSharp);
-        #[cfg(feature = "rust")]
-        languages.push(Language::Rust);
-
-        assert!(
-            !languages.is_empty(),
-            "expected at least one language enabled"
-        );
+        let languages = crate::languages::available_languages();
 
         for lang in languages {
             let frontend = crate::languages::create_frontend(lang)
@@ -784,39 +736,9 @@ mod tests {
 /// Verify that every language with lexical support has a compilable lexical query.
 #[test]
 fn test_all_lexical_queries_compile() {
-    use crate::languages::create_frontend;
-    use types::enums::Language;
+    use crate::languages::{available_languages, create_frontend};
 
-    let languages_with_lexical = [
-        #[cfg(feature = "typescript")]
-        Language::TypeScript,
-        #[cfg(feature = "javascript")]
-        Language::JavaScript,
-        #[cfg(feature = "python")]
-        Language::Python,
-        #[cfg(feature = "java")]
-        Language::Java,
-        #[cfg(feature = "c")]
-        Language::C,
-        #[cfg(feature = "cpp")]
-        Language::Cpp,
-        #[cfg(feature = "arkts")]
-        Language::ArkTS,
-        #[cfg(feature = "go")]
-        Language::Go,
-        #[cfg(feature = "csharp")]
-        Language::CSharp,
-        #[cfg(feature = "rust")]
-        Language::Rust,
-        #[cfg(feature = "php")]
-        Language::Php,
-        #[cfg(feature = "ruby")]
-        Language::Ruby,
-        #[cfg(feature = "kotlin")]
-        Language::Kotlin,
-    ];
-
-    for &lang in &languages_with_lexical {
+    for lang in available_languages() {
         let Some(frontend) = create_frontend(lang) else {
             continue;
         };
@@ -838,8 +760,9 @@ fn test_all_lexical_queries_compile() {
 /// Verify that each dataflow language produces at least some DataNodes and edges.
 #[test]
 fn test_all_dataflow_languages_produce_facts() {
-    use crate::languages::create_frontend;
+    use crate::languages::{available_languages, create_frontend};
     use crate::{ExtractionMode, extract_file_with_mode};
+    use std::collections::HashSet;
     use types::enums::Language;
     use types::ids::FileId;
 
@@ -880,6 +803,18 @@ fn test_all_dataflow_languages_produce_facts() {
             Language::Cpp,
             "cpp",
         ),
+        #[cfg(feature = "arkts")]
+        (
+            "function f(a: number): number { const x = 1; return a + x; }\n",
+            Language::ArkTS,
+            "ets",
+        ),
+        #[cfg(feature = "cangjie")]
+        (
+            "func f(a: Int64): Int64 {\n    let x = 1\n    return a + x\n}\n",
+            Language::Cangjie,
+            "cj",
+        ),
         #[cfg(feature = "go")]
         (
             "package p\nfunc f(a int) int { x := 1; return a + x }\n",
@@ -913,6 +848,18 @@ fn test_all_dataflow_languages_produce_facts() {
             "kt",
         ),
     ];
+
+    let fixture_languages: HashSet<_> = fixtures.iter().map(|(_, language, _)| *language).collect();
+    for language in available_languages() {
+        let frontend = create_frontend(language).expect("available frontend must be constructible");
+        if frontend.dataflow.capability().is_supported() {
+            assert!(
+                fixture_languages.contains(&language),
+                "missing dataflow smoke fixture for {}",
+                language.as_str()
+            );
+        }
+    }
 
     for &(source, lang, ext) in fixtures {
         let Some(frontend) = create_frontend(lang) else {

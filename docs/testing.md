@@ -256,9 +256,13 @@ cargo fmt --all -- --check
 cargo check --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+cargo test -p atlas-mcp --no-default-features --test feature_propagation
+cargo test -p atlas-mcp --no-default-features --features javascript --test feature_propagation
+cargo test -p atlas-mcp --no-default-features --features arkts --test feature_propagation
 ```
 
-如果某个 crate 支持无语言 feature 编译，则默认 feature 的单测也必须通过；否则需要在 Cargo feature 或测试上明确表达“至少一个语言 feature 是前置条件”。
+无语言 feature 必须可编译且 `enabled_languages()` 为空。共用 grammar 的单语言构建
+（至少 JavaScript-only 与 ArkTS-only）必须证明不会顺带启用 TypeScript 发现/frontend。
 
 发布前还必须保存一份路径级验证记录，至少列出：
 - 本次变更影响的 extraction modes、capability bits、lazy precision/status、用户入口。
@@ -391,6 +395,8 @@ cargo test -p atlas-cli --test lazy_index_e2e post_extract
 
 - CLI/MCP 只调用 engine/API，不复制 resolver/graph/analysis 管线。
 - engine / CLI / MCP 各有独立单元或集成/E2E；workspace feature 组合可编译。
+- 高层 Engine 抽取只接受 project-relative `SourcePath`；Corpus-style caller-owned
+  `FileId` 只走低层无 DB extraction API。
 
 ### Focus 公共 analysis 视图
 

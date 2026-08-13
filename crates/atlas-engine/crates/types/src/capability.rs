@@ -290,40 +290,11 @@ impl LanguageCapabilityProfile {
     }
 
     /// All profiles for the languages whose tree-sitter grammars are compiled in.
-    #[allow(clippy::vec_init_then_push)]
     pub fn all_compiled() -> Vec<Self> {
-        let mut profiles = Vec::with_capacity(14);
-
-        #[cfg(feature = "typescript")]
-        profiles.push(Self::for_language(Language::TypeScript));
-        #[cfg(feature = "javascript")]
-        profiles.push(Self::for_language(Language::JavaScript));
-        #[cfg(feature = "python")]
-        profiles.push(Self::for_language(Language::Python));
-        #[cfg(feature = "java")]
-        profiles.push(Self::for_language(Language::Java));
-        #[cfg(feature = "c")]
-        profiles.push(Self::for_language(Language::C));
-        #[cfg(feature = "cpp")]
-        profiles.push(Self::for_language(Language::Cpp));
-        #[cfg(feature = "arkts")]
-        profiles.push(Self::for_language(Language::ArkTS));
-        #[cfg(feature = "cangjie")]
-        profiles.push(Self::for_language(Language::Cangjie));
-        #[cfg(feature = "go")]
-        profiles.push(Self::for_language(Language::Go));
-        #[cfg(feature = "csharp")]
-        profiles.push(Self::for_language(Language::CSharp));
-        #[cfg(feature = "rust")]
-        profiles.push(Self::for_language(Language::Rust));
-        #[cfg(feature = "php")]
-        profiles.push(Self::for_language(Language::Php));
-        #[cfg(feature = "ruby")]
-        profiles.push(Self::for_language(Language::Ruby));
-        #[cfg(feature = "kotlin")]
-        profiles.push(Self::for_language(Language::Kotlin));
-
-        profiles
+        Language::enabled_languages()
+            .into_iter()
+            .map(Self::for_language)
+            .collect()
     }
 }
 

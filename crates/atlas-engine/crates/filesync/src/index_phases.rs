@@ -1035,11 +1035,9 @@ pub fn phase_build_summaries(
     )
     .context("Failed to build summaries")?;
 
-    // Record "summaries" layer in extraction_state so get_capability_mask()
-    // returns the SUMMARIES bit for files that have function summaries.
-    if stats.functions_summarized > 0 {
-        record_summaries_extraction_state(store)?;
-    }
+    // Replace the "summaries" layer so get_capability_mask() reflects the
+    // exact files that still have a function summary, including zero.
+    record_summaries_extraction_state(store)?;
 
     Ok(stats.functions_summarized)
 }
@@ -1049,10 +1047,11 @@ pub fn phase_build_summaries(
 ///
 /// Only records files that are still content-fresh (content_hash matches
 /// `files`), since stale summaries are not trustworthy.
-fn record_summaries_extraction_state(store: &Arc<Store>) -> Result<()> {
+pub(crate) fn record_summaries_extraction_state(store: &Arc<Store>) -> Result<()> {
     use types::structs::FactCoverage;
 
     let files = db::summary::SummaryStore::files_with_summaries(store)?;
+    store.delete_file_extraction_layer("summaries")?;
     for (file_id, content_hash) in &files {
         store.upsert_file_extraction_state(
             file_id,

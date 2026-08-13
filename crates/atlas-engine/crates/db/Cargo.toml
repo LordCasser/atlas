@@ -6,7 +6,7 @@ description = "Atlas SQLite persistence layer — Store, schema, FTS5 search"
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 anyhow = "1"
 blake3 = "1"
 hex = "0.4"

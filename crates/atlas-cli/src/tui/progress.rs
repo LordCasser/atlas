@@ -6,7 +6,7 @@
 //! command output below it on completion or interruption.
 
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,6 +16,23 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use super::TextFallback;
 
 const TICK_MS: u64 = 200;
+
+/// Install the shared CLI interrupt policy for a long-running pipeline.
+/// The first Ctrl+C requests a phase-boundary stop; the second exits when a
+/// worker is stuck inside an operation that cannot observe the stop flag.
+pub(crate) fn install_ctrlc_handler(stop_flag: Arc<AtomicBool>) {
+    let press_count = Arc::new(AtomicU64::new(0));
+    let handler_count = Arc::clone(&press_count);
+    if let Err(e) = ctrlc::set_handler(move || {
+        let n = handler_count.fetch_add(1, Ordering::SeqCst);
+        stop_flag.store(true, Ordering::SeqCst);
+        if n >= 1 {
+            std::process::exit(1);
+        }
+    }) {
+        eprintln!("warning: could not install Ctrl+C handler: {e}");
+    }
+}
 
 /// Owns the terminal progress bar and drives periodic updates.
 pub struct TuiProgress {
@@ -217,7 +234,7 @@ fn write_interrupted<W: Write>(writer: &mut W, state: &ProgressState) -> std::io
 
     writeln!(
         writer,
-        "  Partial results are saved. Run `atlas index` again to resume."
+        "  Partial results are saved. Run the command again to resume."
     )?;
     writer.flush()
 }

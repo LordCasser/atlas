@@ -6,7 +6,7 @@ description = "Atlas context builder — assembles code context views from graph
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
 graph = { path = "../graph" }
 workspace = { path = "../workspace" }

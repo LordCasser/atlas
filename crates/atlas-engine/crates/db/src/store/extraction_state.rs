@@ -82,6 +82,16 @@ impl Store {
         Ok(())
     }
 
+    /// Delete every file-level record for one derived layer.
+    pub fn delete_file_extraction_layer(&self, layer: &str) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM extraction_state WHERE unit_id IS NULL AND layer = ?1",
+            params![layer],
+        )?;
+        Ok(())
+    }
+
     /// Count files by layer and status.
     ///
     /// Returns a Vec of `(layer, status, count)` tuples sorted by layer.
@@ -122,19 +132,16 @@ impl Store {
     /// layer cannot make a downgraded or modified project look protected.
     pub fn read_catalog_tier(&self) -> anyhow::Result<String> {
         let stats = self.get_stats()?;
-        let lazy_stats = self.get_lazy_dataflow_stats().ok();
-        let layer_counts = self.count_fresh_file_extraction_state().unwrap_or_default();
+        let lazy_stats = self.get_lazy_dataflow_stats()?;
+        let layer_counts = self.count_fresh_file_extraction_state()?;
 
         Ok(compute_catalog_tier(
             stats.total_files,
             complete_count(&layer_counts, "manifest"),
             complete_count(&layer_counts, "structural"),
             complete_count(&layer_counts, "dataflow"),
-            lazy_stats
-                .as_ref()
-                .map(|l| l.total_unit_states)
-                .unwrap_or(0),
-            lazy_stats.as_ref().is_some_and(|l| l.has_dataflow),
+            lazy_stats.total_unit_states,
+            lazy_stats.has_dataflow,
         )
         .to_string())
     }
@@ -359,52 +366,51 @@ impl Store {
         Ok(count > 0)
     }
 
-    /// Query the aggregate capability mask for a file across all layers.
-    /// Returns the bitwise OR of all `capability_mask` values for the file.
+    /// Query the aggregate capability mask for a file across fresh, complete layers.
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
-        let mut stmt =
-            conn.prepare("SELECT capability_mask FROM extraction_state WHERE file_id = ?1")?;
-        let rows: Vec<i64> = stmt
+        let mut stmt = conn.prepare(
+            "SELECT l.capability_mask
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.file_id = ?1
+               AND l.unit_id IS NULL
+               AND l.content_hash = f.content_hash
+               AND l.status = 'complete'",
+        )?;
+        let rows = stmt
             .query_map(params![file_id], |row| row.get(0))?
-            .filter_map(|r| match r {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!(?e, %file_id, "Capability mask row decode error, skipping");
-                    None
-                }
-            })
-            .collect();
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
         let mask = rows.iter().fold(0u16, |acc, &m| acc | (m as u16));
         Ok(FactCoverage::new(mask))
     }
 
-    /// Query the capability mask for a specific unit within a file.
+    /// Query the aggregate capability mask for a fresh, complete unit.
     pub fn get_capability_mask_for_unit(
         &self,
         file_id: &FileId,
         unit_id: &[u8; 16],
     ) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
-        let unit_blob: &[u8] = unit_id;
-        let mask: Option<i64> = conn
-            .query_row(
-                "SELECT capability_mask FROM extraction_state
-                 WHERE file_id = ?1 AND unit_id = ?2",
-                params![file_id, unit_blob],
-                |row| row.get(0),
-            )
-            .map_err(|e| {
-                tracing::warn!(
-                    ?e,
-                    %file_id,
-                    "Unit capability mask query failed, defaulting to 0"
-                );
-                e
-            })
-            .ok()
-            .flatten();
-        Ok(FactCoverage::new(mask.unwrap_or(0) as u16))
+        let mut stmt = conn.prepare(
+            "SELECT l.capability_mask
+             FROM extraction_state l
+             JOIN files f ON f.file_id = l.file_id
+             WHERE l.file_id = ?1
+               AND l.unit_id = ?2
+               AND l.content_hash = f.content_hash
+               AND l.status = 'complete'",
+        )?;
+        let masks = stmt
+            .query_map(params![file_id, unit_id.as_slice()], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(FactCoverage::new(
+            masks
+                .into_iter()
+                .fold(0u16, |bits, mask| bits | mask as u16),
+        ))
     }
 
     /// Return project-wide counts for capability analytics.
@@ -1029,15 +1035,9 @@ impl Store {
             [],
             |r| r.get(0),
         )?;
-        let has_dataflow: bool = conn
-            .query_row("SELECT COUNT(*) FROM data_nodes LIMIT 1", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map(|c| c > 0)
-            .unwrap_or_else(|e| {
-                tracing::warn!(?e, "Failed to query data_nodes count, assuming false");
-                false
-            });
+        let has_dataflow = conn.query_row("SELECT COUNT(*) FROM data_nodes", [], |r| {
+            r.get::<_, i64>(0)
+        })? > 0;
         Ok(LazyDataflowStats {
             total_unit_states,
             partial_unit_states,

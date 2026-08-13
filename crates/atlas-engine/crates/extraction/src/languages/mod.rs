@@ -44,7 +44,7 @@ pub fn node_range(node: tree_sitter::Node) -> TextRange {
 
 // Language-specific frontend specs — feature-gated per language.
 
-#[cfg(feature = "typescript")]
+#[cfg(any(feature = "typescript", feature = "javascript", feature = "arkts"))]
 pub mod typescript;
 
 #[cfg(feature = "javascript")]
@@ -134,4 +134,20 @@ pub fn available_languages() -> Vec<Language> {
         .into_iter()
         .filter(|&l| create_frontend(l).is_some())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_enabled_language_has_a_frontend() {
+        for language in Language::enabled_languages() {
+            assert!(
+                create_frontend(language).is_some(),
+                "{} is enabled but has no extraction frontend",
+                language.as_str()
+            );
+        }
+    }
 }

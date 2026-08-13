@@ -56,17 +56,6 @@ impl SyncEngine {
         );
         pipeline.sync(sink, interrupted)
     }
-
-    /// Detect changed files: tries git status first, falls back to DB content-hash comparison.
-    pub fn detect_changes(&self) -> Result<crate::detector::ChangedFiles> {
-        // Try git first (primary strategy — fastest and most reliable)
-        if let Some(changes) = crate::detector::detect_git_changes(&self.project_root) {
-            Ok(changes)
-        } else {
-            // Fallback: compare current file hashes against DB-stored hashes
-            crate::detector::detect_db_hash_changes(&self.project_root, &self.store)
-        }
-    }
 }
 
 // -----------------------------------------------------------------------

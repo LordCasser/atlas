@@ -6,7 +6,7 @@ description = "Atlas analysis engine — function summaries, trace analysis, cal
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
 domain-rules = { path = "../domain_rules" }
 workspace = { path = "../workspace" }
@@ -19,7 +19,7 @@ serde_json = "1"
 tree-sitter-typescript = { version = "0.23", optional = true }
 
 [dev-dependencies]
-extraction = { path = "../extraction" }
+extraction = { path = "../extraction", default-features = false }
 tempfile = "3"
 tree-sitter = "0.26"
 

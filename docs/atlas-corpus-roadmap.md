@@ -158,15 +158,21 @@ Elixir 依赖 Universal Ctags 作为唯一解析来源。ctags 可以快速提�
 - 没有作用域信息，同名符号在不同文件/命名空间中无法区分
 - 不支持 PHP、Ruby、Kotlin、Cangjie 等现代语言
 
-Corpus 应直接复用 Atlas 已有的 **tree-sitter 解析 + SCM 查询 + LanguageAdapter 标准化** 管线：
+Corpus 应直接复用 Atlas 已有的 **tree-sitter 解析 + SCM 查询 + slot-based language frontend 标准化** 核心：
 
 ```text
 Elixir:   ctags -x → 单字符类型码(function/struct/variable/macro/...) + 行号 + 文件名
 Corpus:   tree-sitter + .scm queries →
-Corpus:   tree-sitter + .scm queries →
            SymbolDef(name, kind, range, signature, exported, container)
            + DataNode(parameter, local, return, call_arg)
 ```
+
+这里的“复用”不包括 Atlas workspace 身份和 DB 管线。高层
+`Engine::extract_file_with_mode(SourcePath, ...)` 会按单 workspace 的项目相对路径生成
+`FileId`，Corpus 禁止调用它。Corpus 只调用无 DB 的低层
+`extraction::extract_file_with_mode`，由 blob OID 派生自己的稳定 ID，并将
+tag/version/path 保留在独立 mapping 层。parser path 只用于语法与诊断上下文，
+不能成为 blob 身份。
 
 这带来了两个 Elixir 不具备的核心能力：
 
@@ -516,7 +522,8 @@ Agent → 输出最终报告：
    - `VersionPolicy` trait：Linux kernel、U-Boot、BusyBox 各自实现
 
 2. **复用 Atlas 解析管线**：
-   - 重用 `atlas-engine` 的 tree-sitter 解析和 LanguageAdapter
+   - 重用 `atlas-engine` 中无 DB 的 tree-sitter/SCM/slot frontend 抽取 API
+   - 由 blob OID 生成 caller-owned ID，不调用 path-based 高层 `Engine` 抽取方法
    - 新增 `CorpusAdapter` trait，将 `FileFacts` 映射为 `blob-centric` 的 `CorpusFacts`
    - 对 C/C++ 增加宏展开后的 post-pass（`SYSCALL_DEFINE`、`EXPORT_SYMBOL` 等）
 
@@ -654,7 +661,7 @@ Elixir 自身是 AGPLv3 许可证，而 Atlas 主项目是 MIT。Corpus 可以�
                ┌─────────────────────────────┐
                │    atlas-engine              │
                │  (tree-sitter 解析核心)       │
-               │  14 语言 LanguageAdapter     │
+               │  14 语言 typed frontend slots │
                └──────────┬──────────────────┘
                           │
           ┌───────────────┼───────────────┐

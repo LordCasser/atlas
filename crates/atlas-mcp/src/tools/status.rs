@@ -340,26 +340,10 @@ fn unit_id_hex(unit_id: [u8; 16]) -> String {
     out
 }
 
-fn compiled_features() -> Vec<&'static str> {
+fn compiled_features() -> Vec<String> {
     LanguageCapabilityProfile::all_compiled()
         .into_iter()
-        .map(|p| match p.language.as_str() {
-            "typescript" => "typescript",
-            "javascript" => "javascript",
-            "python" => "python",
-            "java" => "java",
-            "c" => "c",
-            "cpp" => "cpp",
-            "arkts" => "arkts",
-            "go" => "go",
-            "csharp" => "csharp",
-            "rust" => "rust",
-            "php" => "php",
-            "ruby" => "ruby",
-            "kotlin" => "kotlin",
-            "cangjie" => "cangjie",
-            _ => "unknown",
-        })
+        .map(|profile| profile.language)
         .collect()
 }
 

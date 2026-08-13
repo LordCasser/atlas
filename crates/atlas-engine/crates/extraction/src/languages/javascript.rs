@@ -1,7 +1,7 @@
 //! JavaScript frontend spec — thin wrapper around TypeScript.
 //!
 //! Uses tree-sitter-typescript grammar and embedded query files.
-//! Delegates all normalization to `TypeScriptFrontendSpec`, only overriding `language()`.
+//! Reuses the TypeScript-family normalization helpers with JavaScript identity.
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
@@ -11,7 +11,7 @@ use crate::frontend::{
 use types::capability::FeatureSupport;
 use types::*;
 
-/// JavaScript adapter — delegates to TypeScript internally.
+/// JavaScript frontend slots backed by the shared TypeScript-family grammar.
 pub(crate) struct JavaScriptAdapter;
 
 // ---------------------------------------------------------------------------

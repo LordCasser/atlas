@@ -305,7 +305,8 @@ atlas/
 │           ├── search            # FTS5 + LIKE + fuzzy search and query parsing
 │           ├── context           # agent-facing Markdown context builder
 │           ├── filesync          # file discovery, content hashing, incremental sync, locks
-│           └── lazy              # on-demand dataflow job planning and loading
+│           ├── focus_materialize # Focus-internal on-demand structural/dataflow materialization
+│           └── dossier           # symbol dossier assembly
 ├── docs/                          # architectural and release documentation
 ├── skills/atlas/                 # Agent Skill for using Atlas
 ├── Cargo.toml                    # workspace manifest
@@ -337,10 +338,10 @@ atlas-mcp ──▶ atlas-engine
 
 atlas-engine facade ──▶ types, workspace, db, extraction, resolution,
                         graph, analysis, domain_rules, search, context,
-                        filesync, lazy
+                        filesync, focus_materialize, dossier
 
 engine internals stay acyclic:
-types/workspace/db ─▶ extraction/resolution/graph/analysis/domain_rules/search/context/filesync/lazy ─▶ facade/API
+types/workspace/db ─▶ extraction/resolution/graph/analysis/domain_rules/search/context/filesync/focus_materialize/dossier ─▶ facade/API
 ```
 
 ### Storage model
@@ -470,11 +471,14 @@ Each capture includes its **byte range** and **source text** from the CST node. 
 
 ```text
 (capture_name, Node) pairs
-  → LanguageAdapter::normalize()
+  → typed frontend slot normalize(ctx, capture)
   → Symbol, Reference, Import, ScopeDef (deterministic ID via blake3)
 ```
 
-Each language has a `LanguageAdapter` that maps tree-sitter capture names to Atlas types. For example, a `@definition.function` capture becomes a `Symbol` with `SymbolKind::Function`, and its qualified name is built by walking `child_by_field_name("name")` up the CST. All IDs are deterministic — the same file always produces the same facts.
+Each language has a slot-based frontend for parser, symbols, references, imports,
+scopes, callsites, lexical bindings, and dataflow. A slot maps captures through the
+shared `NormalizeCtx` into Atlas IR; binders then attach shared ownership/scope facts.
+All IDs are deterministic — the same identity and source produce the same facts.
 
 ### 4. Lexical binding → scope-aware variable resolution
 
@@ -506,7 +510,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
-### 6. CFG → control flow (12 languages)
+### 6. CFG → control flow (14 languages)
 
 ```text
 CST root (per function)

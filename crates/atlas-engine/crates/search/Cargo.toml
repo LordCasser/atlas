@@ -6,7 +6,7 @@ description = "Atlas fuzzy search engine — query parsing, substring/fuzzy matc
 license = "MIT"
 
 [dependencies]
-types = { path = "../types" }
+types = { path = "../types", default-features = false }
 db = { path = "../db" }
 graph = { path = "../graph" }
 anyhow = "1"
@@ -14,8 +14,3 @@ tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
-
-[features]
-default = ["cangjie"]
-
-cangjie = []  # enables Cangjie-specific keyword search (language-specific)

@@ -165,7 +165,6 @@ fn parse_language(s: &str) -> Option<Language> {
         "c" => Some(Language::C),
         "cpp" | "c++" => Some(Language::Cpp),
         "arkts" | "ark-ts" | "ets" | "sts" => Some(Language::ArkTS),
-        #[cfg(feature = "cangjie")]
         "cangjie" | "cj" => Some(Language::Cangjie),
         "go" => Some(Language::Go),
         "csharp" | "c#" | "cs" => Some(Language::CSharp),
@@ -272,10 +271,7 @@ mod tests {
         assert_eq!(parse_query("lang:js").language, Some(Language::JavaScript));
         assert_eq!(parse_query("lang:py").language, Some(Language::Python));
         assert_eq!(parse_query("lang:c++").language, Some(Language::Cpp));
-        #[cfg(feature = "cangjie")]
         assert_eq!(parse_query("lang:cj").language, Some(Language::Cangjie));
-        #[cfg(not(feature = "cangjie"))]
-        assert_eq!(parse_query("lang:cj").language, None);
         assert_eq!(parse_query("lang:rust").language, Some(Language::Rust));
         assert_eq!(parse_query("lang:go").language, Some(Language::Go));
         assert_eq!(parse_query("lang:cs").language, Some(Language::CSharp));

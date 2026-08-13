@@ -89,7 +89,7 @@ Atlas 不做：
 抽取架构必须是：
 
 ```text
-tree-sitter queries + LanguageAdapter -> FileFacts
+tree-sitter queries + typed language frontend slots -> FileFacts
 ```
 
 每个文件至少产出：

@@ -19,7 +19,7 @@
 10. **事实，非指令**：响应字段提供事实（缺了什么），不提供 Agent 无法执行的指令（如"去索引这个"）。
 11. **三模式共享同一结构**：TUI / MCP+progress / MCP-no-progress 使用同一响应信封；progress token 只增加观测通知，不改变终态、重试或恢复语义。
 12. **非终态无结果**：统一 18 秒窗口内未满足 `QueryNeed` 时，只返回可恢复票据和当前未完成原因；禁止发布任何临时查询数据。
-12. **精度术语分层（强制）**：见 §1.1。禁止无限定的 `mode` / `full` / `index_mode` 单独出现在 API、日志与文档标题；禁止两个不同语义的类型共用 `IndexMode` 一名。
+13. **精度术语分层（强制）**：见 §1.1。禁止无限定的 `mode` / `full` / `index_mode` 单独出现在 API、日志与文档标题；禁止两个不同语义的类型共用 `IndexMode` 一名。
 
 ### 1.1 精度与能力术语分层
 
@@ -80,6 +80,10 @@ crates/
 ```
 
 ### 2.1.1 Index 与 Focus（对外只两种查询时策略叙事）
+
+对外入口有且只有三类：`atlas-cli` 承载 CLI/TUI，`atlas-mcp` 承载
+stdio MCP，`atlas-engine` 是 Library API facade。这是交付边界，不是第三套事实或管线；
+三个入口都只能组合下表的 Index / Focus 产品路径与共享 engine service。
 
 | 路径 | 产品语义 | 实现要点 |
 |------|----------|----------|
@@ -215,14 +219,14 @@ text hash 相同；对 GBK 等转码输入，两者不同。
 ```text
 tree-sitter 0.26 parser
   → per-language .scm queries
-  → LanguageAdapter normalization
+  → typed language frontend slots + normalization
   → FileFacts
 ```
 
 约束：
 - 不实现大型 `GenericExtractor`。
-- LanguageAdapter 不填跨文件语义结果。
-- Adapter 不手写重复的 enclosing function/source_symbol 逻辑；source、scope、binding 由 binder 统一处理。
+- Language frontend slot 不填跨文件语义结果。
+- Frontend 不手写重复的 enclosing function/source_symbol 逻辑；source、scope、binding 由 binder 统一处理。
 - 单文件失败必须结构化记录，不中断项目索引。
 - ArkTS 核心语言是 TypeScript 的静态类型约束子集，前端复用 TypeScript grammar，但
   language 必须是 `arkts`。parser slot 以等长
@@ -476,7 +480,7 @@ domain_rules::GenericRuleEngine
 Source files
   → discovery / file lock / worker
   → tree-sitter parse
-  → query extraction through LanguageAdapter
+  → query extraction through typed frontend slots
   → scope tree
   → lexical binding (LexicalBinder)
   → local dataflow facts (DataFlowBuilder)
@@ -695,6 +699,11 @@ LanguageCapabilityProfile
 - `LexicalBinder` + `DataFlowBuilder` — 词法绑定与数据流。
 - `CfgBuilder` — 函数级 CFG；全部 14 种语言均在 capability profile 中声明有限支持。
 - Golden test framework 覆盖 14 种语言。
+
+分层所有权不变式：各语言 frontend 拥有 grammar、SCM query、capture normalization、
+parser recovery 与 capability 声明；共享 CFG lowering 拥有唯一 Entry/Exit、确定性 ID、
+continuation algebra、path-isolated cleanup 和持久化 IR 不变式。不得在 CLI/MCP/
+analysis 展示层补语言 AST 规则，也不得再建一套 Function IR。
 
 `CfgEdgeId` 必须始终由边的最终 `(source, target, kind)` 生成；任何 lowering 阶段的
 edge retag 都必须同步重算 ID。空 switch/match/select arm 不制造伪 Statement，而是按语言
@@ -1038,12 +1047,15 @@ discover files
 - 共享管线不直接输出终端文本、不依赖 MCP transport，也不安装 Ctrl+C handler。
 - `ExtractionMode::Manifest` 在抽取后停止；`Structural` / `Full` 继续执行 resolution 和 graph build。
 - full-index 共享管线必须执行 dirty/deleted-file 检测并清理 DB 中已不存在的文件；仅清理本次 discover 到的文件不足以保证索引权威性。
-- `Full` 共享管线必须在 graph/annotation 阶段后构建 persistent function summaries，并把 summary capability 反映到持久化状态。
+- discover 结果为空仍必须跑 cleanup/finalize；“项目最后一个源文件被删除”不是 no-op。
+- `Full` 共享管线必须在 graph/annotation 阶段后构建 persistent function summaries。全量 summary 是先完整计算、后事务替换；单函数增量也是计算成功后原子替换。builder/DB 错误必须使 pipeline 失败，不得作为 empty/skip 提交；`summaries` capability 必须精确替换为当前仍有 summary 的文件集。
 - 新增索引阶段时优先进入共享管线，再由入口层决定是否暴露配置。
 - `filesync::build_dirty_set_for_mode` 是 `IndexPipeline` 的 HashCheck 边界；CLI/MCP/TUI 不直接实现 DB hash diff 或 capability upgrade 判断。
+- `IncrementalPipeline` 的变更权威是“规范 discovery 集合 + 磁盘 raw-content hash 对 SQLite `files.content_hash`”。Git 只参与 discovery；`git status` 相对 HEAD，不能代表相对上一次 Atlas 索引的变化。CLI `sync` 不得预检测或单独提交 `last_sync_time`。
 - HashCheck 的 clean 定义是“content hash 相同 + fresh complete file-level `extraction_state` 覆盖本次 `ExtractionMode` 所需 capability”。hash 相同但缺目标 capability 的文件必须进入 dirty set，以支持 manifest → structural → full 的无源码变更升级。
 - 目标 capability 映射为：`Manifest`/`ResolutionSymbols` 需要 manifest，`Structural` 需要 structural，`Full` 需要 dataflow；更高层 capability 可满足低层要求。
 - `project_metadata` 中 `last_index_time`、`last_sync_time` 等可选键不存在时表示未知/尚未发生，不是错误，不得产生 warning；只有表/列/SQL 等真实查询失败才记录 warning/error。
+- inventory、unresolved/symbol 计数、summary 与 capability mask 都是事实边界：SQL/row decode/identity 错误必须向上失败，不能用空列表或 0 伪装成功；file/unit capability 必须对全部 fresh layer 做 bitwise OR，而非读取任意一行。
 - 当前版本未发布，不保留旧 schema 运行时 fallback；如果 schema contract 改变，应更新 DDL 和调用方，并要求重新建库/重索引。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
 - path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
@@ -1116,6 +1128,7 @@ router project 会让原生 search/context session 与 tool session 分裂。`se
 
 - `ProgressSink` trait：入口注入终端进度、MCP notification 或 no-op。
 - `CancelToken`：前台/后台均可中断执行，取消是正常降级路径。
+- CLI `index` / `sync` 共用同一 Ctrl+C 安装边界：第一次设 cooperative stop，第二次强制退出；取消后不得打印完整成功摘要。
 - CLI/TUI 的显式 `index` / `sync` 可以是长操作；MCP 不暴露 `index`，也不
   暴露 waitable task API。
 - MCP 的 `project(action="open")` 只同步激活项目，不扫描全树、不索引。
@@ -1268,6 +1281,7 @@ Progress token 只影响观测通道，不改变终态策略：
 
 ### 11.3 MCP
 - 基于 `rmcp` 的 stdio JSON-RPC transport。
+- `ToolRouter::call_tool` 及其 SQLite/Focus/18s settle 循环是同步工作，`rmcp` async handler 必须把整次调用送入有固定并发闸门的 Tokio blocking pool；不得占用 async worker 等待同步物化，也不得无界创建 blocking 任务。
 - **15 个工具**：MCP 工具面使用 open-first focus 机制；所有工具使用短名（无 `atlas_` 前缀）。`index` 和旧 task/wait 工具已移出 MCP。
 
 | 组 | 工具 |
@@ -1429,12 +1443,21 @@ frame。MCP 将稳定的 `true`/`false`/`case`/`exception` 标签输出到 trans
 | 默认 | `typescript`, `javascript`, `python`, `java`, `c`, `cpp`, `arkts`, `go`, `csharp`, `rust`, `php`, `ruby`, `kotlin`, `cangjie` |
 | MCP | `mcp` (independent of language features) |
 
+`Language` enum 变体是持久化身份，不随 feature 消失；语言 feature 只决定文件发现、
+frontend/grammar 可用性和 capability profile。承载语言 feature 的 workspace 依赖边必须
+`default-features = false`，并由 `atlas-engine` / `atlas-mcp` / `atlas-cli` 显式向下传播；
+`--no-default-features` 不得被任一中间 crate 重新打开 14 种默认语言。
+
 ## 14. 引擎拆分与 Corpus 边界
 
 - `atlas-engine` 的 supported 顶层 facade 可作为独立 crate 使用；稳定范围是高层入口及其公开签名类型闭包。为 MCP/CLI 暂留的 workspace-internal 模块不属于该承诺。
 - `atlas-engine` 不依赖 CLI 参数解析、MCP transport 或交互格式。
 - Corpus（大型多版本源码索引系统）不并入 Atlas 主体。
 - Corpus 以 Git blob/tag/path/version mapping 为核心索引模型，不复用 Atlas 的 path-based `FileId`。
+- 高层 `Engine::extract_file_with_mode` 只接受 project-relative `SourcePath` 并按路径生成
+  Atlas `FileId`。Corpus/blob 消费者只复用无 DB 的低层 extraction API，并显式传入
+  自己的 blob-centric `FileId`、parser path、source/hash 和 `ExtractionMode`；不得绕过
+  `SourcePath` 把绝对路径喂给高层 facade。
 
 ## 15. 相关文档
 
