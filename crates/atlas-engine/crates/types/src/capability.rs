@@ -1224,11 +1224,12 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
-            "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
-            "AST-driven local dataflow with language-specific gaps",
+            "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
+            "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
             "partial classes across files not merged",
         ],
         feature_overrides: &[
@@ -1237,7 +1238,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
                     ],
                 ),
             ),
@@ -1245,7 +1246,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.72,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1253,7 +1256,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware use-def with arm-local switch pattern identities; definite-assignment and nested designation semantics remain conservative",
                     ],
                 ),
             ),
@@ -2970,14 +2973,15 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
-                "AST-driven local dataflow with language-specific gaps",
+                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
+                "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
                 "partial classes across files not merged",
             ]
         );
@@ -3015,7 +3019,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative"
                 ],
             )
         );
@@ -3023,7 +3027,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.72,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3031,7 +3037,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware use-def with arm-local switch pattern identities; definite-assignment and nested designation semantics remain conservative"
                 ],
             )
         );

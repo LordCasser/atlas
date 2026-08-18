@@ -136,7 +136,15 @@ All notable changes to Atlas will be documented in this file.
   extraction→SQLite-persistence fixture without changing the schema or public
   MCP contract.
 
-### C# control flow
+### C# dataflow and control flow
+
+- Extract direct declaration/recursive/var pattern bindings from `is`, switch
+  statement, and switch-expression syntax. Switch sections and expression arms
+  own distinct lexical scopes, so same-name captures do not cross sibling arms;
+  the matched subject flows conservatively to every direct capture.
+- Cover extraction, SQLite Trace, and Focus-vs-full-Index parity. Nested
+  designation projection, compiler definite-assignment, and guard control
+  dependency remain explicit precision boundaries.
 
 - Route direct `goto` exits through every intervening `using` `BlockExit` and
   path-isolated `finally` clone from inner to outer before emitting the final

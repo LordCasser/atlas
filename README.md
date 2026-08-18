@@ -498,7 +498,7 @@ CST root + Bindings + Scopes
   → DataNode + DataFlowEdge
 ```
 
-The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST directly via `Node::child()`, `child_by_field_name()`, and `named_children()`. For each language, it pattern-matches against known AST node types:
+The `DataFlowBuilder` first uses each language's tree-sitter query to normalize candidate nodes, then walks the CST via `Node::child()`, `child_by_field_name()`, and `named_children()` to connect constructs whose semantics depend on their parent/child relationship. Language adapters keep syntax-specific cases at this boundary:
 
 | Pattern | AST nodes matched | Produces |
 |---------|------------------|----------|
@@ -507,6 +507,7 @@ The `DataFlowBuilder` does NOT use tree-sitter queries — it walks the CST dire
 | Field access | `member_expression` → `property_identifier` | `FieldLoad`/`FieldStore` edges |
 | Return values | `return_statement` → child expression | `ReturnValue` edge |
 | Destructuring | `pattern_list`, `tuple_pattern`, `object_pattern` | Multi-target `Assign` edges |
+| Guarded/pattern binding | language-specific match/switch/pattern nodes | Conservative subject → arm-local capture `Assign` edges |
 
 `DataNode` records the source location (byte range), kind (Local, Param, Field, CallArg, Return, Expr), and function scope. `DataFlowEdge` connects a source node to a target node with a directed kind and confidence score.
 
