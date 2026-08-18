@@ -80,10 +80,13 @@ for their supported direct-variable mutation forms; each response still reports 
 own language identity. Cangjie additionally preserves direct simple reassignment and
 direct-identifier non-conditional compound/postfix update forms.
 Attribute/member/field/navigation、subscript/element/array/index、receiver and
-pointer/dereference mutation targets remain conservative, as do logical or
-conditional assignment execution（including Ruby and Cangjie `||=`/`&&=`）、overloaded/dynamic
-operator semantics、numeric promotion/boxing and prefix/postfix result timing where
-the language supports them.
+pointer/dereference mutation targets remain conservative. TypeScript、JavaScript and
+ArkTS direct-identifier `&&=`/`||=`/`??=` preserve path-insensitive old-value/RHS
+may-provenance through Read 0.75 and Assign 0.90, but do not prove RHS execution or
+operator-specific truthiness/nullish control dependency. Ruby and Cangjie
+`||=`/`&&=` remain conditional-write boundaries. Overloaded/dynamic operator
+semantics、numeric promotion/boxing and prefix/postfix result timing remain
+conservative where the language supports them.
 
 Rust `match` scrutinees and source-ordered guard-let RHS values preserve exact
 syntactic access paths for fixed tuple、tuple-struct、struct and slice-prefix

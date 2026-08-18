@@ -250,10 +250,14 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 > at 0.90. Direct extraction、SQLite/Trace 与 cold Focus vs full Index cover every
 > identity independently. Attribute/member/field/navigation、subscript/element/array/
 > index、receiver 与 pointer/dereference targets、
-> logical/conditional assignment execution、overloaded/dynamic operator semantics、
+> overloaded/dynamic operator semantics、
 > numeric promotion/boxing、prefix/postfix result timing、nested destructuring、async
 > paths and ArkUI callback/trailing-block internals remain conservative according to
-> each language profile. Ruby `||=`/`&&=` remain conditional-write boundaries.
+> each language profile. TypeScript、JavaScript 与 ArkTS 的 direct-identifier
+> `&&=`/`||=`/`??=` additionally preserve path-insensitive old-value/RHS
+> may-provenance through Read 0.75 and Assign 0.90 without proving RHS execution or
+> operator-specific truthiness/nullish control dependency. Ruby and Cangjie
+> `||=`/`&&=` remain conditional-write boundaries.
 > Unsupported compound targets do not degrade into an incorrect RHS-only write,
 > synthetic local, or field store.
 
@@ -360,6 +364,13 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   验证 binding coalescing、0.75 Read 与 0.90 Assign 及 unsupported target 负边界；
   SQLite/Trace 验证运算符位置选择 aggregate Expr 与输入来源；cold Focus 对 full
   Index 验证同 unit bindings/dataflow/CFG/confidence，并保持 peer unit 冷态。
+- ✅ TypeScript、JavaScript 与 ArkTS direct-identifier `&&=`/`||=`/`??=`
+  logical assignment 已在共享 pinned grammar 上显式建模为路径不敏感的
+  old-value/RHS may-provenance：两种可能来源以 Read 0.75 进入 aggregate Expr，
+  Expr 再以 Assign 0.90 进入 coalesced Local，但不证明 RHS 必然执行。
+  Direct extraction、SQLite/Trace、cold Focus==full Index 与真实 OpenCode
+  `defaultPreferred ??= select(process.env.SHELL)` 覆盖该边界；member/subscript
+  target 与 operator-specific truthiness/nullish control dependency 保持保守。
 - ✅ Cangjie simple/nested-tuple/enum-payload `for-in` capture 已建模为
   loop-scoped binding，enum constructor syntax 不建 binding，iterable 向每个 capture 以
   0.65 aggregate Assign 提供来源；guard/body 复用循环变量 identity，循环后同名 use
@@ -525,6 +536,15 @@ CFG + DataFlow
   CFG parity and cold peer isolation. Dynamic/non-variable mutation targets、
   `??=` conditional execution and prefix/postfix result timing remain explicit
   precision boundaries.
+- **TypeScript-family logical assignment — scoped phase implemented:** direct
+  identifier `&&=`/`||=`/`??=` preserves both the previous local value and the
+  conditional RHS as path-insensitive possible origins of one aggregate Expr
+  through `Read` at 0.75；the Expr reaches the coalesced Local through `Assign` at
+  0.90. This is a may-provenance contract, not proof that the RHS executes.
+  Direct extraction、SQLite/Trace、cold Focus-vs-full-Index and the real OpenCode
+  `defaultPreferred ??= select(process.env.SHELL)` fixture cover TypeScript、
+  JavaScript and ArkTS identities independently. Member/subscript targets and
+  exact truthiness/nullish control dependency remain explicit boundaries.
 - **Python/Go/Rust/Kotlin/Ruby direct-variable mutation — scoped phase implemented:**
   each pinned grammar now emits one direct-identifier aggregate read-modify-write
   shape for its supported augmented/compound/operator/update syntax. Previous value
