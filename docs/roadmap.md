@@ -239,15 +239,18 @@ The original baseline implementation blockers are closed and covered by the rele
 
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
-> **TypeScript-family mutation status (updated 2026-08)**: TypeScript,
-> JavaScript, and ArkTS now share direct-identifier `op=` and prefix/postfix
-> `++`/`--` extraction without losing their persisted language identities. The
-> whole expression is an aggregate read-modify-write value; previous target
-> value and explicit RHS flow into it, then it flows to the coalesced local at
-> 0.90. Direct extraction, SQLite/Trace, and cold Focus vs full Index cover all
-> three identities independently. Member/subscript targets, logical-assignment
-> conditional execution, prefix/postfix result timing, nested destructuring,
-> async paths, and ArkUI callback/trailing-block internals remain conservative.
+> **Cross-language direct-variable mutation status (updated 2026-08)**:
+> TypeScript、JavaScript、ArkTS、C、C++、Java 与 C# now preserve direct-identifier
+> compound/update expressions without losing their persisted language identities.
+> The whole expression is an aggregate read-modify-write value; previous target
+> value and explicit RHS flow into it at 0.75, then it flows to the coalesced local
+> at 0.90. Direct extraction、SQLite/Trace 与 cold Focus vs full Index cover every
+> identity independently. Member/field、subscript/element/array 与 pointer targets、
+> logical/conditional assignment execution、overloaded/dynamic operator semantics、
+> numeric promotion/boxing、prefix/postfix result timing、nested destructuring、async
+> paths and ArkUI callback/trailing-block internals remain conservative according to
+> each language profile. Unsupported compound targets do not degrade into an
+> incorrect RHS-only write or field store.
 
 > **CFG status (updated 2026-08)**: CFG builder (`cfg_builder.rs`) exposes limited function/method CFG for all 14 languages. PHP branch/loop/switch/elseif, wrapped throw, return terminals, persisted E2E, golden, and the repository PHP syntax example are verified at WithLimitations(0.60). Switch sibling paths preserve C/C++/JS/TS/ArkTS/PHP and Java-colon implicit fall-through plus Go's explicit `fallthrough`; Go `select` additionally preserves communication/default siblings and blocking no-default semantics，真实 `gin.Context.Stream` 覆盖 SQLite persistence。`Break`/`Continue` edges resolve nested control paths, including PHP numeric nesting and Java、JS/TS/ArkTS、Go、Rust、Kotlin grammar-visible lexical labels；标签 target 可跨 finally/managed cleanup 后再由目标 loop/block 消费，真实 `ESLZ4Compressor.compress64k/compress` 覆盖 labeled break/continue 的 SQLite persistence。C/C++/Go/C#/PHP direct same-function goto/label 使用专用 `Goto` edge；C# 在 goto 退出时按内到外顺序经过 using `BlockExit` 与 path-isolated finally clone，禁止跳入更深的词法/cleanup region 或跳出 finally clause。PHP standalone label 复用 Join target，允许跳入普通 block 或跳出 loop/switch，禁止跳入 loop/switch 或跨 finally-clause 边界，退出 nested try 时按内到外经过 path-isolated finally clone。真实 Redis `hdr_percentiles_print` 与 Shadowsocks `Listener.ReceiveCallback` 覆盖 direct goto persistence，synthetic C#/PHP fixtures 覆盖 cleanup-crossing goto 的 extraction→SQLite persistence；未知/非直接目标终止本地 best-effort 路径。Go defer 在 64-clone 预算内按 CFG×runtime-stack 展开，条件注册不会串线，normal return 通过专用 `Defer` edge 和 owner-matched `BlockExit` 执行 LIFO cleanup；真实 Gin `Engine.RunUnix` 覆盖 early/final return 的不同持久化 defer stack。Rust `?` 保留 success continuation 与 residual return-to-Exit，并在 closure/async boundary 停止；Rust `let-else` 将 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative 分离，真实 `Controller::print_file_ranges` 与 `EscapeSequenceOffsetsIterator::next_osc` 覆盖 SQLite persistence。Ruby modifier while/until 区分 plain pre-test 与 `begin...end` post-test，并复用既有 `next`/`redo`/`break` target 语义。C++ lowers try/catch and explicit throw through `Exception` edges；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated finally/ensure clones 表达 normal、return、throw、break 与 continue continuation。Java/C#/PHP direct object-created explicit throw 按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；真实 Elasticsearch `RestActions.getQueryContent` 覆盖 extraction→SQLite 边界。Java try-with-resources、C# using、Python with、Kotlin use 与 Ruby block resource 使用持久化 owner 匹配 normal/abrupt completion 的隔离 BlockExit，并确定性地按 LIFO 生成 cleanup；cleanup 自身抛出的异常会保留有序 `Throw` continuation，经过外层资源退出与 finally/ensure 后进入词法 handler。注释 AST extras 不生成可执行 Statement，包括 label 与正文之间的 comment extras。单个路径隔离区域超过 64 个 clone 时原子回退为 Statement。All return/throw terminals connect to the unique function Exit. Go cyclic/over-budget defer、panic/recover/Goexit 与复杂 anonymous deferred body、Rust macro shadowing/re-export、custom never-return macro 与 panic unwind/catch_unwind、ArkUI trailing blocks and nested arrow callbacks、Ruby ordinary iterator/callback blocks、cleanup exception suppression/replacement 与精确 identity、computed goto、C# `goto case/default`、C++ cross-scope destruction、grammar-hidden labels、继承/alias/变量/guard handler selection 和 implicit exceptions remain explicit boundaries.
 
@@ -346,6 +349,11 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   回归，`scope_aware_binding` 与 adapter slot confidence 已对齐。Java 不伪造非法的
   overlapping local shadowing；PHP destructuring key expression 保持读取，assignment whole RHS 与 foreach collection 保守流向各 target，direct variable mutation 保留 aggregate read-modify-write provenance，exact key/index projection、missing-key/null、reference-alias semantics、dynamic/non-variable target、conditional write 与 prefix/postfix result timing 保持 limitation；未显式捕获的匿名函数外层 local 保持 unresolved，arrow-function ownership 暂不伪造；Ruby block write 仅复用源码更早的祖先 binding，flat/nested/rest multiple-assignment local target 复用同一 namespace，显式 RHS list 具备顶层位置流；Go same-block mixed `:=` 已覆盖 local/函数体参数复用、声明后激活与 clause 隔离；其余语言特有的 pattern、projection、mixed declaration、smart-cast 与
   definite-assignment 边界仍以 capability limitation 为准。
+- ✅ C、C++、Java 与 C# direct-variable compound/update mutation 已与
+  TypeScript-family 的 aggregate read-modify-write 契约对齐：direct extraction
+  验证 binding coalescing、0.75 Read 与 0.90 Assign 及 unsupported target 负边界；
+  SQLite/Trace 验证运算符位置选择 aggregate Expr 与输入来源；cold Focus 对 full
+  Index 验证同 unit bindings/dataflow/CFG/confidence，并保持 peer unit 冷态。
 - ✅ Cangjie simple/nested-tuple/enum-payload `for-in` capture 已建模为
   loop-scoped binding，enum constructor syntax 不建 binding，iterable 向每个 capture 以
   0.65 aggregate Assign 提供来源；guard/body 复用循环变量 identity，循环后同名 use

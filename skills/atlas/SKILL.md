@@ -75,10 +75,12 @@ equivalence. Read the profile limitations for destructuring, pattern,
 callback, definite-assignment, and dynamic-namespace boundaries before relying
 on an apparently resolved same-name use.
 
-TypeScript, JavaScript, and ArkTS direct-identifier `op=` / `++` / `--` facts
-preserve aggregate read-modify-write provenance; each response still reports
-its own language identity. Member/subscript mutation targets, conditional
-logical assignment, and prefix/postfix result timing remain conservative.
+TypeScript、JavaScript、ArkTS、C、C++、Java and C# direct-identifier compound
+assignment / `++` / `--` facts preserve aggregate read-modify-write provenance;
+each response still reports its own language identity. Member/field、subscript/
+element/array and pointer mutation targets remain conservative, as do logical or
+conditional assignment execution、overloaded/dynamic operator semantics、numeric
+promotion/boxing and prefix/postfix result timing where the language supports them.
 
 ### Source encoding and positions
 
