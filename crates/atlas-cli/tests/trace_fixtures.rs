@@ -5455,6 +5455,128 @@ fn fx_cangjie_simple_for_in_binding_persists_and_traces_from_iterable() {
 }
 
 #[test]
+#[cfg(feature = "cangjie")]
+fn fx_cangjie_for_in_pattern_bindings_persist_and_trace_from_iterables() {
+    let source = r#"enum PairBox {
+    | Pair(Int64, Int64)
+}
+func select(pairs: Array<((Int64, Int64), Int64)>, boxes: Array<PairBox>): Int64 {
+    for (((left, right), tail) in pairs where left > 0) {
+        consume(left, right, tail)
+    }
+    for (Pair(first, second) in boxes where first > 0) {
+        consume(first, second)
+    }
+    return 0
+}
+"#;
+    let store = index_files(&[("for_in_patterns.cj", source)]);
+    let file_id = FileId::generate("for_in_patterns.cj");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Cangjie for-in pattern bindings");
+    let captures: Vec<_> = bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                binding.name.as_str(),
+                "left" | "right" | "tail" | "first" | "second"
+            )
+        })
+        .collect();
+    assert_eq!(captures.len(), 5);
+    assert!(bindings.iter().all(|binding| binding.name != "Pair"));
+    let tuple_scope = captures
+        .iter()
+        .find(|binding| binding.name == "left")
+        .expect("tuple binding")
+        .scope_id;
+    let enum_scope = captures
+        .iter()
+        .find(|binding| binding.name == "first")
+        .expect("enum payload binding")
+        .scope_id;
+    assert_ne!(tuple_scope, enum_scope);
+    assert!(
+        captures
+            .iter()
+            .filter(|binding| matches!(binding.name.as_str(), "left" | "right" | "tail"))
+            .all(|binding| binding.scope_id == tuple_scope)
+    );
+    assert!(
+        captures
+            .iter()
+            .filter(|binding| matches!(binding.name.as_str(), "first" | "second"))
+            .all(|binding| binding.scope_id == enum_scope)
+    );
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let engine = TraceEngine::new(store.clone());
+    for (iterable_name, loop_line, body_line, target_names) in [
+        ("pairs", 4, 5, &["left", "right", "tail"][..]),
+        ("boxes", 7, 8, &["first", "second"][..]),
+    ] {
+        let iterable = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some(iterable_name)
+                    && node.range.start_line == loop_line
+            })
+            .unwrap_or_else(|| panic!("persisted iterable {iterable_name}"));
+        let iterable_edges = store
+            .find_dataflow_edges_by_source(&iterable.id)
+            .expect("persisted iterable edges");
+        for target_name in target_names {
+            let binding = captures
+                .iter()
+                .find(|binding| binding.name == *target_name)
+                .unwrap_or_else(|| panic!("persisted binding {target_name}"));
+            let target = data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(*target_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("persisted Local target {target_name}"));
+            assert_eq!(target.binding_id, Some(binding.id));
+            assert!(iterable_edges.iter().any(|edge| {
+                edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.65
+            }));
+
+            let sink = data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(*target_name)
+                        && node.range.start_line == body_line
+                })
+                .unwrap_or_else(|| panic!("persisted body use {target_name}"));
+            assert_eq!(sink.binding_id, Some(binding.id));
+            let response = engine.trace_variable(
+                &file_id,
+                sink.range.start_line + 1,
+                sink.range.start_column + 1,
+                20,
+            );
+            assert_envelope_ok(&response, "cangjie");
+            let path = response
+                .result
+                .unwrap_or_else(|| panic!("Cangjie for-in trace path for {target_name}"));
+            assert_has_edge_kind(&path, DataFlowKind::Assign);
+            assert_source_name(&path, iterable_name);
+        }
+    }
+    assert!(data_nodes.iter().all(|node| {
+        node.name.as_deref() != Some("Pair")
+            || !matches!(node.kind, DataNodeKind::Local | DataNodeKind::VariableUse)
+    }));
+}
+
+#[test]
 #[cfg(feature = "rust")]
 fn fx_rust_match_bindings_persist_and_trace_from_scrutinee() {
     let source = r#"enum Result {
