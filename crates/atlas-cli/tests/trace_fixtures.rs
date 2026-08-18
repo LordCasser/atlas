@@ -2337,6 +2337,141 @@ fn fx_typescript_family_for_in_bindings_persist_and_trace_from_iterables() {
 }
 
 #[test]
+fn fx_typescript_family_declaration_destructuring_persists_and_traces_initializers() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "declaration_destructuring.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "declaration_destructuring.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "declaration_destructuring.ets"),
+    ];
+    let source = concat!(
+        "function unpack(input, fallback, propertyKey, legacy) {\n",
+        "  const id = 'outer';\n",
+        "  {\n",
+        "    const { id, profile: { name: displayName, scores: [firstScore = fallback] }, [propertyKey]: computed, ...rest } = input;\n",
+        "    const [head, , { value }, ...tail] = input.items;\n",
+        "    consume(id, displayName, firstScore, computed, rest, head, value, tail);\n",
+        "  }\n",
+        "  consume(id);\n",
+        "  var { legacyName } = legacy;\n",
+        "  return fallback;\n",
+        "}\n",
+    );
+
+    for (language, path) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| {
+                panic!("{language}: persisted destructuring bindings: {error}")
+            });
+        let mut id_bindings: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == "id")
+            .collect();
+        id_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(id_bindings.len(), 2, "{language}: outer and nested id");
+        assert_ne!(id_bindings[0].scope_id, id_bindings[1].scope_id);
+        let nested_uses = store
+            .find_binding_uses_by_binding(&id_bindings[1].id)
+            .unwrap_or_else(|error| panic!("{language}: nested id uses: {error}"));
+        let outer_uses = store
+            .find_binding_uses_by_binding(&id_bindings[0].id)
+            .unwrap_or_else(|error| panic!("{language}: outer id uses: {error}"));
+        assert!(nested_uses.iter().any(|use_| use_.range.start_line == 5));
+        assert!(outer_uses.iter().any(|use_| use_.range.start_line == 7));
+        assert!(bindings.iter().all(|binding| {
+            !matches!(
+                binding.name.as_str(),
+                "profile" | "name" | "scores" | "legacyName"
+            )
+        }));
+
+        let nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted destructuring nodes: {error}"));
+        for (initializer_name, line, target_name) in [
+            ("input", 3, "id"),
+            ("input", 3, "displayName"),
+            ("input", 3, "firstScore"),
+            ("input", 3, "computed"),
+            ("input", 3, "rest"),
+            ("input.items", 4, "head"),
+            ("input.items", 4, "value"),
+            ("input.items", 4, "tail"),
+        ] {
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.name == target_name && binding.range.start_line == line)
+                .unwrap_or_else(|| panic!("{language}: destructured binding {target_name}"));
+            let initializer = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(initializer_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: initializer {initializer_name}"));
+            let target = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: destructured target {target_name}"));
+            assert_eq!(target.binding_id, Some(binding.id), "{language}");
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&initializer.id)
+                    .unwrap_or_else(|error| panic!("{language}: initializer edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                "{language}: {initializer_name} must reach {target_name}"
+            );
+        }
+        for read_name in ["fallback", "propertyKey"] {
+            assert!(nodes.iter().any(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(read_name)
+                    && node.range.start_line == 3
+            }));
+        }
+        assert!(nodes.iter().all(|node| {
+            node.kind != DataNodeKind::Local || node.name.as_deref() != Some("legacyName")
+        }));
+
+        let display_use = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("displayName")
+                    && node.range.start_line == 5
+            })
+            .unwrap_or_else(|| panic!("{language}: displayName use"));
+        let response = TraceEngine::new(store.clone()).trace_variable(
+            &file_id,
+            display_use.range.start_line + 1,
+            display_use.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, language);
+        let trace = response
+            .result
+            .unwrap_or_else(|| panic!("{language}: declaration destructuring trace"));
+        assert_has_edge_kind(&trace, DataFlowKind::Assign);
+        assert_source_name(&trace, "input");
+    }
+}
+
+#[test]
 #[cfg(feature = "typescript")]
 fn fx_typescript_real_opencode_for_of_pattern_persists_and_traces() {
     let source = example_source_or_skip!(
@@ -2423,6 +2558,93 @@ fn fx_typescript_real_opencode_for_of_pattern_persists_and_traces() {
         .expect("OpenCode for-of value trace");
     assert_has_edge_kind(&trace, DataFlowKind::Assign);
     assert_step_with_name(&store, &trace, DataFlowKind::Assign, "entries");
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_typescript_real_opencode_declaration_destructuring_persists_and_traces() {
+    let source = example_source_or_skip!("opencode/packages/core/src/session/projector.ts");
+    let path = "packages/core/src/session/projector.ts";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let declaration_line = source
+        .lines()
+        .position(|line| line.contains("const { id: _, sessionID: __, ...rest } = info"))
+        .expect("OpenCode declaration destructuring") as u32;
+    let return_line = source
+        .lines()
+        .enumerate()
+        .skip(declaration_line as usize)
+        .find(|(_, line)| line.contains("return rest as"))
+        .map(|(line, _)| line as u32)
+        .expect("OpenCode destructured rest return");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("OpenCode persisted declaration bindings");
+    let nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("OpenCode persisted declaration nodes");
+    let initializer = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("info")
+                && node.range.start_line == declaration_line
+        })
+        .expect("OpenCode info initializer");
+    for target_name in ["_", "__", "rest"] {
+        let binding = bindings
+            .iter()
+            .find(|binding| {
+                binding.name == target_name && binding.range.start_line == declaration_line
+            })
+            .unwrap_or_else(|| panic!("OpenCode declaration binding {target_name}"));
+        let target = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(target_name)
+                    && node.range.start_line == declaration_line
+            })
+            .unwrap_or_else(|| panic!("OpenCode declaration target {target_name}"));
+        assert_eq!(target.binding_id, Some(binding.id));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&initializer.id)
+                .expect("OpenCode initializer edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.85
+                })
+        );
+    }
+
+    let rest_use = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("rest")
+                && node.range.start_line == return_line
+        })
+        .expect("OpenCode returned rest use");
+    let rest_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "rest" && binding.range.start_line == declaration_line)
+        .expect("OpenCode rest binding");
+    assert_eq!(rest_use.binding_id, Some(rest_binding.id));
+    let trace = TraceEngine::new(store.clone())
+        .trace_variable(
+            &file_id,
+            rest_use.range.start_line + 1,
+            rest_use.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("OpenCode declaration destructuring trace");
+    assert_has_edge_kind(&trace, DataFlowKind::Assign);
+    assert_step_with_name(&store, &trace, DataFlowKind::Assign, "info");
 }
 
 #[test]

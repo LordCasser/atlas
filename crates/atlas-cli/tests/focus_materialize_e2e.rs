@@ -2597,6 +2597,168 @@ fn n5_focus_typescript_family_for_in_bindings_match_index_full() {
     }
 }
 
+/// TypeScript-family let/const declaration destructuring must materialize the
+/// same block-local bindings and whole-initializer aggregate provenance under
+/// Focus as full Index, while unsupported var destructuring and a peer unit
+/// stay cold.
+#[test]
+fn n5_focus_typescript_family_declaration_destructuring_matches_index_full() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "declaration_destructuring.ts", "peer.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "declaration_destructuring.js", "peer.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "declaration_destructuring.ets", "peer.ets"),
+    ];
+    let source = concat!(
+        "function unpack(input, fallback, propertyKey, legacy) {\n",
+        "  const id = 'outer';\n",
+        "  {\n",
+        "    const { id, profile: { name: displayName, scores: [firstScore = fallback] }, [propertyKey]: computed, ...rest } = input;\n",
+        "    const [head, , { value }, ...tail] = input.items;\n",
+        "    consume(id, displayName, firstScore, computed, rest, head, value, tail);\n",
+        "  }\n",
+        "  consume(id);\n",
+        "  var { legacyName } = legacy;\n",
+        "  return fallback;\n",
+        "}\n",
+    );
+    let peer_source = "function unrelated() { return 42; }\n";
+
+    for (language, path, peer_path) in cases {
+        let fixture = [(path, source), (peer_path, peer_source)];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_unpack = symbol_id_by_name(&indexed_store, "unpack");
+        let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_unpack);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_unpack);
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == "id")
+                .count(),
+            2,
+            "{language}: outer and destructured id bindings"
+        );
+        for name in [
+            "displayName",
+            "firstScore",
+            "computed",
+            "rest",
+            "head",
+            "value",
+            "tail",
+        ] {
+            assert!(
+                indexed_bindings.iter().any(|binding| binding.1 == name),
+                "{language}: full Index binding {name}"
+            );
+        }
+        assert!(indexed_bindings.iter().all(|binding| {
+            !matches!(
+                binding.1.as_str(),
+                "profile" | "name" | "scores" | "legacyName"
+            )
+        }));
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_unpack)
+            .unwrap_or_else(|error| panic!("{language}: full Index destructuring nodes: {error}"));
+        for (initializer_name, line, target_name) in [
+            ("input", 3, "id"),
+            ("input", 3, "displayName"),
+            ("input", 3, "firstScore"),
+            ("input", 3, "computed"),
+            ("input", 3, "rest"),
+            ("input.items", 4, "head"),
+            ("input.items", 4, "value"),
+            ("input.items", 4, "tail"),
+        ] {
+            let initializer = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(initializer_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index initializer {initializer_name}"));
+            let target = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index target {target_name}"));
+            assert!(
+                indexed_store
+                    .find_dataflow_edges_by_source(&initializer.id)
+                    .unwrap_or_else(|error| panic!("{language}: initializer edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                "{language}: {initializer_name} must reach {target_name}"
+            );
+        }
+        assert!(indexed_nodes.iter().all(|node| {
+            node.kind != DataNodeKind::Local || node.name.as_deref() != Some("legacyName")
+        }));
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let unpack = symbol_id_by_name(&focused_store, "unpack");
+        let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unpack)
+                .unwrap_or_else(|error| panic!("{language}: cold destructuring unit: {error}"))
+                .is_empty(),
+            "{language}: destructuring unit must be cold before Focus ensure"
+        );
+
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &unpack,
+                Some("typescript-family-declaration-destructuring-parity"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure destructuring unit: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &unpack),
+            indexed_slice,
+            "{language}: Focus destructuring dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &unpack),
+            indexed_bindings,
+            "{language}: Focus destructuring bindings == full Index"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unrelated)
+                .unwrap_or_else(|error| panic!("{language}: destructuring peer state: {error}"))
+                .is_empty(),
+            "{language}: destructuring peer unit must stay outside the Focus window"
+        );
+    }
+}
+
 /// C, C++, Java, and C# encode compound/update expressions with different AST
 /// shapes. Each language must nevertheless materialize the same direct-local
 /// read-modify-write contract as full Index while leaving a peer unit cold.
