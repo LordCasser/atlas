@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_scope_chain_identity_across_static_language_adapters() {
-        let cases: Vec<(&str, Language, &str, &str, [(u32, u32); 2])> = vec![
+        let cases = vec![
             #[cfg(feature = "typescript")]
             (
                 "scope.ts",

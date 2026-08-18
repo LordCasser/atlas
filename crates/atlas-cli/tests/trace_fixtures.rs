@@ -112,8 +112,9 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
     store
 }
 
-fn scope_chain_persistence_cases() -> Vec<(&'static str, &'static str, [(u32, u32); 2])> {
-    vec![
+#[test]
+fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
+    let cases = vec![
         #[cfg(feature = "typescript")]
         (
             "scope.ts",
@@ -150,13 +151,11 @@ fn scope_chain_persistence_cases() -> Vec<(&'static str, &'static str, [(u32, u3
             "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
             [(3, 4), (6, 7)],
         ),
-    ]
-}
-
-#[test]
-fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
-    let cases = scope_chain_persistence_cases();
-    assert!(!cases.is_empty(), "at least one language feature is required");
+    ];
+    assert!(
+        !cases.is_empty(),
+        "at least one language feature is required"
+    );
     let files: Vec<_> = cases
         .iter()
         .map(|(path, source, _)| (*path, *source))

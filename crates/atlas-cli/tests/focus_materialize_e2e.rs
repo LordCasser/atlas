@@ -1421,7 +1421,10 @@ fn scope_chain_language_parity_cases() -> Vec<(&'static str, &'static str, &'sta
 #[test]
 fn n5_focus_scope_chain_bindings_match_index_full_across_languages() {
     let cases = scope_chain_language_parity_cases();
-    assert!(!cases.is_empty(), "at least one language feature is required");
+    assert!(
+        !cases.is_empty(),
+        "at least one language feature is required"
+    );
     let fixtures: Vec<_> = cases
         .iter()
         .map(|(path, source, _)| (*path, *source))
