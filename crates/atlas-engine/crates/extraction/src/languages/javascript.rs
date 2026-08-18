@@ -150,7 +150,7 @@ impl LexicalBindingSpec for JavaScriptAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "scope-chain-aware binding with shadowing support; let/const declaration destructuring simple/renamed/nested/default/rest pattern captures are block-scoped; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var declaration/loop binding semantics and assignment/parameter destructuring remain conservative",
             ],
         )
     }
@@ -167,7 +167,7 @@ impl DataflowSpec for JavaScriptAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declaration destructuring receives whole-initializer aggregate provenance (Assign 0.85); let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact property/index or element/key projection, var declaration/loop binding semantics, assignment/parameter destructuring, member/subscript mutation or iteration targets, prefix/postfix result timing, and async scheduling remain conservative",
             ],
         )
     }

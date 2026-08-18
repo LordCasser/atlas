@@ -1184,6 +1184,143 @@ mod tests {
     }
 
     #[test]
+    fn test_typescript_family_declaration_destructuring_preserves_bindings_and_aggregate_flow() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            ("declaration_destructuring.ts", Language::TypeScript),
+            #[cfg(feature = "javascript")]
+            ("declaration_destructuring.js", Language::JavaScript),
+            #[cfg(feature = "arkts")]
+            ("declaration_destructuring.ets", Language::ArkTS),
+        ];
+        let source = concat!(
+            "function unpack(input, fallback, propertyKey, legacy) {\n",
+            "  const id = 'outer';\n",
+            "  {\n",
+            "    const { id, profile: { name: displayName, scores: [firstScore = fallback] }, [propertyKey]: computed, ...rest } = input;\n",
+            "    const [head, , { value }, ...tail] = input.items;\n",
+            "    consume(id, displayName, firstScore, computed, rest, head, value, tail);\n",
+            "  }\n",
+            "  consume(id);\n",
+            "  var { legacyName } = legacy;\n",
+            "  return fallback;\n",
+            "}\n",
+        );
+
+        for (path, language) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let mut id_bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "id")
+                .collect();
+            id_bindings.sort_by_key(|binding| binding.range.start_byte);
+            assert_eq!(id_bindings.len(), 2, "{language:?}: outer and nested id");
+            assert_ne!(id_bindings[0].id, id_bindings[1].id, "{language:?}");
+            assert_ne!(
+                id_bindings[0].scope_id, id_bindings[1].scope_id,
+                "{language:?}"
+            );
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "id"
+                    && use_.range.start_line == 5
+                    && use_.binding_id == Some(id_bindings[1].id)
+            }));
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "id"
+                    && use_.range.start_line == 7
+                    && use_.binding_id == Some(id_bindings[0].id)
+            }));
+
+            let expected = [
+                ("input", 3, "id"),
+                ("input", 3, "displayName"),
+                ("input", 3, "firstScore"),
+                ("input", 3, "computed"),
+                ("input", 3, "rest"),
+                ("input.items", 4, "head"),
+                ("input.items", 4, "value"),
+                ("input.items", 4, "tail"),
+            ];
+            for (initializer_name, line, target_name) in expected {
+                let binding = facts
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == target_name && binding.range.start_line == line)
+                    .unwrap_or_else(|| panic!("{language:?}: missing binding {target_name}"));
+                let initializer = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Expr
+                            && node.name.as_deref() == Some(initializer_name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{language:?}: missing initializer {initializer_name} on line {line}"
+                        )
+                    });
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Local
+                            && node.name.as_deref() == Some(target_name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing target {target_name} on line {line}")
+                    });
+                assert_eq!(target.binding_id, Some(binding.id), "{language:?}");
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == initializer.id
+                            && edge.target == target.id
+                            && edge.kind == types::DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                    "{language:?}: {initializer_name} must provide aggregate provenance to {target_name}"
+                );
+            }
+
+            for read_name in ["fallback", "propertyKey"] {
+                assert!(facts.data_nodes.iter().any(|node| {
+                    node.kind == types::DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(read_name)
+                        && node.range.start_line == 3
+                }));
+            }
+            assert!(
+                facts.bindings.iter().all(|binding| {
+                    !matches!(
+                        binding.name.as_str(),
+                        "profile" | "name" | "scores" | "propertyKey" | "fallback" | "legacyName"
+                    ) || matches!(binding.name.as_str(), "propertyKey" | "fallback")
+                        && binding.kind == types::BindingKind::Parameter
+                }),
+                "{language:?}: property keys, default RHS reads, and var destructuring stay outside lexical declaration bindings"
+            );
+            assert!(facts.data_nodes.iter().all(|node| {
+                node.kind != types::DataNodeKind::Local
+                    || node.name.as_deref() != Some("legacyName")
+            }));
+        }
+    }
+
+    #[test]
     fn test_c_style_variable_mutations_preserve_read_modify_write_provenance() {
         let cases = vec![
             #[cfg(feature = "c")]

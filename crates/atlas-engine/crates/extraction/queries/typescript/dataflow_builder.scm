@@ -41,6 +41,18 @@
   name: (identifier) @df.assign_target
   value: (_) @df.assign_value)
 
+;; `let`/`const` declaration destructuring. The adapter filters the broad leaf
+;; captures to the `name` field of a lexical_declaration; the generic
+;; variable_declarator walker connects the whole initializer to every leaf.
+(variable_declarator
+  name: [(object_pattern) (array_pattern)]
+  value: (_) @df.destructure_value)
+(array_pattern (identifier) @df.destructure_target)
+(pair_pattern value: (identifier) @df.destructure_target)
+(rest_pattern (identifier) @df.destructure_target)
+(assignment_pattern left: (identifier) @df.destructure_target)
+(shorthand_property_identifier_pattern) @df.destructure_target
+
 ;; --- for...of / for...in iteration bindings ---
 ;; The adapter filters broad pattern-leaf captures against the left side of a
 ;; for_in_statement, then adds whole-iterable aggregate Assign edges (0.65).
@@ -92,15 +104,6 @@
 ;; --- Identifier uses (variable references) ---
 ;; Captured broadly; normalize filters out declarations/properties/types/callee-targets.
 (identifier) @df.identifier_use
-
-;; --- Destructuring binding ---
-(object_pattern
-  (shorthand_property_identifier_pattern) @df.assign_target)
-(pair_pattern
-  key: (_)
-  value: (identifier) @df.assign_target)
-(array_pattern
-  (identifier) @df.assign_target)
 
 ;; --- Property assignment (obj.field = value) ---
 (assignment_expression

@@ -701,7 +701,7 @@ impl LexicalBindingSpec for ArkTsAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "scope-chain-aware binding via TS grammar; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics and ArkUI callback ownership remain conservative",
+                "scope-chain-aware binding via TS grammar; let/const declaration destructuring simple/renamed/nested/default/rest pattern captures are block-scoped; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var declaration/loop binding semantics, assignment/parameter destructuring, and ArkUI callback ownership remain conservative",
             ],
         )
     }
@@ -723,7 +723,7 @@ impl DataflowSpec for ArkTsAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, async scheduling, ArkUI trailing-block, and nested callback internals remain conservative",
+                "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declaration destructuring receives whole-initializer aggregate provenance (Assign 0.85); let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact property/index or element/key projection, var declaration/loop binding semantics, assignment/parameter destructuring, member/subscript mutation or iteration targets, prefix/postfix result timing, async scheduling, ArkUI trailing-block, and nested callback internals remain conservative",
             ],
         )
     }

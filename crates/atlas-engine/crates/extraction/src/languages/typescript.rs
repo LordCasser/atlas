@@ -116,7 +116,7 @@ impl LexicalBindingSpec for TypeScriptFrontendSpec {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "scope-chain-aware binding with shadowing support; let/const declaration destructuring simple/renamed/nested/default/rest pattern captures are block-scoped; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var declaration/loop binding semantics and assignment/parameter destructuring remain conservative",
             ],
         )
     }
@@ -134,7 +134,7 @@ impl DataflowSpec for TypeScriptFrontendSpec {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declaration destructuring receives whole-initializer aggregate provenance (Assign 0.85); let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact property/index or element/key projection, var declaration/loop binding semantics, assignment/parameter destructuring, member/subscript mutation or iteration targets, prefix/postfix result timing, and async scheduling remain conservative",
             ],
         )
     }
@@ -314,13 +314,20 @@ pub(crate) fn normalize_ts_lexical(
     source: &str,
     file_id: FileId,
 ) -> Option<BindingDef> {
-    let kind = if capture_name == "lexical.for_variable" {
-        if !is_ts_declared_for_in_binding(node, source) {
-            return None;
+    let kind = match capture_name {
+        "lexical.for_variable" => {
+            if !is_ts_declared_for_in_binding(node, source) {
+                return None;
+            }
+            BindingKind::Local
         }
-        BindingKind::Local
-    } else {
-        ts_binding_kind(capture_name)?
+        "lexical.declaration_variable" => {
+            if !is_ts_declaration_binding_pattern(node) {
+                return None;
+            }
+            BindingKind::Local
+        }
+        _ => ts_binding_kind(capture_name)?,
     };
     let name = node_text(node, source)?;
     let range = node_range(node);
@@ -330,7 +337,7 @@ pub(crate) fn normalize_ts_lexical(
 /// Check if a tree-sitter identifier node is a declaration name, property name,
 /// or type name — i.e., it should NOT be treated as an identifier use.
 fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
-    if is_ts_for_in_binding_pattern(node) {
+    if is_ts_for_in_binding_pattern(node) || is_ts_declaration_binding_pattern(node) {
         return true;
     }
     let parent = match node.parent() {
@@ -389,6 +396,13 @@ pub(crate) fn normalize_ts_dataflow_builder(
         "df.assign_target" | "df.mutation_target" | "df.logical_mutation_target" => {
             make_df_assign_target(file_id, node, source, range)
         }
+        "df.destructure_target" => {
+            if is_ts_declaration_binding_pattern(node) {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
         "df.for_target" => {
             if is_ts_for_in_binding_pattern(node) {
                 make_df_assign_target(file_id, node, source, range)
@@ -403,15 +417,16 @@ pub(crate) fn normalize_ts_dataflow_builder(
             range,
             &["call_expression", "new_expression"],
         ),
-        "df.assign_value" | "df.mutation_value" | "df.logical_mutation_value" => {
-            make_df_assign_value(
-                file_id,
-                node,
-                source,
-                range,
-                &["call_expression", "new_expression"],
-            )
-        }
+        "df.assign_value"
+        | "df.destructure_value"
+        | "df.mutation_value"
+        | "df.logical_mutation_value" => make_df_assign_value(
+            file_id,
+            node,
+            source,
+            range,
+            &["call_expression", "new_expression"],
+        ),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_arg" => make_df_call_arg(
             file_id,
@@ -626,7 +641,7 @@ fn ts_for_in_owner(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>>
         })
 }
 
-fn collect_ts_for_in_bindings<'tree>(
+fn collect_ts_pattern_bindings<'tree>(
     node: tree_sitter::Node<'tree>,
     bindings: &mut Vec<tree_sitter::Node<'tree>>,
 ) {
@@ -634,18 +649,18 @@ fn collect_ts_for_in_bindings<'tree>(
         "identifier" | "shorthand_property_identifier_pattern" => bindings.push(node),
         "pair_pattern" => {
             if let Some(value) = node.child_by_field_name("value") {
-                collect_ts_for_in_bindings(value, bindings);
+                collect_ts_pattern_bindings(value, bindings);
             }
         }
         "assignment_pattern" | "object_assignment_pattern" => {
             if let Some(left) = node.child_by_field_name("left") {
-                collect_ts_for_in_bindings(left, bindings);
+                collect_ts_pattern_bindings(left, bindings);
             }
         }
         "array_pattern" | "object_pattern" | "rest_pattern" => {
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {
-                collect_ts_for_in_bindings(child, bindings);
+                collect_ts_pattern_bindings(child, bindings);
             }
         }
         _ => {}
@@ -660,7 +675,32 @@ fn is_ts_for_in_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
         return false;
     };
     let mut bindings = Vec::new();
-    collect_ts_for_in_bindings(left, &mut bindings);
+    collect_ts_pattern_bindings(left, &mut bindings);
+    bindings.iter().any(|binding| binding.id() == node.id())
+}
+
+fn ts_variable_declarator_owner(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    std::iter::successors(Some(node), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == "variable_declarator")
+        .filter(|declarator| {
+            declarator.child_by_field_name("name").is_some_and(|name| {
+                name.start_byte() <= node.start_byte() && node.end_byte() <= name.end_byte()
+            })
+        })
+}
+
+fn is_ts_declaration_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
+    let Some(declarator) = ts_variable_declarator_owner(node) else {
+        return false;
+    };
+    if declarator.parent().map(|parent| parent.kind()) != Some("lexical_declaration") {
+        return false;
+    }
+    let Some(name) = declarator.child_by_field_name("name") else {
+        return false;
+    };
+    let mut bindings = Vec::new();
+    collect_ts_pattern_bindings(name, &mut bindings);
     bindings.iter().any(|binding| binding.id() == node.id())
 }
 
@@ -695,7 +735,7 @@ pub(crate) fn build_ts_language_edges(
         };
         if let Some(&source_id) = pos_map.get(&iterable_key) {
             let mut targets = Vec::new();
-            collect_ts_for_in_bindings(left, &mut targets);
+            collect_ts_pattern_bindings(left, &mut targets);
             for target in targets {
                 let target_key = NodePosKey {
                     start_byte: target.start_byte() as u32,

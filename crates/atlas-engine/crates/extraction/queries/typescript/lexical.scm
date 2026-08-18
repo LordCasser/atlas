@@ -22,6 +22,15 @@
   (variable_declarator
     name: (identifier) @lexical.local))
 
+;; `let`/`const` declaration destructuring. Captures stay broad so nested
+;; patterns are covered; the adapter keeps only binding leaves under the
+;; `name` field of a lexical_declaration variable_declarator.
+(array_pattern (identifier) @lexical.declaration_variable)
+(pair_pattern value: (identifier) @lexical.declaration_variable)
+(rest_pattern (identifier) @lexical.declaration_variable)
+(assignment_pattern left: (identifier) @lexical.declaration_variable)
+(shorthand_property_identifier_pattern) @lexical.declaration_variable
+
 ;; --- for...of / for...in iteration variables ---
 ;; The leaf captures are intentionally broad because destructuring patterns
 ;; may nest. The adapter keeps only supported leaves inside the `left` field of
