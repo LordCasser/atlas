@@ -1,7 +1,8 @@
 //! File inventory store — lightweight file discovery index (Tier 0 bootstrap).
 //!
-//! Populated on first `atlas open` with cheap stat() data. Provides fast
-//! file lookup without full extraction.
+//! Populated by bounded Focus bootstrap/discovery with cheap stat() data.
+//! Provides fast file lookup without full extraction or an eager scan during
+//! `project(action="open")`.
 
 use rusqlite::params;
 use types::{Language, ids::FileId};

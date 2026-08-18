@@ -506,7 +506,7 @@ CREATE TABLE IF NOT EXISTS symbol_edge_candidates (
 );
 
 -- File inventory for lightweight first-time discovery (Tier 0 bootstrap).
--- Populated on first `atlas open` with cheap stat() data.
+-- Populated by bounded Focus bootstrap/discovery with cheap stat() data.
 -- No content_hash until fingerprinting (Tier 0.5).
 CREATE TABLE IF NOT EXISTS file_inventory (
     file_id BLOB PRIMARY KEY,

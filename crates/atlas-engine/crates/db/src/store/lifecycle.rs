@@ -157,7 +157,7 @@ impl Store {
 
     /// Open an empty in-memory database (no file on disk).
     ///
-    /// Used by tests and by [`open_project`] with `storage: "memory"`.
+    /// Used by tests and other explicitly ephemeral engine consumers.
     /// No WAL journal (single-connection, no concurrency).  The returned
     /// store is isolated to the current process and destroyed on drop.
     pub fn open_in_memory() -> anyhow::Result<Self> {
