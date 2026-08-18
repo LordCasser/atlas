@@ -13,6 +13,11 @@
     (varBindingPattern) @df.assign_target)
   initilizer: (_) @df.assign_value)
 
+;; --- Simple for-in binding: iterable aggregate -> iteration variable ---
+(forInExpression
+  . (varBindingPattern) @df.for_target
+  . (_) @df.for_iterable)
+
 ;; --- Match selector and pattern binding targets ---
 ;; The anchors select only `match (selector)`, not conditionless match bodies.
 (matchExpression

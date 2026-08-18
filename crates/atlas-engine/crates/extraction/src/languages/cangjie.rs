@@ -203,7 +203,7 @@ impl LexicalBindingSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+                "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative",
             ],
         )
     }
@@ -228,7 +228,7 @@ impl DataflowSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative",
+                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple loop variables; iterator element/structural projection and guard control dependencies remain conservative",
             ],
         )
     }
@@ -249,7 +249,7 @@ impl DataflowSpec for CangjieAdapter {
         _scopes: &[ScopeDef],
         edges: &mut Vec<DataFlowEdge>,
     ) -> anyhow::Result<()> {
-        walk_cangjie_match_edges(ctx.root, pos_map, edges);
+        walk_cangjie_language_edges(ctx.root, pos_map, edges);
         Ok(())
     }
 }
@@ -388,6 +388,7 @@ fn cj_scope_kind(capture: &str) -> Option<ScopeKind> {
         "scope.class" => Some(ScopeKind::Class),
         "scope.interface" => Some(ScopeKind::Class),
         "scope.function" => Some(ScopeKind::Function),
+        "scope.loop" => Some(ScopeKind::Loop),
         "scope.conditional" => Some(ScopeKind::Conditional),
         "scope.block" => Some(ScopeKind::Block),
         _ => None,
@@ -400,6 +401,7 @@ fn cj_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
+        "lexical.for_variable" => Some(BindingKind::Local),
         "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
     }
@@ -456,6 +458,16 @@ fn is_cangjie_match_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
             .is_none_or(|parent| parent.kind() != "enumPattern")
 }
 
+fn is_cangjie_for_in_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
+    node.kind() == "varBindingPattern"
+        && node.parent().is_some_and(|parent| {
+            parent.kind() == "forInExpression"
+                && parent
+                    .named_child(0)
+                    .is_some_and(|target| target.id() == node.id())
+        })
+}
+
 fn collect_cangjie_match_bindings<'tree>(
     node: tree_sitter::Node<'tree>,
     bindings: &mut Vec<tree_sitter::Node<'tree>>,
@@ -486,7 +498,7 @@ fn collect_cangjie_match_case_bindings<'tree>(
     }
 }
 
-fn walk_cangjie_match_edges(
+fn walk_cangjie_language_edges(
     node: tree_sitter::Node<'_>,
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
@@ -542,9 +554,39 @@ fn walk_cangjie_match_edges(
         }
     }
 
+    if node.kind() == "forInExpression"
+        && let (Some(target), Some(iterable)) = (node.named_child(0), node.named_child(1))
+        && is_cangjie_for_in_binding_pattern(target)
+    {
+        let target_key = NodePosKey {
+            start_byte: target.start_byte() as u32,
+            end_byte: target.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let iterable_key = NodePosKey {
+            start_byte: iterable.start_byte() as u32,
+            end_byte: iterable.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let (Some(&target_id), Some(&source_id)) =
+            (pos_map.get(&target_key), pos_map.get(&iterable_key))
+        {
+            let edge_id =
+                DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+            edges.push(DataFlowEdge::new(
+                edge_id,
+                source_id,
+                target_id,
+                DataFlowKind::Assign,
+                node_range(target),
+                0.65,
+            ));
+        }
+    }
+
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_cangjie_match_edges(child, pos_map, edges);
+        walk_cangjie_language_edges(child, pos_map, edges);
     }
 }
 
@@ -602,6 +644,16 @@ fn normalize_cangjie_dataflow(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.for_target" => {
+            if is_cangjie_for_in_binding_pattern(node) {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
+        "df.for_iterable" => {
+            make_df_assign_value(file_id, node, source, range, &["postfixExpression"])
+        }
         "df.pattern_target" => {
             if is_cangjie_match_binding_pattern(node) {
                 make_df_assign_target(file_id, node, source, range)
@@ -770,7 +822,7 @@ fn normalize_cangjie_dataflow(
             (Some(dn), None)
         }
         "df.identifier_use" => {
-            if is_cangjie_match_pattern_syntax(node) {
+            if is_cangjie_match_pattern_syntax(node) || is_cangjie_for_in_binding_pattern(node) {
                 return (None, None);
             }
             // Part A: standard declaration/property filter (checks immediate parent)
@@ -853,6 +905,118 @@ mod tests {
         assert!(!spec.scope_query().is_empty());
         assert!(!spec.lexical_query().is_empty());
         assert!(!spec.dataflow_builder_query().is_empty());
+    }
+
+    #[test]
+    fn test_cj_simple_for_in_binding_and_iterable_flow() {
+        let source = concat!(
+            "func select(values: Array<Int64>, value: Int64): Int64 {\n",
+            "    for (value in values where value > 0) {\n",
+            "        consume(value)\n",
+            "    }\n",
+            "    return value\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("for_in.cj");
+        let facts = crate::extract_file_with_mode(
+            &cangjie_frontend(),
+            file_id,
+            std::path::Path::new("for_in.cj"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        value_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(value_bindings.len(), 2);
+        let outer = value_bindings[0];
+        let iteration = value_bindings[1];
+        assert_eq!(outer.kind, BindingKind::Parameter);
+        assert_eq!(iteration.kind, BindingKind::Local);
+        assert_ne!(outer.id, iteration.id);
+        assert_ne!(outer.scope_id, iteration.scope_id);
+        assert_eq!(outer.function_id, iteration.function_id);
+        let iteration_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == iteration.scope_id)
+            .expect("for-in loop scope");
+        assert_eq!(iteration_scope.kind, ScopeKind::Loop);
+
+        for line in [1, 2] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "value"
+                    && use_.range.start_line == line
+                    && use_.binding_id == Some(iteration.id)
+            }));
+        }
+        assert!(facts.binding_uses.iter().any(|use_| {
+            use_.name == "value" && use_.range.start_line == 4 && use_.binding_id == Some(outer.id)
+        }));
+
+        let target = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 1
+            })
+            .expect("for-in Local target");
+        assert_eq!(target.binding_id, Some(iteration.id));
+        let iterable = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("values")
+                    && node.range.start_line == 1
+            })
+            .expect("for-in iterable Expr");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == iterable.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+                && edge.confidence == 0.65
+        }));
+
+        let body_use = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 2
+            })
+            .expect("for-in body use");
+        let post_loop_use = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 4
+            })
+            .expect("post-loop outer use");
+        assert_eq!(body_use.binding_id, Some(iteration.id));
+        assert_eq!(post_loop_use.binding_id, Some(outer.id));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == target.id
+                && edge.target == body_use.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse || node.range != target.range
+            })
+        );
     }
 
     #[test]

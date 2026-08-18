@@ -1059,9 +1059,9 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
+            "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, conservative match subject-to-binding flow, and aggregate for-in iterable-to-simple-binding flow",
             "method call targets now captured (simple + obj.method() patterns)",
-            "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+            "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative",
         ],
         feature_overrides: &[
             (
@@ -1076,7 +1076,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+                        "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative",
                     ],
                 ),
             ),
@@ -1085,7 +1085,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative",
+                        "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple loop variables; iterator element/structural projection and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1094,7 +1094,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "scope-chain-aware use-def for parameters/simple locals; match guard/body uses share arm binding identity",
+                        "scope-chain-aware use-def for parameters/simple locals and loop-scoped simple for-in variables; match guard/body uses share arm binding identity; tuple/destructuring and iterator element projection remain conservative",
                     ],
                 ),
             ),
@@ -2892,9 +2892,9 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
+                "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, conservative match subject-to-binding flow, and aggregate for-in iterable-to-simple-binding flow",
                 "method call targets now captured (simple + obj.method() patterns)",
-                "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+                "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative",
             ]
         );
 
@@ -2922,7 +2922,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative"
+                    "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative"
                 ],
             )
         );
@@ -2931,7 +2931,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative"
+                    "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple loop variables; iterator element/structural projection and guard control dependencies remain conservative"
                 ]
             )
         );
@@ -2940,7 +2940,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "scope-chain-aware use-def for parameters/simple locals; match guard/body uses share arm binding identity"
+                    "scope-chain-aware use-def for parameters/simple locals and loop-scoped simple for-in variables; match guard/body uses share arm binding identity; tuple/destructuring and iterator element projection remain conservative"
                 ],
             )
         );

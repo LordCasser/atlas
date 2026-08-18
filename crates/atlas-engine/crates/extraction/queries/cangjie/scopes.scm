@@ -6,5 +6,6 @@
 (interfaceDefinition) @scope.interface
 (functionDefinition) @scope.function
 (mainDefinition) @scope.function
+(forInExpression) @scope.loop
 (matchCase) @scope.conditional
 (block) @scope.block
