@@ -2545,6 +2545,225 @@ fn fx_typescript_family_declaration_destructuring_persists_and_traces_initialize
 }
 
 #[test]
+fn fx_typescript_family_assignment_destructuring_persists_and_traces_rhs() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "assignment_destructuring.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "assignment_destructuring.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "assignment_destructuring.ets"),
+    ];
+    let source = concat!(
+        "function update(source, fallback, key, holder, items) {\n",
+        "  let existing = 0, renamed = 0, nested = 0, computed = 0, defaulted = 0, rest = [], first = 0, tail = [];\n",
+        "  ({ existing, prop: renamed, nested: { value: nested }, [key]: computed, fallback: defaulted = fallback, ...rest } = source);\n",
+        "  [first, , existing, ...tail] = source.items;\n",
+        "  ({ value: holder.value } = source);\n",
+        "  [items[0]] = source.items;\n",
+        "  consume(existing, renamed, nested, computed, defaulted, rest, first, tail);\n",
+        "  return fallback;\n",
+        "}\n",
+    );
+
+    for (language, path) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted assignment bindings: {error}"));
+        let nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted assignment nodes: {error}"));
+
+        let binding_id = |name: &str| {
+            let matches: Vec<_> = bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "{language}: assignment target {name} must reuse one binding"
+            );
+            assert_eq!(matches[0].range.start_line, 1, "{language}: {name}");
+            matches[0].id
+        };
+
+        for (rhs_name, line, target_name) in [
+            ("source", 2, "existing"),
+            ("source", 2, "renamed"),
+            ("source", 2, "nested"),
+            ("source", 2, "computed"),
+            ("source", 2, "defaulted"),
+            ("source", 2, "rest"),
+            ("source.items", 3, "first"),
+            ("source.items", 3, "existing"),
+            ("source.items", 3, "tail"),
+        ] {
+            let rhs = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(rhs_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: assignment RHS {rhs_name}"));
+            let target = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: assignment target {target_name}"));
+            assert_eq!(
+                target.binding_id,
+                Some(binding_id(target_name)),
+                "{language}"
+            );
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&rhs.id)
+                    .unwrap_or_else(|error| panic!("{language}: assignment RHS edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                "{language}: {rhs_name} must reach {target_name}"
+            );
+        }
+
+        for read_name in ["key", "fallback"] {
+            assert!(nodes.iter().any(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(read_name)
+                    && node.range.start_line == 2
+            }));
+        }
+        for line in [4, 5] {
+            assert!(
+                nodes.iter().all(|node| {
+                    node.kind != DataNodeKind::Local || node.range.start_line != line
+                })
+            );
+        }
+
+        let nested_use = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("nested")
+                    && node.range.start_line == 6
+            })
+            .unwrap_or_else(|| panic!("{language}: nested body use"));
+        let response = TraceEngine::new(store.clone()).trace_variable(
+            &file_id,
+            nested_use.range.start_line + 1,
+            nested_use.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, language);
+        let trace = response
+            .result
+            .unwrap_or_else(|| panic!("{language}: assignment destructuring trace"));
+        assert_has_edge_kind(&trace, DataFlowKind::Assign);
+        assert_step_with_name(&store, &trace, DataFlowKind::Assign, "source");
+    }
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_typescript_real_opencode_assignment_destructuring_persists_and_traces() {
+    let source = example_source_or_skip!("opencode/packages/console/core/src/util/date.ts");
+    let path = "packages/console/core/src/util/date.ts";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let assignment_line = source
+        .lines()
+        .position(|line| line.contains(";[y, m] = shift(y, m, -1)"))
+        .expect("OpenCode assignment destructuring") as u32;
+    let post_assignment_line = source
+        .lines()
+        .enumerate()
+        .skip(assignment_line as usize + 1)
+        .find(|(_, line)| line.trim() == "start = anchor(y, m)")
+        .map(|(line, _)| line as u32)
+        .expect("OpenCode post-assignment y use");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("OpenCode assignment bindings");
+    let nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("OpenCode assignment nodes");
+    let rhs = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("shift(y, m, -1)")
+                && node.range.start_line == assignment_line
+        })
+        .expect("OpenCode shift assignment RHS");
+
+    for target_name in ["y", "m"] {
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.name == target_name)
+            .unwrap_or_else(|| panic!("OpenCode binding {target_name}"));
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|candidate| candidate.name == target_name)
+                .count(),
+            1,
+            "OpenCode assignment must not declare another {target_name} binding"
+        );
+        let target = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(target_name)
+                    && node.range.start_line == assignment_line
+            })
+            .unwrap_or_else(|| panic!("OpenCode assignment target {target_name}"));
+        assert_eq!(target.binding_id, Some(binding.id));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&rhs.id)
+                .expect("OpenCode assignment RHS edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.85
+                })
+        );
+    }
+
+    let y_use = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("y")
+                && node.range.start_line == post_assignment_line
+        })
+        .expect("OpenCode post-assignment y use");
+    let trace = TraceEngine::new(store.clone())
+        .trace_variable(
+            &file_id,
+            y_use.range.start_line + 1,
+            y_use.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("OpenCode assignment destructuring trace");
+    assert_has_edge_kind(&trace, DataFlowKind::Assign);
+    assert_step_with_name(&store, &trace, DataFlowKind::Assign, "shift(y, m, -1)");
+}
+
+#[test]
 #[cfg(feature = "typescript")]
 fn fx_typescript_real_opencode_for_of_pattern_persists_and_traces() {
     let source = example_source_or_skip!(

@@ -2775,6 +2775,162 @@ fn n5_focus_typescript_family_declaration_destructuring_matches_index_full() {
     }
 }
 
+/// TypeScript-family assignment destructuring must reuse prior bindings and
+/// preserve whole-RHS aggregate provenance identically under Full Index and
+/// cold Focus, without materializing an unrelated peer unit.
+#[test]
+fn n5_focus_typescript_family_assignment_destructuring_matches_index_full() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "assignment_destructuring.ts", "peer.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "assignment_destructuring.js", "peer.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "assignment_destructuring.ets", "peer.ets"),
+    ];
+    let source = concat!(
+        "function update(source, fallback, key, holder, items) {\n",
+        "  let existing = 0, renamed = 0, nested = 0, computed = 0, defaulted = 0, rest = [], first = 0, tail = [];\n",
+        "  ({ existing, prop: renamed, nested: { value: nested }, [key]: computed, fallback: defaulted = fallback, ...rest } = source);\n",
+        "  [first, , existing, ...tail] = source.items;\n",
+        "  ({ value: holder.value } = source);\n",
+        "  [items[0]] = source.items;\n",
+        "  consume(existing, renamed, nested, computed, defaulted, rest, first, tail);\n",
+        "  return fallback;\n",
+        "}\n",
+    );
+    let peer_source = "function unrelated() { return 42; }\n";
+
+    for (language, path, peer_path) in cases {
+        let fixture = [(path, source), (peer_path, peer_source)];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_update = symbol_id_by_name(&indexed_store, "update");
+        let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_update);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_update);
+
+        for name in [
+            "existing",
+            "renamed",
+            "nested",
+            "computed",
+            "defaulted",
+            "rest",
+            "first",
+            "tail",
+        ] {
+            assert_eq!(
+                indexed_bindings
+                    .iter()
+                    .filter(|binding| binding.1 == name)
+                    .count(),
+                1,
+                "{language}: assignment target {name} must reuse one binding"
+            );
+        }
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_update)
+            .unwrap_or_else(|error| panic!("{language}: full Index assignment nodes: {error}"));
+        for (rhs_name, line, target_name) in [
+            ("source", 2, "existing"),
+            ("source", 2, "renamed"),
+            ("source", 2, "nested"),
+            ("source", 2, "computed"),
+            ("source", 2, "defaulted"),
+            ("source", 2, "rest"),
+            ("source.items", 3, "first"),
+            ("source.items", 3, "existing"),
+            ("source.items", 3, "tail"),
+        ] {
+            let rhs = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(rhs_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index RHS {rhs_name}"));
+            let target = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index target {target_name}"));
+            assert!(
+                indexed_store
+                    .find_dataflow_edges_by_source(&rhs.id)
+                    .unwrap_or_else(|error| panic!("{language}: assignment edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                "{language}: {rhs_name} must reach {target_name}"
+            );
+        }
+        for line in [4, 5] {
+            assert!(
+                indexed_nodes.iter().all(|node| {
+                    node.kind != DataNodeKind::Local || node.range.start_line != line
+                })
+            );
+        }
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let update = symbol_id_by_name(&focused_store, "update");
+        let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&update)
+                .unwrap_or_else(|error| panic!("{language}: cold assignment unit: {error}"))
+                .is_empty(),
+            "{language}: assignment unit must be cold before Focus ensure"
+        );
+
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &update,
+                Some("typescript-family-assignment-destructuring-parity"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure assignment unit: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &update),
+            indexed_slice,
+            "{language}: Focus assignment dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &update),
+            indexed_bindings,
+            "{language}: Focus assignment bindings == full Index"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unrelated)
+                .unwrap_or_else(|error| panic!("{language}: assignment peer state: {error}"))
+                .is_empty(),
+            "{language}: assignment peer unit must stay outside the Focus window"
+        );
+    }
+}
+
 /// TypeScript-family parameter destructuring must preserve one function-scoped
 /// binding per leaf and a shared top-level argument position under both full
 /// Index and Focus. Full summary bridging and Focus runtime bridging must each
