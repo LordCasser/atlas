@@ -172,12 +172,11 @@ impl Slicer {
                     }
                     _ => {
                         // A linear trace cannot display every operand of an
-                        // expression. Prefer a call target first so its
-                        // ArgToCall bridge remains visible, then state-bearing
-                        // inputs over literals so read-modify-write chains
-                        // follow the previous value instead of a constant.
+                        // expression. Prefer a resolved callee return over
+                        // syntactic operands, then state-bearing inputs over
+                        // literals so read-modify-write chains follow the
+                        // previous value instead of a constant.
                         let source_priority = |node: Option<&DataNode>| match node.map(|n| n.kind) {
-                            Some(types::enums::DataNodeKind::CallTarget) => 4,
                             Some(
                                 types::enums::DataNodeKind::VariableUse
                                 | types::enums::DataNodeKind::CallArg
@@ -192,8 +191,13 @@ impl Slicer {
                             Some(_) => 1,
                             None => 0,
                         };
-                        source_priority(a_dn)
-                            .cmp(&source_priority(b_dn))
+                        let edge_priority = |kind: DataFlowKind| match kind {
+                            DataFlowKind::ReturnToCall => 1,
+                            _ => 0,
+                        };
+                        edge_priority(a.kind)
+                            .cmp(&edge_priority(b.kind))
+                            .then_with(|| source_priority(a_dn).cmp(&source_priority(b_dn)))
                             .then_with(|| {
                                 a_dn.map(|dn| dn.range.start_byte)
                                     .unwrap_or(0)
