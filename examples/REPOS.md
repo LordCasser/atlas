@@ -17,7 +17,7 @@
 | `elasticsearch/` | https://github.com/elastic/elasticsearch | 全量目录（e2e 遍历含 `.atlas/atlas.db` 的项目） | Java 大仓库基准、e2e_tests |
 | `typescript_example/` | TypeScript 示例项目（4054 文件，2644 入库） | 全量目录 | TS 性能基准、resolution 正确性基准 |
 | `arkts_example/` | ArkTS 示例项目（788M） | 全量目录 | ArkTS 解析回归 |
-| `opencode/` | https://github.com/anomalyco/opencode | `packages/core/src/shell.ts`、`packages/core/src/session/projector.ts`、`packages/sdk/js/src/v2/gen/core/queryKeySerializer.gen.ts` | TypeScript `??=`、declaration destructuring 与 `[key, value] of entries` 真实语料的 SQLite/Trace 回归 |
+| `opencode/` | https://github.com/anomalyco/opencode | `packages/core/src/shell.ts`、`packages/core/src/session/projector.ts`、`packages/sdk/js/src/v2/gen/core/queryKeySerializer.gen.ts`、`packages/core/src/github-copilot/responses/map-openai-responses-finish-reason.ts`、`packages/core/src/github-copilot/responses/openai-responses-language-model.ts` | TypeScript `??=`、declaration/iteration destructuring、parameter destructuring function binding 与真实跨文件 `ArgToParam` 的 SQLite/Trace 回归 |
 | `c_example/` | C 示例项目（725 文件） | `src/tool_convert.c`、`src/hdr_histogram.c` 等 | C CFG、fallthrough、label 边回归 |
 | `c_sharp_example/` | https://github.com/shadowsocks-backup/shadowsocks-csharp | `shadowsocks-csharp/Controller/Service/Listener.cs`、`shadowsocks-csharp/Controller/FileManager.cs` | C# 直接 goto、CFG 回归 |
 | `cangjie_example/` | Cangjie 语言示例 | `src/command_install.cj`、`src/stdx/command.cj` | Cangjie 解析回归 |

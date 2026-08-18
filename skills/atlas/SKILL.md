@@ -8,9 +8,6 @@ description: >-
   Atlas over filename guesses or blind text search. Always project(open) then
   scoped MCP tools; do not run atlas index from the agent (blocks large repos).
 license: MIT
-compatibility: >-
-  Requires Atlas MCP (`atlas mcp` / built `atlas` with `--features mcp`) and a
-  local source checkout. Queries need no network. Agent path is MCP-only.
 metadata:
   version: "1.6.1"
   repository: https://github.com/lordcasser/atlas
@@ -93,7 +90,16 @@ simple、renamed、nested、default-left and rest targets in the enclosing block
 The whole initializer reaches every supported target through aggregate Assign
 0.85；computed keys and default RHS expressions remain reads. Treat this as
 aggregate origin evidence, not exact property/index projection. `var`
-declarations and assignment/parameter destructuring remain conservative.
+declarations and assignment destructuring remain conservative.
+
+TypeScript、JavaScript and ArkTS function、method and arrow parameter
+destructuring binds simple、renamed、nested、default-left and rest leaves in
+the function scope. Leaves from the same top-level parameter retain the same
+runtime argument position, excluding TypeScript's erased `this` parameter. The
+whole call argument reaches each leaf through aggregate `ArgToParam`, whether
+supplied by a Full Index summary or a Focus runtime edge. Computed keys and
+default RHS expressions remain reads. Treat this as aggregate origin evidence,
+not exact property/index projection or proof that a parameter default activates.
 
 TypeScript、JavaScript and ArkTS `let`/`const` `for...of`/`for...in` simple or
 nested pattern captures are loop-scoped；direct existing-local assignment forms
