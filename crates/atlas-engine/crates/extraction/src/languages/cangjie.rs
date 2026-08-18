@@ -1242,7 +1242,7 @@ mod tests {
             language: Language::Cangjie,
         };
 
-        let result = DataFlowBuilder::extract(&spec, &ctx, &[], &[], &[], None).unwrap();
+        let result = DataFlowBuilder::extract(&spec, &spec, &ctx, &[], &[], &[], None).unwrap();
         let value = result
             .nodes
             .iter()

@@ -196,6 +196,15 @@ pub trait LexicalBindingSpec: Send + Sync {
     fn is_lexical_scope(&self, _kind: ScopeKind) -> bool {
         true
     }
+
+    /// Whether names unresolved in `scope` may continue into its parent scope.
+    ///
+    /// Most languages use lexical capture across nested scopes. Languages with
+    /// explicit callable capture rules can stop lookup at the callable scope
+    /// and represent allowed captures as bindings inside that scope.
+    fn inherits_bindings_from_parent(&self, _scope: &ScopeDef) -> bool {
+        true
+    }
 }
 
 /// Dataflow extraction spec.

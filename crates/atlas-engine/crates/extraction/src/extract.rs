@@ -442,6 +442,7 @@ pub fn extract_file_with_mode(
         if mode.produces_dataflow() && frontend.dataflow.capability().is_supported() {
             let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
                 frontend.dataflow.as_ref(),
+                frontend.lexical.as_ref(),
                 &ectx,
                 &bindings,
                 &scopes,
@@ -1081,9 +1082,8 @@ fn build_reference_binding_uses(
             .push(binding);
     }
 
-    // Build scope parent map from the scope tree
-    let parent_map: HashMap<ScopeId, Option<ScopeId>> =
-        scopes.iter().map(|s| (s.id, s.parent_id)).collect();
+    let scopes_by_id: HashMap<ScopeId, &ScopeDef> =
+        scopes.iter().map(|scope| (scope.id, scope)).collect();
 
     // Collect binding declaration ranges (for filtering out decl sites)
     let binding_ranges: Vec<TextRange> = declaration_uses.iter().map(|use_| use_.range).collect();
@@ -1130,27 +1130,15 @@ fn build_reference_binding_uses(
 
         // Resolve the binding by walking the scope chain
         let binding_id = match containing_scope {
-            Some(mut sid) => {
-                let mut found = None;
-                loop {
-                    if let Some(bindings_in_scope) = scope_bindings.get(&sid)
-                        && let Some(b) = super::languages::shared::latest_visible_binding(
-                            bindings_in_scope.iter().copied(),
-                            &name,
-                            range.start_byte,
-                        )
-                    {
-                        found = Some(b.id);
-                        break;
-                    }
-                    let parent = parent_map.get(&sid).and_then(|&maybe_p| maybe_p);
-                    match parent {
-                        Some(pid) => sid = pid,
-                        None => break,
-                    }
-                }
-                found
-            }
+            Some(scope_id) => super::languages::shared::resolve_binding_in_scope_chain(
+                &scope_bindings,
+                &scopes_by_id,
+                scope_id,
+                &name,
+                range.start_byte,
+                |scope| lexical_spec.inherits_bindings_from_parent(scope),
+            )
+            .map(|binding| binding.id),
             None => None,
         };
 

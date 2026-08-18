@@ -1,10 +1,30 @@
-;; PHP lexical binding captures: parameters, foreach vars, catch vars, static vars
-;; Note: assignment LHS ($x = ...) is NOT treated as a binding definition —
-;; only explicit declaration points (param, foreach, catch, static) create BindingDefs.
+;; PHP lexical binding captures: parameters, assignment-created locals,
+;; foreach vars, catch vars, static vars, and explicit anonymous-function captures.
 
 ;; --- Function/method parameters ---
 (simple_parameter
   name: (variable_name) @lexical.parameter)
+
+;; --- Assignment-created locals ---
+(assignment_expression
+  left: (variable_name) @lexical.local)
+
+(reference_assignment_expression
+  left: (variable_name) @lexical.local)
+
+(augmented_assignment_expression
+  left: (variable_name) @lexical.local)
+
+(update_expression
+  argument: (variable_name) @lexical.local)
+
+;; --- Explicit anonymous-function captures (use ($value, &$other)) ---
+(anonymous_function_use_clause
+  (variable_name) @lexical.local)
+
+(anonymous_function_use_clause
+  (by_ref
+    (variable_name) @lexical.local))
 
 ;; --- Foreach key/value variables (foreach ($items as $key => $value)) ---
 ;; Anchor after `as` so the collection expression is never misclassified as a

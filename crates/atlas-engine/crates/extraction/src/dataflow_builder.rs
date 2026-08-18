@@ -48,7 +48,7 @@ use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{BindingId, DataFlowEdgeId, DataNodeId, ScopeId, SymbolId};
 use types::structs::{SymbolDef, TextRange};
 
-use super::frontend::{Capture, DataflowSpec};
+use super::frontend::{Capture, DataflowSpec, LexicalBindingSpec};
 use crate::extraction_ctx::ExtractionCtx;
 
 /// Key for mapping tree-sitter capture positions to DataNodeIds.
@@ -88,6 +88,7 @@ impl DataFlowBuilder {
     /// dataflow for the entire file when only a window of functions is needed.
     pub(crate) fn extract(
         dataflow_spec: &dyn DataflowSpec,
+        lexical_spec: &dyn LexicalBindingSpec,
         ctx: &ExtractionCtx<'_>,
         bindings: &[BindingDef],
         scopes: &[ScopeDef],
@@ -183,7 +184,9 @@ impl DataFlowBuilder {
         }
 
         // Post-process: resolve bindings to nodes
-        resolve_bindings_to_nodes(&mut nodes, bindings, scopes);
+        resolve_bindings_to_nodes(&mut nodes, bindings, scopes, |scope| {
+            lexical_spec.inherits_bindings_from_parent(scope)
+        });
 
         // Resolve function_ids BEFORE building edges so that
         // FieldLoad, Assign, and containment edges have correct function_id
@@ -235,7 +238,12 @@ impl DataFlowBuilder {
 ///
 /// Falls back to a flat name-based lookup when the node's range is not
 /// contained by any scope.
-fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], scopes: &[ScopeDef]) {
+fn resolve_bindings_to_nodes(
+    nodes: &mut [DataNode],
+    bindings: &[BindingDef],
+    scopes: &[ScopeDef],
+    inherits_bindings_from_parent: impl Fn(&ScopeDef) -> bool,
+) {
     // Build scope → bindings map (bindings indexed by their scope_id)
     let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
     for binding in bindings {
@@ -245,9 +253,8 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
             .push(binding);
     }
 
-    // Build parent map from the scope tree
-    let parent_map: HashMap<ScopeId, Option<ScopeId>> =
-        scopes.iter().map(|s| (s.id, s.parent_id)).collect();
+    let scopes_by_id: HashMap<ScopeId, &ScopeDef> =
+        scopes.iter().map(|scope| (scope.id, scope)).collect();
 
     // Flat fallback: for nodes not contained by any scope, find the
     // binding whose range most closely precedes or contains the node's
@@ -295,31 +302,15 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
         let containing_scope = innermost_scope_by_range(scopes, node.range);
 
         let binding_id = match containing_scope {
-            Some(scope_id) => {
-                // Walk the scope chain upward looking for a binding with
-                // the matching name
-                let mut found: Option<&BindingId> = None;
-                let mut current = Some(scope_id);
-                while let Some(sid) = current {
-                    if let Some(bindings_in_scope) = scope_bindings.get(&sid)
-                        && let Some(b) = crate::languages::shared::latest_visible_binding(
-                            bindings_in_scope.iter().copied(),
-                            name,
-                            node.range.start_byte,
-                        )
-                    {
-                        found = Some(&b.id);
-                        break;
-                    }
-                    current = parent_map.get(&sid).and_then(|&maybe_parent| maybe_parent);
-                }
-                if found.is_some() {
-                    found
-                } else {
-                    // Fallback: find closest binding by range for this name
-                    closest_binding_by_range(bindings, name, node.range)
-                }
-            }
+            Some(scope_id) => crate::languages::shared::resolve_binding_in_scope_chain(
+                &scope_bindings,
+                &scopes_by_id,
+                scope_id,
+                name,
+                node.range.start_byte,
+                &inherits_bindings_from_parent,
+            )
+            .map(|binding| &binding.id),
             None => closest_binding_by_range(bindings, name, node.range),
         };
 
@@ -1364,6 +1355,7 @@ mod tests {
         let spec = TypeScriptFrontendSpec;
         let ts_lang = spec.tree_sitter_language();
         let dataflow_spec: &dyn DataflowSpec = &spec;
+        let lexical_spec: &dyn LexicalBindingSpec = &spec;
 
         let mut parser = Parser::new();
         parser.set_language(&ts_lang).unwrap();
@@ -1384,9 +1376,16 @@ mod tests {
             language: types::Language::TypeScript,
         };
 
-        let result =
-            DataFlowBuilder::extract(dataflow_spec, &ctx, &bindings, &scopes, &symbols, None)
-                .unwrap();
+        let result = DataFlowBuilder::extract(
+            dataflow_spec,
+            lexical_spec,
+            &ctx,
+            &bindings,
+            &scopes,
+            &symbols,
+            None,
+        )
+        .unwrap();
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
@@ -1485,7 +1484,7 @@ mod tests {
             use_node(file_id, 100),
         ];
 
-        resolve_bindings_to_nodes(&mut nodes, &bindings, &scopes);
+        resolve_bindings_to_nodes(&mut nodes, &bindings, &scopes, |_| true);
 
         assert_eq!(nodes[0].binding_id, Some(parameter_id));
         assert_eq!(nodes[1].binding_id, Some(guard_id));

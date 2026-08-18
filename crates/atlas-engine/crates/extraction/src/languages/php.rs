@@ -219,7 +219,7 @@ impl LexicalBindingSpec for PhpAdapter {
         FeatureSupport::supported_with_limitations(
             0.62,
             vec![
-                "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
+                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
             ],
         )
     }
@@ -235,6 +235,10 @@ impl LexicalBindingSpec for PhpAdapter {
         strip_php_sigil(raw).to_string()
     }
 
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        php_enclosing_callable_kind(node) != Some("arrow_function")
+    }
+
     fn coalesce_same_scope_bindings(&self) -> bool {
         true
     }
@@ -244,6 +248,10 @@ impl LexicalBindingSpec for PhpAdapter {
             kind,
             ScopeKind::File | ScopeKind::Function | ScopeKind::Method
         )
+    }
+
+    fn inherits_bindings_from_parent(&self, scope: &ScopeDef) -> bool {
+        !matches!(scope.kind, ScopeKind::Function | ScopeKind::Method)
     }
 }
 
@@ -421,6 +429,9 @@ fn normalize_php_lexical(
     source: &str,
     file_id: FileId,
 ) -> Option<BindingDef> {
+    if php_enclosing_callable_kind(node) == Some("arrow_function") {
+        return None;
+    }
     let kind = php_binding_kind(capture_name)?;
     let name = strip_php_sigil(&node_text(node, source)?).to_string();
     let range = node_range(node);
@@ -435,12 +446,34 @@ fn strip_php_sigil(raw: &str) -> &str {
     raw.trim_start_matches('$')
 }
 
+/// Return the closest callable syntax enclosing `node`.
+///
+/// PHP arrow functions do not have a first-class symbol in the current
+/// frontend. Their captures and parameters are therefore excluded instead of
+/// being falsely attributed to an enclosing named function.
+fn php_enclosing_callable_kind(node: tree_sitter::Node<'_>) -> Option<&'static str> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "arrow_function" => return Some("arrow_function"),
+            "anonymous_function" => return Some("anonymous_function"),
+            "function_definition" => return Some("function_definition"),
+            "method_declaration" => return Some("method_declaration"),
+            _ => current = parent.parent(),
+        }
+    }
+    None
+}
+
 fn normalize_php_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
 ) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    if php_enclosing_callable_kind(node) == Some("arrow_function") {
+        return (None, None);
+    }
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
@@ -917,5 +950,131 @@ function f($req) {
                 .unwrap_or_else(|| panic!("PHP {name} data node on line {line}"));
             assert_eq!(node.binding_id, binding_by_name.get(name).copied());
         }
+    }
+
+    #[test]
+    fn test_assignment_bindings_are_isolated_by_anonymous_function_scope() {
+        let source = concat!(
+            "<?php\n",
+            "function transform($input) {\n",
+            "    $value = $input;\n",
+            "    $hidden = $input;\n",
+            "    $callback = function ($captured) use ($input) {\n",
+            "        $value = $input + $captured;\n",
+            "        consume($value, $hidden);\n",
+            "    };\n",
+            "    return $value;\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("anonymous_scope.php");
+        let facts = crate::extract_file_with_mode(
+            &php_frontend(),
+            file_id,
+            std::path::Path::new("anonymous_scope.php"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        value_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(value_bindings.len(), 2);
+        assert_ne!(value_bindings[0].id, value_bindings[1].id);
+        assert_ne!(value_bindings[0].scope_id, value_bindings[1].scope_id);
+        assert_eq!(value_bindings[0].function_id, value_bindings[1].function_id);
+        assert!(value_bindings[0].function_id.is_some());
+
+        let inner_value_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "value" && use_.range.start_line == 6)
+            .expect("anonymous-function value use");
+        assert_eq!(inner_value_use.binding_id, Some(value_bindings[1].id));
+        let outer_value_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "value" && use_.range.start_line == 8)
+            .expect("outer value use");
+        assert_eq!(outer_value_use.binding_id, Some(value_bindings[0].id));
+
+        let captured_input = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "input" && binding.range.start_line == 4)
+            .expect("explicit anonymous-function capture");
+        let inner_input_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "input" && use_.range.start_line == 5)
+            .expect("captured input use");
+        assert_eq!(inner_input_use.binding_id, Some(captured_input.id));
+
+        let hidden_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "hidden" && use_.range.start_line == 6)
+            .expect("non-captured anonymous-function use");
+        assert_eq!(hidden_use.binding_id, None);
+        let hidden_node = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("hidden")
+                    && node.range.start_line == 6
+            })
+            .expect("non-captured anonymous-function data node");
+        assert_eq!(hidden_node.binding_id, None);
+    }
+
+    #[test]
+    fn test_arrow_function_facts_do_not_pollute_enclosing_function() {
+        let source = concat!(
+            "<?php\n",
+            "function transform($input) {\n",
+            "    $value = $input;\n",
+            "    $callback = fn($value) => consume($value, $input);\n",
+            "    return $value;\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("arrow_boundary.php");
+        let facts = crate::extract_file_with_mode(
+            &php_frontend(),
+            file_id,
+            std::path::Path::new("arrow_boundary.php"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        assert_eq!(value_bindings.len(), 1, "only the outer assignment binds");
+        assert_eq!(value_bindings[0].range.start_line, 2);
+        assert!(
+            facts.binding_uses.iter().all(|use_| {
+                use_.range.start_line != 3 || !matches!(use_.name.as_str(), "value" | "input")
+            }),
+            "arrow parameters and captures must not inherit outer ownership"
+        );
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.range.start_line != 3
+                    || (!matches!(node.name.as_deref(), Some("value" | "input" | "consume"))
+                        && node.kind != DataNodeKind::Parameter)
+            }),
+            "arrow internals must not be attributed to the named function"
+        );
     }
 }

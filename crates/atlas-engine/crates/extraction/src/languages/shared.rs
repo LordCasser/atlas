@@ -37,6 +37,8 @@
 // frontend are intentionally dormant in that build.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use types::*;
 
 /// Construct a `ScopeDef` with ID generation and default optional fields, reducing
@@ -124,6 +126,36 @@ pub(crate) fn latest_visible_binding<'a>(
         .into_iter()
         .filter(|binding| binding.name == name && binding.visible_from_byte <= at_byte)
         .max_by_key(|binding| (binding.visible_from_byte, binding.range.start_byte))
+}
+
+/// Resolve a name through the lexical scope chain.
+///
+/// `inherits_bindings_from_parent` is evaluated after bindings in the current
+/// scope have been considered. This lets a language expose explicit captures
+/// as local bindings while stopping unresolved names at a callable boundary.
+pub(crate) fn resolve_binding_in_scope_chain<'a>(
+    scope_bindings: &HashMap<ScopeId, Vec<&'a BindingDef>>,
+    scopes_by_id: &HashMap<ScopeId, &'a ScopeDef>,
+    starting_scope: ScopeId,
+    name: &str,
+    at_byte: u32,
+    inherits_bindings_from_parent: impl Fn(&ScopeDef) -> bool,
+) -> Option<&'a BindingDef> {
+    let mut current = Some(starting_scope);
+    while let Some(scope_id) = current {
+        if let Some(bindings) = scope_bindings.get(&scope_id)
+            && let Some(binding) = latest_visible_binding(bindings.iter().copied(), name, at_byte)
+        {
+            return Some(binding);
+        }
+
+        let scope = scopes_by_id.get(&scope_id)?;
+        if !inherits_bindings_from_parent(scope) {
+            return None;
+        }
+        current = scope.parent_id;
+    }
+    None
 }
 
 // ── Shared binding helpers ──────────────────────────────────────────────

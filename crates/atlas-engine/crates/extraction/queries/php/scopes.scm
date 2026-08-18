@@ -14,6 +14,11 @@
 
 (function_definition) @scope.function
 
+;; Anonymous functions establish an independent local-variable namespace.
+;; Arrow functions are intentionally excluded until callable ownership can be
+;; represented without attributing their facts to an enclosing named function.
+(anonymous_function) @scope.function
+
 (method_declaration) @scope.method
 
 (compound_statement) @scope.block
