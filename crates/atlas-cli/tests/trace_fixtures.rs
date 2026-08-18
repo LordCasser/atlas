@@ -1825,6 +1825,149 @@ function mutate($seed, $delta) {
     }
 }
 
+#[test]
+fn fx_typescript_family_variable_mutations_persist_and_trace_read_modify_write_inputs() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        (
+            "typescript",
+            "variable_mutations.ts",
+            "function mutate(seed: number, delta: number): number {\n  let total = seed;\n  total += delta;\n  total++;\n  --total;\n  return total;\n}\n",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "javascript",
+            "variable_mutations.js",
+            "function mutate(seed, delta) {\n  let total = seed;\n  total += delta;\n  total++;\n  --total;\n  return total;\n}\n",
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "arkts",
+            "variable_mutations.ets",
+            "function mutate(seed: number, delta: number): number {\n  let total: number = seed;\n  total += delta;\n  total++;\n  --total;\n  return total;\n}\n",
+        ),
+    ];
+
+    for (language, path, source) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted mutation bindings: {error}"));
+        let total_binding = {
+            let matches: Vec<_> = bindings
+                .iter()
+                .filter(|binding| binding.name == "total")
+                .collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "{language}: mutation writes share one binding"
+            );
+            matches[0]
+        };
+        let delta_binding = bindings
+            .iter()
+            .find(|binding| binding.name == "delta")
+            .unwrap_or_else(|| panic!("{language}: delta parameter binding"));
+
+        let data_nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted mutation nodes: {error}"));
+        let node = |kind: DataNodeKind, name: &str, line: u32| {
+            data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: persisted {kind:?} {name} on line {line}"))
+        };
+
+        for (line, expression) in [(2, "total += delta"), (3, "total++"), (4, "--total")] {
+            let value = node(DataNodeKind::Expr, expression, line);
+            let target = node(DataNodeKind::Local, "total", line);
+            let lhs_read = node(DataNodeKind::VariableUse, "total", line);
+            assert_eq!(target.binding_id, Some(total_binding.id), "{language}");
+            assert_eq!(lhs_read.binding_id, Some(total_binding.id), "{language}");
+
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&value.id)
+                    .unwrap_or_else(|error| {
+                        panic!("{language}: persisted mutation value edges: {error}")
+                    })
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.90
+                    }),
+                "{language}: mutation aggregate must persist its target edge"
+            );
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&lhs_read.id)
+                    .unwrap_or_else(|error| {
+                        panic!("{language}: persisted mutation lhs edges: {error}")
+                    })
+                    .iter()
+                    .any(|edge| {
+                        edge.target == value.id
+                            && edge.kind == DataFlowKind::Read
+                            && edge.confidence == 0.75
+                    }),
+                "{language}: previous target value must persist as a mutation input"
+            );
+        }
+
+        let compound_value = node(DataNodeKind::Expr, "total += delta", 2);
+        let rhs_read = node(DataNodeKind::VariableUse, "delta", 2);
+        assert_eq!(rhs_read.binding_id, Some(delta_binding.id), "{language}");
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&rhs_read.id)
+                .unwrap_or_else(|error| {
+                    panic!("{language}: persisted mutation rhs edges: {error}")
+                })
+                .iter()
+                .any(|edge| {
+                    edge.target == compound_value.id
+                        && edge.kind == DataFlowKind::Read
+                        && edge.confidence == 0.75
+                }),
+            "{language}: compound RHS must persist as a mutation input"
+        );
+
+        let engine = TraceEngine::new(store.clone());
+        for (line, column, expression) in [(3, 9, "total += delta"), (4, 9, "total++")] {
+            let response = engine.trace_variable(&file_id, line, column, 20);
+            assert_envelope_ok(&response, language);
+            let path = response
+                .result
+                .unwrap_or_else(|| panic!("{language}: mutation trace for {expression}"));
+            let sink = path
+                .sink
+                .data_node
+                .as_ref()
+                .unwrap_or_else(|| panic!("{language}: mutation trace sink"));
+            assert_eq!(sink.kind, DataNodeKind::Expr, "{language}");
+            assert_eq!(sink.name.as_deref(), Some(expression), "{language}");
+            assert_has_edge_kind(&path, DataFlowKind::Read);
+            let source_name = path
+                .source
+                .data_node
+                .as_ref()
+                .and_then(|node| node.name.as_deref());
+            assert!(
+                matches!(source_name, Some("seed" | "delta")),
+                "{language}: mutation trace must reach an input binding, got {source_name:?}"
+            );
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Ruby: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
