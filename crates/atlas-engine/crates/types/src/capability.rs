@@ -1530,8 +1530,8 @@ mod profiles {
     // ---- Kotlin (DataflowInterproc) -----------------------------------------------
     // NOTE: Golden fixtures fx19 (ArgToParam) and fx20 (ReturnToCall) exist.
     //       Both bridge directions are strict passing evidence.
-    //       Extension function receiver (fun String.isValid()) now creates a
-    //       "this" binding as the first parameter.
+    //       The pinned grammar does not expose extension receivers to the
+    //       lexical query, so no synthetic "this" binding is claimed.
 
     const KOTLIN_PROFILE_SPEC: ProfileSpec = ProfileSpec {
         language: "kotlin",
@@ -1552,16 +1552,17 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "name-based binding (no proper shadowing)",
-            "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
-            "extension receiver binding is not extracted by the pinned grammar; type-directed resolution is not modeled",
+            "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
+            "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
         ],
         feature_overrides: &[
             (
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.67,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
+                    ],
                 ),
             ),
             (
@@ -1569,7 +1570,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+                        "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1577,7 +1578,9 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.67,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "binding_id-grouped use-def preserves nested control-scope shadowing; Kotlin smart-cast and definite-assignment semantics remain conservative",
+                    ],
                 ),
             ),
             (
@@ -3403,9 +3406,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "name-based binding (no proper shadowing)",
-                "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
-                "extension receiver binding is not extracted by the pinned grammar; type-directed resolution is not modeled",
+                "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
+                "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
             ]
         );
 
@@ -3441,7 +3443,9 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.67,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled"
+                ],
             )
         );
         assert_eq!(
@@ -3449,7 +3453,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative"
+                    "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3457,7 +3461,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.67,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "binding_id-grouped use-def preserves nested control-scope shadowing; Kotlin smart-cast and definite-assignment semantics remain conservative"
+                ],
             )
         );
         assert_eq!(

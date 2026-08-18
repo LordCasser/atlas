@@ -198,7 +198,9 @@ impl LexicalBindingSpec for KotlinAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.67,
-            vec!["name-based binding (no proper shadowing)"],
+            vec![
+                "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -222,7 +224,7 @@ impl DataflowSpec for KotlinAdapter {
         FeatureSupport::supported_with_limitations(
             0.67,
             vec![
-                "when subject initializers flow to scoped subject-variable bindings; smart-cast, type/range projection, and guard control dependencies remain conservative",
+                "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -903,5 +905,78 @@ mod tests {
                 })
                 .all(|node| node.binding_id == Some(result_binding.id))
         );
+    }
+
+    #[test]
+    fn test_nested_local_shadowing_keeps_scope_chain_identity() {
+        let source = concat!(
+            "fun shadow(input: Int): Int {\n",
+            "  val value = input\n",
+            "  if (input > 0) {\n",
+            "    val value = input + 1\n",
+            "    consume(value)\n",
+            "  }\n",
+            "  return value\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("shadow.kt");
+        let facts = crate::extract_file_with_mode(
+            &kotlin_frontend(),
+            file_id,
+            std::path::Path::new("shadow.kt"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        value_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(value_bindings.len(), 2);
+        let outer = value_bindings[0];
+        let inner = value_bindings[1];
+        assert_ne!(outer.id, inner.id);
+        assert_ne!(outer.scope_id, inner.scope_id);
+        assert_eq!(outer.function_id, inner.function_id);
+        assert!(outer.function_id.is_some());
+
+        let inner_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "value" && use_.range.start_line == 4)
+            .expect("inner consume(value) binding use");
+        let outer_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "value" && use_.range.start_line == 6)
+            .expect("outer return value binding use");
+        assert_eq!(inner_use.binding_id, Some(inner.id));
+        assert_eq!(outer_use.binding_id, Some(outer.id));
+
+        let inner_node = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 4
+            })
+            .expect("inner consume(value) data node");
+        let outer_node = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 6
+            })
+            .expect("outer return value data node");
+        assert_eq!(inner_node.binding_id, Some(inner.id));
+        assert_eq!(outer_node.binding_id, Some(outer.id));
     }
 }

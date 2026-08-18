@@ -7693,6 +7693,91 @@ fn fx_kotlin_when_subject_binding_persists_and_traces_from_initializer() {
 }
 
 #[test]
+#[cfg(feature = "kotlin")]
+fn fx_kotlin_nested_local_shadow_bindings_persist_and_trace_separately() {
+    let source = r#"fun shadow(input: Int): Int {
+    val value = input
+    if (input > 0) {
+        val value = input + 1
+        consume(value)
+    }
+    return value
+}
+"#;
+    let store = index_files(&[("shadow.kt", source)]);
+    let file_id = FileId::generate("shadow.kt");
+    let mut value_bindings: Vec<_> = store
+        .find_bindings_by_file(&file_id)
+        .expect("Kotlin bindings")
+        .into_iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    value_bindings.sort_by_key(|binding| binding.range.start_byte);
+    assert_eq!(value_bindings.len(), 2);
+    let outer = &value_bindings[0];
+    let inner = &value_bindings[1];
+    assert_ne!(outer.id, inner.id);
+    assert_ne!(outer.scope_id, inner.scope_id);
+    assert_eq!(outer.function_id, inner.function_id);
+    assert!(outer.function_id.is_some());
+
+    let outer_uses = store
+        .find_binding_uses_by_binding(&outer.id)
+        .expect("outer value uses");
+    let inner_uses = store
+        .find_binding_uses_by_binding(&inner.id)
+        .expect("inner value uses");
+    assert!(outer_uses.iter().any(|use_| use_.range.start_line == 6));
+    assert!(!outer_uses.iter().any(|use_| use_.range.start_line == 4));
+    assert!(inner_uses.iter().any(|use_| use_.range.start_line == 4));
+    assert!(!inner_uses.iter().any(|use_| use_.range.start_line == 6));
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let engine = TraceEngine::new(store.clone());
+    for (binding, line, label, expected_source) in [
+        (inner, 4, "inner", None),
+        (outer, 6, "outer", Some("input")),
+    ] {
+        let sink = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted {label} value use"));
+        assert_eq!(sink.binding_id, Some(binding.id));
+
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert!(
+            response.ok,
+            "Kotlin {label} shadow trace failed: {response:?}"
+        );
+        assert_envelope_ok(&response, "kotlin");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("Kotlin {label} shadow trace path"));
+        assert_eq!(
+            path.sink
+                .binding_use
+                .as_ref()
+                .and_then(|use_| use_.binding_id),
+            Some(binding.id),
+            "trace sink must preserve the {label} binding identity"
+        );
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        if let Some(expected_source) = expected_source {
+            assert_source_name(&path, expected_source);
+        }
+    }
+}
+
+#[test]
 #[cfg(feature = "ruby")]
 fn fx_cfg_case_ruby() {
     let files = &[(

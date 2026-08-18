@@ -1653,6 +1653,93 @@ fn n5_focus_kotlin_when_subject_dataflow_matches_index_full() {
     );
 }
 
+/// Kotlin nested locals with the same name must retain two scope-chain
+/// identities, and Focus must materialize the same binding/dataflow unit as a
+/// full Index without warming an unrelated function.
+#[cfg(feature = "kotlin")]
+#[test]
+fn n5_focus_kotlin_nested_local_shadowing_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "shadow.kt",
+            "fun shadow(input: Int): Int {\n\
+             \x20 val value = input\n\
+             \x20 if (input > 0) {\n\
+             \x20   val value = input + 1\n\
+             \x20   consume(value)\n\
+             \x20 }\n\
+             \x20 return value\n\
+             }\n",
+        ),
+        ("peer.kt", "fun unrelated(): Int = 42\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_shadow = symbol_id_by_name(&indexed_store, "shadow");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_shadow);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_shadow);
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "value")
+            .count(),
+        2,
+        "full Index must keep both value declaration events"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.0 == "local" && binding.1 == "value")
+            .count(),
+        2,
+        "full Index must keep both scoped value bindings"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let shadow = symbol_id_by_name(&focused_store, "shadow");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&shadow)
+            .unwrap()
+            .is_empty(),
+        "Kotlin shadow unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&shadow, Some("kotlin-shadowing-parity"))
+        .expect("Focus ensure Kotlin shadow");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &shadow),
+        indexed_slice,
+        "Kotlin shadowing dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &shadow),
+        indexed_bindings,
+        "Kotlin shadowing bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Kotlin unit must stay outside the Focus window"
+    );
+}
+
 /// Cangjie match capture bindings and guard/body identity must produce the
 /// same dataflow/CFG facts through Focus as through a full Index.
 #[cfg(feature = "cangjie")]
