@@ -40,6 +40,10 @@
     {
       "name": "Conditional#45",
       "kind": "conditional"
+    },
+    {
+      "name": "Conditional#55",
+      "kind": "conditional"
     }
   ],
   "callsites": [
