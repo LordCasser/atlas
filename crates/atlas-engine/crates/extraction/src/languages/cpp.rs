@@ -216,8 +216,8 @@ impl LexicalBindingSpec for CppAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
-            vec!["name-based binding (no proper shadowing)"],
+            0.70,
+            vec!["scope-chain-aware binding with shadowing support"],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -231,7 +231,7 @@ impl DataflowSpec for CppAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
+            0.70,
             vec!["AST-driven local dataflow with language-specific gaps"],
         )
     }

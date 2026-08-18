@@ -465,8 +465,9 @@ mod profiles {
             "access_path",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
             "AST-driven local dataflow with language-specific gaps",
@@ -541,8 +542,9 @@ mod profiles {
             "access_path",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
@@ -702,10 +704,11 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
-            "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+            "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
             "AST-driven local dataflow with language-specific gaps",
         ],
         feature_overrides: &[
@@ -714,7 +717,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.75,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
                     ],
                 ),
             ),
@@ -730,7 +733,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.75,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
                     ],
                 ),
             ),
@@ -789,8 +792,9 @@ mod profiles {
             "function_pointer_tracking",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support",
             "AST-driven local dataflow with language-specific gaps",
@@ -879,8 +883,9 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support",
             "AST-driven local dataflow with language-specific gaps",
@@ -964,8 +969,9 @@ mod profiles {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "TS grammar fallback with byte-stable struct/member recovery; ArkUI trailing-block syntax may retain partial parse status",
             "scope-chain binding is heuristic and does not independently model ArkUI callback ownership",
@@ -2209,9 +2215,10 @@ mod tests {
             "access_path",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
@@ -2315,9 +2322,10 @@ mod tests {
             "access_path",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
@@ -2423,13 +2431,14 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
                 "AST-driven local dataflow with language-specific gaps",
             ]
         );
@@ -2467,7 +2476,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.75,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative"
                 ],
             )
         );
@@ -2483,7 +2492,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.75,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative"
                 ],
             )
         );
@@ -2532,9 +2541,10 @@ mod tests {
             "function_pointer_tracking",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
@@ -2641,9 +2651,10 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
@@ -2747,9 +2758,10 @@ mod tests {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![

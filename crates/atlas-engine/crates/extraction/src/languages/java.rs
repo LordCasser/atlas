@@ -190,8 +190,10 @@ impl LexicalBindingSpec for JavaAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
-            vec!["name-based binding (no proper shadowing)"],
+            0.75,
+            vec![
+                "scope-chain-aware parameter/local/foreach/catch/lambda binding; sibling blocks retain distinct identities; pattern variables remain conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -205,7 +207,7 @@ impl DataflowSpec for JavaAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
+            0.75,
             vec!["AST-driven local dataflow with language-specific gaps"],
         )
     }

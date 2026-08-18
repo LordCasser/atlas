@@ -180,8 +180,8 @@ impl LexicalBindingSpec for CAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
-            vec!["name-based binding (no proper shadowing)"],
+            0.73,
+            vec!["scope-chain-aware binding with shadowing support"],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -195,7 +195,7 @@ impl DataflowSpec for CAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.65,
+            0.73,
             vec!["AST-driven local dataflow with language-specific gaps"],
         )
     }

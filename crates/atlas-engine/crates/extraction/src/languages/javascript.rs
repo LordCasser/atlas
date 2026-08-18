@@ -146,8 +146,10 @@ impl LexicalBindingSpec for JavaScriptAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
-            vec!["name-based binding (no proper shadowing)"],
+            0.60,
+            vec![
+                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -161,7 +163,7 @@ impl DataflowSpec for JavaScriptAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
+            0.60,
             vec!["AST-driven local dataflow with language-specific gaps"],
         )
     }

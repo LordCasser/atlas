@@ -697,9 +697,9 @@ impl LexicalBindingSpec for ArkTsAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.45,
+            0.60,
             vec![
-                "ArkTS via TS grammar fallback — lexical bindings may miss ArkTS-specific constructs",
+                "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized",
             ],
         )
     }
@@ -719,8 +719,10 @@ impl DataflowSpec for ArkTsAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.45,
-            vec!["ArkTS via TS grammar fallback — dataflow may miss ArkTS-specific constructs"],
+            0.60,
+            vec![
+                "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort",
+            ],
         )
     }
     fn normalize(
