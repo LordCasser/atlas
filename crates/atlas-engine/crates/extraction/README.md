@@ -73,6 +73,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   value flows conservatively to every alias and the guard alias token is not a
   read. Case-type projection, function-literal ownership, select receive-clause
   flow, and parallel-assignment evaluation order remain conservative.
+- Ruby local targets in flat, nested, and rest multiple assignment participate
+  in the same source-ordered method/module/class/block namespace as simple
+  assignments. Explicit RHS lists map by top-level position; a single aggregate
+  RHS and nested/rest targets keep conservative group/slice flow. Structural
+  element projection, `to_ary` coercion, implicit `nil` fill, parallel
+  evaluation order, and numbered parameters remain explicit boundaries.
 - Python unguarded syntax-irrefutable wildcard, capture, `as`, grouping, and OR
   match arms suppress the impossible synthetic no-match path. Capture, `as`,
   and star/rest identifiers share the enclosing Python namespace and receive

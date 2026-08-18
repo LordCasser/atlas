@@ -1491,7 +1491,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
+            "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
+            "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
             "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             "dynamic methods (method_missing / define_method) not yet verified",
             "block/yield implicit calls documented but not yet implemented",
@@ -1502,7 +1503,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
+                        "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
                     ],
                 ),
             ),
@@ -1511,6 +1512,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
+                        "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                         "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                     ],
                 ),
@@ -1520,7 +1522,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "scope-chain-aware source-ordered use-def across method/module/class/block namespaces; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
+                        "scope-chain-aware source-ordered use-def across method/module/class/block namespaces, including local targets in flat/nested/rest multiple assignment; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters and parallel-assignment evaluation order remain conservative",
                     ],
                 ),
             ),
@@ -3342,7 +3344,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
+                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
+                "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                 "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                 "dynamic methods (method_missing / define_method) not yet verified",
                 "block/yield implicit calls documented but not yet implemented",
@@ -3382,7 +3385,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative"
+                    "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative"
                 ],
             )
         );
@@ -3391,6 +3394,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
+                    "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                     "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive"
                 ],
             )
@@ -3400,7 +3404,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "scope-chain-aware source-ordered use-def across method/module/class/block namespaces; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative"
+                    "scope-chain-aware source-ordered use-def across method/module/class/block namespaces, including local targets in flat/nested/rest multiple assignment; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters and parallel-assignment evaluation order remain conservative"
                 ],
             )
         );

@@ -117,6 +117,20 @@ All notable changes to Atlas will be documented in this file.
   retain the same success envelope when a Kotlin initializer calls an external
   symbol.
 
+### Ruby dataflow
+
+- Bind local targets in flat, nested, and rest multiple assignment through the
+  existing source-ordered method/module/class/block namespace. A block target
+  reuses an earlier ancestor binding while newly introduced names remain local
+  to that block.
+- Pair explicit RHS lists with top-level targets by position. A single
+  aggregate RHS, nested destructuring, and rest targets retain conservative
+  group/slice flow; field and global targets use the existing `FieldStore` and
+  `Assign` edges without adding persistent entities.
+- Cover direct extraction, SQLite Trace, and Focus-vs-full-Index parity. Exact
+  structural element projection, `to_ary` coercion, implicit `nil` fill,
+  parallel evaluation order, and numbered parameters remain explicit bounds.
+
 ### Ruby control flow
 
 - Persist dedicated `Redo` edges from lexical while/until/for and modeled
@@ -147,8 +161,7 @@ All notable changes to Atlas will be documented in this file.
 - Resolve Ruby block assignments in source order: writes reuse an existing
   ancestor binding, while new block locals and shadowing block parameters keep
   their own identity. A later outer assignment does not retroactively capture
-  an earlier block local; multiple assignment/destructuring and numbered
-  parameters remain explicit boundaries.
+  an earlier block local; numbered parameters remain an explicit boundary.
 
 ### PHP control flow
 

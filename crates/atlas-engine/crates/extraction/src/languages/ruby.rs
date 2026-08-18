@@ -17,6 +17,10 @@
 //! - **Pattern projection**: `case/in` capture targets receive the whole match
 //!   subject conservatively. Array/hash element projection and post-match
 //!   path-definedness are not modeled.
+//! - **Multiple-assignment projection**: flat RHS lists map by position, but a
+//!   single aggregate RHS and nested/rest targets retain conservative
+//!   group/slice flow. `to_ary` coercion, implicit `nil` fill, and parallel
+//!   evaluation order are not modeled.
 
 use crate::languages::{node_range, node_text};
 use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
@@ -206,7 +210,7 @@ impl LexicalBindingSpec for RubyAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
+                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
             ],
         )
     }
@@ -250,6 +254,7 @@ impl DataflowSpec for RubyAdapter {
                 "implicit return is approximate (body_statement last-child heuristic)",
                 "method calls and field access share `call` node; attr_reader not resolved",
                 "dynamic methods / method_missing not resolved",
+                "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                 "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             ],
         )
