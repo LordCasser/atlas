@@ -211,7 +211,7 @@ impl LexicalBindingSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "scope-chain-aware binding with source-ordered ordinary let/let-else patterns, arm-local match captures, and source-ordered match-guard/if/while let-condition chains; ordinary let captures activate after the declaration (excluding the initializer and let-else alternative), if-let captures are excluded from else branches, and syntactically ambiguous single-segment constants remain conservative",
+                "scope-chain-aware named function/method and closure parameter-pattern bindings; named parameter leaves retain one binding per leaf, closure parameters use isolated function scopes, and Rust self remains a lexical parameter; ordinary let/let-else patterns, arm-local match captures, and source-ordered match-guard/if/while let-condition chains preserve declaration-end/branch-local activation; syntactically ambiguous single-segment constants remain conservative",
             ],
         )
     }
@@ -232,7 +232,7 @@ impl DataflowSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; ordinary let initializers, match scrutinees, and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while direct identifiers preserve whole-value Assign flow (0.90) and whole-pattern bare/ref/@ or post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
+                "named function/method parameter-pattern leaves retain shared top-level runtime argument positions and receive whole-call-argument aggregate ArgToParam; Rust self and closure parameters do not map to the enclosing named call, and closure invocation resolution/exact component projection remain conservative; direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; ordinary let initializers, match scrutinees, and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while direct identifiers preserve whole-value Assign flow (0.90) and whole-pattern bare/ref/@ or post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
             ],
         )
     }

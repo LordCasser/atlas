@@ -109,6 +109,16 @@ that edge as a possible aggregate origin, not exact element/key projection or
 proof of async scheduling. `var` function-scoped loop binding semantics and
 member/subscript iteration targets remain conservative.
 
+Rust named function/method parameter patterns preserve one `Parameter` binding
+per tuple、struct、reference or nested leaf. Leaves under the same top-level
+parameter share its runtime argument position, so Full summaries and Focus
+runtime edges send the whole caller argument to every leaf through aggregate
+`ArgToParam`. Rust `self` does not consume a runtime argument position. Closure
+identifier、mut、reference and tuple parameters have isolated lexical function
+scopes and local use-def, but deliberately do not map to the enclosing named
+call. Do not infer exact argument-component projection、receiver→`self` flow or
+closure invocation resolution from these facts.
+
 Rust ordinary `let`/`let-else` captures join the enclosing block and activate
 only after the complete declaration. Initializers and `let-else` alternatives
 therefore keep source-earlier same-name identities；uses after the declaration

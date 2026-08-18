@@ -283,7 +283,8 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 > projection/post-match path-definedness; none is a pre-1.6.0 capability gate without such a fixture. Java
 > `if`-condition/arrow-switch guarded patterns、Ruby retry/redo、Rust fixed
 > tuple/tuple-struct/struct/slice-prefix projection、Rust `if`/`while` let-condition
-> binding，以及 Rust ordinary `let`/`let-else` pattern activation/projection graduated
+> binding、Rust ordinary `let`/`let-else` pattern activation/projection，以及 Rust
+> named/closure parameter-pattern binding and runtime-position semantics graduated
 > from this list after pinned grammar, adversarial extraction, SQLite consumer,
 > and Focus-vs-Index evidence established their scoped semantics.
 
@@ -359,7 +360,9 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
 - `analysis.basis` may only advertise facts proven by DB state or verified during the current tool call.
 - ✅ TypeScript、JavaScript、ArkTS、Java、C、C++、Go、Rust、Kotlin、Cangjie 的普通 block/sibling-block、PHP assignment/anonymous-function/`[]`/`list()` nested/keyed/by-reference destructuring/direct-variable mutation，以及 Ruby source-ordered block namespace
   scope-chain identity 已通过 extraction、SQLite Trace、Focus-vs-full-Index 三层
-  回归，`scope_aware_binding` 与 adapter slot confidence 已对齐。Java 不伪造非法的
+  回归，`scope_aware_binding` 与 adapter slot confidence 已对齐。Rust named
+  parameter-pattern leaf 共享 runtime argument position，closure pattern 使用隔离 scope
+  且不伪造 enclosing named-call bridge。Java 不伪造非法的
   overlapping local shadowing；PHP destructuring key expression 保持读取，assignment whole RHS 与 foreach collection 保守流向各 target，direct variable mutation 保留 aggregate read-modify-write provenance，exact key/index projection、missing-key/null、reference-alias semantics、dynamic/non-variable target、conditional write 与 prefix/postfix result timing 保持 limitation；未显式捕获的匿名函数外层 local 保持 unresolved，arrow-function ownership 暂不伪造；Ruby block write 仅复用源码更早的祖先 binding，flat/nested/rest multiple-assignment local target 复用同一 namespace，显式 RHS list 具备顶层位置流；Go same-block mixed `:=` 已覆盖 local/函数体参数复用、声明后激活与 clause 隔离；Rust ordinary `let`/`let-else` 已覆盖 declaration-end 激活、同作用域 shadow 与 fixed structural projection；其余语言特有的 pattern、projection、mixed declaration、smart-cast 与
   definite-assignment 边界仍以 capability limitation 为准。
 - ✅ C、C++、Java 与 C# direct-variable compound/update mutation 已与
@@ -693,6 +696,22 @@ CFG + DataFlow
   identity、activation、exact paths、confidence、CFG parity and cold peer isolation.
   Runtime-length suffix projection、borrow/move mode and irrefutability/type
   validation remain explicit precision boundaries.
+- **Rust parameter-pattern provenance — scoped phase implemented:** named
+  function/method tuple、struct、ref and nested parameter leaves are persisted as
+  `Parameter` facts and share their top-level runtime argument position. Full
+  summaries and cold Focus runtime edges therefore send the whole caller
+  argument to every leaf through aggregate `ArgToParam`, while `self` does not
+  consume an argument slot. Closure identifier、mut、reference and tuple
+  parameters use an isolated function scope and local use-def, but deliberately
+  have no position in the enclosing named call. The checked-in 303-file Rust
+  corpus contains 183 non-identifier closure parameter patterns (147 tuple、32
+  reference、4 mut), making this a real repository boundary rather than a
+  symmetry-only promotion. Direct extraction、SQLite/Trace、cold
+  Focus-vs-full-Index and the real `FocusEngine::record_extraction_outcome`
+  tuple-closure fixture cover identity、position、aggregate bridging、scope
+  isolation and cold-peer behavior. Exact caller-argument component projection、
+  closure invocation resolution、receiver→`self` bridging and compiler
+  irrefutability/type validation remain explicit limitations.
 - **Switch/match/select sibling detection** — *Phase 1 implemented*: `CfgBuilder::walk_switch` emits a `Branch` dispatch node with one `CfgEdgeKind::CaseBranch` edge per executable sibling into a shared `Join`. Languages wired up: C/C++、Java、JS/TS/ArkTS、Go switch、C#、PHP、Python、Rust、Kotlin、Cangjie，以及 Ruby classic `case` 和 `case ... in`。Go `select_statement` maps communication/default siblings while preserving blocking no-default semantics。Python unguarded syntax-irrefutable wildcard/capture/`as`/group/OR arms, Ruby unguarded capture/wildcard, plus Rust/Cangjie direct unguarded wildcards suppress impossible synthetic no-match paths；Ruby refutable case/in without `else` instead emits the required implicit Throw；Python match subject conservatively flows to capture/`as`/star bindings，Ruby case/in subject conservatively flows to bare/key-only/`=>`/rest bindings；两者的 guard/body uses 均复用 enclosing namespace identity，Ruby pin 保持读取。Kotlin nested control scope 的同名 local 经 scope chain 保留独立 identity，`when (val V = E)` 将 initializer 流向 subject binding，condition/guard/body 复用同一 scoped identity；typed late-declared local 的 simple `=` 写保留跨 branch join 的全部具体 RHS，但不证明所有路径均已赋值；Rust ordinary let initializer、match scrutinee 与 source-ordered guard-let RHS 对 fixed tuple/tuple-struct/struct/slice-prefix capture 建立 FieldLoad 0.80→Assign 0.90 projection chain；ordinary capture 在完整 declaration 后激活，guard/body 复用 arm-scoped identity；whole-pattern bare/ref/`@` capture 与 `..` 后 target 保留 aggregate Assign 0.75；Cangjie selector 保守流向 arm-scoped simple/tuple/enum-payload/type binding，guard/body 复用该 identity；Go type-switch guard value 保守流向每个 case/default implicit block 的 clause-local alias，guard alias 本身不作为读取；same-block mixed `:=` 复用 source-earlier local/函数体参数，新名字在声明后激活，switch/select clause 保持 sibling identity；identifier-only select receive 的 `:=` target 为 clause-local declaration、`=` target 复用 existing binding，whole receive operation 以 0.78 aggregate flow 流向各 target；Java `if` condition 的 direct/record `instanceof` 与 arrow switch type/record capture 使用 scoped identity，tested value/selector 以 0.75 aggregate flow 流向 capture；C# `is`/switch direct declaration/recursive/var pattern capture 采用 scope-chain identity，switch sibling arm 的同名 capture 不串线，subject 保守流向 capture。真实 `gin.Context.Stream`、Go `context.stringify`、Rust `parse_less_version_busybox`、`ClosurePlanner::plan_dependencies`、`CfgBuilder::walk_labeled_statement` 与 Cangjie `handleCommand`，以及 synthetic Go/Python/Ruby/Kotlin/Rust/Cangjie/Java/C# fixtures 覆盖 extraction→SQLite persistence/Trace。Remaining structural/type-driven pattern exhaustiveness、Python/Ruby structural projection/post-match path-definedness、remaining other-language guard/binding dataflow、Java colon-group/other boolean-context flow scope、exact record projection/definite-assignment/guard dependency、Go case-type projection/function-literal ownership/exact receive-result component/non-identifier receive target/parallel-assignment evaluation order、C# nested designation projection/definite-assignment/guard control dependency、Kotlin smart-cast/compiler-grade variable-initialization proof/type/range condition projection/guard control dependency、Rust runtime-length suffix projection/borrow-move/guard control dependency、Cangjie structural projection/guard control dependency 与 communication readiness probabilities remain outside CFG.
   - **Fall-through and control transfers — Phase 2 implemented:** C/C++/JS/TS/ArkTS/PHP and Java colon groups connect a reachable case tail to the next executable case; Java arrow rules and non-C sibling constructs terminate their arms; Go connects only an explicit `fallthrough`. Empty arms preserve the same per-language routing without synthetic executable nodes: implicit-fall-through labels target the next executable body, while Go switch/select、Java arrow、Rust/Kotlin/Cangjie/Ruby-style arms target the Join. Identical direct paths collapse to one `(source, target, kind)` edge. Exact `default`/`else` clauses suppress impossible synthetic no-match edges. Only C/C++/JS/TS/ArkTS/Java/Go/C#/PHP switch-like constructs consume unlabeled `break`；Python/Rust/Kotlin/Cangjie/Ruby sibling constructs propagate it to an enclosing loop or labeled block. `break`/`continue` use persisted `Break`/`Continue` edge kinds；PHP `break N`/`continue N` decrements through nested switch/loop levels. The real curl `convert_char` example and persisted JS/PHP/Ruby fixtures cover fall-through、break ownership and SQLite edge-ID integrity.
     - Both branch-diff engines now walk downstream case effects, so `case 1: log(); case 2: free(x); break;` attributes the free to both runtime entry paths. The conservative all-but-one rule remains: effect-less paths are ignored, a finding requires at least three effectful paths, and a resource unique to one case is treated as intentional.
