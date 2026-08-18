@@ -46,6 +46,9 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - MCP/TUI 一致性改动必须覆盖同一工具的 `ToolContract` 与 handler required need、
   pending→resume、background failure→`tasks(status=failed)`、单块有效 JSON、TUI 表单
   默认值/array 参数，以及 ToolRouter 写后 native GraphSession stale + 状态栏刷新。
+- 冷 `search` scope 含多个 inventory-only 候选时，必须断言每个 deferred 文件都有
+  可追踪的 Focus seed；`tasks(status=ready)` 后一次 `resume_query` 必须进入无 retry 的
+  终态，不得只用三个以内文件的同目录 fixture 掩盖 inventory/files 扩展差异。
 - `file_dependencies(manifest)` 必须断言不启动 Focus；
   `file_dependencies(structural)` 必须断言 CallGraph Focus 能收敛到跨文件依赖。
 

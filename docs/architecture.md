@@ -1302,6 +1302,7 @@ Progress token 只影响观测通道，不改变终态策略：
 - Graph 惰性初始化：首次 graph-backed tool 调用时构建 snapshot。
 - Focus/lazy 写入通过 `record_lazy_writes()` 进入刷新队列；后续 graph-backed 请求由 `maybe_refresh_graph()` 批量增量刷新，累计变更过大时退化为完整 snapshot rebuild；增量刷新失败的 batch 原样回队且不重复累计 lazy-write count，避免一次性写入信号丢失。
 - 后台 closure 完成时通过 `JobTracker::record_built_files` 同时写入两种视图：按 job 保留的 built-files 历史供 `resume_query` 判定与重放，以及 project-wide、去重、一次性消费的 graph-refresh 集合。`maybe_refresh_graph()` 不依赖 `replay_focus_result`，会在 `take_incremental_batch` 之前经 `FocusRuntime::take_background_refresh_files` / `QueryRuntime::record_background_built_files` drain 后者到 lazy 刷新队列。因此 fresh 请求、resume replay 和不携带 query snapshot 的 file-focused warming 都共享同一刷新边界；无需 engine 回调 listener 或 MCP 跨请求保存 closure ID。重复 drain 为空，resume 的 `materialized_files()` 与刷新队列去重保持幂等。
+- file-focused warming 只允许按目录合并已经进入 `files` 表的候选；仅存在于 `file_inventory` 的 deferred 候选必须各自成为 seed，因为 `SameDirectory` 不从 inventory 扩展。每个窗口同时记录其必需 seed：窗口完成但 seed 仍无 structural facts 时视为终态无进展，后续 `resume_query` 发布已有 `closure_boundary` gap，不得重新排入同一窗口形成永久 ready/retry 循环。
 - 当 handler 内部触发 lazy structural 并写入新 facts（如 `symbol(view="context")` 的 Tier 3 解析），handler 显式调用 `force_refresh_graph()`（跳过缓存冷却），确保 graph 包含刚解析的边。
 - `project(action="open")` 不索引，只同步激活项目并打开持久化的 `project/.atlas/atlas.db`；MCP 不暴露 storage mode。
 - MCP 查询路径不探测或同步整个工作树。磁盘文件与持久化索引的全项目同步由显式 CLI `atlas sync`/`atlas index` 负责；查询触发的 lazy extraction 只更新当前 scope/closure，并通过 `tasks`、`query_id` 和 analysis envelope 暴露状态。

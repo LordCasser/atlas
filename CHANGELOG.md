@@ -6,6 +6,15 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### MCP Focus convergence
+
+- Materialize every deferred inventory-only search candidate as an explicit
+  Focus seed instead of grouping candidates that are not yet present in the
+  `files` table into an unreachable same-directory closure.
+- Keep a completed no-progress file window terminal. Scoped search therefore
+  converges to a bounded gap instead of cycling through
+  `tasks(status=ready)` and another retryable `resume_query` forever.
+
 ### Go dataflow
 
 - Model a type-switch alias as one distinct binding in every case/default
