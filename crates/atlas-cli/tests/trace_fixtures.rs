@@ -1722,6 +1722,109 @@ function unpack($source, $rows, $selector) {
     }
 }
 
+#[test]
+#[cfg(feature = "php")]
+fn fx_php_variable_mutations_persist_and_trace_read_modify_write_inputs() {
+    let source = r#"<?php
+function mutate($seed, $delta) {
+    $total = $seed;
+    $total += $delta;
+    $total++;
+    --$total;
+    return $total;
+}
+"#;
+    let store = index_files(&[("variable_mutations.php", source)]);
+    let file_id = FileId::generate("variable_mutations.php");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted PHP mutation bindings");
+    let total_binding = {
+        let matches: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == "total")
+            .collect();
+        assert_eq!(matches.len(), 1, "mutation writes share one binding");
+        matches[0]
+    };
+    let delta_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "delta")
+        .expect("delta parameter binding");
+
+    let data_nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("persisted PHP mutation data nodes");
+    let node = |kind: DataNodeKind, name: &str, line: u32| {
+        data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == kind
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted {kind:?} {name} on line {line}"))
+    };
+
+    for (line, expression) in [(3, "$total += $delta"), (4, "$total++"), (5, "--$total")] {
+        let value = node(DataNodeKind::Expr, expression, line);
+        let target = node(DataNodeKind::Local, "total", line);
+        let lhs_read = node(DataNodeKind::VariableUse, "total", line);
+        assert_eq!(target.binding_id, Some(total_binding.id));
+        assert_eq!(lhs_read.binding_id, Some(total_binding.id));
+
+        let value_edges = store
+            .find_dataflow_edges_by_source(&value.id)
+            .expect("persisted mutation value edges");
+        assert!(value_edges.iter().any(|edge| {
+            edge.target == target.id && edge.kind == DataFlowKind::Assign && edge.confidence == 0.90
+        }));
+        let lhs_edges = store
+            .find_dataflow_edges_by_source(&lhs_read.id)
+            .expect("persisted mutation lhs edges");
+        assert!(lhs_edges.iter().any(|edge| {
+            edge.target == value.id && edge.kind == DataFlowKind::Read && edge.confidence == 0.75
+        }));
+    }
+
+    let compound_value = node(DataNodeKind::Expr, "$total += $delta", 3);
+    let rhs_read = node(DataNodeKind::VariableUse, "delta", 3);
+    assert_eq!(rhs_read.binding_id, Some(delta_binding.id));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&rhs_read.id)
+            .expect("persisted mutation rhs edges")
+            .iter()
+            .any(|edge| {
+                edge.target == compound_value.id
+                    && edge.kind == DataFlowKind::Read
+                    && edge.confidence == 0.75
+            })
+    );
+
+    let engine = TraceEngine::new(store.clone());
+    for (line, column, expression) in [(4, 12, "$total += $delta"), (5, 12, "$total++")] {
+        let response = engine.trace_variable(&file_id, line, column, 20);
+        assert_envelope_ok(&response, "php");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("PHP mutation trace for {expression}"));
+        let sink = path.sink.data_node.as_ref().expect("mutation trace sink");
+        assert_eq!(sink.kind, DataNodeKind::Expr);
+        assert_eq!(sink.name.as_deref(), Some(expression));
+        assert_has_edge_kind(&path, DataFlowKind::Read);
+        let source_name = path
+            .source
+            .data_node
+            .as_ref()
+            .and_then(|node| node.name.as_deref());
+        assert!(
+            matches!(source_name, Some("seed" | "delta")),
+            "mutation trace must reach an input binding, got {source_name:?}"
+        );
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Ruby: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────

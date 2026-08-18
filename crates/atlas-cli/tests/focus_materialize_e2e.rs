@@ -1968,6 +1968,133 @@ fn n5_focus_php_nested_destructuring_matches_index_full() {
     );
 }
 
+/// PHP direct-variable augmented/update expressions are aggregate
+/// read-modify-write values. Focus must persist their bindings, dataflow, CFG,
+/// and confidence exactly as full Index while leaving a peer unit cold.
+#[cfg(feature = "php")]
+#[test]
+fn n5_focus_php_variable_mutations_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "variable_mutations.php",
+            "<?php\n\
+             function mutate($seed, $delta) {\n\
+             \x20 $total = $seed;\n\
+             \x20 $total += $delta;\n\
+             \x20 $total++;\n\
+             \x20 --$total;\n\
+             \x20 return $total;\n\
+             }\n",
+        ),
+        ("peer.php", "<?php\nfunction unrelated() { return 42; }\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_mutate = symbol_id_by_name(&indexed_store, "mutate");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_mutate);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_mutate);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "total")
+            .count(),
+        1,
+        "full Index must coalesce mutation writes into one binding"
+    );
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "total")
+            .count(),
+        4,
+        "initial assignment plus three mutation writes"
+    );
+    for expression in ["$total += $delta", "$total++", "--$total"] {
+        assert_eq!(
+            indexed_slice
+                .nodes
+                .iter()
+                .filter(|node| node.0 == DataNodeKind::Expr.as_str() && node.1 == expression)
+                .count(),
+            1,
+            "full Index mutation Expr {expression}"
+        );
+    }
+
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_mutate)
+        .expect("full Index PHP mutation nodes");
+    for (line, expression) in [(3, "$total += $delta"), (4, "$total++"), (5, "--$total")] {
+        let value = indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some(expression)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("full Index PHP mutation value {expression}"));
+        let target = indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("total")
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("full Index PHP mutation target line {line}"));
+        let edge = indexed_store
+            .find_dataflow_edges_by_source(&value.id)
+            .expect("full Index PHP mutation edges")
+            .into_iter()
+            .find(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+            .unwrap_or_else(|| panic!("full Index PHP mutation flow line {line}"));
+        assert_eq!(edge.confidence, 0.90);
+    }
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let mutate = symbol_id_by_name(&focused_store, "mutate");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&mutate)
+            .unwrap()
+            .is_empty(),
+        "PHP mutation unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&mutate, Some("php-variable-mutation-parity"))
+        .expect("Focus ensure PHP variable mutations");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &mutate),
+        indexed_slice,
+        "PHP mutation dataflow/CFG/confidence: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &mutate),
+        indexed_bindings,
+        "PHP mutation bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "peer PHP unit must stay outside the Focus window"
+    );
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.
