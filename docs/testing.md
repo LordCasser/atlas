@@ -38,7 +38,8 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、mixed short declaration、match binding、PHP nested/keyed
   destructuring、Ruby multiple assignment、C# parenthesized nested designation、Kotlin
-  late-assignment branch provenance、modifier loop、nested lexical shadowing 等精确断言。
+  late-assignment branch provenance、Cangjie simple `for-in` loop binding/aggregate
+  provenance、modifier loop、nested lexical shadowing 等精确断言。
 - 声明 `scope_aware_binding` 前必须同时具备三层证据：直接 extraction 断言 distinct
   `BindingId`/`scope_id` 以及 `BindingUse`/`DataNode.binding_id`，SQLite Trace 断言持久化后
   sink identity 与 Assign path，Focus cold unit 对 full Index 的 bindings/dataflow/CFG 对拍。

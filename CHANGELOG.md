@@ -89,13 +89,17 @@ All notable changes to Atlas will be documented in this file.
 
 ### Cangjie dataflow
 
+- Model a simple `for-in` target as a loop-scoped binding. The iterable flows
+  conservatively to that target as aggregate provenance, guard/body uses share
+  its identity, and a same-name outer binding is restored after the loop.
 - Bind simple, tuple, enum-payload, and type-pattern captures in an isolated
   `matchCase` scope. The match selector flows conservatively to each capture,
   while guard and arm-body uses resolve the same binding identity.
-- Cover extraction, SQLite trace, nested-match selector ownership, and
-  Focus-vs-full-Index parity. Structural projection, guard control
-  dependencies, guarded/composite exhaustiveness, tuple/destructuring,
-  for-in, and resource bindings remain explicit precision boundaries.
+- Cover extraction, SQLite trace, nested-match selector ownership, simple
+  `for-in`, and Focus-vs-full-Index parity. Iterator element/structural
+  projection, guard control dependencies, guarded/composite exhaustiveness,
+  tuple/destructuring (including `for-in` patterns), and resource bindings
+  remain explicit precision boundaries.
 - Verify ordinary nested-block shadowing against the Cangjie language scope
   rules through direct extraction, SQLite Trace, and Focus-vs-full-Index parity,
   then publish `scope_aware_binding` for parameters and simple locals.
