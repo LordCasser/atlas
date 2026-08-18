@@ -133,6 +133,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   abrupt, including a `?` residual third path from the evaluated value.
   Standalone unqualified builtin `panic!`/`unreachable!`/`todo!`/
   `unimplemented!` macros terminate the local path as Throw nodes.
+- A guarded Rust `match` arm persists its guard as an explicit Branch. The
+  match dispatch enters the guard through `CaseBranch`; `TrueBranch` enters the
+  arm body, while `FalseBranch` ends that guarded-arm path at the shared Join.
+  Later arms remain independent sibling paths from the match dispatch. This
+  does not prove ordered pattern re-dispatch or pattern predicates, and
+  variable Trace does not infer guard-to-value control dependency.
   Nested-expression macros, macro shadowing/re-exports, custom never-return
   macros, panic unwinding, and `catch_unwind` recovery remain conservative.
   Comment AST extras are never executable CFG Statement nodes.

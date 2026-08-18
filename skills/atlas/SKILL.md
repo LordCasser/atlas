@@ -134,6 +134,13 @@ targets after `..` remain aggregate Assign 0.75；runtime-length suffix projecti
 borrow/move mode、compiler irrefutability/type validation and condition/guard
 control dependency remain explicit limitations.
 
+Rust guarded `match` arms persist the guard as a CFG Branch. Match dispatch
+enters it through `CaseBranch`, `TrueBranch` enters the arm body, and
+`FalseBranch` ends that guarded-arm path at the shared Join. Later arms remain
+independent sibling dispatch paths. Do not infer ordered pattern re-dispatch or
+pattern-predicate proof from these edges, and do not expect `trace(variable)`
+to include values that affect the variable only through guard control flow.
+
 ### Source encoding and positions
 
 - Atlas decodes project sources internally before extraction. UTF-8 is direct;
