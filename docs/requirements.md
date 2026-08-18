@@ -204,9 +204,10 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 - `Callsite`：记录 callee、receiver、callee range、call range，并保存当前实现使用的 inline argument facts。
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
-- shared use-def 以 binding identity 分组，写入在显式 RHS 完成后激活，读取只连接
-  source-order 上最近的已激活定义；`trace(variable)` 在写节点优先追显式值源，在
-  多操作数表达式中先保留 CallTarget→ArgToCall 桥，再延续 state-bearing source。
+- shared use-def 以 binding identity 分组，写入在显式 RHS 完成后激活，读取连接
+  source-order 上所有已激活的 may-reach 定义；`trace(variable)` 从中选择最近写入，
+  并在写节点优先追显式值源，在多操作数表达式中先选择可解析的 ReturnToCall 桥，
+  再延续 state-bearing source。
   该行为是 source-order
   approximation，不得表述为 CFG-aware SSA 或精确 branch merge。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。

@@ -216,8 +216,8 @@ impl DataFlowBuilder {
     /// edges from variable definitions to later uses of the same name.
     ///
     /// Key heuristic: nodes with the same function/binding identity are
-    /// grouped, and each read is connected to the latest source-ordered write
-    /// that has finished evaluating its value. This enables basic
+    /// grouped, and each read is connected to the source-ordered writes that
+    /// have finished evaluating their values. This enables basic
     /// cross-statement propagation (e.g. `const x = source; sink(x)`) without
     /// making an assignment visible inside its own RHS.
     ///
@@ -1147,10 +1147,12 @@ fn build_dataflow_edges(
 /// local variable or parameter.
 ///
 /// Edge creation uses a source-ordered reaching-definition approximation:
-/// each read connects only to the most recently activated definition in its
-/// group. A write activates after its explicit value source has been
-/// evaluated, so `x = x + 1` reads the previous `x` rather than the write
-/// currently being evaluated. CFG-aware branch merges remain conservative.
+/// each read connects to every activated definition in its group. A write
+/// activates after its explicit value source has been evaluated, so
+/// `x = x + 1` reads the previous `x` rather than the write currently being
+/// evaluated. Keeping all activated definitions preserves may-reach origins
+/// across branch joins; the linear slicer selects the latest candidate when
+/// several definitions are available. This is not CFG-aware SSA.
 fn resolve_use_def(data_nodes: &[DataNode], existing_edges: &[DataFlowEdge]) -> Vec<DataFlowEdge> {
     let mut edges = Vec::new();
 
@@ -1220,41 +1222,28 @@ fn resolve_use_def(data_nodes: &[DataNode], existing_edges: &[DataFlowEdge]) -> 
                     | DataNodeKind::Return
             )
         }) {
-            let reaching_definition = definitions
-                .iter()
-                .copied()
-                .filter(|definition| {
-                    activation_byte
-                        .get(&definition.id)
-                        .copied()
-                        .unwrap_or(definition.range.end_byte)
-                        <= use_node.range.start_byte
-                })
-                .max_by_key(|definition| {
-                    (
-                        activation_byte
-                            .get(&definition.id)
-                            .copied()
-                            .unwrap_or(definition.range.end_byte),
-                        definition.range.start_byte,
-                    )
-                });
-            let Some(definition) = reaching_definition else {
-                continue;
-            };
-            let edge_id = DataFlowEdgeId::generate(
-                &definition.id,
-                &use_node.id,
-                DataFlowKind::Assign.as_str(),
-            );
-            edges.push(DataFlowEdge::new(
-                edge_id,
-                definition.id,
-                use_node.id,
-                DataFlowKind::Assign,
-                use_node.range,
-                0.85,
-            ));
+            let reaching_definitions = definitions.iter().copied().filter(|definition| {
+                activation_byte
+                    .get(&definition.id)
+                    .copied()
+                    .unwrap_or(definition.range.end_byte)
+                    <= use_node.range.start_byte
+            });
+            for definition in reaching_definitions {
+                let edge_id = DataFlowEdgeId::generate(
+                    &definition.id,
+                    &use_node.id,
+                    DataFlowKind::Assign.as_str(),
+                );
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    definition.id,
+                    use_node.id,
+                    DataFlowKind::Assign,
+                    use_node.range,
+                    0.85,
+                ));
+            }
         }
     }
 
@@ -1870,6 +1859,12 @@ mod tests {
             edges
                 .iter()
                 .any(|edge| edge.source == write.id && edge.target == later_read.id)
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.source == initial.id && edge.target == later_read.id),
+            "all source-ordered definitions remain may-reach candidates"
         );
         assert!(
             edges

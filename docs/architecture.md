@@ -495,10 +495,11 @@ Source files
 ```
 
 局部 use-def 按 `(function_id, binding_id)` 分组；无 binding identity 时才退化为
-name-based 分组。写入在显式 RHS 完成求值后才激活，后续读取只连接源码顺序上最近的
-已激活定义，因此 `x = x + 1` 的 RHS 读取旧 `x`，而写入后的 use 读取新 `x`。线性
-Trace 在写节点优先选择显式值源，在多操作数表达式中优先保留 CallTarget→ArgToCall
-桥，再选择变量/实参/字段等状态源而非字面量。该规则是跨语言共享的 source-order approximation；branch join 仍不等同于
+name-based 分组。写入在显式 RHS 完成求值后才激活，后续读取连接源码顺序上所有
+已激活定义，因此 `x = x + 1` 的 RHS 不会读取当前写入，branch join 仍保留多个
+may-reach 来源；线性 Trace 从候选中选择最近写入。Trace 在写节点优先选择显式值源，
+在多操作数表达式中优先选择可解析的
+ReturnToCall 桥，再选择变量/实参/字段等状态源而非字面量。该规则是跨语言共享的 source-order approximation；branch join 不等同于
 CFG-aware SSA。
 
 ### 7.1 Focus materialize（内部按需物化，非产品线）
