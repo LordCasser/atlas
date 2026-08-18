@@ -77,6 +77,13 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   projection, function-literal ownership, exact receive-result components,
   non-identifier receive targets, and parallel-assignment evaluation order
   remain conservative.
+- TypeScript, JavaScript, and ArkTS object/array assignment destructuring
+  reuses source-visible identifier bindings and creates no declarations. The
+  whole RHS reaches simple, renamed, nested, default-left, and rest identifier
+  targets through aggregate `Assign` at confidence 0.85; computed keys and
+  default RHS expressions remain reads. Exact property/index projection,
+  default activation, nested member/subscript targets, and parallel assignment
+  evaluation order remain conservative.
 - Java direct and record-pattern captures are bindings in supported
   `if`-condition `instanceof` expressions and Java 21 arrow `switch_rule`
   scopes. Same-named captures in sibling rules retain distinct identities; the

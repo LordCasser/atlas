@@ -253,7 +253,7 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 > index、receiver 与 pointer/dereference targets、
 > overloaded/dynamic operator semantics、
 > numeric promotion/boxing、prefix/postfix result timing、`var` declaration/loop
-> binding semantics、assignment destructuring、async scheduling and ArkUI callback/trailing-block
+> binding semantics、unsupported destructuring target/evaluation semantics、async scheduling and ArkUI callback/trailing-block
 > internals remain conservative according to each language profile.
 > TypeScript、JavaScript 与 ArkTS 的 direct-identifier
 > `&&=`/`||=`/`??=` additionally preserve path-insensitive old-value/RHS
@@ -384,7 +384,15 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   Index 与真实 OpenCode `toV1Message` 的 `{ id: _, sessionID: __, ...rest } = info`
   覆盖三种 identity。OpenCode 语料审计包含 2,201 行 direct `const` object/array
   declaration destructuring，分布于 771 个文件。Exact property/index projection、
-  `var` declaration binding 与 assignment destructuring 保持保守。
+  destructuring default activation 与 `var` declaration binding 保持保守。
+- ✅ TypeScript、JavaScript 与 ArkTS 的 object/array assignment destructuring
+  simple/renamed/nested/default/rest identifier target 复用 source-visible existing
+  binding，不新建 BindingDef；computed key 与 default RHS 保持读取，target 不伪造
+  read。Whole RHS 以 Assign 0.85 向每个 supported target 提供 aggregate provenance。
+  Direct extraction、SQLite/Trace、cold Focus==full Index 与真实 OpenCode
+  `;[y, m] = shift(y, m, -1)` 覆盖三种 identity。Exact property/index projection、
+  default activation、member/subscript target 与 parallel assignment evaluation order
+  保持保守。
 - ✅ TypeScript、JavaScript 与 ArkTS 的 function/method/arrow parameter
   destructuring simple/renamed/nested/default/rest leaf 已使用 function-scoped
   Parameter binding；同一顶层 parameter 下的每个 leaf 共享同一调用位置，
@@ -393,8 +401,8 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   leaf；computed key 与 default RHS 保持读取。Direct extraction、SQLite/Trace、
   cold Focus==full Index 与真实 OpenCode `hasFunctionCall` 跨文件调用覆盖
   三种 identity。OpenCode 语料审计包含 978 个 destructured parameter，
-  分布于 383 个文件；assignment destructuring 仅 1 处。Exact property/index
-  projection 与 parameter default activation 保持保守。
+  分布于 383 个文件；唯一一处 assignment destructuring 已由上一条真实源码回归
+  覆盖。Exact property/index projection 与 parameter default activation 保持保守。
 - ✅ TypeScript、JavaScript 与 ArkTS 的 `let/const` `for-of`/`for-in`
   simple/nested pattern capture 已使用 loop-scoped binding；无 declaration 的
   direct existing-local assignment form 复用原 binding。Whole iterable/object
@@ -586,8 +594,19 @@ CFG + DataFlow
   `Assign` at 0.85. Direct extraction、SQLite/Trace、cold Focus-vs-full-Index and
   the real OpenCode `{ id: _, sessionID: __, ...rest } = info` fixture cover
   TypeScript、JavaScript and ArkTS identities independently. Exact property/index
-  projection、`var` declaration binding and assignment destructuring
-  remain explicit precision boundaries.
+  projection、default activation and `var` declaration binding remain explicit
+  precision boundaries.
+- **TypeScript-family assignment destructuring — scoped phase implemented:**
+  object/array assignment patterns accept simple、renamed、nested、default-left
+  and rest identifier leaves only when scope-chain lookup resolves an existing
+  binding；the write creates no BindingDef and the target is not treated as a read.
+  The whole RHS reaches every supported target through aggregate `Assign` at 0.85,
+  while computed keys and default RHS expressions remain reads. Direct extraction、
+  SQLite/Trace、cold Focus-vs-full-Index and the real OpenCode
+  `;[y, m] = shift(y, m, -1)` fixture cover TypeScript、JavaScript and ArkTS
+  identities independently. Exact property/index projection、default activation、
+  member/subscript targets and parallel assignment evaluation order remain explicit
+  precision boundaries.
 - **TypeScript-family parameter destructuring — scoped phase implemented:**
   recursive pattern classification accepts simple、renamed、nested、default-left
   and rest leaves only inside function、method or arrow parameters. Every leaf is
@@ -598,9 +617,10 @@ CFG + DataFlow
   RHS expressions remain reads. Direct extraction、SQLite/Trace、cold
   Focus-vs-full-Index and the real cross-file OpenCode `hasFunctionCall` fixture
   cover TypeScript、JavaScript and ArkTS identities independently. The audited
-  corpus contains 978 destructured parameters across 383 files, while assignment
-  destructuring appears once. Exact property/index projection and parameter
-  default activation remain explicit precision boundaries.
+  corpus contains 978 destructured parameters across 383 files；the single audited
+  assignment-destructuring occurrence is covered by the preceding phase. Exact
+  property/index projection and parameter default activation remain explicit
+  precision boundaries.
 - **TypeScript-family iteration binding — scoped phase implemented:** pinned
   `for_in_statement` fields drive one shared TS-family path. `let/const`
   simple/nested pattern leaves join the loop scope；direct existing-local

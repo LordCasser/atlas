@@ -90,7 +90,16 @@ simple、renamed、nested、default-left and rest targets in the enclosing block
 The whole initializer reaches every supported target through aggregate Assign
 0.85；computed keys and default RHS expressions remain reads. Treat this as
 aggregate origin evidence, not exact property/index projection. `var`
-declarations and assignment destructuring remain conservative.
+declarations and destructuring default activation remain conservative.
+
+TypeScript、JavaScript and ArkTS object/array assignment destructuring does not
+declare names. Simple、renamed、nested、default-left and rest identifier targets
+reuse source-visible bindings, and the whole RHS reaches each supported target
+through aggregate Assign 0.85；computed keys and default RHS expressions remain
+reads, while targets are writes rather than reads. Treat this as aggregate origin
+evidence, not exact property/index projection or proof that a default activates.
+Member/subscript targets and parallel assignment evaluation order remain
+conservative.
 
 TypeScript、JavaScript and ArkTS function、method and arrow parameter
 destructuring binds simple、renamed、nested、default-left and rest leaves in
