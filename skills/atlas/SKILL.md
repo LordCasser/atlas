@@ -109,13 +109,16 @@ that edge as a possible aggregate origin, not exact element/key projection or
 proof of async scheduling. `var` function-scoped loop binding semantics and
 member/subscript iteration targets remain conservative.
 
-Rust `match` scrutinees and source-ordered guard-let RHS values preserve exact
-syntactic access paths for fixed tuple、tuple-struct、struct and slice-prefix
-captures. Variable Trace can therefore traverse `FieldLoad` 0.80 into an
-anonymous projection Expr and `Assign` 0.90 into the arm-local capture. Bare or
-`@` whole captures and targets after `..` remain aggregate Assign 0.75；runtime-
-length suffix projection、borrow/move mode and guard control dependency remain
-explicit limitations.
+Rust `match` scrutinees and source-ordered match-guard、`if` and `while`
+let-condition RHS values preserve exact syntactic access paths for fixed tuple、
+tuple-struct、struct and slice-prefix captures. Variable Trace can therefore
+traverse `FieldLoad` 0.80 into an anonymous projection Expr and `Assign` 0.90
+into the scoped capture. `if let`/let-chain captures activate in source order,
+remain visible through later conditions and the success block, and do not enter
+`else`; `while let` captures remain loop-scoped. Bare or `@` whole captures and
+targets after `..` remain aggregate Assign 0.75；runtime-length suffix projection、
+borrow/move mode and condition/guard control dependency remain explicit
+limitations.
 
 ### Source encoding and positions
 
