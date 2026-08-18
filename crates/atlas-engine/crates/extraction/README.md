@@ -77,6 +77,14 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   projection, function-literal ownership, exact receive-result components,
   non-identifier receive targets, and parallel-assignment evaluation order
   remain conservative.
+- Java direct and record-pattern captures are bindings in supported
+  `if`-condition `instanceof` expressions and Java 21 arrow `switch_rule`
+  scopes. Same-named captures in sibling rules retain distinct identities; the
+  tested value or switch selector flows conservatively to every supported
+  capture at confidence 0.75. Colon-style switch groups, standalone or other
+  flow-sensitive boolean contexts, exact record-component projection,
+  compiler definite-assignment, and guard control dependencies remain
+  conservative.
 - Cangjie simple, nested-tuple, and enum-payload `for-in` captures are
   loop-scoped bindings; enum constructor syntax is excluded. The iterable
   provides conservative aggregate provenance to every capture, guard/body uses

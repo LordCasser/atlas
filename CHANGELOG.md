@@ -70,6 +70,20 @@ All notable changes to Atlas will be documented in this file.
   non-identifier receive targets, and parallel-assignment evaluation order
   remain conservative.
 
+### Java dataflow
+
+- Bind direct and record-pattern variables in supported `if`-condition
+  `instanceof` expressions and Java 21 arrow switch rules. Arrow-rule captures
+  use one scope per sibling, so same-named variables retain distinct binding
+  identities; tested values and switch selectors flow conservatively to every
+  supported capture at confidence 0.75.
+- Cover declaration/use identity, nested record captures, constructor and
+  underscore rejection, SQLite Trace, and cold Focus-vs-full-Index
+  bindings/dataflow/CFG/confidence parity. Colon-style switch groups,
+  standalone or other flow-sensitive boolean contexts, exact record-component
+  projection, compiler definite-assignment, and guard control dependencies
+  remain explicit boundaries.
+
 ### Rust dataflow
 
 - Model `match` guard `let` chains with source-ordered binding activation:

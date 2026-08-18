@@ -37,7 +37,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow（含 edge kind/confidence）、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、mixed short declaration、Go select receive、match binding、PHP nested/keyed
-  destructuring、Ruby multiple assignment、C# parenthesized nested designation、Kotlin
+  destructuring、Ruby multiple assignment、Java guarded type/record pattern、C# parenthesized nested designation、Kotlin
   late-assignment branch provenance、Cangjie simple/nested-tuple/enum-payload
   `for-in` loop binding/aggregate provenance、modifier loop、nested lexical shadowing
   等精确断言。
@@ -245,6 +245,11 @@ rg 'read_to_string' crates/atlas-engine crates/atlas-mcp --glob '*.rs'
   - Focus：structural 底库 → `ensure_for_function(seed)`。  
   - 断言：seed unit dataflow（含 edge kind/confidence）/CFG 切片 == Index full 同 unit；peer 无 dataflow。
 - **Language-specific unit semantics**
+  - Java `n5_focus_java_pattern_bindings_match_index_full` 覆盖 supported
+    `if`-condition `instanceof` 与 Java 21 arrow switch type/record capture 的
+    rule-local identity、0.75 tested-value/selector aggregate flow、edge confidence
+    parity 与 peer method 冷态；colon group 和其他 flow-sensitive boolean context
+    由直接 boundary fixture 固定为保守，不能由普通函数基线替代。
   - C# `n5_focus_csharp_pattern_bindings_match_index_full` 覆盖 parenthesized nested
     designation 的 binding/dataflow/CFG 切片、0.72 aggregate subject flow，以及 peer
     method 保持冷态；不能由普通函数基线替代。
