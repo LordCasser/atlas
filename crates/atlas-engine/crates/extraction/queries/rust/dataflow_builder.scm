@@ -10,18 +10,6 @@
 
 ;; --- Let bindings ---
 (let_declaration
-  pattern: (identifier) @df.assign_target
-  value: (_) @df.assign_value)
-
-;; Destructuring let: let (a, b) = expr
-(let_declaration
-  pattern: (tuple_pattern
-    (identifier) @df.assign_target)
-  value: (_) @df.assign_value)
-
-(let_declaration
-  pattern: (tuple_struct_pattern
-    (identifier) @df.assign_target)
   value: (_) @df.assign_value)
 
 ;; --- Assignments: x = expr ---
@@ -91,10 +79,11 @@
 (let_condition
   value: (_) @df.let_condition_value)
 
-;; Broad captures are classified by the Rust adapter so nested patterns share
-;; the same syntax rules as lexical binding extraction. The second capture on
-;; each binding lets the adapter materialize an exact syntactic projection when
-;; the path is knowable without type or slice-length inference.
+;; Broad captures are classified by the Rust adapter so ordinary let/let-else,
+;; match, and let-condition patterns share the same syntax rules as lexical
+;; binding extraction. The second capture on each binding lets the adapter
+;; materialize an exact syntactic projection when the path is knowable without
+;; type or slice-length inference.
 (match_pattern
   (identifier) @df.pattern_target @df.pattern_projection)
 (_pattern

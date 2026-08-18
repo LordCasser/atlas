@@ -9,10 +9,6 @@
 (self_parameter
   (self) @lexical.parameter)
 
-;; --- Let bindings (let x = expr) ---
-(let_declaration
-  pattern: (identifier) @lexical.local)
-
 ;; --- For-loop variable (for x in ...) ---
 (for_expression
   pattern: (identifier) @lexical.local)
@@ -21,11 +17,11 @@
 (closure_parameters
   (identifier) @lexical.parameter)
 
-;; --- Match arm and let-condition bindings ---
+;; --- Let declaration, match arm, and let-condition pattern bindings ---
 ;; Broad grammar captures are filtered by the adapter. This reaches nested
-;; tuple/struct/ref/@ patterns in match arms, match guards, and if/while
-;; conditions while rejecting constructor paths and non-canonical alternatives
-;; of an or-pattern.
+;; tuple/struct/ref/@ patterns in ordinary let/let-else declarations, match
+;; arms, match guards, and if/while conditions while rejecting constructor
+;; paths and non-canonical alternatives of an or-pattern.
 (match_pattern
   (identifier) @lexical.pattern)
 (_pattern
