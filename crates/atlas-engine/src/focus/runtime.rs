@@ -262,10 +262,12 @@ pub struct FocusRuntime {
     /// Foreground jobs are marked done immediately; background
     /// jobs are marked by the scheduler on completion.
     job_tracker: Arc<JobTracker>,
-    /// Active or failed file warming job per source directory. Successful
-    /// entries are replaced only when a later query still has incomplete files
-    /// in that directory; failed entries remain terminal for resume convergence.
-    file_focus_jobs: HashMap<String, String>,
+    /// Active or failed file warming job per source region, together with the
+    /// incomplete seed that the job was required to materialize. Successful
+    /// entries are replaced only when that seed completed and a later query
+    /// still has incomplete files in the region. A completed job whose seed is
+    /// still incomplete remains terminal so resume cannot enqueue it forever.
+    file_focus_jobs: HashMap<String, (String, FileId)>,
 }
 
 // ── Hot region tracking ────────────────────────────────────────────────────
@@ -795,9 +797,19 @@ impl FocusRuntime {
         self.ensure_started();
 
         let mut groups: HashMap<String, Vec<FileId>> = HashMap::new();
-        for file_id in file_ids {
+        for file_id in file_ids.iter().filter(|file_id| {
+            !self
+                .materialize
+                .structural()
+                .has_structural_layer(file_id)
+                .unwrap_or(false)
+        }) {
             let key = self.file_focus_group_key(file_id);
             groups.entry(key).or_default().push(*file_id);
+        }
+
+        if groups.is_empty() {
+            return Ok(None);
         }
 
         let mut groups: Vec<_> = groups.into_iter().collect();
@@ -805,7 +817,7 @@ impl FocusRuntime {
         let mut job_ids = Vec::with_capacity(groups.len());
         let mut scheduler = self.scheduler.lock().unwrap();
         for (group_key, group_files) in groups {
-            if let Some(job_id) = self.file_focus_jobs.get(&group_key).cloned() {
+            if let Some((job_id, seed_file_id)) = self.file_focus_jobs.get(&group_key).cloned() {
                 let ids = std::slice::from_ref(&job_id);
                 if self.job_tracker.pending_count(ids) > 0
                     || !self.job_tracker.failures_for(ids).is_empty()
@@ -813,13 +825,16 @@ impl FocusRuntime {
                     job_ids.push(job_id);
                     continue;
                 }
-                let complete = group_files.iter().all(|file_id| {
-                    self.materialize
-                        .structural()
-                        .has_structural_layer(file_id)
-                        .unwrap_or(false)
-                });
-                if complete {
+                let seed_complete = self
+                    .materialize
+                    .structural()
+                    .has_structural_layer(&seed_file_id)
+                    .unwrap_or(false);
+                if !seed_complete {
+                    // The completed window made no progress on its required
+                    // seed. Re-enqueuing the same region would create an
+                    // unbounded ready -> resume -> retry cycle. Reuse the
+                    // terminal job so the caller publishes a bounded gap.
                     job_ids.push(job_id);
                     continue;
                 }
@@ -839,7 +854,8 @@ impl FocusRuntime {
                 max_iterations: 2,
             };
             let job_id = scheduler.enqueue(window, FocusPriority::UserFocus);
-            self.file_focus_jobs.insert(group_key, job_id.clone());
+            self.file_focus_jobs
+                .insert(group_key, (job_id.clone(), file_id));
             job_ids.push(job_id);
         }
         drop(scheduler);
@@ -860,24 +876,28 @@ impl FocusRuntime {
     }
 
     fn file_focus_group_key(&self, file_id: &FileId) -> String {
-        let path = self
+        let registered_path = self
             .store
             .get_file(file_id)
             .ok()
             .flatten()
-            .map(|file| file.path)
-            .or_else(|| {
-                self.store
-                    .find_file_inventory_by_id(file_id)
-                    .ok()
-                    .flatten()
-                    .map(|row| row.path)
-            });
-        path.as_deref()
-            .and_then(|path| Path::new(path).parent())
-            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-            .filter(|parent| !parent.is_empty())
-            .unwrap_or_else(|| file_id.to_hex())
+            .map(|file| file.path);
+        if let Some(path) = registered_path {
+            return Path::new(&path)
+                .parent()
+                .map(|parent| format!("dir:{}", parent.to_string_lossy().replace('\\', "/")))
+                .unwrap_or_else(|| "dir:.".to_string());
+        }
+
+        // SameDirectory expands from registered `files`. Inventory-only
+        // candidates therefore need their own seed until materialized; grouping
+        // them by directory would silently discard every file but the first.
+        self.store
+            .find_file_inventory_by_id(file_id)
+            .ok()
+            .flatten()
+            .map(|row| format!("inventory:{}", row.path))
+            .unwrap_or_else(|| format!("file:{}", file_id.to_hex()))
     }
 
     /// Called when a file is structurally ensured — pre-warm its imports

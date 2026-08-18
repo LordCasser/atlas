@@ -810,7 +810,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cold_search_tracks_one_retryable_job_per_candidate_directory_and_converges() {
+    fn cold_search_tracks_deferred_focus_and_converges() {
         let root = tempfile::tempdir().unwrap();
         let src = root.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -879,5 +879,70 @@ mod tests {
         assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
         assert_eq!(resumed["total"], 3, "{resumed}");
         assert_eq!(resumed["results"].as_array().unwrap().len(), 3, "{resumed}");
+    }
+
+    #[test]
+    fn cold_search_materializes_every_inventory_only_candidate_before_ready_resume() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..6 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+
+        let (body, is_error) = router.handle_search(
+            &ToolCallContext::empty(),
+            &serde_json::json!({"query": "Widget", "scope": "src", "limit": 10}),
+        );
+        assert!(!is_error, "{body}");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        let query_id = value["query_id"].as_str().unwrap().to_string();
+        let snapshot = router
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get(&query_id)
+            .cloned()
+            .expect("search query snapshot");
+        let focus = snapshot.focus_result.expect("tracked search focus result");
+        assert_eq!(
+            focus.pending_closure_ids.len(),
+            4,
+            "each deferred inventory-only file must be a materialization seed"
+        );
+
+        let mut task_state = Value::Null;
+        for _ in 0..100 {
+            let (tasks, tasks_error) =
+                router.handle_tasks(&serde_json::json!({"query_id": query_id}));
+            assert!(!tasks_error, "{tasks}");
+            task_state = serde_json::from_str(&tasks).unwrap();
+            if task_state["query"]["status"] == "ready" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(task_state["query"]["status"], "ready", "{task_state}");
+
+        let (resumed, resume_error) =
+            router.handle_resume_query(&serde_json::json!({"query_id": query_id}));
+        assert!(!resume_error, "{resumed}");
+        let resumed: Value = serde_json::from_str(&resumed).unwrap();
+        assert!(
+            resumed["analysis"].get("retry_after_ms").is_none(),
+            "ready must resume to a terminal response: {resumed}"
+        );
+        assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
+        assert_eq!(resumed["total"], 6, "{resumed}");
     }
 }
