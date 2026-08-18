@@ -2423,6 +2423,197 @@ fn n5_focus_c_style_variable_mutations_match_index_full() {
     }
 }
 
+/// Python, Go, Rust, Kotlin, and Ruby expose distinct non-C-family mutation
+/// nodes. Focus must materialize the same direct-local aggregate provenance as
+/// full Index for each identity while leaving a peer unit cold.
+#[test]
+fn n5_focus_remaining_language_variable_mutations_match_index_full() {
+    let cases: Vec<(&str, &str, &str, &str, &[(u32, &str)], &str, &str, &str)> = vec![
+        #[cfg(feature = "python")]
+        (
+            "python",
+            "variable_mutations.py",
+            "def mutate(seed, delta):\n    total = seed\n    total += delta\n    return total\n",
+            "mutate",
+            &[(2, "total += delta")],
+            "peer.py",
+            "def unrelated():\n    return 42\n",
+            "unrelated",
+        ),
+        #[cfg(feature = "go")]
+        (
+            "go",
+            "variable_mutations.go",
+            "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  return total\n}\n",
+            "mutate",
+            &[(4, "total += delta"), (5, "total++"), (6, "total--")],
+            "peer.go",
+            "package mutations\nfunc unrelated() int { return 42 }\n",
+            "unrelated",
+        ),
+        #[cfg(feature = "rust")]
+        (
+            "rust",
+            "variable_mutations.rs",
+            "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    total\n}\n",
+            "mutate",
+            &[(2, "total += delta")],
+            "peer.rs",
+            "fn unrelated() -> i32 { 42 }\n",
+            "unrelated",
+        ),
+        #[cfg(feature = "kotlin")]
+        (
+            "kotlin",
+            "VariableMutations.kt",
+            "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    return total\n}\n",
+            "mutate",
+            &[(2, "total += delta"), (3, "total++"), (4, "--total")],
+            "Peer.kt",
+            "fun unrelated(): Int = 42\n",
+            "unrelated",
+        ),
+        #[cfg(feature = "ruby")]
+        (
+            "ruby",
+            "variable_mutations.rb",
+            "def mutate(seed, delta)\n  total = seed\n  total += delta\n  total\nend\n",
+            "mutate",
+            &[(2, "total += delta")],
+            "peer.rb",
+            "def unrelated\n  42\nend\n",
+            "unrelated",
+        ),
+    ];
+
+    for (
+        language,
+        path,
+        source,
+        function_name,
+        mutations,
+        peer_path,
+        peer_source,
+        peer_function_name,
+    ) in cases
+    {
+        let fixture = [(path, source), (peer_path, peer_source)];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_function = symbol_id_by_name(&indexed_store, function_name);
+        let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_function);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_function);
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == "total")
+                .count(),
+            1,
+            "{language}: full Index must preserve one total binding"
+        );
+        assert_eq!(
+            indexed_slice
+                .nodes
+                .iter()
+                .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "total")
+                .count(),
+            mutations.len() + 1,
+            "{language}: initializer plus every direct-variable mutation write"
+        );
+        for &(_, expression) in mutations {
+            assert_eq!(
+                indexed_slice
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        node.0 == DataNodeKind::Expr.as_str() && node.1 == expression
+                    })
+                    .count(),
+                1,
+                "{language}: full Index mutation Expr {expression}"
+            );
+        }
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_function)
+            .unwrap_or_else(|error| panic!("{language}: full Index mutation nodes: {error}"));
+        for &(line, expression) in mutations {
+            let value = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(expression)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index mutation value {expression}"));
+            let target = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some("total")
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index mutation target line {line}"));
+            let edge = indexed_store
+                .find_dataflow_edges_by_source(&value.id)
+                .unwrap_or_else(|error| panic!("{language}: full Index mutation edges: {error}"))
+                .into_iter()
+                .find(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+                .unwrap_or_else(|| panic!("{language}: full Index mutation flow line {line}"));
+            assert_eq!(edge.confidence, 0.90, "{language}");
+        }
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let focused_function = symbol_id_by_name(&focused_store, function_name);
+        let peer_function = symbol_id_by_name(&focused_store, peer_function_name);
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&focused_function)
+                .unwrap_or_else(|error| panic!("{language}: cold mutation unit: {error}"))
+                .is_empty(),
+            "{language}: mutation unit must be cold before Focus ensure"
+        );
+
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &focused_function,
+                Some("remaining-language-variable-mutation-parity"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure mutation unit: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &focused_function),
+            indexed_slice,
+            "{language}: Focus mutation dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &focused_function),
+            indexed_bindings,
+            "{language}: Focus mutation bindings == full Index"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&peer_function)
+                .unwrap_or_else(|error| panic!("{language}: peer unit state: {error}"))
+                .is_empty(),
+            "{language}: peer unit must stay outside the Focus window"
+        );
+    }
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.
