@@ -556,8 +556,7 @@ fn java_switch_subject(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<
         return Some(condition);
     }
     let mut cursor = condition.walk();
-    let subject = condition.named_children(&mut cursor).next();
-    subject
+    condition.named_children(&mut cursor).next()
 }
 
 fn walk_java_pattern_edges(
