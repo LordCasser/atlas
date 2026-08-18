@@ -25,6 +25,22 @@ All notable changes to Atlas will be documented in this file.
   and PHP, where the language boundary needs stronger assertions than the
   common baseline.
 
+### Cross-language binding identity
+
+- Promote `scope_aware_binding` for TypeScript, JavaScript, ArkTS, Java, C,
+  and C++ after direct extraction, SQLite Trace, and Focus-vs-full-Index
+  fixtures proved that same-name locals retain distinct `BindingId` and scope
+  ownership. Java uses legal sibling-block redeclarations because overlapping
+  local redeclaration is rejected by the language.
+- Align frontend lexical/dataflow slot confidence and limitation text with the
+  authoritative language profiles. ArkTS remains a TypeScript-grammar boundary:
+  ordinary nested blocks are verified, while ArkUI callback ownership and
+  trailing-block internals remain best-effort.
+- Remove the unused slot-derived capability-profile path. Static
+  `LanguageCapabilityProfile.features` remains the single runtime gating truth;
+  slot capabilities are implementation contracts checked against it, not a
+  second user-visible profile.
+
 ### Go dataflow
 
 - Model a type-switch alias as one distinct binding in every case/default

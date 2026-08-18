@@ -649,7 +649,7 @@ LanguageCapabilityProfile
   features               → FeatureMatrix（必填；类型安全的逐 feature 查询）
 ```
 
-`features` 是能力门控的唯一权威。`supported_features` / `unsupported_features` 只是面向人类和 JSON 输出的镜像列表，必须与 `features` 保持一致，但运行时不得以字符串列表作为能力判断来源。
+`features` 是能力门控的唯一权威。`supported_features` / `unsupported_features` 只是面向人类和 JSON 输出的镜像列表，必须与 `features` 保持一致，但运行时不得以字符串列表作为能力判断来源。Frontend slot 的 `capability()` 描述具体 extractor 实现契约，只用于构造期/测试一致性检查；不得由 slot 再反向派生第二份 `LanguageCapabilityProfile`。
 
 ### 9.2 权威能力表
 
@@ -657,13 +657,13 @@ LanguageCapabilityProfile
 
 | Language | Level | CFG | Confidence | Interprocedural | Note |
 |----------|-------|:---:|:---:|:---:|------|
-| TypeScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally path-isolated continuation CFG |
-| JavaScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | 共享 TS adapter；try/catch/finally continuation CFG |
+| TypeScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | 普通/nested block 的同名 local 经 scope chain 保留独立 identity；nested destructuring/async pattern 保守；try/catch/finally path-isolated continuation CFG |
+| JavaScript | DataflowInterproc | ✓ | 0.60 | ✓ (ArgToParam + ReturnToCall) | 共享 TS adapter；普通/nested block 的同名 local 经 scope chain 保留独立 identity；nested destructuring/async pattern 保守；try/catch/finally continuation CFG |
 | Python | DataflowInterproc | ✓ (branch/loop/`match`) | 0.72 | ✓ (ArgToParam + ReturnToCall) | module/function/class 同 namespace 重写共享 binding identity，普通 statement block 不造 scope，comprehension 隔离；match subject 保守流向 capture/`as`/star binding 并贯通 guard/body；结构投影、post-match path-definedness、`global`/`nonlocal` 与动态 namespace mutation 保守；try/except/else/finally、`with` continuation CFG |
-| Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | classic try/catch/finally 与 try-with-resources 组合的 normal/abrupt continuation CFG；direct `throw new T` 按 handler 顺序在首个无 guard 的语法精确匹配处截断；继承/alias/变量抛出仍保守；managed exit 先于 catch/finally，cleanup 为确定性 LIFO |
-| C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch 与 direct same-function `Goto` CFG；函数指针 limited depth 3；computed/unresolved goto 保守终止 |
-| C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG；lifecycle goto 清除不可证明的 branch context；cross-scope destruction、模板/重载/ADL、catch-type selection、implicit exception 不建模 |
-| ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback 仍是显式边界 |
+| Java | DataflowInterproc | ✓ | 0.75 | ✓ (ArgToParam + ReturnToCall) | parameter/local/foreach/catch/lambda 经 scope chain 解析，合法 sibling-block 同名 local 保留独立 identity；Java 拒绝 overlapping local redeclaration，pattern variable 保守；classic try/catch/finally 与 try-with-resources 组合的 normal/abrupt continuation CFG；direct `throw new T` 按 handler 顺序在首个无 guard 的语法精确匹配处截断；继承/alias/变量抛出仍保守；managed exit 先于 catch/finally，cleanup 为确定性 LIFO |
+| C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | nested block 同名 local 经 scope chain 保留独立 identity；branch/loop/switch 与 direct same-function `Goto` CFG；函数指针 limited depth 3；computed/unresolved goto 保守终止 |
+| C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | nested block 同名 local 经 scope chain 保留独立 identity；branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG；lifecycle goto 清除不可证明的 branch context；cross-scope destruction、模板/重载/ADL、catch-type selection、implicit exception 不建模 |
+| ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar 下普通/nested block 的同名 local 经 scope chain 保留独立 identity；等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback ownership 仍是显式边界 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | type-switch guard value 保守流向每个 case/default implicit block 的 clause-local alias；case-type projection 与 mixed short-declaration identity 保守；branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | `is`/switch 的 direct declaration/recursive/var pattern capture 经 scope chain 解析，switch arm 保留独立 identity，subject 保守流向 capture；nested designation projection、definite-assignment 与 guard dependency 保守；try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct same-function `Goto` 退出按内到外执行 using/finally cleanup，非法 region crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
 | Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与 abrupt alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` 抑制 synthetic no-match；scrutinee 保守流向 arm-local nested capture，guard/body 复用 identity；guard-let chain 按源码顺序激活 binding，RHS→capture 建立保守 Assign；结构投影、borrow/move mode、guard dependency、单段常量歧义与 macro resolution/unwind 保守；Drop 仅为 function-exit heuristic |
@@ -676,6 +676,8 @@ LanguageCapabilityProfile
 - capability profile 属于 engine/analysis 边界；CLI/MCP/context 只能读取并展示。
 - 每个查询结果必须携带实际使用的语言能力信息。
 - 查询请求超出当前语言边界时，trace 内层返回 `partial_result + diagnostics`；非 trace MCP 外层返回终态 capability gap，不静默返回无法解释的空数组。
+
+`scope_aware_binding` 是经过路径证据约束的精度标记，不代表编译器级 name resolution。当前完整产品路径矩阵覆盖 Python、TypeScript、JavaScript、ArkTS、Java、C、C++、C#：直接 extraction 验证 `BindingDef`/`BindingUse`/`DataNode.binding_id`，SQLite Trace 验证持久化身份，Focus 与 full Index 验证同 unit 的 bindings/dataflow/CFG 等价。语言特有的 destructuring、pattern、callback、definite-assignment 等边界仍以各 profile limitation 为准。
 
 函数级 Focus 物化依赖持久化事实自身携带 owner：`BindingDef` 与 `DataNode`
 共享“最内层 enclosing callable”区间解析，包含零长度的隐式声明点；Index、Focus、

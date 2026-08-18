@@ -70,6 +70,11 @@ construct coverage and confidence differ by language; overall
 - `project(action="status")` (verbose if needed)
 - Trace response `capability` / diagnostics
 
+Treat `scope_aware_binding` as an evidence-backed precision marker, not compiler
+equivalence. Read the profile limitations for destructuring, pattern,
+callback, definite-assignment, and dynamic-namespace boundaries before relying
+on an apparently resolved same-name use.
+
 ### Source encoding and positions
 
 - Atlas decodes project sources internally before extraction. UTF-8 is direct;

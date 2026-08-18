@@ -37,6 +37,12 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、match binding、modifier loop、nested lexical shadowing 等精确断言。
+- 声明 `scope_aware_binding` 前必须同时具备三层证据：直接 extraction 断言 distinct
+  `BindingId`/`scope_id` 以及 `BindingUse`/`DataNode.binding_id`，SQLite Trace 断言持久化后
+  sink identity 与 Assign path，Focus cold unit 对 full Index 的 bindings/dataflow/CFG 对拍。
+  当前共享矩阵覆盖 TypeScript、JavaScript、ArkTS、Java、C、C++；Python/C# 及其他
+  pattern/namespace 特化语言继续保留各自 fixture。Java 必须用语言合法的 sibling block，
+  不能用编译器拒绝的 overlapping local redeclaration 伪造 shadowing。
 - capability/status 测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 - FullCache/Focus 判定必须覆盖：整仓 finalized manifest + 少量 Focus structural、
