@@ -206,7 +206,7 @@ impl LexicalBindingSpec for RubyAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
             ],
         )
     }

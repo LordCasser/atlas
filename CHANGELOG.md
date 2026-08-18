@@ -28,7 +28,7 @@ All notable changes to Atlas will be documented in this file.
 ### Cross-language binding identity
 
 - Promote `scope_aware_binding` for TypeScript, JavaScript, ArkTS, Java, C,
-  C++, Go, Rust, Kotlin, Cangjie, and PHP after direct extraction, SQLite Trace, and Focus-vs-full-Index
+  C++, Go, Rust, Kotlin, Cangjie, PHP, and Ruby after direct extraction, SQLite Trace, and Focus-vs-full-Index
   fixtures proved that same-name locals retain distinct `BindingId` and scope
   ownership. Java uses legal sibling-block redeclarations because overlapping
   local redeclaration is rejected by the language. Go mixed short declarations,
@@ -136,6 +136,11 @@ All notable changes to Atlas will be documented in this file.
 - Add adversarial extraction and extraction→SQLite persistence coverage without
   changing the database schema or MCP/TUI response contracts. Ordinary
   iterator/callback blocks remain an explicit gap.
+- Resolve Ruby block assignments in source order: writes reuse an existing
+  ancestor binding, while new block locals and shadowing block parameters keep
+  their own identity. A later outer assignment does not retroactively capture
+  an earlier block local; multiple assignment/destructuring and numbered
+  parameters remain explicit boundaries.
 
 ### PHP control flow
 

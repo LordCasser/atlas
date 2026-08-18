@@ -1487,10 +1487,11 @@ mod profiles {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
-            "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+            "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
             "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             "dynamic methods (method_missing / define_method) not yet verified",
             "block/yield implicit calls documented but not yet implemented",
@@ -1501,7 +1502,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                        "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
                     ],
                 ),
             ),
@@ -1519,7 +1520,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                        "scope-chain-aware source-ordered use-def across method/module/class/block namespaces; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
                     ],
                 ),
             ),
@@ -3334,13 +3335,14 @@ mod tests {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
-                "method/module/class local namespace identity; block assignment to an existing outer local remains conservative",
+                "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative",
                 "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                 "dynamic methods (method_missing / define_method) not yet verified",
                 "block/yield implicit calls documented but not yet implemented",
@@ -3380,7 +3382,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "method/module/class local namespace identity; block assignment to an existing outer local remains conservative"
+                    "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative"
                 ],
             )
         );
@@ -3398,7 +3400,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "method/module/class local namespace identity; block assignment to an existing outer local remains conservative"
+                    "scope-chain-aware source-ordered use-def across method/module/class/block namespaces; block writes reuse existing ancestors while new block locals remain isolated; multiple assignment/destructuring and numbered parameters remain conservative"
                 ],
             )
         );
