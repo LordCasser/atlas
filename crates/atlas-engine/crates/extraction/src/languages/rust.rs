@@ -198,7 +198,7 @@ impl LexicalBindingSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+                "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
             ],
         )
     }
@@ -219,7 +219,7 @@ impl DataflowSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
+                "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -371,6 +371,44 @@ fn walk_rust_language_edges(
                         0.75,
                     ));
                 }
+            }
+        }
+    }
+
+    if node.kind() == "let_condition"
+        && rust_match_guard_let_condition(node).is_some()
+        && let (Some(pattern), Some(value)) = (
+            node.child_by_field_name("pattern"),
+            node.child_by_field_name("value"),
+        )
+    {
+        let value_key = NodePosKey {
+            start_byte: value.start_byte() as u32,
+            end_byte: value.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&value_key) {
+            let mut targets = Vec::new();
+            collect_rust_guard_let_binding_nodes(pattern, source, &mut targets);
+            for target in targets {
+                let target_key = NodePosKey {
+                    start_byte: target.start_byte() as u32,
+                    end_byte: target.end_byte() as u32,
+                    kind: DataNodeKind::Local,
+                };
+                let Some(&target_id) = pos_map.get(&target_key) else {
+                    continue;
+                };
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    node_range(target),
+                    0.75,
+                ));
             }
         }
     }
@@ -594,10 +632,15 @@ fn is_rust_match_arm_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
         .is_some_and(|pattern| node_is_within(node, pattern))
 }
 
+fn rust_match_guard_let_condition(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let let_condition = nearest_ancestor_of_kind(node, "let_condition")?;
+    let match_pattern = nearest_ancestor_of_kind(let_condition, "match_pattern")?;
+    let guard = match_pattern.child_by_field_name("condition")?;
+    node_is_within(let_condition, guard).then_some(let_condition)
+}
+
 fn is_rust_guard_let_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
-    std::iter::successors(node.parent(), |current| current.parent())
-        .take_while(|ancestor| ancestor.kind() != "match_arm")
-        .find(|ancestor| ancestor.kind() == "let_condition")
+    rust_match_guard_let_condition(node)
         .and_then(|condition| condition.child_by_field_name("pattern"))
         .is_some_and(|pattern| node_is_within(node, pattern))
 }
@@ -608,7 +651,7 @@ fn is_rust_pattern_declaration_syntax(node: tree_sitter::Node<'_>) -> bool {
 
 fn is_canonical_rust_or_alternative(
     node: tree_sitter::Node<'_>,
-    match_pattern: tree_sitter::Node<'_>,
+    root_pattern: tree_sitter::Node<'_>,
 ) -> bool {
     let mut current = node.parent();
     while let Some(ancestor) = current {
@@ -620,7 +663,7 @@ fn is_canonical_rust_or_alternative(
                 return false;
             }
         }
-        if ancestor.id() == match_pattern.id() {
+        if ancestor.id() == root_pattern.id() {
             break;
         }
         current = ancestor.parent();
@@ -630,7 +673,7 @@ fn is_canonical_rust_or_alternative(
 
 fn identifier_is_pattern_type_syntax(
     node: tree_sitter::Node<'_>,
-    match_pattern: tree_sitter::Node<'_>,
+    root_pattern: tree_sitter::Node<'_>,
 ) -> bool {
     let mut current = node.parent();
     while let Some(ancestor) = current {
@@ -647,7 +690,7 @@ fn identifier_is_pattern_type_syntax(
         {
             return true;
         }
-        if ancestor.id() == match_pattern.id() {
+        if ancestor.id() == root_pattern.id() {
             break;
         }
         current = ancestor.parent();
@@ -655,34 +698,53 @@ fn identifier_is_pattern_type_syntax(
     false
 }
 
-/// Select a single syntax representative for each Rust match-arm binding.
+/// Classify a binding inside one Rust pattern root.
+///
 /// Rust requires every or-pattern alternative to bind the same names with the
 /// same modes, so the first alternative is the canonical declaration site.
 /// Upper-case bare identifiers remain conservatively classified as constant or
 /// unit-variant syntax because tree-sitter cannot perform Rust name resolution.
-fn is_rust_match_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+fn is_rust_binding_node_in_pattern(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    root_pattern: tree_sitter::Node<'_>,
+) -> bool {
     if !matches!(node.kind(), "identifier" | "shorthand_field_identifier") {
         return false;
     }
-    let Some(match_pattern) = nearest_ancestor_of_kind(node, "match_pattern") else {
-        return false;
-    };
-    let Some(root_pattern) = rust_match_root_pattern(match_pattern) else {
-        return false;
-    };
-    if !node_is_within(node, root_pattern) || !is_canonical_rust_or_alternative(node, match_pattern)
+    if !node_is_within(node, root_pattern) || !is_canonical_rust_or_alternative(node, root_pattern)
     {
         return false;
     }
     if node.kind() == "shorthand_field_identifier" {
         return true;
     }
-    if identifier_is_pattern_type_syntax(node, match_pattern) {
+    if identifier_is_pattern_type_syntax(node, root_pattern) {
         return false;
     }
     node_text(node, source)
         .and_then(|name| name.chars().next())
         .is_some_and(|first| !first.is_uppercase())
+}
+
+fn is_rust_match_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    let Some(match_pattern) = nearest_ancestor_of_kind(node, "match_pattern") else {
+        return false;
+    };
+    let Some(root_pattern) = rust_match_root_pattern(match_pattern) else {
+        return false;
+    };
+    is_rust_binding_node_in_pattern(node, source, root_pattern)
+}
+
+fn is_rust_guard_let_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    rust_match_guard_let_condition(node)
+        .and_then(|condition| condition.child_by_field_name("pattern"))
+        .is_some_and(|pattern| is_rust_binding_node_in_pattern(node, source, pattern))
+}
+
+fn is_rust_pattern_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    is_rust_match_binding_node(node, source) || is_rust_guard_let_binding_node(node, source)
 }
 
 fn collect_rust_match_binding_nodes<'tree>(
@@ -700,6 +762,21 @@ fn collect_rust_match_binding_nodes<'tree>(
     }
 }
 
+fn collect_rust_guard_let_binding_nodes<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &str,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_rust_guard_let_binding_node(node, source) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_rust_guard_let_binding_nodes(child, source, bindings);
+    }
+}
+
 fn normalize_rust_lexical(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -707,12 +784,20 @@ fn normalize_rust_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = rust_binding_kind(capture_name)?;
-    if capture_name == "lexical.pattern" && !is_rust_match_binding_node(node, source) {
+    if capture_name == "lexical.pattern" && !is_rust_pattern_binding_node(node, source) {
         return None;
     }
     let name = node_text(node, source)?;
     let range = node_range(node);
-    Some(make_binding_def(file_id, kind, name, range))
+    let mut binding = make_binding_def(file_id, kind, name, range);
+    if let Some(condition) = rust_match_guard_let_condition(node)
+        && condition
+            .child_by_field_name("pattern")
+            .is_some_and(|pattern| node_is_within(node, pattern))
+    {
+        binding.visible_from_byte = condition.end_byte() as u32;
+    }
+    Some(binding)
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -729,7 +814,7 @@ fn normalize_rust_dataflow_builder(
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.pattern_target" => {
-            if is_rust_match_binding_node(node, source) {
+            if is_rust_pattern_binding_node(node, source) {
                 make_df_assign_target(file_id, node, source, range)
             } else {
                 (None, None)
@@ -740,6 +825,13 @@ fn normalize_rust_dataflow_builder(
         }
         "df.match_subject" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
+        "df.guard_value" => {
+            if rust_match_guard_let_condition(node).is_some() {
+                make_df_assign_value(file_id, node, source, range, &["call_expression"])
+            } else {
+                (None, None)
+            }
         }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.tail_return" => {
@@ -1235,19 +1327,24 @@ fn inspect(value: Message) -> i32 {
     }
 
     #[test]
-    fn test_rust_match_guard_let_binding_stays_an_explicit_boundary() {
-        let source = r#"fn inspect(value: Option<i32>, other: Option<i32>) -> i32 {
+    fn test_rust_match_guard_let_bindings_follow_source_order_and_value_flow() {
+        let source = r#"fn inspect(value: Option<i32>, extra: Option<i32>) -> i32 {
     match value {
-        Some(current) if let Some(extra) = other && extra > 0 => current + extra,
+        Some(current)
+            if before(extra)
+                && let Some(extra) = extra
+                && let Some(next) = Some(extra)
+                && next > current
+            => consume(extra) + next,
         _ => 0,
     }
 }
 "#;
-        let file_id = FileId::generate("guard_let_boundary.rs");
+        let file_id = FileId::generate("guard_let_bindings.rs");
         let facts = crate::extract_file_with_mode(
             &rust_frontend(),
             file_id,
-            std::path::Path::new("guard_let_boundary.rs"),
+            std::path::Path::new("guard_let_bindings.rs"),
             source,
             "hash",
             crate::ExtractionMode::Full,
@@ -1255,23 +1352,99 @@ fn inspect(value: Message) -> i32 {
         )
         .unwrap();
 
-        assert!(
-            facts
-                .bindings
-                .iter()
-                .any(|binding| binding.name == "current")
+        let extra_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "extra")
+            .collect();
+        assert_eq!(
+            extra_bindings.len(),
+            2,
+            "parameter and guard-let shadow need distinct identities"
         );
-        assert!(
-            facts.bindings.iter().all(|binding| binding.name != "extra"),
-            "guard-let bindings are not claimed until their chained scope/dataflow is modeled"
-        );
-        assert!(
+        let outer_extra = extra_bindings
+            .iter()
+            .find(|binding| binding.kind == BindingKind::Parameter)
+            .expect("outer parameter binding");
+        let guard_extra = extra_bindings
+            .iter()
+            .find(|binding| binding.kind == BindingKind::Local)
+            .expect("guard-let binding");
+        let next = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "next")
+            .expect("second guard-let binding");
+        assert!(guard_extra.visible_from_byte > guard_extra.range.end_byte);
+        assert!(next.visible_from_byte > next.range.end_byte);
+        assert!(next.visible_from_byte > guard_extra.visible_from_byte);
+
+        assert_eq!(
             facts
                 .binding_uses
                 .iter()
-                .filter(|use_| use_.name == "extra")
-                .all(|use_| use_.binding_id.is_none()),
-            "guard-let syntax must not alias an outer same-named binding"
+                .filter(|use_| use_.binding_id == Some(outer_extra.id))
+                .count(),
+            3,
+            "parameter declaration, pre-let guard use, and guard RHS stay outer"
+        );
+        assert_eq!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(guard_extra.id))
+                .count(),
+            3,
+            "guard declaration plus later let RHS and body share identity"
+        );
+        assert_eq!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(next.id))
+                .count(),
+            3,
+            "second guard declaration, condition, and body share identity"
+        );
+
+        let guard_target = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local && node.binding_id == Some(guard_extra.id)
+            })
+            .expect("guard-let Local target");
+        let guard_rhs = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("extra")
+                    && node.range.start_byte > guard_extra.range.end_byte
+                    && node.range.start_byte < guard_extra.visible_from_byte
+            })
+            .expect("guard-let RHS value");
+        assert_eq!(guard_rhs.binding_id, Some(outer_extra.id));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == guard_rhs.id
+                && edge.target == guard_target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+
+        let later_extra_uses: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("extra")
+                    && node.range.start_byte >= guard_extra.visible_from_byte
+            })
+            .collect();
+        assert_eq!(later_extra_uses.len(), 2);
+        assert!(
+            later_extra_uses
+                .iter()
+                .all(|node| node.binding_id == Some(guard_extra.id))
         );
     }
 }

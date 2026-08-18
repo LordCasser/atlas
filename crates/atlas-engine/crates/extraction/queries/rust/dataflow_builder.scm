@@ -78,6 +78,11 @@
 (match_expression
   value: (_) @df.match_subject)
 
+;; Each guard-let RHS is an independent value source. The adapter filters this
+;; broad grammar capture to let conditions inside a match guard.
+(let_condition
+  value: (_) @df.guard_value)
+
 ;; Broad captures are classified by the Rust adapter so nested patterns share
 ;; the same syntax rules as lexical binding extraction.
 (match_pattern

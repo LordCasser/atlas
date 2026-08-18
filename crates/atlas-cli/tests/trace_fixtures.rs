@@ -4798,9 +4798,9 @@ fn fx_rust_match_bindings_persist_and_trace_from_scrutinee() {
     Good(i32),
     Bad(i32),
 }
-fn dispatch(value: Result) -> i32 {
+fn dispatch(value: Result, fallback: Option<i32>) -> i32 {
     match value {
-        Result::Good(payload) if payload > 0 => consume(payload),
+        Result::Good(payload) if let Some(extra) = fallback && extra > payload => consume(payload) + extra,
         Result::Bad(payload) => consume(payload),
     }
 }
@@ -4831,6 +4831,31 @@ fn dispatch(value: Result) -> i32 {
         3,
         "declaration, guard, and body must persist one binding identity"
     );
+    let fallback = bindings
+        .iter()
+        .find(|binding| binding.name == "fallback")
+        .expect("persisted outer parameter");
+    let extra = bindings
+        .iter()
+        .find(|binding| binding.name == "extra")
+        .expect("persisted guard-let binding");
+    assert!(extra.visible_from_byte > extra.range.end_byte);
+    assert_eq!(
+        store
+            .find_binding_uses_by_binding(&fallback.id)
+            .expect("fallback uses")
+            .len(),
+        2,
+        "parameter declaration and guard-let RHS stay on the outer identity"
+    );
+    assert_eq!(
+        store
+            .find_binding_uses_by_binding(&extra.id)
+            .expect("guard-let uses")
+            .len(),
+        3,
+        "guard-let declaration, later condition, and body share one identity"
+    );
 
     let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
     let subject = data_nodes
@@ -4855,6 +4880,26 @@ fn dispatch(value: Result) -> i32 {
             .iter()
             .any(|edge| edge.target == *target && edge.kind == DataFlowKind::Assign)
     }));
+    let fallback_rhs = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("fallback")
+                && node.range.start_byte < extra.visible_from_byte
+        })
+        .expect("persisted guard-let RHS");
+    let extra_target = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(extra.id))
+        .expect("persisted guard-let target");
+    assert_eq!(fallback_rhs.binding_id, Some(fallback.id));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&fallback_rhs.id)
+            .expect("guard-let value edges")
+            .iter()
+            .any(|edge| edge.target == extra_target.id && edge.kind == DataFlowKind::Assign)
+    );
 
     let sink = data_nodes
         .iter()
@@ -4876,6 +4921,26 @@ fn dispatch(value: Result) -> i32 {
     let path = response.result.expect("Rust match binding trace path");
     assert_has_edge_kind(&path, DataFlowKind::Assign);
     assert_source_name(&path, "value");
+
+    let extra_sink = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("extra")
+                && node.range.start_byte >= extra.visible_from_byte
+        })
+        .max_by_key(|node| node.range.start_column)
+        .expect("guard-let body use");
+    let response = engine.trace_variable(
+        &file_id,
+        extra_sink.range.start_line + 1,
+        extra_sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "rust");
+    let path = response.result.expect("Rust guard-let trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "fallback");
 }
 
 /// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary

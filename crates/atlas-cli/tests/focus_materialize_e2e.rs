@@ -1042,6 +1042,28 @@ fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDat
     }
 }
 
+fn unit_binding_slice(
+    store: &Store,
+    fn_id: &atlas_engine::SymbolId,
+) -> Vec<(String, String, u32, u32, u32)> {
+    let mut bindings: Vec<_> = store
+        .find_bindings_by_function(fn_id)
+        .unwrap()
+        .into_iter()
+        .map(|binding| {
+            (
+                binding.kind.as_str().to_string(),
+                binding.name,
+                binding.visible_from_byte,
+                binding.range.start_byte,
+                binding.range.end_byte,
+            )
+        })
+        .collect();
+    bindings.sort();
+    bindings
+}
+
 fn symbol_id_by_name(store: &Store, name: &str) -> atlas_engine::SymbolId {
     store
         .find_symbols_by_name(name)
@@ -1501,9 +1523,9 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
              \x20   Good(i32),\n\
              \x20   Bad(i32),\n\
              }\n\
-             fn dispatch(value: Result) -> i32 {\n\
+             fn dispatch(value: Result, fallback: Option<i32>) -> i32 {\n\
              \x20   match value {\n\
-             \x20       Result::Good(payload) if payload > 0 => consume(payload),\n\
+             \x20       Result::Good(payload) if let Some(extra) = fallback && extra > payload => consume(payload) + extra,\n\
              \x20       Result::Bad(payload) => consume(payload),\n\
              \x20   }\n\
              }\n",
@@ -1516,10 +1538,9 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
     CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
     index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
     let indexed_store = open_store(&indexed);
-    let indexed_slice = unit_dataflow_slice(
-        &indexed_store,
-        &symbol_id_by_name(&indexed_store, "dispatch"),
-    );
+    let indexed_dispatch = symbol_id_by_name(&indexed_store, "dispatch");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_dispatch);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_dispatch);
     assert_eq!(
         indexed_slice
             .nodes
@@ -1528,12 +1549,27 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
             .count(),
         2
     );
-    assert!(
+    assert_eq!(
         indexed_slice
-            .edges
+            .nodes
             .iter()
-            .any(|edge| edge.2 == DataFlowKind::Assign.as_str())
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "extra")
+            .count(),
+        1
     );
+    let fallback_rhs = indexed_slice
+        .nodes
+        .iter()
+        .position(|node| node.0 == DataNodeKind::Expr.as_str() && node.1 == "fallback")
+        .expect("guard-let RHS in full Index");
+    let extra_target = indexed_slice
+        .nodes
+        .iter()
+        .position(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "extra")
+        .expect("guard-let target in full Index");
+    assert!(indexed_slice.edges.iter().any(|edge| {
+        edge.0 == fallback_rhs && edge.1 == extra_target && edge.2 == DataFlowKind::Assign.as_str()
+    }));
 
     let focused = setup_project(FIXTURE);
     let focused_project = focused.path().to_string_lossy().to_string();
@@ -1553,6 +1589,11 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
         unit_dataflow_slice(&focused_store, &dispatch),
         indexed_slice,
         "Rust match binding dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &dispatch),
+        indexed_bindings,
+        "Rust guard-let binding activation: Focus ensure == Index full"
     );
     assert!(
         focused_store
