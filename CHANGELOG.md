@@ -59,9 +59,16 @@ All notable changes to Atlas will be documented in this file.
   still read the outer binding; switch/select clauses retain sibling identities,
   and blank identifiers create no binding/dataflow facts.
 - Cover the mixed-declaration boundary through direct extraction, SQLite Trace,
-  and Focus-vs-full-Index parity. Case-type projection, function-literal
-  ownership, select receive-clause flow, and parallel-assignment evaluation
-  order remain conservative.
+  and Focus-vs-full-Index parity.
+- Model identifier-only select receive clauses: `:=` targets are declarations
+  in the communication clause's implicit block, `=` targets reuse existing
+  bindings, and the whole receive operation flows to every supported target at
+  confidence 0.78. Blank identifiers produce no binding/dataflow facts.
+- Cover select receive behavior through direct extraction, SQLite Trace, and
+  Focus-vs-full-Index bindings/dataflow/CFG/confidence parity. Case-type
+  projection, function-literal ownership, exact receive-result components,
+  non-identifier receive targets, and parallel-assignment evaluation order
+  remain conservative.
 
 ### Rust dataflow
 

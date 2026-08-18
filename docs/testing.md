@@ -34,9 +34,9 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 同一修复如果影响 shared pipeline 和 CLI 自有 pipeline，必须覆盖两者。
 - 同一修复如果影响 file-level state 和 unit-level state，必须覆盖两者。
 - 同一修复如果影响 Focus materialize ensure 与 Index 预物化，必须至少各有一条回归（禁止只测 helper）。
-- 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow、CFG
+- 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow（含 edge kind/confidence）、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
-  测试替代 type-switch、mixed short declaration、match binding、PHP nested/keyed
+  测试替代 type-switch、mixed short declaration、Go select receive、match binding、PHP nested/keyed
   destructuring、Ruby multiple assignment、C# parenthesized nested designation、Kotlin
   late-assignment branch provenance、Cangjie simple/nested-tuple/enum-payload
   `for-in` loop binding/aggregate provenance、modifier loop、nested lexical shadowing
@@ -243,11 +243,14 @@ rg 'read_to_string' crates/atlas-engine crates/atlas-mcp --glob '*.rs'
   - 自包含 seed 函数（无 callee）+ peer。  
   - Index：`--analysis full`。  
   - Focus：structural 底库 → `ensure_for_function(seed)`。  
-  - 断言：seed unit dataflow/CFG 切片 == Index full 同 unit；peer 无 dataflow。
+  - 断言：seed unit dataflow（含 edge kind/confidence）/CFG 切片 == Index full 同 unit；peer 无 dataflow。
 - **Language-specific unit semantics**
   - C# `n5_focus_csharp_pattern_bindings_match_index_full` 覆盖 parenthesized nested
     designation 的 binding/dataflow/CFG 切片、0.72 aggregate subject flow，以及 peer
     method 保持冷态；不能由普通函数基线替代。
+  - Go `n5_focus_go_select_receive_dataflow_matches_index_full` 覆盖 `:=` clause-local
+    declaration、`=` outer-binding reuse、blank filtering、0.78 receive aggregate flow、
+    confidence parity 与 peer unit 冷态；不能由普通函数基线替代。
 - **Dataflow expanded window**（`n5_focus_dataflow_expanded_window_matches_index_full`）  
   - seed 调用 math；ensure(seed) 展开 callee unit。  
   - 断言：seed 与 callee 两 unit 切片均 == Index full；peer 无 dataflow。

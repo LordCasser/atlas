@@ -71,8 +71,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   Blank identifiers do not create binding/dataflow facts. Type-switch aliases
   are distinct bindings in each case/default clause's implicit block; the guard
   value flows conservatively to every alias and the guard alias token is not a
-  read. Case-type projection, function-literal ownership, select receive-clause
-  flow, and parallel-assignment evaluation order remain conservative.
+  read. Identifier-only select receive `:=` targets are clause-local
+  declarations, while `=` targets reuse existing bindings; the whole receive
+  operation flows to every supported target at confidence 0.78. Case-type
+  projection, function-literal ownership, exact receive-result components,
+  non-identifier receive targets, and parallel-assignment evaluation order
+  remain conservative.
 - Cangjie simple, nested-tuple, and enum-payload `for-in` captures are
   loop-scoped bindings; enum constructor syntax is excluded. The iterable
   provides conservative aggregate provenance to every capture, guard/body uses

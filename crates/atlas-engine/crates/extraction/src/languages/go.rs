@@ -254,7 +254,7 @@ impl DataflowSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
+                "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
             ],
         )
     }
