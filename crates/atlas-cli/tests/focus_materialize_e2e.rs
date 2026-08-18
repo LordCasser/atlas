@@ -2242,6 +2242,209 @@ fn n5_focus_typescript_family_variable_mutations_match_index_full() {
     }
 }
 
+/// TypeScript, JavaScript, and ArkTS direct logical assignments preserve both
+/// possible origins in one path-insensitive merge value. Focus must materialize
+/// the same local slice as full Index without pulling in an unrelated unit.
+#[test]
+fn n5_focus_typescript_family_logical_assignments_match_index_full() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        (
+            "typescript",
+            "logical_assignments.ts",
+            "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            "peer.ts",
+            "function unrelated(): number { return 42; }\n",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "javascript",
+            "logical_assignments.js",
+            "function initialize(seed, fallback, guard) {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            "peer.js",
+            "function unrelated() { return 42; }\n",
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "arkts",
+            "logical_assignments.ets",
+            "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value: number | undefined = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            "peer.ets",
+            "function unrelated(): number { return 42; }\n",
+        ),
+    ];
+
+    for (language, path, source, peer_path, peer_source) in cases {
+        let fixture = [(path, source), (peer_path, peer_source)];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_initialize = symbol_id_by_name(&indexed_store, "initialize");
+        let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_initialize);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_initialize);
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == "value")
+                .count(),
+            1,
+            "{language}: full Index must preserve one value binding"
+        );
+        assert_eq!(
+            indexed_slice
+                .nodes
+                .iter()
+                .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "value")
+                .count(),
+            4,
+            "{language}: initializer plus three logical merge states"
+        );
+        for expression in [
+            "value ??= fallback",
+            "value ||= fallback",
+            "value &&= guard",
+        ] {
+            assert_eq!(
+                indexed_slice
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        node.0 == DataNodeKind::Expr.as_str() && node.1 == expression
+                    })
+                    .count(),
+                1,
+                "{language}: full Index logical Expr {expression}"
+            );
+        }
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_initialize)
+            .unwrap_or_else(|error| panic!("{language}: full Index logical nodes: {error}"));
+        for (line, expression, rhs_name) in [
+            (2, "value ??= fallback", "fallback"),
+            (3, "value ||= fallback", "fallback"),
+            (4, "value &&= guard", "guard"),
+        ] {
+            let merged_value = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(expression)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index logical value {expression}"));
+            let target = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some("value")
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index logical target line {line}"));
+            let old_value = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some("value")
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index old value line {line}"));
+            let conditional_rhs = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(rhs_name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index RHS {rhs_name} line {line}"));
+            assert!(
+                indexed_store
+                    .find_dataflow_edges_by_source(&merged_value.id)
+                    .unwrap_or_else(|error| {
+                        panic!("{language}: full Index logical result edges: {error}")
+                    })
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.90
+                    })
+            );
+            for possible_origin in [old_value, conditional_rhs] {
+                assert!(
+                    indexed_store
+                        .find_dataflow_edges_by_source(&possible_origin.id)
+                        .unwrap_or_else(|error| {
+                            panic!("{language}: full Index logical origin edges: {error}")
+                        })
+                        .iter()
+                        .any(|edge| {
+                            edge.target == merged_value.id
+                                && edge.kind == DataFlowKind::Read
+                                && edge.confidence == 0.75
+                        }),
+                    "{language}: full Index must preserve logical origin {:?}",
+                    possible_origin.name
+                );
+            }
+        }
+        for line in [5, 6] {
+            assert!(indexed_nodes.iter().all(|node| {
+                !(matches!(node.kind, DataNodeKind::Local | DataNodeKind::Expr)
+                    && node.range.start_line == line)
+            }));
+        }
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let initialize = symbol_id_by_name(&focused_store, "initialize");
+        let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&initialize)
+                .unwrap_or_else(|error| panic!("{language}: cold logical unit: {error}"))
+                .is_empty(),
+            "{language}: logical unit must be cold before Focus ensure"
+        );
+
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &initialize,
+                Some("typescript-family-logical-assignment-parity"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure logical unit: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &initialize),
+            indexed_slice,
+            "{language}: Focus logical dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &initialize),
+            indexed_bindings,
+            "{language}: Focus logical bindings == full Index"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unrelated)
+                .unwrap_or_else(|error| panic!("{language}: logical peer unit state: {error}"))
+                .is_empty(),
+            "{language}: logical peer unit must stay outside the Focus window"
+        );
+    }
+}
+
 /// C, C++, Java, and C# encode compound/update expressions with different AST
 /// shapes. Each language must nevertheless materialize the same direct-local
 /// read-modify-write contract as full Index while leaving a peer unit cold.

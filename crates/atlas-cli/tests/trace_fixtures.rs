@@ -1969,6 +1969,223 @@ fn fx_typescript_family_variable_mutations_persist_and_trace_read_modify_write_i
 }
 
 #[test]
+fn fx_typescript_family_logical_assignments_persist_and_trace_may_provenance() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        (
+            "typescript",
+            "logical_assignments.ts",
+            "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "javascript",
+            "logical_assignments.js",
+            "function initialize(seed, fallback, guard) {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "arkts",
+            "logical_assignments.ets",
+            "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value: number | undefined = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+        ),
+    ];
+
+    for (language, path, source) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted logical bindings: {error}"));
+        let value_binding = {
+            let matches: Vec<_> = bindings
+                .iter()
+                .filter(|binding| binding.name == "value")
+                .collect();
+            assert_eq!(matches.len(), 1, "{language}: one value binding");
+            matches[0]
+        };
+        let data_nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted logical nodes: {error}"));
+        let node = |kind: DataNodeKind, name: &str, line: u32| {
+            data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("{language}: persisted {kind:?} {name} on line {line}"))
+        };
+
+        for (line, expression, rhs_name) in [
+            (2, "value ??= fallback", "fallback"),
+            (3, "value ||= fallback", "fallback"),
+            (4, "value &&= guard", "guard"),
+        ] {
+            let merged_value = node(DataNodeKind::Expr, expression, line);
+            let target = node(DataNodeKind::Local, "value", line);
+            let old_value = node(DataNodeKind::VariableUse, "value", line);
+            let conditional_rhs = node(DataNodeKind::VariableUse, rhs_name, line);
+            assert_eq!(target.binding_id, Some(value_binding.id), "{language}");
+            assert_eq!(old_value.binding_id, Some(value_binding.id), "{language}");
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&merged_value.id)
+                    .unwrap_or_else(|error| {
+                        panic!("{language}: persisted logical result edges: {error}")
+                    })
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.90
+                    }),
+                "{language}: logical merge result must persist as the post-expression local state"
+            );
+            for possible_origin in [old_value, conditional_rhs] {
+                assert!(
+                    store
+                        .find_dataflow_edges_by_source(&possible_origin.id)
+                        .unwrap_or_else(|error| {
+                            panic!("{language}: persisted logical origin edges: {error}")
+                        })
+                        .iter()
+                        .any(|edge| {
+                            edge.target == merged_value.id
+                                && edge.kind == DataFlowKind::Read
+                                && edge.confidence == 0.75
+                        }),
+                    "{language}: {expression} must preserve possible origin {:?}",
+                    possible_origin.name
+                );
+            }
+
+            let engine = TraceEngine::new(store.clone());
+            let response = engine.trace_variable(&file_id, line + 1, 9, 20);
+            assert_envelope_ok(&response, language);
+            let trace = response
+                .result
+                .unwrap_or_else(|| panic!("{language}: logical trace for {expression}"));
+            let sink = trace
+                .sink
+                .data_node
+                .as_ref()
+                .unwrap_or_else(|| panic!("{language}: logical trace sink"));
+            assert_eq!(sink.kind, DataNodeKind::Expr, "{language}");
+            assert_eq!(sink.name.as_deref(), Some(expression), "{language}");
+            assert_has_edge_kind(&trace, DataFlowKind::Read);
+        }
+
+        for line in [5, 6] {
+            assert!(
+                data_nodes.iter().all(|node| {
+                    !(matches!(node.kind, DataNodeKind::Local | DataNodeKind::Expr)
+                        && node.range.start_line == line)
+                }),
+                "{language}: member/subscript logical assignment remains outside the direct-variable boundary"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_typescript_real_opencode_nullish_assignment_persists_and_traces() {
+    let source = example_source_or_skip!("opencode/packages/core/src/shell.ts");
+    let path = "packages/core/src/shell.ts";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let preferred = store
+        .find_symbols_by_file(&file_id)
+        .expect("OpenCode shell symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "preferred" && symbol.kind == SymbolKind::Function)
+        .expect("OpenCode preferred function");
+    let logical_line = source
+        .lines()
+        .position(|line| line.contains("defaultPreferred ??="))
+        .expect("OpenCode defaultPreferred logical assignment") as u32;
+    let nodes = store
+        .find_data_nodes_by_function(&preferred.id)
+        .expect("OpenCode preferred data nodes");
+    let merged_value = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.range.start_line == logical_line
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("defaultPreferred ??="))
+        })
+        .expect("OpenCode nullish-assignment merge Expr");
+    let target = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("defaultPreferred")
+                && node.range.start_line == logical_line
+        })
+        .expect("OpenCode nullish-assignment target");
+    let old_value = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("defaultPreferred")
+                && node.range.start_line == logical_line
+        })
+        .expect("OpenCode nullish-assignment old value");
+    let rhs_call = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::CallTarget
+                && node.name.as_deref() == Some("select")
+                && node.range.start_line == logical_line
+        })
+        .expect("OpenCode nullish-assignment conditional RHS call");
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&merged_value.id)
+            .expect("OpenCode logical result edges")
+            .iter()
+            .any(|edge| {
+                edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            })
+    );
+    for possible_origin in [old_value, rhs_call] {
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&possible_origin.id)
+                .expect("OpenCode logical origin edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == merged_value.id
+                        && edge.kind == DataFlowKind::Read
+                        && edge.confidence == 0.75
+                }),
+            "OpenCode nullish assignment must preserve origin {:?}",
+            possible_origin.name
+        );
+    }
+
+    let trace = TraceEngine::new(store)
+        .trace_variable(&file_id, logical_line + 1, 20, 20)
+        .result
+        .expect("OpenCode nullish assignment trace");
+    let sink = trace
+        .sink
+        .data_node
+        .as_ref()
+        .expect("OpenCode nullish assignment trace sink");
+    assert_eq!(sink.id, merged_value.id);
+    assert_has_edge_kind(&trace, DataFlowKind::Read);
+}
+
+#[test]
 fn fx_c_style_variable_mutations_persist_and_trace_read_modify_write_inputs() {
     let cases = vec![
         #[cfg(feature = "c")]
