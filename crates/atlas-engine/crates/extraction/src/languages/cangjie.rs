@@ -228,7 +228,7 @@ impl DataflowSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple/tuple/enum-payload loop captures; exact iterator element/structural projection, guard control dependencies, and compiler validation of pattern irrefutability remain conservative",
+                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple/tuple/enum-payload loop captures; direct-variable mutation, exact iterator element/structural projection, guard control dependencies, and compiler validation of pattern irrefutability remain conservative",
             ],
         )
     }
