@@ -62,6 +62,13 @@
 (assignment_pattern left: (identifier) @df.destructure_target)
 (shorthand_property_identifier_pattern) @df.destructure_target
 
+;; Assignment destructuring reuses existing locals rather than declaring new
+;; bindings. The adapter filters the same broad pattern-leaf captures against
+;; the assignment left side, then connects the whole RHS conservatively.
+(assignment_expression
+  left: [(object_pattern) (array_pattern)]
+  right: (_) @df.assignment_destructure_value)
+
 ;; --- for...of / for...in iteration bindings ---
 ;; The adapter filters broad pattern-leaf captures against the left side of a
 ;; for_in_statement, then adds whole-iterable aggregate Assign edges (0.65).

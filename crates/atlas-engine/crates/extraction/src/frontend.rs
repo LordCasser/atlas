@@ -1321,6 +1321,148 @@ mod tests {
     }
 
     #[test]
+    fn test_typescript_family_assignment_destructuring_reuses_bindings_and_aggregate_flow() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            ("assignment_destructuring.ts", Language::TypeScript),
+            #[cfg(feature = "javascript")]
+            ("assignment_destructuring.js", Language::JavaScript),
+            #[cfg(feature = "arkts")]
+            ("assignment_destructuring.ets", Language::ArkTS),
+        ];
+        let source = concat!(
+            "function update(source, fallback, key, holder, items) {\n",
+            "  let existing = 0, renamed = 0, nested = 0, computed = 0, defaulted = 0, rest = [], first = 0, tail = [];\n",
+            "  ({ existing, prop: renamed, nested: { value: nested }, [key]: computed, fallback: defaulted = fallback, ...rest } = source);\n",
+            "  [first, , existing, ...tail] = source.items;\n",
+            "  ({ value: holder.value } = source);\n",
+            "  [items[0]] = source.items;\n",
+            "  consume(existing, renamed, nested, computed, defaulted, rest, first, tail);\n",
+            "  return fallback;\n",
+            "}\n",
+        );
+
+        for (path, language) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let binding_id = |name: &str| {
+                let matches: Vec<_> = facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == name)
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "{language:?}: assignment destructuring must reuse one binding for {name}"
+                );
+                assert_eq!(matches[0].range.start_line, 1, "{language:?}: {name}");
+                matches[0].id
+            };
+
+            for (rhs_name, line, target_name) in [
+                ("source", 2, "existing"),
+                ("source", 2, "renamed"),
+                ("source", 2, "nested"),
+                ("source", 2, "computed"),
+                ("source", 2, "defaulted"),
+                ("source", 2, "rest"),
+                ("source.items", 3, "first"),
+                ("source.items", 3, "existing"),
+                ("source.items", 3, "tail"),
+            ] {
+                let rhs = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Expr
+                            && node.name.as_deref() == Some(rhs_name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing assignment RHS {rhs_name} on line {line}")
+                    });
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Local
+                            && node.name.as_deref() == Some(target_name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{language:?}: missing assignment target {target_name} on line {line}"
+                        )
+                    });
+                assert_eq!(
+                    target.binding_id,
+                    Some(binding_id(target_name)),
+                    "{language:?}: {target_name} must retain its prior binding"
+                );
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == rhs.id
+                            && edge.target == target.id
+                            && edge.kind == types::DataFlowKind::Assign
+                            && edge.confidence == 0.85
+                    }),
+                    "{language:?}: {rhs_name} must provide aggregate provenance to {target_name}"
+                );
+            }
+
+            for read_name in ["key", "fallback"] {
+                assert!(facts.data_nodes.iter().any(|node| {
+                    node.kind == types::DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(read_name)
+                        && node.range.start_line == 2
+                }));
+            }
+            for line in [2, 3] {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        node.kind != types::DataNodeKind::VariableUse
+                            || node.range.start_line != line
+                            || !matches!(
+                                node.name.as_deref(),
+                                Some(
+                                    "existing"
+                                        | "renamed"
+                                        | "nested"
+                                        | "computed"
+                                        | "defaulted"
+                                        | "rest"
+                                        | "first"
+                                        | "tail"
+                                )
+                            )
+                    }),
+                    "{language:?}: assignment targets must not become reads"
+                );
+            }
+            for line in [4, 5] {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        node.kind != types::DataNodeKind::Local || node.range.start_line != line
+                    }),
+                    "{language:?}: nested member/subscript assignment targets remain conservative"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_typescript_family_parameter_destructuring_preserves_bindings_and_argument_positions() {
         let cases = vec![
             #[cfg(feature = "typescript")]

@@ -346,6 +346,7 @@ fn is_ts_identifier_declaration_or_property(node: tree_sitter::Node) -> bool {
     if is_ts_parameter_binding_pattern(node)
         || is_ts_for_in_binding_pattern(node)
         || is_ts_declaration_binding_pattern(node)
+        || is_ts_assignment_destructure_target(node)
     {
         return true;
     }
@@ -415,7 +416,8 @@ pub(crate) fn normalize_ts_dataflow_builder(
             make_df_assign_target(file_id, node, source, range)
         }
         "df.destructure_target" => {
-            if is_ts_declaration_binding_pattern(node) {
+            if is_ts_declaration_binding_pattern(node) || is_ts_assignment_destructure_target(node)
+            {
                 make_df_assign_target(file_id, node, source, range)
             } else {
                 (None, None)
@@ -437,6 +439,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
         ),
         "df.assign_value"
         | "df.destructure_value"
+        | "df.assignment_destructure_value"
         | "df.mutation_value"
         | "df.logical_mutation_value" => make_df_assign_value(
             file_id,
@@ -771,6 +774,30 @@ fn is_ts_declaration_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
     bindings.iter().any(|binding| binding.id() == node.id())
 }
 
+fn ts_assignment_destructure_owner(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    std::iter::successors(Some(node), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == "assignment_expression")
+        .filter(|assignment| {
+            assignment.child_by_field_name("left").is_some_and(|left| {
+                matches!(left.kind(), "object_pattern" | "array_pattern")
+                    && left.start_byte() <= node.start_byte()
+                    && node.end_byte() <= left.end_byte()
+            })
+        })
+}
+
+fn is_ts_assignment_destructure_target(node: tree_sitter::Node<'_>) -> bool {
+    let Some(assignment) = ts_assignment_destructure_owner(node) else {
+        return false;
+    };
+    let Some(left) = assignment.child_by_field_name("left") else {
+        return false;
+    };
+    let mut targets = Vec::new();
+    collect_ts_pattern_bindings(left, &mut targets);
+    targets.iter().any(|target| target.id() == node.id())
+}
+
 fn is_ts_declared_for_in_binding(node: tree_sitter::Node<'_>, source: &str) -> bool {
     let Some(for_in) = ts_for_in_owner(node) else {
         return false;
@@ -789,6 +816,51 @@ pub(crate) fn build_ts_language_edges(
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
 ) {
+    if node.kind() == "assignment_expression"
+        && let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        )
+        && matches!(left.kind(), "object_pattern" | "array_pattern")
+    {
+        let right_key = NodePosKey {
+            start_byte: right.start_byte() as u32,
+            end_byte: right.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&right_key) {
+            let mut targets = Vec::new();
+            collect_ts_pattern_bindings(left, &mut targets);
+            for target in targets {
+                let target_key = NodePosKey {
+                    start_byte: target.start_byte() as u32,
+                    end_byte: target.end_byte() as u32,
+                    kind: DataNodeKind::Local,
+                };
+                let Some(&target_id) = pos_map.get(&target_key) else {
+                    continue;
+                };
+                if edges.iter().any(|edge| {
+                    edge.source == source_id
+                        && edge.target == target_id
+                        && edge.kind == DataFlowKind::Assign
+                }) {
+                    continue;
+                }
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    node_range(target),
+                    0.85,
+                ));
+            }
+        }
+    }
+
     if node.kind() == "for_in_statement"
         && let (Some(left), Some(iterable)) = (
             node.child_by_field_name("left"),
