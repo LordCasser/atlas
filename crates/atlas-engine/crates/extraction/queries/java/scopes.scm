@@ -19,3 +19,7 @@
 (try_statement) @scope.conditional
 (catch_clause) @scope.conditional
 (switch_expression) @scope.conditional
+
+;; Pattern variables in arrow rules are scoped to one rule. Capturing only the
+;; switch expression would merge same-named captures from sibling rules.
+(switch_rule) @scope.conditional

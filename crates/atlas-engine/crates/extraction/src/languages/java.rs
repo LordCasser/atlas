@@ -6,6 +6,10 @@
 
 use crate::languages::{node_range, node_text};
 
+use std::collections::HashMap;
+
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
@@ -192,12 +196,16 @@ impl LexicalBindingSpec for JavaAdapter {
         FeatureSupport::supported_with_limitations(
             0.75,
             vec![
-                "scope-chain-aware parameter/local/foreach/catch/lambda binding; sibling blocks retain distinct identities; pattern variables remain conservative",
+                "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
             ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_java_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        !is_java_pattern_binding_syntax(node)
     }
 }
 
@@ -208,7 +216,9 @@ impl DataflowSpec for JavaAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.75,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            vec![
+                "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -217,6 +227,19 @@ impl DataflowSpec for JavaAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_java_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_java_pattern_edges(ctx.root, pos_map, edges);
+        Ok(())
     }
 }
 
@@ -377,7 +400,202 @@ fn java_binding_kind(capture_name: &str) -> Option<BindingKind> {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
+    }
+}
+
+fn same_java_node(left: tree_sitter::Node<'_>, right: tree_sitter::Node<'_>) -> bool {
+    left.start_byte() == right.start_byte()
+        && left.end_byte() == right.end_byte()
+        && left.kind() == right.kind()
+}
+
+fn java_node_contains(ancestor: tree_sitter::Node<'_>, node: tree_sitter::Node<'_>) -> bool {
+    ancestor.start_byte() <= node.start_byte() && ancestor.end_byte() >= node.end_byte()
+}
+
+fn java_instanceof_is_supported_if_condition(node: tree_sitter::Node<'_>) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "if_statement" {
+            return ancestor
+                .child_by_field_name("condition")
+                .is_some_and(|condition| java_node_contains(condition, node));
+        }
+        if matches!(
+            ancestor.kind(),
+            "method_declaration"
+                | "constructor_declaration"
+                | "lambda_expression"
+                | "class_declaration"
+        ) {
+            return false;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
+fn is_java_pattern_binding_syntax(node: tree_sitter::Node<'_>) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "instanceof_expression" => parent
+            .child_by_field_name("name")
+            .is_some_and(|name| same_java_node(name, node)),
+        "type_pattern" | "record_pattern_component" => parent
+            .named_child_count()
+            .checked_sub(1)
+            .and_then(|index| parent.named_child(index as u32))
+            .is_some_and(|name| same_java_node(name, node)),
+        _ => false,
+    }
+}
+
+fn java_pattern_binding_owner(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    if !is_java_pattern_binding_syntax(node) {
+        return None;
+    }
+
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        match ancestor.kind() {
+            "switch_rule" => return Some(ancestor),
+            "switch_block_statement_group" => return None,
+            "instanceof_expression" => {
+                return java_instanceof_is_supported_if_condition(ancestor).then_some(ancestor);
+            }
+            "method_declaration"
+            | "constructor_declaration"
+            | "lambda_expression"
+            | "class_declaration" => return None,
+            _ => current = ancestor.parent(),
+        }
+    }
+    None
+}
+
+fn is_java_supported_pattern_subject(node: tree_sitter::Node<'_>) -> bool {
+    node.parent().is_some_and(|parent| match parent.kind() {
+        "instanceof_expression" => java_instanceof_is_supported_if_condition(parent),
+        "parenthesized_expression" => parent
+            .parent()
+            .is_some_and(|ancestor| ancestor.kind() == "switch_expression"),
+        _ => false,
+    })
+}
+
+fn collect_java_pattern_bindings<'tree>(
+    node: tree_sitter::Node<'tree>,
+    targets: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if java_pattern_binding_owner(node).is_some() {
+        targets.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_java_pattern_bindings(child, targets);
+    }
+}
+
+fn connect_java_pattern_bindings(
+    value: tree_sitter::Node<'_>,
+    pattern_owner: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let value_key = NodePosKey {
+        start_byte: value.start_byte() as u32,
+        end_byte: value.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let Some(&source_id) = pos_map.get(&value_key) else {
+        return;
+    };
+
+    let mut targets = Vec::new();
+    collect_java_pattern_bindings(pattern_owner, &mut targets);
+    for target in targets {
+        let target_key = NodePosKey {
+            start_byte: target.start_byte() as u32,
+            end_byte: target.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let Some(&target_id) = pos_map.get(&target_key) else {
+            continue;
+        };
+        if edges.iter().any(|edge| {
+            edge.source == source_id
+                && edge.target == target_id
+                && edge.kind == DataFlowKind::Assign
+        }) {
+            continue;
+        }
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            target_id,
+            DataFlowKind::Assign,
+            node_range(target),
+            0.75,
+        ));
+    }
+}
+
+fn java_switch_subject(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let condition = node.child_by_field_name("condition")?;
+    if condition.kind() != "parenthesized_expression" {
+        return Some(condition);
+    }
+    let mut cursor = condition.walk();
+    let subject = condition.named_children(&mut cursor).next();
+    subject
+}
+
+fn walk_java_pattern_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    match node.kind() {
+        "instanceof_expression" if java_instanceof_is_supported_if_condition(node) => {
+            if let Some(value) = node.child_by_field_name("left") {
+                connect_java_pattern_bindings(value, node, pos_map, edges);
+            }
+        }
+        "switch_expression" => {
+            if let (Some(value), Some(body)) =
+                (java_switch_subject(node), node.child_by_field_name("body"))
+            {
+                let mut cursor = body.walk();
+                for rule in body
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() == "switch_rule")
+                {
+                    let mut rule_cursor = rule.walk();
+                    if let Some(label) = rule
+                        .named_children(&mut rule_cursor)
+                        .find(|child| child.kind() == "switch_label")
+                    {
+                        connect_java_pattern_bindings(value, label, pos_map, edges);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_java_pattern_edges(child, pos_map, edges);
     }
 }
 
@@ -389,6 +607,9 @@ fn normalize_java_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = java_binding_kind(capture_name)?;
+    if capture_name == "lexical.pattern" && java_pattern_binding_owner(node).is_none() {
+        return None;
+    }
     let name = node_text(node, source)?;
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
@@ -411,6 +632,13 @@ fn normalize_java_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.pattern_target" => {
+            if java_pattern_binding_owner(node).is_some() {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
         "df.assign_value" => make_df_assign_value(
             file_id,
             node,
@@ -418,6 +646,19 @@ fn normalize_java_dataflow_builder(
             range,
             &["method_invocation", "object_creation_expression"],
         ),
+        "df.pattern_subject" => {
+            if is_java_supported_pattern_subject(node) {
+                make_df_assign_value(
+                    file_id,
+                    node,
+                    source,
+                    range,
+                    &["method_invocation", "object_creation_expression"],
+                )
+            } else {
+                (None, None)
+            }
+        }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|name| {
@@ -509,6 +750,9 @@ fn normalize_java_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
+            if is_java_pattern_binding_syntax(node) {
+                return (None, None);
+            }
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
                 &[
@@ -834,5 +1078,145 @@ mod tests {
             call_names.iter().any(|t| t.contains("Foo")),
             "should capture new Foo(x, y) call target, got: {call_names:?}"
         );
+    }
+
+    #[test]
+    fn test_pattern_bindings_are_scoped_and_receive_the_tested_value() {
+        let source = concat!(
+            "class PatternDispatch {\n",
+            "  static int dispatch(Object input) {\n",
+            "    if (input instanceof String text && !text.isEmpty()) {\n",
+            "      return consume(text);\n",
+            "    }\n",
+            "    if (input instanceof Box(String label, Pair(Integer size, _)) && size > 0) {\n",
+            "      return consume(label, size);\n",
+            "    }\n",
+            "    return switch (input) {\n",
+            "      case String value when !value.isEmpty() -> consume(value);\n",
+            "      case Integer value -> consume(value);\n",
+            "      case Box(String name, Pair(Integer count, _)) -> consume(name, count);\n",
+            "      default -> 0;\n",
+            "    };\n",
+            "  }\n",
+            "  static int colonGroup(Object input) {\n",
+            "    switch (input) {\n",
+            "      case String legacy:\n",
+            "        return consume(legacy);\n",
+            "      default:\n",
+            "        return 0;\n",
+            "    }\n",
+            "  }\n",
+            "  static boolean detached(Object input) {\n",
+            "    boolean matched = input instanceof String detached;\n",
+            "    return matched;\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("PatternDispatch.java");
+        let facts = crate::extract_file_with_mode(
+            &java_frontend(),
+            file_id,
+            std::path::Path::new("PatternDispatch.java"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract Java patterns");
+
+        let pattern_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| {
+                ["text", "label", "size", "value", "name", "count"].contains(&binding.name.as_str())
+            })
+            .collect();
+        assert_eq!(
+            pattern_bindings.len(),
+            7,
+            "direct and record pattern captures must become bindings: {pattern_bindings:?}"
+        );
+        assert!(
+            pattern_bindings
+                .iter()
+                .all(|binding| binding.function_id.is_some())
+        );
+        assert!(facts.bindings.iter().all(|binding| {
+            !["legacy", "detached", "Box", "Pair", "_"].contains(&binding.name.as_str())
+        }));
+
+        let mut value_bindings: Vec<_> = pattern_bindings
+            .iter()
+            .copied()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        value_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(value_bindings.len(), 2);
+        assert_ne!(value_bindings[0].id, value_bindings[1].id);
+        assert_ne!(value_bindings[0].scope_id, value_bindings[1].scope_id);
+
+        for binding in &pattern_bindings {
+            let uses: Vec<_> = facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(binding.id))
+                .collect();
+            assert!(
+                uses.len() >= 2,
+                "declaration and guard/body uses must share {}: {uses:?}",
+                binding.name
+            );
+        }
+
+        let subject_lines = [2, 5, 8];
+        let subjects: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && subject_lines.contains(&node.range.start_line)
+            })
+            .collect();
+        assert_eq!(subjects.len(), 3, "tested values and switch selector");
+
+        for binding in pattern_bindings {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local && node.binding_id == Some(binding.id)
+                })
+                .unwrap_or_else(|| panic!("missing pattern target for {}", binding.name));
+            let expected_subject_line = match binding.range.start_line {
+                2 => 2,
+                5 => 5,
+                9..=11 => 8,
+                line => panic!("unexpected pattern line {line}"),
+            };
+            let subject = subjects
+                .iter()
+                .copied()
+                .find(|node| node.range.start_line == expected_subject_line)
+                .expect("pattern subject");
+            let edge = facts
+                .dataflow_edges
+                .iter()
+                .find(|edge| {
+                    edge.source == subject.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                })
+                .unwrap_or_else(|| panic!("missing tested-value flow to {}", binding.name));
+            assert_eq!(edge.confidence, 0.75);
+            assert!(facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse || node.range != target.range
+            }));
+            assert!(facts.dataflow_edges.iter().all(|candidate| {
+                candidate.target != target.id
+                    || candidate.kind != DataFlowKind::Assign
+                    || candidate.source == subject.id
+            }));
+        }
     }
 }

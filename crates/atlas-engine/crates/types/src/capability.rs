@@ -708,8 +708,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
-            "AST-driven local dataflow with language-specific gaps",
+            "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
+            "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
         ],
         feature_overrides: &[
             (
@@ -717,7 +717,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.75,
                     &[
-                        "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
+                        "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
                     ],
                 ),
             ),
@@ -725,7 +725,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.75,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+                    ],
                 ),
             ),
             (
@@ -733,7 +735,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.75,
                     &[
-                        "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
+                        "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
                     ],
                 ),
             ),
@@ -2451,8 +2453,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative",
-                "AST-driven local dataflow with language-specific gaps",
+                "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
+                "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
             ]
         );
 
@@ -2489,7 +2491,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.75,
                 vec![
-                    "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative"
+                    "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative"
                 ],
             )
         );
@@ -2497,7 +2499,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.75,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2505,7 +2509,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.75,
                 vec![
-                    "scope-chain-aware parameter/local/foreach/catch/lambda binding; Java rejects overlapping local redeclaration, while sibling blocks retain distinct identities; pattern variables remain conservative"
+                    "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative"
                 ],
             )
         );

@@ -64,5 +64,22 @@
   name: (identifier) @df.assign_target
   value: (_) @df.assign_value)
 
+;; --- Pattern subjects and capture targets ---
+(instanceof_expression
+  left: (_) @df.pattern_subject)
+
+(switch_expression
+  condition: (parenthesized_expression
+    (_) @df.pattern_subject))
+
+(instanceof_expression
+  name: (identifier) @df.pattern_target)
+
+(type_pattern
+  (identifier) @df.pattern_target)
+
+(record_pattern_component
+  (identifier) @df.pattern_target)
+
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use

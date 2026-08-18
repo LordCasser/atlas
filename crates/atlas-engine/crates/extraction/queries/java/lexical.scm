@@ -23,3 +23,16 @@
 ;; --- Lambda parameter (x -> expr) ---
 (lambda_expression
   (identifier) @lexical.parameter)
+
+;; --- Java pattern variables ---
+;; The normalizer limits these syntax captures to supported if-condition
+;; instanceof expressions and arrow switch rules. Colon-style switch groups
+;; retain their explicit conservative boundary.
+(instanceof_expression
+  name: (identifier) @lexical.pattern)
+
+(type_pattern
+  (identifier) @lexical.pattern)
+
+(record_pattern_component
+  (identifier) @lexical.pattern)
