@@ -22,5 +22,13 @@
   (identifier) @lexical.parameter)
 
 ;; --- Match arm bindings ---
+;; Broad grammar captures are filtered by the adapter. This reaches nested
+;; tuple/struct/ref/@ patterns while rejecting constructor paths, guard syntax,
+;; and non-canonical alternatives of an or-pattern.
 (match_pattern
-  (identifier) @lexical.local)
+  (identifier) @lexical.pattern)
+(_pattern
+  (identifier) @lexical.pattern)
+(field_pattern
+  pattern: (identifier) @lexical.pattern)
+(shorthand_field_identifier) @lexical.pattern

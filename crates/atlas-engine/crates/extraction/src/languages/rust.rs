@@ -196,12 +196,18 @@ impl LexicalBindingSpec for RustAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
-            vec!["name-based binding (no proper shadowing)"],
+            0.70,
+            vec![
+                "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_rust_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        !is_rust_pattern_declaration_syntax(node)
     }
 }
 
@@ -211,8 +217,10 @@ impl DataflowSpec for RustAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.55,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            0.70,
+            vec![
+                "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -232,14 +240,15 @@ impl DataflowSpec for RustAdapter {
         _scopes: &[ScopeDef],
         edges: &mut Vec<DataFlowEdge>,
     ) -> anyhow::Result<()> {
-        walk_rust_assign_edges(ctx.root, pos_map, edges);
+        walk_rust_language_edges(ctx.root, ctx.source, pos_map, edges);
         Ok(())
     }
 }
 
-/// Walk the AST for Rust-specific let_declaration patterns.
-fn walk_rust_assign_edges(
+/// Walk the AST for Rust-specific let bindings and match captures.
+fn walk_rust_language_edges(
     node: tree_sitter::Node,
+    source: &str,
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
 ) {
@@ -309,9 +318,66 @@ fn walk_rust_assign_edges(
             }
         }
     }
+
+    if node.kind() == "match_expression"
+        && let (Some(subject), Some(body)) = (
+            node.child_by_field_name("value"),
+            node.child_by_field_name("body"),
+        )
+    {
+        let subject_key = NodePosKey {
+            start_byte: subject.start_byte() as u32,
+            end_byte: subject.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&subject_key) {
+            let mut cursor = body.walk();
+            for arm in body
+                .named_children(&mut cursor)
+                .filter(|child| child.kind() == "match_arm")
+            {
+                let Some(pattern) = arm.child_by_field_name("pattern") else {
+                    continue;
+                };
+                let mut targets = Vec::new();
+                collect_rust_match_binding_nodes(pattern, source, &mut targets);
+                for target in targets {
+                    let target_key = NodePosKey {
+                        start_byte: target.start_byte() as u32,
+                        end_byte: target.end_byte() as u32,
+                        kind: DataNodeKind::Local,
+                    };
+                    let Some(&target_id) = pos_map.get(&target_key) else {
+                        continue;
+                    };
+                    if edges.iter().any(|edge| {
+                        edge.source == source_id
+                            && edge.target == target_id
+                            && edge.kind == DataFlowKind::Assign
+                    }) {
+                        continue;
+                    }
+                    let edge_id = DataFlowEdgeId::generate(
+                        &source_id,
+                        &target_id,
+                        DataFlowKind::Assign.as_str(),
+                    );
+                    edges.push(DataFlowEdge::new(
+                        edge_id,
+                        source_id,
+                        target_id,
+                        DataFlowKind::Assign,
+                        node_range(target),
+                        0.75,
+                    ));
+                }
+            }
+        }
+    }
+
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
-            walk_rust_assign_edges(child, pos_map, edges);
+            walk_rust_language_edges(child, source, pos_map, edges);
         }
     }
 }
@@ -494,8 +560,143 @@ fn rust_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
+        "lexical.pattern" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
         _ => None,
+    }
+}
+
+fn node_is_within(node: tree_sitter::Node<'_>, ancestor: tree_sitter::Node<'_>) -> bool {
+    node.start_byte() >= ancestor.start_byte() && node.end_byte() <= ancestor.end_byte()
+}
+
+fn nearest_ancestor_of_kind<'tree>(
+    node: tree_sitter::Node<'tree>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'tree>> {
+    std::iter::successors(Some(node), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == kind)
+}
+
+fn rust_match_root_pattern(match_pattern: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let condition = match_pattern.child_by_field_name("condition");
+    let mut cursor = match_pattern.walk();
+    match_pattern.named_children(&mut cursor).find(|child| {
+        condition.is_none_or(|condition| {
+            child.start_byte() != condition.start_byte() || child.end_byte() != condition.end_byte()
+        })
+    })
+}
+
+fn is_rust_match_arm_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    nearest_ancestor_of_kind(node, "match_pattern")
+        .and_then(rust_match_root_pattern)
+        .is_some_and(|pattern| node_is_within(node, pattern))
+}
+
+fn is_rust_guard_let_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    std::iter::successors(node.parent(), |current| current.parent())
+        .take_while(|ancestor| ancestor.kind() != "match_arm")
+        .find(|ancestor| ancestor.kind() == "let_condition")
+        .and_then(|condition| condition.child_by_field_name("pattern"))
+        .is_some_and(|pattern| node_is_within(node, pattern))
+}
+
+fn is_rust_pattern_declaration_syntax(node: tree_sitter::Node<'_>) -> bool {
+    is_rust_match_arm_pattern_syntax(node) || is_rust_guard_let_pattern_syntax(node)
+}
+
+fn is_canonical_rust_or_alternative(
+    node: tree_sitter::Node<'_>,
+    match_pattern: tree_sitter::Node<'_>,
+) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "or_pattern" {
+            let Some(first) = ancestor.named_child(0) else {
+                return false;
+            };
+            if !node_is_within(node, first) {
+                return false;
+            }
+        }
+        if ancestor.id() == match_pattern.id() {
+            break;
+        }
+        current = ancestor.parent();
+    }
+    true
+}
+
+fn identifier_is_pattern_type_syntax(
+    node: tree_sitter::Node<'_>,
+    match_pattern: tree_sitter::Node<'_>,
+) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if matches!(
+            ancestor.kind(),
+            "scoped_identifier" | "scoped_type_identifier" | "generic_pattern"
+        ) {
+            return true;
+        }
+        if matches!(ancestor.kind(), "tuple_struct_pattern" | "struct_pattern")
+            && ancestor
+                .child_by_field_name("type")
+                .is_some_and(|type_node| node_is_within(node, type_node))
+        {
+            return true;
+        }
+        if ancestor.id() == match_pattern.id() {
+            break;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
+/// Select a single syntax representative for each Rust match-arm binding.
+/// Rust requires every or-pattern alternative to bind the same names with the
+/// same modes, so the first alternative is the canonical declaration site.
+/// Upper-case bare identifiers remain conservatively classified as constant or
+/// unit-variant syntax because tree-sitter cannot perform Rust name resolution.
+fn is_rust_match_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    if !matches!(node.kind(), "identifier" | "shorthand_field_identifier") {
+        return false;
+    }
+    let Some(match_pattern) = nearest_ancestor_of_kind(node, "match_pattern") else {
+        return false;
+    };
+    let Some(root_pattern) = rust_match_root_pattern(match_pattern) else {
+        return false;
+    };
+    if !node_is_within(node, root_pattern) || !is_canonical_rust_or_alternative(node, match_pattern)
+    {
+        return false;
+    }
+    if node.kind() == "shorthand_field_identifier" {
+        return true;
+    }
+    if identifier_is_pattern_type_syntax(node, match_pattern) {
+        return false;
+    }
+    node_text(node, source)
+        .and_then(|name| name.chars().next())
+        .is_some_and(|first| !first.is_uppercase())
+}
+
+fn collect_rust_match_binding_nodes<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &str,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_rust_match_binding_node(node, source) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_rust_match_binding_nodes(child, source, bindings);
     }
 }
 
@@ -506,6 +707,9 @@ fn normalize_rust_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = rust_binding_kind(capture_name)?;
+    if capture_name == "lexical.pattern" && !is_rust_match_binding_node(node, source) {
+        return None;
+    }
     let name = node_text(node, source)?;
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
@@ -524,7 +728,17 @@ fn normalize_rust_dataflow_builder(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.pattern_target" => {
+            if is_rust_match_binding_node(node, source) {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
         "df.assign_value" => {
+            make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
+        "df.match_subject" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
@@ -637,6 +851,9 @@ fn normalize_rust_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
+            if is_rust_pattern_declaration_syntax(node) {
+                return (None, None);
+            }
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
                 &[
@@ -800,6 +1017,261 @@ mod tests {
         assert!(
             nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
             "varuse"
+        );
+    }
+
+    #[test]
+    fn test_rust_match_bindings_are_arm_scoped_and_receive_the_scrutinee() {
+        let source = r#"enum Result {
+    Good(i32),
+    Bad(i32),
+}
+fn dispatch(value: Result) -> i32 {
+    match value {
+        Result::Good(payload) if payload > 0 => consume(payload),
+        Result::Bad(payload) => match payload {
+            inner => consume(inner),
+        },
+    }
+}
+"#;
+        let file_id = FileId::generate("match_bindings.rs");
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            file_id,
+            std::path::Path::new("match_bindings.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let payload_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "payload")
+            .collect();
+        assert_eq!(
+            payload_bindings.len(),
+            2,
+            "same-named captures in separate arms need distinct identities"
+        );
+        let inner_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "inner")
+            .expect("nested match binding");
+        for binding in payload_bindings
+            .iter()
+            .copied()
+            .chain(std::iter::once(inner_binding))
+        {
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding.scope_id)
+                .expect("binding scope");
+            assert_eq!(scope.kind, ScopeKind::Conditional);
+        }
+        assert_ne!(payload_bindings[0].scope_id, payload_bindings[1].scope_id);
+
+        let guarded_payload = payload_bindings
+            .iter()
+            .find(|binding| binding.range.start_line == 6)
+            .expect("guarded payload binding");
+        assert_eq!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(guarded_payload.id))
+                .count(),
+            3,
+            "declaration, guard, and body must share one arm-local identity"
+        );
+
+        let outer_subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 5
+            })
+            .expect("outer match scrutinee");
+        for target in facts.data_nodes.iter().filter(|node| {
+            node.kind == DataNodeKind::Local && node.name.as_deref() == Some("payload")
+        }) {
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == outer_subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+
+        let inner_subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("payload")
+                    && node.range.start_line == 7
+            })
+            .expect("nested match scrutinee");
+        let inner_target = facts
+            .data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("inner"))
+            .expect("nested match target");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == inner_subject.id
+                && edge.target == inner_target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts
+                .dataflow_edges
+                .iter()
+                .all(|edge| edge.source != outer_subject.id || edge.target != inner_target.id),
+            "outer scrutinee must not flow into a nested match binding"
+        );
+    }
+
+    #[test]
+    fn test_rust_struct_ref_captured_and_or_patterns_use_canonical_bindings() {
+        let source = r#"enum Message {
+    Pair(i32, i32),
+    Point { x: i32, y: i32 },
+    Unit,
+    Values([i32; 2]),
+}
+fn inspect(value: Message) -> i32 {
+    match value {
+        Message::Pair(left, ref right) if left > 0 => left + *right,
+        Message::Point { x, y: renamed } => x + renamed,
+        whole @ Message::Pair(_, inner) => consume(whole) + inner,
+        Message::Pair(a, b) | Message::Pair(b, a) if a != b => a + b,
+        Message::Values([first, mut second]) => first + second,
+        Message::Unit => 0,
+        lower::unit => 0,
+    }
+}
+"#;
+        let file_id = FileId::generate("structural_match_bindings.rs");
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            file_id,
+            std::path::Path::new("structural_match_bindings.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        for name in [
+            "left", "right", "x", "renamed", "whole", "inner", "a", "b", "first", "second",
+        ] {
+            assert_eq!(
+                facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == name)
+                    .count(),
+                1,
+                "{name} needs one canonical arm binding"
+            );
+        }
+        for rejected in ["Message", "Pair", "Point", "Unit", "lower", "unit", "y"] {
+            assert!(
+                facts
+                    .bindings
+                    .iter()
+                    .all(|binding| binding.name != rejected),
+                "constructor/type/explicit-field syntax must not bind {rejected}"
+            );
+        }
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 7
+            })
+            .expect("match scrutinee");
+        for name in [
+            "left", "right", "x", "renamed", "whole", "inner", "a", "b", "first", "second",
+        ] {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing target {name}"));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+
+        for name in ["a", "b"] {
+            let binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap();
+            assert_eq!(
+                facts
+                    .binding_uses
+                    .iter()
+                    .filter(|use_| use_.binding_id == Some(binding.id))
+                    .count(),
+                3,
+                "one canonical declaration plus guard/body uses for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rust_match_guard_let_binding_stays_an_explicit_boundary() {
+        let source = r#"fn inspect(value: Option<i32>, other: Option<i32>) -> i32 {
+    match value {
+        Some(current) if let Some(extra) = other && extra > 0 => current + extra,
+        _ => 0,
+    }
+}
+"#;
+        let file_id = FileId::generate("guard_let_boundary.rs");
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            file_id,
+            std::path::Path::new("guard_let_boundary.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        assert!(
+            facts
+                .bindings
+                .iter()
+                .any(|binding| binding.name == "current")
+        );
+        assert!(
+            facts.bindings.iter().all(|binding| binding.name != "extra"),
+            "guard-let bindings are not claimed until their chained scope/dataflow is modeled"
+        );
+        assert!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.name == "extra")
+                .all(|use_| use_.binding_id.is_none()),
+            "guard-let syntax must not alias an outer same-named binding"
         );
     }
 }

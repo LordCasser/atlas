@@ -19,6 +19,9 @@
 
 (match_expression) @scope.conditional
 
+;; Match bindings are visible only in their own guard and arm expression.
+(match_arm) @scope.conditional
+
 (for_expression) @scope.loop
 
 (while_expression) @scope.loop

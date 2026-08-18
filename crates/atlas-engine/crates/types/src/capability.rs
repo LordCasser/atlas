@@ -1306,8 +1306,8 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "scope-chain-aware binding with shadowing support",
-            "AST-driven local dataflow with language-specific gaps",
+            "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+            "AST-driven local dataflow with conservative match scrutinee-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
             "macro_rules! body patterns not analyzed",
             "borrow checker semantics not modeled",
         ],
@@ -1316,21 +1316,27 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["scope-chain-aware binding with shadowing support"],
+                    &[
+                        "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+                    ],
                 ),
             ),
             (
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
+                    ],
                 ),
             ),
             (
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["scope-chain-aware binding with shadowing support"],
+                    &[
+                        "scope-chain-aware use-def; match guard/body uses share arm-local identity while guard-let bindings remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1338,7 +1344,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded wildcards, and binding/or/range exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees flow to arm-local captures used by guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/binding/range exhaustiveness, structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -3068,8 +3074,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with shadowing support",
-                "AST-driven local dataflow with language-specific gaps",
+                "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+                "AST-driven local dataflow with conservative match scrutinee-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
                 "macro_rules! body patterns not analyzed",
                 "borrow checker semantics not modeled",
             ]
@@ -3107,21 +3113,27 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["scope-chain-aware binding with shadowing support"],
+                vec![
+                    "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative"
+                ],
             )
         );
         assert_eq!(
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative"
+                ],
             )
         );
         assert_eq!(
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["scope-chain-aware binding with shadowing support"],
+                vec![
+                    "scope-chain-aware use-def; match guard/body uses share arm-local identity while guard-let bindings remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3129,7 +3141,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded wildcards, and binding/or/range exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware"
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees flow to arm-local captures used by guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/binding/range exhaustiveness, structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative"
                 ],
             )
         );

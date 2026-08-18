@@ -74,20 +74,16 @@
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
 
-;; --- Match arm bindings: match value { Pattern(x) => ... } ---
-;; Simple binding: x => ...
-(match_arm
-  pattern: (match_pattern
-    (identifier) @df.assign_target))
+;; --- Match scrutinees and pattern bindings ---
+(match_expression
+  value: (_) @df.match_subject)
 
-;; mut binding: mut x => ...
-(match_arm
-  pattern: (match_pattern
-    (mut_pattern
-      (identifier) @df.assign_target)))
-
-;; ref binding: ref x => ...
-(match_arm
-  pattern: (match_pattern
-    (ref_pattern
-      (identifier) @df.assign_target)))
+;; Broad captures are classified by the Rust adapter so nested patterns share
+;; the same syntax rules as lexical binding extraction.
+(match_pattern
+  (identifier) @df.pattern_target)
+(_pattern
+  (identifier) @df.pattern_target)
+(field_pattern
+  pattern: (identifier) @df.pattern_target)
+(shorthand_field_identifier) @df.pattern_target

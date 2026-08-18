@@ -1489,6 +1489,80 @@ fn n5_focus_cangjie_match_binding_dataflow_matches_index_full() {
     );
 }
 
+/// Rust match captures and guard/body identity must produce the same
+/// dataflow/CFG facts through Focus as through a full Index.
+#[cfg(feature = "rust")]
+#[test]
+fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "match_bindings.rs",
+            "enum Result {\n\
+             \x20   Good(i32),\n\
+             \x20   Bad(i32),\n\
+             }\n\
+             fn dispatch(value: Result) -> i32 {\n\
+             \x20   match value {\n\
+             \x20       Result::Good(payload) if payload > 0 => consume(payload),\n\
+             \x20       Result::Bad(payload) => consume(payload),\n\
+             \x20   }\n\
+             }\n",
+        ),
+        ("peer.rs", "fn unrelated() -> i32 {\n    42\n}\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_slice = unit_dataflow_slice(
+        &indexed_store,
+        &symbol_id_by_name(&indexed_store, "dispatch"),
+    );
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "payload")
+            .count(),
+        2
+    );
+    assert!(
+        indexed_slice
+            .edges
+            .iter()
+            .any(|edge| edge.2 == DataFlowKind::Assign.as_str())
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let dispatch = symbol_id_by_name(&focused_store, "dispatch");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&dispatch, Some("rust-match-binding-parity"))
+        .expect("Focus ensure Rust dispatch");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &dispatch),
+        indexed_slice,
+        "Rust match binding dataflow/CFG: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Rust unit must stay outside the Focus window"
+    );
+}
+
 /// N5 dataflow with planner call expansion: ensure(useAdd) also builds callee
 /// `add`; both units match Index full; peer stays empty.
 #[test]
