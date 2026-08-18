@@ -7997,6 +7997,337 @@ fn fx_rust_control_let_bindings_persist_scope_order_and_trace_exact_inputs() {
 
 #[test]
 #[cfg(feature = "rust")]
+fn fx_rust_let_patterns_persist_activation_projection_and_trace_inputs() {
+    let source = r#"struct Point { x: i32, coords: (i32, i32) }
+fn inspect(
+    input: ((i32, i32), Point),
+    fallback: Option<((i32, i32), i32)>,
+    values: [i32; 3],
+    outer: i32,
+) -> i32 {
+    let first = outer;
+    let guard_left = outer;
+    let shadow = outer;
+    let shadow = shadow + 1;
+    let ((first, second), Point { x, coords: (left, right) }) = input;
+    consume(first, second, x, left, right, shadow);
+    let Some(((guard_left, guard_right), tail)) = fallback else {
+        consume(guard_left);
+        return first;
+    };
+    consume(guard_left, guard_right, tail);
+    let [head, .., suffix] = values;
+    consume(head, suffix);
+    first + guard_left + shadow
+}
+"#;
+    let store = index_files(&[("let_pattern_bindings.rs", source)]);
+    let file_id = FileId::generate("let_pattern_bindings.rs");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Rust let-pattern bindings");
+    let bindings_named = |name: &str| {
+        let mut matches: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .collect();
+        matches.sort_by_key(|binding| binding.range.start_byte);
+        matches
+    };
+    let first_bindings = bindings_named("first");
+    let guard_left_bindings = bindings_named("guard_left");
+    let shadow_bindings = bindings_named("shadow");
+    assert_eq!(first_bindings.len(), 2);
+    assert_eq!(guard_left_bindings.len(), 2);
+    assert_eq!(shadow_bindings.len(), 2);
+    for pair in [&first_bindings, &guard_left_bindings, &shadow_bindings] {
+        assert_eq!(pair[0].scope_id, pair[1].scope_id);
+        assert_ne!(pair[0].id, pair[1].id);
+    }
+
+    let declaration_end = |needle: &str| {
+        source
+            .find(needle)
+            .map(|start| (start + needle.len()) as u32)
+            .unwrap_or_else(|| panic!("missing declaration {needle}"))
+    };
+    let destructuring_end =
+        declaration_end("let ((first, second), Point { x, coords: (left, right) }) = input;");
+    for name in ["first", "second", "x", "left", "right"] {
+        let binding = bindings_named(name)
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| panic!("persisted destructured binding {name}"));
+        assert_eq!(binding.visible_from_byte, destructuring_end, "{name}");
+    }
+    let let_else_end = declaration_end(
+        "let Some(((guard_left, guard_right), tail)) = fallback else {\n        consume(guard_left);\n        return first;\n    };",
+    );
+    for name in ["guard_left", "guard_right", "tail"] {
+        let binding = bindings_named(name)
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| panic!("persisted let-else binding {name}"));
+        assert_eq!(binding.visible_from_byte, let_else_end, "{name}");
+    }
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let assert_use = |name: &str, line, expected: &atlas_engine::BindingDef| {
+        let uses: Vec<_> = data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .collect();
+        assert_eq!(uses.len(), 1, "one persisted {name} use on line {line}");
+        assert_eq!(uses[0].binding_id, Some(expected.id));
+    };
+    assert_use("shadow", 10, shadow_bindings[0]);
+    assert_use("shadow", 12, shadow_bindings[1]);
+    assert_use("guard_left", 14, guard_left_bindings[0]);
+    assert_use("guard_left", 17, guard_left_bindings[1]);
+    assert_use("first", 15, first_bindings[1]);
+
+    let source_node = |name: &str, line| {
+        data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted source {name} on line {line}"))
+    };
+    let engine = TraceEngine::new(store.clone());
+    for (name, access_path, source_name, source_line, sink_line) in [
+        ("first", "input[0][0]", "input", 11, 12),
+        ("second", "input[0][1]", "input", 11, 12),
+        ("x", "input[1].x", "input", 11, 12),
+        ("left", "input[1].coords[0]", "input", 11, 12),
+        ("right", "input[1].coords[1]", "input", 11, 12),
+        ("guard_left", "fallback[0][0][0]", "fallback", 13, 17),
+        ("guard_right", "fallback[0][0][1]", "fallback", 13, 17),
+        ("tail", "fallback[0][1]", "fallback", 13, 17),
+        ("head", "values[0]", "values", 18, 19),
+    ] {
+        let binding = bindings_named(name)
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| panic!("persisted binding {name}"));
+        let target = data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(binding.id))
+            .unwrap_or_else(|| panic!("persisted target {name}"));
+        let projection = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == target.range
+                    && node.access_path.as_deref() == Some(access_path)
+            })
+            .unwrap_or_else(|| panic!("persisted projection {access_path}"));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&source_node(source_name, source_line).id)
+                .expect("projection input edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == projection.id
+                        && edge.kind == DataFlowKind::FieldLoad
+                        && edge.confidence == 0.80
+                })
+        );
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("projection output edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+        let sink = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.binding_id == Some(binding.id)
+                    && node.range.start_line == sink_line
+            })
+            .unwrap_or_else(|| panic!("persisted trace sink {name}"));
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            24,
+        );
+        assert_envelope_ok(&response, "rust");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("Rust let-pattern trace path for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        assert_source_name(&path, source_name);
+    }
+
+    let suffix_binding = bindings_named("suffix")[0];
+    let suffix_target = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(suffix_binding.id))
+        .expect("persisted slice suffix target");
+    assert!(
+        data_nodes
+            .iter()
+            .all(|node| { node.range != suffix_target.range || node.kind != DataNodeKind::Expr })
+    );
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&source_node("values", 18).id)
+            .expect("aggregate suffix edges")
+            .iter()
+            .any(|edge| {
+                edge.target == suffix_target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.75
+            })
+    );
+    let suffix_sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.binding_id == Some(suffix_binding.id)
+                && node.range.start_line == 19
+        })
+        .expect("persisted suffix trace sink");
+    let response = engine.trace_variable(
+        &file_id,
+        suffix_sink.range.start_line + 1,
+        suffix_sink.range.start_column + 1,
+        24,
+    );
+    assert_envelope_ok(&response, "rust");
+    let path = response.result.expect("Rust suffix aggregate trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert!(
+        path.steps
+            .iter()
+            .all(|step| step.edge_kind != DataFlowKind::FieldLoad)
+    );
+    assert_source_name(&path, "values");
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_real_cfg_builder_let_else_tuple_projection_persists_and_traces() {
+    let source = include_str!("../../atlas-engine/crates/extraction/src/cfg_builder.rs");
+    let store = index_files(&[("cfg_builder.rs", source)]);
+    let file_id = FileId::generate("cfg_builder.rs");
+    let marker = "let Some((label, body)) = self.labeled_statement_parts(node) else {";
+    let pattern_start = source
+        .find(marker)
+        .expect("real cfg_builder let-else pattern");
+    let value_start = pattern_start + "let Some((label, body)) = ".len();
+    let label_start = pattern_start + "let Some((".len();
+    let body_start = pattern_start + "let Some((label, ".len();
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let value = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr && node.range.start_byte as usize == value_start
+        })
+        .expect("real cfg_builder let-else initializer");
+    assert_eq!(
+        value.name.as_deref(),
+        Some("self.labeled_statement_parts(node)")
+    );
+    let engine = TraceEngine::new(store.clone());
+
+    for (name, target_start, access_path, sink_marker) in [
+        (
+            "label",
+            label_start,
+            "(self.labeled_statement_parts(node))[0][0]",
+            "&[label]",
+        ),
+        (
+            "body",
+            body_start,
+            "(self.labeled_statement_parts(node))[0][1]",
+            "body.kind()",
+        ),
+    ] {
+        let target = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_byte as usize == target_start
+            })
+            .unwrap_or_else(|| panic!("real cfg_builder let-else target {name}"));
+        let projection = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == target.range
+                    && node.access_path.as_deref() == Some(access_path)
+            })
+            .unwrap_or_else(|| panic!("real cfg_builder projection {access_path}"));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&value.id)
+                .expect("real let-else projection input edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == projection.id
+                        && edge.kind == DataFlowKind::FieldLoad
+                        && edge.confidence == 0.80
+                })
+        );
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("real let-else projection output edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+
+        let sink_start = source[pattern_start..]
+            .find(sink_marker)
+            .map(|offset| pattern_start + offset + sink_marker.find(name).unwrap())
+            .unwrap_or_else(|| panic!("real cfg_builder sink marker {sink_marker}"));
+        let sink = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_byte as usize == sink_start
+            })
+            .unwrap_or_else(|| panic!("real cfg_builder persisted sink {name}"));
+        assert_eq!(sink.binding_id, target.binding_id);
+        let response = engine.trace_variable(
+            &file_id,
+            target.range.start_line + 1,
+            target.range.start_column + 1,
+            24,
+        );
+        assert_envelope_ok(&response, "rust");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("real cfg_builder trace path for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+    }
+}
+
+#[test]
+#[cfg(feature = "rust")]
 fn fx_rust_real_closure_planner_nested_result_projection_persists_and_traces() {
     let source = include_str!("../../atlas-engine/src/closure_planner.rs");
     let store = index_files(&[("closure_planner.rs", source)]);

@@ -4955,6 +4955,206 @@ fn n5_focus_rust_control_let_bindings_match_index_full() {
     );
 }
 
+/// Rust ordinary let/let-else patterns must preserve declaration-end
+/// activation, same-scope shadow identities, exact projections, aggregate
+/// post-rest flow, and CFG identically through cold Focus and full Index.
+#[cfg(feature = "rust")]
+#[test]
+fn n5_focus_rust_let_pattern_bindings_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "let_pattern_bindings.rs",
+            "struct Point { x: i32, coords: (i32, i32) }\n\
+             fn inspect(\n\
+             \x20   input: ((i32, i32), Point),\n\
+             \x20   fallback: Option<((i32, i32), i32)>,\n\
+             \x20   values: [i32; 3],\n\
+             \x20   outer: i32,\n\
+             ) -> i32 {\n\
+             \x20   let first = outer;\n\
+             \x20   let guard_left = outer;\n\
+             \x20   let shadow = outer;\n\
+             \x20   let shadow = shadow + 1;\n\
+             \x20   let ((first, second), Point { x, coords: (left, right) }) = input;\n\
+             \x20   consume(first, second, x, left, right, shadow);\n\
+             \x20   let Some(((guard_left, guard_right), tail)) = fallback else {\n\
+             \x20       consume(guard_left);\n\
+             \x20       return first;\n\
+             \x20   };\n\
+             \x20   consume(guard_left, guard_right, tail);\n\
+             \x20   let [head, .., suffix] = values;\n\
+             \x20   consume(head, suffix);\n\
+             \x20   first + guard_left + shadow\n\
+             }\n",
+        ),
+        ("peer.rs", "fn unrelated() -> i32 {\n    42\n}\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_inspect = symbol_id_by_name(&indexed_store, "inspect");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_inspect);
+    let indexed_binding_slice = unit_binding_slice(&indexed_store, &indexed_inspect);
+    let indexed_bindings = indexed_store
+        .find_bindings_by_function(&indexed_inspect)
+        .expect("full Index Rust let-pattern bindings");
+    for name in ["first", "guard_left", "shadow"] {
+        let mut named: Vec<_> = indexed_bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .collect();
+        named.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(named.len(), 2, "full Index duplicate identity for {name}");
+        assert_eq!(named[0].scope_id, named[1].scope_id);
+        assert_ne!(named[0].id, named[1].id);
+    }
+    let source = FIXTURE[0].1;
+    let declaration_end = |needle: &str| {
+        source
+            .find(needle)
+            .map(|start| (start + needle.len()) as u32)
+            .unwrap_or_else(|| panic!("fixture declaration {needle}"))
+    };
+    let destructuring_end =
+        declaration_end("let ((first, second), Point { x, coords: (left, right) }) = input;");
+    for name in ["first", "second", "x", "left", "right"] {
+        let binding = indexed_bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .max_by_key(|binding| binding.range.start_byte)
+            .unwrap_or_else(|| panic!("full Index destructured binding {name}"));
+        assert_eq!(binding.visible_from_byte, destructuring_end, "{name}");
+    }
+    let let_else_end = declaration_end(
+        "let Some(((guard_left, guard_right), tail)) = fallback else {\n        consume(guard_left);\n        return first;\n    };",
+    );
+    for name in ["guard_left", "guard_right", "tail"] {
+        let binding = indexed_bindings
+            .iter()
+            .filter(|binding| binding.name == name)
+            .max_by_key(|binding| binding.range.start_byte)
+            .unwrap_or_else(|| panic!("full Index let-else binding {name}"));
+        assert_eq!(binding.visible_from_byte, let_else_end, "{name}");
+    }
+
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_inspect)
+        .expect("full Index Rust let-pattern data nodes");
+    let mut indexed_projection_paths: Vec<_> = indexed_nodes
+        .iter()
+        .filter_map(|node| {
+            (node.kind == DataNodeKind::Expr && node.name.is_none())
+                .then(|| node.access_path.clone())
+                .flatten()
+        })
+        .collect();
+    indexed_projection_paths.sort();
+    assert_eq!(
+        indexed_projection_paths,
+        [
+            "fallback[0][0][0]",
+            "fallback[0][0][1]",
+            "fallback[0][1]",
+            "input[0][0]",
+            "input[0][1]",
+            "input[1].coords[0]",
+            "input[1].coords[1]",
+            "input[1].x",
+            "values[0]",
+        ]
+    );
+    for path in &indexed_projection_paths {
+        let projection = indexed_nodes
+            .iter()
+            .find(|node| node.access_path.as_ref() == Some(path))
+            .unwrap_or_else(|| panic!("full Index let projection {path}"));
+        assert!(
+            indexed_store
+                .find_dataflow_edges_by_target(&projection.id)
+                .expect("full Index projection input")
+                .iter()
+                .any(|edge| { edge.kind == DataFlowKind::FieldLoad && edge.confidence == 0.80 })
+        );
+        assert!(
+            indexed_store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("full Index projection output")
+                .iter()
+                .any(|edge| edge.kind == DataFlowKind::Assign && edge.confidence == 0.90)
+        );
+    }
+    let suffix = indexed_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("suffix"))
+        .expect("full Index post-rest suffix");
+    assert!(
+        indexed_nodes
+            .iter()
+            .all(|node| { node.range != suffix.range || node.kind != DataNodeKind::Expr })
+    );
+    assert!(
+        indexed_store
+            .find_dataflow_edges_by_target(&suffix.id)
+            .expect("full Index suffix inputs")
+            .iter()
+            .any(|edge| edge.kind == DataFlowKind::Assign && edge.confidence == 0.75)
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let inspect = symbol_id_by_name(&focused_store, "inspect");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&inspect)
+            .unwrap()
+            .is_empty(),
+        "Rust ordinary let-pattern unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&inspect, Some("rust-let-pattern-parity"))
+        .expect("Focus ensure Rust ordinary let patterns");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &inspect),
+        indexed_slice,
+        "Rust ordinary let-pattern dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &inspect),
+        indexed_binding_slice,
+        "Rust ordinary let-pattern binding activation: Focus ensure == Index full"
+    );
+    let mut focused_projection_paths: Vec<_> = focused_store
+        .find_data_nodes_by_function(&inspect)
+        .expect("Focus Rust let-pattern data nodes")
+        .into_iter()
+        .filter_map(|node| {
+            (node.kind == DataNodeKind::Expr && node.name.is_none())
+                .then_some(node.access_path)
+                .flatten()
+        })
+        .collect();
+    focused_projection_paths.sort();
+    assert_eq!(focused_projection_paths, indexed_projection_paths);
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Rust unit must stay outside the Focus window"
+    );
+}
+
 /// N5 dataflow with planner call expansion: ensure(useAdd) also builds callee
 /// `add`; both units match Index full; peer stays empty.
 #[test]
