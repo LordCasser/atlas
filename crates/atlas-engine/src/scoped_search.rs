@@ -1,11 +1,10 @@
 //! ScopedSearchService: shared search orchestration with scope parsing, lazy
 //! structural triggering, and result assembly.
 //!
-//! This service encapsulates the search semantics that were previously duplicated
-//! across the MCP (`atlas-mcp/src/tools/search.rs`) and TUI
-//! (`atlas-cli/src/tui/search_session.rs`) entry points.  Both entry points can
-//! wrap this single service instead of independently re-implementing scope
-//! resolution, analysis-mode selection, and lazy-structural fallback.
+//! MCP uses this service for scoped, Focus-aware analysis. The TUI's native
+//! search bar is intentionally a store-backed candidate browser and shares
+//! only the query parser; TUI analysis commands enter the same MCP `ToolRouter`
+//! before making coverage or completeness claims.
 //!
 //! # Flow
 //!

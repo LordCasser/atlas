@@ -15,6 +15,16 @@ All notable changes to Atlas will be documented in this file.
   converges to a bounded gap instead of cycling through
   `tasks(status=ready)` and another retryable `resume_query` forever.
 
+### Cross-language product-path parity
+
+- Add one shared Focus-vs-full-Index baseline matrix for TypeScript,
+  JavaScript, Python, Java, C, C++, ArkTS, C#, and PHP. Each fixture verifies
+  that on-demand function materialization persists the same bindings, local
+  dataflow, and CFG as full Index while the unit is cold beforehand.
+- Keep feature-specific parity fixtures for Go, Rust, Ruby, Kotlin, and
+  Cangjie, where the language boundary needs stronger assertions than the
+  common baseline.
+
 ### Go dataflow
 
 - Model a type-switch alias as one distinct binding in every case/default

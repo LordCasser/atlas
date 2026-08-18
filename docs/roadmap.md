@@ -213,6 +213,10 @@ Pre-release TUI/MCP/Focus alignment review:
 - Tier-0 inventory writes accept one typed `DiscoveredFile` record instead of
   seven positional discovery fields; the later content fingerprint phase
   remains a separate boundary.
+- Focus-vs-full-Index dataflow/CFG parity now has a shared baseline matrix for
+  TypeScript, JavaScript, Python, Java, C, C++, ArkTS, C#, and PHP. Go, Rust,
+  Ruby, Kotlin, and Cangjie retain stronger feature-specific parity fixtures
+  for their type-switch, match, modifier-loop, and subject-binding boundaries.
 
 ### 1.6 Completed baseline release gates
 

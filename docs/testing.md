@@ -34,6 +34,9 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 同一修复如果影响 shared pipeline 和 CLI 自有 pipeline，必须覆盖两者。
 - 同一修复如果影响 file-level state 和 unit-level state，必须覆盖两者。
 - 同一修复如果影响 Focus materialize ensure 与 Index 预物化，必须至少各有一条回归（禁止只测 helper）。
+- 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow、CFG
+  对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
+  测试替代 type-switch、match binding、modifier loop 等精确断言。
 - capability/status 测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
 - 当某个路径确认不受影响时，PR 或 review 里必须写明理由。
 - FullCache/Focus 判定必须覆盖：整仓 finalized manifest + 少量 Focus structural、
