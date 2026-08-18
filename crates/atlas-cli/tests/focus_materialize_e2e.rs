@@ -1686,6 +1686,91 @@ fn n5_focus_php_foreach_namespace_matches_index_full() {
     );
 }
 
+/// PHP nested/keyed destructuring must persist the same callable bindings and
+/// conservative aggregate flow through Focus as through a full Index. The key
+/// selector remains a parameter read, and an unrelated PHP unit stays cold.
+#[cfg(feature = "php")]
+#[test]
+fn n5_focus_php_nested_destructuring_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "nested_destructure.php",
+            "<?php\n\
+             function unpack($source, $rows, $selector) {\n\
+             \x20 list($first, list($second, &$third)) = $source;\n\
+             \x20 [$selector => $selected] = $source;\n\
+             \x20 foreach ($rows as ['meta' => ['flag' => $row_flag]]) {\n\
+             \x20   consume($row_flag);\n\
+             \x20 }\n\
+             \x20 return consume($first, $second, $third, $selected);\n\
+             }\n",
+        ),
+        ("peer.php", "<?php\nfunction unrelated() { return 42; }\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_unpack = symbol_id_by_name(&indexed_store, "unpack");
+    let indexed_dataflow = unit_dataflow_slice(&indexed_store, &indexed_unpack);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_unpack);
+    for name in [
+        "source", "rows", "selector", "first", "second", "third", "selected", "row_flag",
+    ] {
+        assert_eq!(
+            indexed_store
+                .find_bindings_by_function(&indexed_unpack)
+                .unwrap()
+                .iter()
+                .filter(|binding| binding.name == name)
+                .count(),
+            1,
+            "{name} must have one binding identity in the full Index"
+        );
+    }
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let unpack = symbol_id_by_name(&focused_store, "unpack");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unpack)
+            .unwrap()
+            .is_empty(),
+        "PHP destructuring unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&unpack, Some("php-nested-destructuring-parity"))
+        .expect("Focus ensure PHP nested destructuring");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &unpack),
+        indexed_dataflow,
+        "PHP destructuring dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &unpack),
+        indexed_bindings,
+        "PHP destructuring bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated PHP unit must stay outside the Focus window"
+    );
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.

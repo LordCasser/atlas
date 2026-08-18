@@ -1641,6 +1641,87 @@ function iterate($items) {
     );
 }
 
+#[test]
+#[cfg(feature = "php")]
+fn fx_php_nested_destructuring_persists_bindings_and_aggregate_trace() {
+    let source = r#"<?php
+function unpack($source, $rows, $selector) {
+    list($first, list($second, &$third)) = $source;
+    [$selector => $selected] = $source;
+    foreach ($rows as ['meta' => ['flag' => $row_flag]]) {
+        consume($row_flag);
+    }
+    return consume($first, $second, $third, $selected);
+}
+"#;
+    let store = index_files(&[("nested_destructure.php", source)]);
+    let file_id = FileId::generate("nested_destructure.php");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted PHP destructuring bindings");
+
+    for name in [
+        "source", "rows", "selector", "first", "second", "third", "selected", "row_flag",
+    ] {
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .count(),
+            1,
+            "{name} must retain one persisted binding identity"
+        );
+    }
+    let selector = bindings
+        .iter()
+        .find(|binding| binding.name == "selector")
+        .expect("selector parameter binding");
+    assert_eq!(selector.kind, atlas_engine::BindingKind::Parameter);
+
+    let data_nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("persisted PHP destructuring data nodes");
+    let selector_read = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("selector")
+                && node.range.start_line == 3
+        })
+        .expect("destructuring key selector read");
+    assert_eq!(selector_read.binding_id, Some(selector.id));
+
+    let engine = TraceEngine::new(store.clone());
+    for (name, line, source_name) in [("selected", 7, "source"), ("row_flag", 5, "rows")] {
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.name == name)
+            .unwrap_or_else(|| panic!("{name} binding"));
+        let sink = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("{name} use on line {line}"));
+        assert_eq!(sink.binding_id, Some(binding.id));
+
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, "php");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("{name} aggregate trace path"));
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        assert_source_name(&path, source_name);
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Ruby: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
