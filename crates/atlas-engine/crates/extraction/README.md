@@ -98,6 +98,11 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   to each supported target; exact key/index projection, missing-key/null
   behavior, reference-alias semantics, and dynamic/non-variable targets remain
   explicit boundaries.
+- PHP direct file/function/method variable `op=` and prefix/postfix `++`/`--`
+  preserve aggregate read-modify-write provenance: the previous value and any
+  explicit RHS feed a mutation Expr, then the Expr flows to the coalesced Local
+  write at confidence 0.90. Dynamic/non-variable mutation targets, conditional
+  `??=` execution, and prefix/postfix result timing remain conservative.
 - Ruby local targets in flat, nested, and rest multiple assignment participate
   in the same source-ordered method/module/class/block namespace as simple
   assignments. Explicit RHS lists map by top-level position; a single aggregate

@@ -203,6 +203,14 @@ All notable changes to Atlas will be documented in this file.
 
 ### PHP dataflow and control flow
 
+- Model direct file/function/method variable augmented assignments and prefix/
+  postfix updates as aggregate read-modify-write expressions. The previous
+  variable value and augmented RHS flow into the expression, which then flows
+  to the namespace-coalesced write at confidence 0.90. Direct extraction,
+  SQLite Trace, and Focus-vs-full-Index fixtures cover persisted identity,
+  edge confidence, CFG parity, and cold peer isolation. Dynamic/non-variable
+  mutation targets, `??=` conditional execution, and prefix/postfix result
+  timing remain explicit boundaries.
 - Extract `[]` and `list()` nested, keyed, and by-reference destructuring
   targets into the callable namespace for assignment and `foreach`. Key
   expressions remain reads. Assignment conservatively flows the whole RHS to
@@ -221,8 +229,8 @@ All notable changes to Atlas will be documented in this file.
   anonymous-function captures now use scope-chain identity; unresolved names
   stop at function/method boundaries. Anonymous-function dataflow remains in
   the enclosing named-function materialization unit. Global aliases, variable
-  variables, compound/update assignment edges, and arrow-function ownership
-  remain conservative.
+  variables, dynamic/non-variable targets, and arrow-function ownership remain
+  conservative.
 - Resolve direct same-function PHP `goto` to standalone label `Join` targets
   through deterministic persisted `Goto` edges.
 - Execute every intervening path-isolated `finally` clone from inner to outer;

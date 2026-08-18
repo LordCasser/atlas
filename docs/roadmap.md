@@ -331,10 +331,10 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
 - Ensure unsupported or partial trace queries return diagnostics rather than silent empty results.
 - Keep `FactCoverage` synchronized with persisted state: `cfg` requires actual CFG facts, `dataflow` requires dataflow facts, and `summaries` requires successfully built summary tables.
 - `analysis.basis` may only advertise facts proven by DB state or verified during the current tool call.
-- ✅ TypeScript、JavaScript、ArkTS、Java、C、C++、Go、Rust、Kotlin、Cangjie 的普通 block/sibling-block、PHP assignment/anonymous-function/`[]`/`list()` nested/keyed/by-reference destructuring，以及 Ruby source-ordered block namespace
+- ✅ TypeScript、JavaScript、ArkTS、Java、C、C++、Go、Rust、Kotlin、Cangjie 的普通 block/sibling-block、PHP assignment/anonymous-function/`[]`/`list()` nested/keyed/by-reference destructuring/direct-variable mutation，以及 Ruby source-ordered block namespace
   scope-chain identity 已通过 extraction、SQLite Trace、Focus-vs-full-Index 三层
   回归，`scope_aware_binding` 与 adapter slot confidence 已对齐。Java 不伪造非法的
-  overlapping local shadowing；PHP destructuring key expression 保持读取，assignment whole RHS 与 foreach collection 保守流向各 target，exact key/index projection、missing-key/null、reference-alias semantics 与 dynamic/non-variable target 保持 limitation；未显式捕获的匿名函数外层 local 保持 unresolved，arrow-function ownership 暂不伪造；Ruby block write 仅复用源码更早的祖先 binding，flat/nested/rest multiple-assignment local target 复用同一 namespace，显式 RHS list 具备顶层位置流；Go same-block mixed `:=` 已覆盖 local/函数体参数复用、声明后激活与 clause 隔离；其余语言特有的 pattern、projection、mixed declaration、smart-cast 与
+  overlapping local shadowing；PHP destructuring key expression 保持读取，assignment whole RHS 与 foreach collection 保守流向各 target，direct variable mutation 保留 aggregate read-modify-write provenance，exact key/index projection、missing-key/null、reference-alias semantics、dynamic/non-variable target、conditional write 与 prefix/postfix result timing 保持 limitation；未显式捕获的匿名函数外层 local 保持 unresolved，arrow-function ownership 暂不伪造；Ruby block write 仅复用源码更早的祖先 binding，flat/nested/rest multiple-assignment local target 复用同一 namespace，显式 RHS list 具备顶层位置流；Go same-block mixed `:=` 已覆盖 local/函数体参数复用、声明后激活与 clause 隔离；其余语言特有的 pattern、projection、mixed declaration、smart-cast 与
   definite-assignment 边界仍以 capability limitation 为准。
 - ✅ Cangjie simple/nested-tuple/enum-payload `for-in` capture 已建模为
   loop-scoped binding，enum constructor syntax 不建 binding，iterable 向每个 capture 以
@@ -492,6 +492,15 @@ CFG + DataFlow
   Focus-vs-full-Index fixtures cover identity and product-path parity. Exact
   key/index projection、missing-key/null behavior、reference-alias semantics
   and dynamic/non-variable targets remain explicit precision boundaries.
+- **PHP direct-variable mutation — scoped phase implemented:** file/function/
+  method namespace variables used by `op=` and prefix/postfix `++`/`--`
+  produce an aggregate read-modify-write Expr. The previous value and explicit
+  RHS enter that Expr through `Read`; the Expr reaches the coalesced Local write
+  through `Assign` at 0.90. Direct extraction、SQLite Trace and
+  Focus-vs-full-Index fixtures cover persisted binding identity、edge confidence、
+  CFG parity and cold peer isolation. Dynamic/non-variable mutation targets、
+  `??=` conditional execution and prefix/postfix result timing remain explicit
+  precision boundaries.
 - **Ruby multiple assignment — scoped phase implemented:** flat/nested/rest local
   targets join the existing source-ordered method/module/class/block binding
   namespace. Explicit RHS lists map to top-level target groups by position；a
@@ -634,9 +643,12 @@ branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-
 local、`[]`/`list()` nested/keyed/by-reference destructuring target、foreach/catch/static
 declaration 与 explicit anonymous-function capture 采用 file/function/method scope-chain
 identity，key expression 保持读取，assignment whole RHS 与 foreach collection
-保守流向各 target。PHP exact key/index projection、missing-key/null、reference-alias
-semantics、dynamic/non-variable target、global alias、variable variable、
-compound/update assignment edge 与 arrow-function ownership 仍保守，未显式捕获的
+保守流向各 target；direct file/function/method variable `op=` 与 prefix/postfix
+`++`/`--` 保留 aggregate read-modify-write provenance，mutation Expr→Local 为 0.90。
+PHP exact key/index projection、missing-key/null、reference-alias semantics、
+dynamic/non-variable destructuring/mutation target、`??=` conditional execution、
+prefix/postfix result timing、global alias、variable variable 与 arrow-function
+ownership 仍保守，未显式捕获的
 匿名函数外层 local 不越过 callable boundary。Ruby simple assignment、
 flat/nested/rest multiple-assignment local target、parameter、rescue/for variable 与
 case/in capture 使用 source-ordered method/module/class/block scope chain，block write

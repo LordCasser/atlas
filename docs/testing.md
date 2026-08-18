@@ -37,7 +37,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow（含 edge kind/confidence）、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、mixed short declaration、Go select receive、match binding、PHP nested/keyed
-  destructuring、Ruby multiple assignment、Java guarded type/record pattern、C# parenthesized nested designation、Kotlin
+  destructuring 与 direct-variable mutation、Ruby multiple assignment、Java guarded type/record pattern、C# parenthesized nested designation、Kotlin
   late-assignment branch provenance、Cangjie simple/nested-tuple/enum-payload
   `for-in` loop binding/aggregate provenance、modifier loop、nested lexical shadowing
   等精确断言。
