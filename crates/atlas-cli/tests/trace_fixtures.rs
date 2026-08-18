@@ -8277,6 +8277,121 @@ fn fx_kotlin_when_subject_binding_persists_and_traces_from_initializer() {
 
 #[test]
 #[cfg(feature = "kotlin")]
+fn fx_kotlin_branch_complete_late_assignment_persists_both_write_origins() {
+    let source = r#"fun select(primary: Int, fallback: Int, choose: Boolean): Int {
+    var result: Int
+    if (choose) {
+        result = primary
+    } else {
+        result = fallback
+    }
+    return consume(result)
+}
+"#;
+    let store = index_files(&[("late_assignment.kt", source)]);
+    let file_id = FileId::generate("late_assignment.kt");
+    let result_binding = store
+        .find_bindings_by_file(&file_id)
+        .expect("Kotlin bindings")
+        .into_iter()
+        .find(|binding| binding.name == "result")
+        .expect("persisted late-declared result binding");
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let mut result_locals: Vec<_> = data_nodes
+        .iter()
+        .filter(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("result"))
+        .collect();
+    result_locals.sort_by_key(|node| node.range.start_byte);
+    assert_eq!(result_locals.len(), 2);
+    assert!(
+        result_locals
+            .iter()
+            .all(|node| node.binding_id == Some(result_binding.id))
+    );
+
+    let primary_write = result_locals[0];
+    let fallback_write = result_locals[1];
+    assert_eq!(primary_write.range.start_line, 3);
+    assert_eq!(fallback_write.range.start_line, 5);
+
+    let mut edges = Vec::new();
+    for node in &data_nodes {
+        edges.extend(
+            store
+                .find_dataflow_edges_by_source(&node.id)
+                .expect("persisted dataflow edges"),
+        );
+    }
+    assert!(data_nodes.iter().all(|node| {
+        node.kind != DataNodeKind::Local
+            || node.name.as_deref() != Some("result")
+            || node.range.start_line != 1
+    }));
+    for (source_name, line, target) in [
+        ("primary", 3, primary_write),
+        ("fallback", 5, fallback_write),
+    ] {
+        let source = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some(source_name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted {source_name} assignment source"));
+        assert!(edges.iter().any(|edge| {
+            edge.source == source.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+    }
+
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("result")
+                && node.range.start_line == 7
+        })
+        .expect("post-branch result use");
+    assert_eq!(sink.binding_id, Some(result_binding.id));
+    for write in [primary_write, fallback_write] {
+        assert!(edges.iter().any(|edge| {
+            edge.source == write.id && edge.target == sink.id && edge.kind == DataFlowKind::Assign
+        }));
+    }
+
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "kotlin");
+    let path = response.result.expect("Kotlin late-assignment trace path");
+    assert_eq!(
+        path.sink
+            .binding_use
+            .as_ref()
+            .and_then(|use_| use_.binding_id),
+        Some(result_binding.id)
+    );
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    let source_name = path
+        .source
+        .data_node
+        .as_ref()
+        .and_then(|node| node.name.as_deref())
+        .expect("Kotlin late-assignment trace source");
+    assert!(
+        matches!(source_name, "primary" | "fallback"),
+        "trace must end at one of the persisted branch origins, got {source_name}"
+    );
+}
+
+#[test]
+#[cfg(feature = "kotlin")]
 fn fx_kotlin_nested_local_shadow_bindings_persist_and_trace_separately() {
     let source = r#"fun shadow(input: Int): Int {
     val value = input

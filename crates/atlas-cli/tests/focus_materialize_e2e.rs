@@ -2297,6 +2297,94 @@ fn n5_focus_kotlin_when_subject_dataflow_matches_index_full() {
     );
 }
 
+/// A typed Kotlin local declared before an exhaustive `if` must retain both
+/// concrete branch writes as one binding. Focus must materialize the same
+/// post-join provenance as a full Index and leave peer units cold.
+#[cfg(feature = "kotlin")]
+#[test]
+fn n5_focus_kotlin_branch_complete_late_assignment_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "late_assignment.kt",
+            "fun select(primary: Int, fallback: Int, choose: Boolean): Int {\n\
+             \x20 var result: Int\n\
+             \x20 if (choose) {\n\
+             \x20   result = primary\n\
+             \x20 } else {\n\
+             \x20   result = fallback\n\
+             \x20 }\n\
+             \x20 return consume(result)\n\
+             }\n",
+        ),
+        ("peer.kt", "fun unrelated(): Int = 42\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_select = symbol_id_by_name(&indexed_store, "select");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_select);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_select);
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "result")
+            .count(),
+        2,
+        "full Index must keep both concrete branch writes"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.0 == "local" && binding.1 == "result")
+            .count(),
+        1,
+        "all result writes must retain one lexical binding"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let select = symbol_id_by_name(&focused_store, "select");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&select)
+            .unwrap()
+            .is_empty(),
+        "Kotlin late-assignment unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&select, Some("kotlin-late-assignment-parity"))
+        .expect("Focus ensure Kotlin late assignment");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &select),
+        indexed_slice,
+        "Kotlin late-assignment dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &select),
+        indexed_bindings,
+        "Kotlin late-assignment bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Kotlin unit must stay outside the Focus window"
+    );
+}
+
 /// Kotlin nested locals with the same name must retain two scope-chain
 /// identities, and Focus must materialize the same binding/dataflow unit as a
 /// full Index without warming an unrelated function.
