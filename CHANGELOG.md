@@ -33,8 +33,8 @@ All notable changes to Atlas will be documented in this file.
   ownership. Java uses legal sibling-block redeclarations because overlapping
   local redeclaration is rejected by the language. Go additionally covers
   same-block mixed short declarations and the function-body parameter
-  exception. Rust pattern projection and Kotlin smart-cast/definite-assignment
-  remain explicit language-specific limitations.
+  exception. Rust pattern projection, Kotlin smart-cast, and compiler-grade
+  variable-initialization proof remain explicit language-specific limitations.
 - Align frontend lexical/dataflow slot confidence and limitation text with the
   authoritative language profiles. ArkTS remains a TypeScript-grammar boundary:
   ordinary nested blocks are verified, while ArkUI callback ownership and
@@ -102,16 +102,26 @@ All notable changes to Atlas will be documented in this file.
 
 ### Kotlin dataflow
 
+- Capture fieldless tree-sitter-kotlin simple assignments through their
+  `directly_assignable_expression` wrapper and preserve every concrete write
+  origin for a typed local declared before a branch. A declaration without an
+  initializer remains a lexical binding, not a source-free dataflow
+  definition, so SQLite Trace reaches a real branch RHS instead of terminating
+  at the variable name. Direct extraction, SQLite Trace, and
+  Focus-vs-full-Index fixtures cover the boundary; compiler-grade
+  variable-initialization proof and smart-cast type refinement remain
+  conservative.
 - Preserve distinct `BindingId` values for same-name Kotlin locals in nested
   control scopes. Extraction, SQLite Trace, and Focus-vs-full-Index fixtures
   prove that an inner read resolves the inner declaration while a later read
-  resolves the outer declaration; smart-cast and definite-assignment semantics
-  remain conservative.
+  resolves the outer declaration; smart-cast and compiler-grade
+  variable-initialization proof remain conservative.
 - Model `when (val V = E)` as initializer-to-subject assignment dataflow and
   resolve condition, guard, and body uses to the same scoped binding identity.
   Extraction, SQLite trace, and Focus-vs-full-Index parity fixtures cover the
-  boundary; smart-cast, definite-assignment, type/range condition projection,
-  and guard control dependencies remain conservative.
+  boundary; smart-cast, compiler-grade variable-initialization proof,
+  type/range condition projection, and guard control dependencies remain
+  conservative.
 - Treat unresolved callsites as absent from resolved-callsite lookups instead
   of decoding nullable symbol IDs as query errors. Trace consumers therefore
   retain the same success envelope when a Kotlin initializer calls an external
