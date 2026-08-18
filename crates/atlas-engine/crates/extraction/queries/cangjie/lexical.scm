@@ -11,9 +11,10 @@
   (variableName
     (varBindingPattern) @lexical.local))
 
-;; --- Simple for-in iteration variables ---
-(forInExpression
-  . (varBindingPattern) @lexical.for_variable)
+;; --- For-in iteration variables ---
+;; Broad grammar capture filtered by the adapter to keep only binding nodes in
+;; the first forInExpression child and reject enum constructor names.
+(varBindingPattern) @lexical.for_variable
 
 ;; --- Match pattern bindings ---
 ;; Broad grammar capture filtered by the adapter: enum constructor names and

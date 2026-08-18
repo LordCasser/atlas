@@ -203,7 +203,7 @@ impl LexicalBindingSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple for-in variables, and arm-scoped match captures; tuple/destructuring and resource bindings remain conservative",
+                "scope-chain-aware parameter/simple-local binding with nested block shadowing, loop-scoped simple/tuple/enum-payload for-in captures, and arm-scoped match captures; other tuple/destructuring, resource bindings, and compiler validation of pattern irrefutability remain conservative",
             ],
         )
     }
@@ -216,7 +216,7 @@ impl LexicalBindingSpec for CangjieAdapter {
     }
 
     fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
-        !is_cangjie_match_pattern_syntax(node)
+        !is_cangjie_match_pattern_syntax(node) && !is_cangjie_for_in_pattern_syntax(node)
     }
 }
 
@@ -228,7 +228,7 @@ impl DataflowSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple loop variables; iterator element/structural projection and guard control dependencies remain conservative",
+                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple/tuple/enum-payload loop captures; exact iterator element/structural projection, guard control dependencies, and compiler validation of pattern irrefutability remain conservative",
             ],
         )
     }
@@ -417,6 +417,9 @@ fn normalize_cangjie_lexical(
     if capture_name == "lexical.pattern" && !is_cangjie_match_binding_pattern(node) {
         return None;
     }
+    if capture_name == "lexical.for_variable" && !is_cangjie_for_in_binding_pattern(node) {
+        return None;
+    }
     let name = node_text(node, source)?;
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
@@ -458,14 +461,38 @@ fn is_cangjie_match_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
             .is_none_or(|parent| parent.kind() != "enumPattern")
 }
 
+fn is_cangjie_for_in_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    std::iter::successors(Some(node), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == "forInExpression")
+        .and_then(|for_in| for_in.named_child(0))
+        .is_some_and(|pattern| {
+            pattern.start_byte() <= node.start_byte() && node.end_byte() <= pattern.end_byte()
+        })
+}
+
+/// Select variables introduced by a Cangjie for-in pattern. The direct
+/// `varBindingPattern` child of an enum pattern is its constructor name; only
+/// bindings nested in that enum's tuple payload are iteration variables.
 fn is_cangjie_for_in_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
     node.kind() == "varBindingPattern"
-        && node.parent().is_some_and(|parent| {
-            parent.kind() == "forInExpression"
-                && parent
-                    .named_child(0)
-                    .is_some_and(|target| target.id() == node.id())
-        })
+        && is_cangjie_for_in_pattern_syntax(node)
+        && node
+            .parent()
+            .is_none_or(|parent| parent.kind() != "enumPattern")
+}
+
+fn collect_cangjie_for_in_bindings<'tree>(
+    node: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_cangjie_for_in_binding_pattern(node) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_cangjie_for_in_bindings(child, bindings);
+    }
 }
 
 fn collect_cangjie_match_bindings<'tree>(
@@ -555,32 +582,43 @@ fn walk_cangjie_language_edges(
     }
 
     if node.kind() == "forInExpression"
-        && let (Some(target), Some(iterable)) = (node.named_child(0), node.named_child(1))
-        && is_cangjie_for_in_binding_pattern(target)
+        && let (Some(pattern), Some(iterable)) = (node.named_child(0), node.named_child(1))
     {
-        let target_key = NodePosKey {
-            start_byte: target.start_byte() as u32,
-            end_byte: target.end_byte() as u32,
-            kind: DataNodeKind::Local,
-        };
         let iterable_key = NodePosKey {
             start_byte: iterable.start_byte() as u32,
             end_byte: iterable.end_byte() as u32,
             kind: DataNodeKind::Expr,
         };
-        if let (Some(&target_id), Some(&source_id)) =
-            (pos_map.get(&target_key), pos_map.get(&iterable_key))
-        {
-            let edge_id =
-                DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-            edges.push(DataFlowEdge::new(
-                edge_id,
-                source_id,
-                target_id,
-                DataFlowKind::Assign,
-                node_range(target),
-                0.65,
-            ));
+        if let Some(&source_id) = pos_map.get(&iterable_key) {
+            let mut targets = Vec::new();
+            collect_cangjie_for_in_bindings(pattern, &mut targets);
+            for target in targets {
+                let target_key = NodePosKey {
+                    start_byte: target.start_byte() as u32,
+                    end_byte: target.end_byte() as u32,
+                    kind: DataNodeKind::Local,
+                };
+                let Some(&target_id) = pos_map.get(&target_key) else {
+                    continue;
+                };
+                if edges.iter().any(|edge| {
+                    edge.source == source_id
+                        && edge.target == target_id
+                        && edge.kind == DataFlowKind::Assign
+                }) {
+                    continue;
+                }
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    node_range(target),
+                    0.65,
+                ));
+            }
         }
     }
 
@@ -822,7 +860,7 @@ fn normalize_cangjie_dataflow(
             (Some(dn), None)
         }
         "df.identifier_use" => {
-            if is_cangjie_match_pattern_syntax(node) || is_cangjie_for_in_binding_pattern(node) {
+            if is_cangjie_match_pattern_syntax(node) || is_cangjie_for_in_pattern_syntax(node) {
                 return (None, None);
             }
             // Part A: standard declaration/property filter (checks immediate parent)
@@ -1017,6 +1055,168 @@ mod tests {
                 node.kind != DataNodeKind::VariableUse || node.range != target.range
             })
         );
+    }
+
+    #[test]
+    fn test_cj_tuple_and_enum_for_in_bindings_receive_iterable_aggregate() {
+        let source = concat!(
+            "enum PairBox {\n",
+            "    | Pair(Int64, Int64)\n",
+            "}\n",
+            "func select(pairs: Array<((Int64, Int64), Int64)>, boxes: Array<PairBox>): Int64 {\n",
+            "    for (((left, right), tail) in pairs where left > 0) {\n",
+            "        consume(left, right, tail)\n",
+            "    }\n",
+            "    for (Pair(first, second) in boxes where first > 0) {\n",
+            "        consume(first, second)\n",
+            "    }\n",
+            "    return 0\n",
+            "}\n",
+        );
+        let lang = CangjieAdapter.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "fixture must parse with the pinned Cangjie grammar: {}",
+            tree.root_node().to_sexp()
+        );
+        let file_id = FileId::generate("for_in_patterns.cj");
+        let facts = crate::extract_file_with_mode(
+            &cangjie_frontend(),
+            file_id,
+            std::path::Path::new("for_in_patterns.cj"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let captures: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| {
+                matches!(
+                    binding.name.as_str(),
+                    "left" | "right" | "tail" | "first" | "second"
+                )
+            })
+            .collect();
+        assert_eq!(captures.len(), 5, "for-in captures: {captures:?}");
+        assert!(
+            facts.bindings.iter().all(|binding| binding.name != "Pair"),
+            "enum constructor syntax must not become a binding"
+        );
+        assert!(
+            facts.binding_uses.iter().all(|use_| use_.name != "Pair"),
+            "enum constructor syntax must not become a lexical use"
+        );
+
+        let tuple_scope = captures
+            .iter()
+            .find(|binding| binding.name == "left")
+            .expect("tuple left binding")
+            .scope_id;
+        let enum_scope = captures
+            .iter()
+            .find(|binding| binding.name == "first")
+            .expect("enum payload binding")
+            .scope_id;
+        assert_ne!(tuple_scope, enum_scope);
+        for (binding, expected_scope) in captures.iter().map(|binding| {
+            let scope = if matches!(binding.name.as_str(), "left" | "right" | "tail") {
+                tuple_scope
+            } else {
+                enum_scope
+            };
+            (*binding, scope)
+        }) {
+            assert_eq!(binding.kind, BindingKind::Local);
+            assert_eq!(binding.scope_id, expected_scope);
+            assert_eq!(
+                facts
+                    .scopes
+                    .iter()
+                    .find(|scope| scope.id == binding.scope_id)
+                    .expect("for-in pattern scope")
+                    .kind,
+                ScopeKind::Loop
+            );
+        }
+
+        for (iterable_name, loop_line, target_names) in [
+            ("pairs", 4, &["left", "right", "tail"][..]),
+            ("boxes", 7, &["first", "second"][..]),
+        ] {
+            let iterable = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(iterable_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("missing for-in iterable {iterable_name}"));
+            for target_name in target_names {
+                let binding = captures
+                    .iter()
+                    .find(|binding| binding.name == *target_name)
+                    .unwrap_or_else(|| panic!("missing binding {target_name}"));
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == DataNodeKind::Local
+                            && node.name.as_deref() == Some(*target_name)
+                            && node.range.start_line == loop_line
+                    })
+                    .unwrap_or_else(|| panic!("missing Local target {target_name}"));
+                assert_eq!(target.binding_id, Some(binding.id));
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == iterable.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.65
+                }));
+
+                let body_line = loop_line + 1;
+                let body_use = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == DataNodeKind::VariableUse
+                            && node.name.as_deref() == Some(*target_name)
+                            && node.range.start_line == body_line
+                    })
+                    .unwrap_or_else(|| panic!("missing body use {target_name}"));
+                assert_eq!(body_use.binding_id, Some(binding.id));
+                assert!(facts.data_nodes.iter().all(|node| {
+                    node.kind != DataNodeKind::VariableUse || node.range != binding.range
+                }));
+            }
+
+            let guarded_name = target_names[0];
+            let guarded_binding = captures
+                .iter()
+                .find(|binding| binding.name == guarded_name)
+                .expect("guarded pattern binding");
+            let guard_use = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(guarded_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("missing guard use {guarded_name}"));
+            assert_eq!(guard_use.binding_id, Some(guarded_binding.id));
+        }
+        assert!(facts.data_nodes.iter().all(|node| {
+            node.name.as_deref() != Some("Pair")
+                || !matches!(node.kind, DataNodeKind::Local | DataNodeKind::VariableUse)
+        }));
     }
 
     #[test]

@@ -13,10 +13,14 @@
     (varBindingPattern) @df.assign_target)
   initilizer: (_) @df.assign_value)
 
-;; --- Simple for-in binding: iterable aggregate -> iteration variable ---
+;; --- For-in bindings: iterable aggregate -> pattern variables ---
 (forInExpression
-  . (varBindingPattern) @df.for_target
+  . (_)
   . (_) @df.for_iterable)
+
+;; Broad grammar capture filtered by the adapter to keep only binding nodes in
+;; the first forInExpression child and reject enum constructor names.
+(varBindingPattern) @df.for_target
 
 ;; --- Match selector and pattern binding targets ---
 ;; The anchors select only `match (selector)`, not conditionless match bodies.
