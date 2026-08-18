@@ -169,6 +169,12 @@ fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
             "fun shadowKotlin(input: Int): Int {\n  val value = input\n  if (input > 0) {\n    val value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
             [(1, 6), (3, 4)],
         ),
+        #[cfg(feature = "cangjie")]
+        (
+            "scope.cj",
+            "func shadowCangjie(input: Int64): Int64 {\n  let value = input\n  if (input > 0) {\n    let value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
+            [(1, 6), (3, 4)],
+        ),
     ];
     assert!(
         !cases.is_empty(),

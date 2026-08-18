@@ -679,6 +679,14 @@ mod tests {
                 "value",
                 [(1, 6), (3, 4)],
             ),
+            #[cfg(feature = "cangjie")]
+            (
+                "scope.cj",
+                Language::Cangjie,
+                "func shadowCangjie(input: Int64): Int64 {\n  let value = input\n  if (input > 0) {\n    let value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
         ];
 
         for (path, language, source, name, declaration_and_use_lines) in cases {
