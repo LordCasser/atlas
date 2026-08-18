@@ -2614,6 +2614,168 @@ fn n5_focus_remaining_language_variable_mutations_match_index_full() {
     }
 }
 
+/// Cangjie direct reassignment and non-conditional compound/postfix updates
+/// must preserve the same binding, dataflow, CFG, and confidence facts through
+/// cold Focus materialization as through a complete Index.
+#[cfg(feature = "cangjie")]
+#[test]
+fn n5_focus_cangjie_variable_reassignment_and_mutations_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "variable_mutations.cj",
+            "func mutate(seed: Int64, delta: Int64, guard: Bool): Int64 {\n\
+             \x20   var total = seed\n\
+             \x20   total = delta\n\
+             \x20   total += delta\n\
+             \x20   total++\n\
+             \x20   total--\n\
+             \x20   holder.value += delta\n\
+             \x20   items[0] += delta\n\
+             \x20   items[1]++\n\
+             \x20   var flag = true\n\
+             \x20   flag &&= guard\n\
+             \x20   flag ||= guard\n\
+             \x20   return total\n\
+             }\n",
+        ),
+        (
+            "peer.cj",
+            "func unrelated(): Int64 {\n\
+             \x20   return 42\n\
+             }\n",
+        ),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init Index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("full Cangjie Index");
+    let indexed_store = open_store(&indexed);
+    let indexed_function = symbol_id_by_name(&indexed_store, "mutate");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_function);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_function);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "total")
+            .count(),
+        1,
+        "all Cangjie writes must reuse one total binding"
+    );
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "total")
+            .count(),
+        5,
+        "initializer, reassignment, and three mutation writes"
+    );
+
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_function)
+        .expect("full Index Cangjie mutation nodes");
+    let node = |kind: DataNodeKind, name: &str, line: u32| {
+        indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == kind
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("full Index {kind:?} {name} on line {line}"))
+    };
+    let reassignment_value = node(DataNodeKind::Expr, "delta", 2);
+    let reassignment_target = node(DataNodeKind::Local, "total", 2);
+    assert!(
+        indexed_store
+            .find_dataflow_edges_by_source(&reassignment_value.id)
+            .expect("full Index reassignment edges")
+            .iter()
+            .any(|edge| {
+                edge.target == reassignment_target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            })
+    );
+    assert!(indexed_nodes.iter().all(|node| {
+        !(node.kind == DataNodeKind::VariableUse
+            && node.name.as_deref() == Some("total")
+            && node.range.start_line == 2)
+    }));
+    for (line, expression) in [(3, "total += delta"), (4, "total++"), (5, "total--")] {
+        let value = node(DataNodeKind::Expr, expression, line);
+        let target = node(DataNodeKind::Local, "total", line);
+        let edge = indexed_store
+            .find_dataflow_edges_by_source(&value.id)
+            .expect("full Index mutation edges")
+            .into_iter()
+            .find(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+            .unwrap_or_else(|| panic!("full Index mutation flow line {line}"));
+        assert_eq!(edge.confidence, 0.90);
+    }
+    for (line, expression) in [
+        (6, "holder.value += delta"),
+        (7, "items[0] += delta"),
+        (8, "items[1]++"),
+        (10, "flag &&= guard"),
+        (11, "flag ||= guard"),
+    ] {
+        assert!(indexed_nodes.iter().all(|node| {
+            !(node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some(expression)
+                && node.range.start_line == line)
+        }));
+        assert!(
+            indexed_nodes.iter().all(|node| {
+                !(node.kind == DataNodeKind::Local && node.range.start_line == line)
+            })
+        );
+    }
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init Focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("Cangjie structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let focused_function = symbol_id_by_name(&focused_store, "mutate");
+    let peer_function = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&focused_function)
+            .expect("cold Cangjie mutation unit")
+            .is_empty(),
+        "mutation unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(
+            &focused_function,
+            Some("cangjie-variable-reassignment-mutation-parity"),
+        )
+        .expect("Focus ensure Cangjie mutation unit");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &focused_function),
+        indexed_slice,
+        "Cangjie Focus dataflow/CFG/confidence == full Index"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &focused_function),
+        indexed_bindings,
+        "Cangjie Focus bindings == full Index"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&peer_function)
+            .expect("cold Cangjie peer unit")
+            .is_empty(),
+        "peer unit must stay outside the Focus window"
+    );
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.

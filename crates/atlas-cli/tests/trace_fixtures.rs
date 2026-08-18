@@ -2329,6 +2329,191 @@ fn fx_remaining_language_variable_mutations_persist_and_trace_read_modify_write_
     }
 }
 
+#[cfg(feature = "cangjie")]
+#[test]
+fn fx_cangjie_variable_reassignment_and_mutations_persist_and_trace_inputs() {
+    let source = concat!(
+        "func mutate(seed: Int64, delta: Int64, guard: Bool): Int64 {\n",
+        "    var total = seed\n",
+        "    total = delta\n",
+        "    total += delta\n",
+        "    total++\n",
+        "    total--\n",
+        "    holder.value += delta\n",
+        "    items[0] += delta\n",
+        "    items[1]++\n",
+        "    var flag = true\n",
+        "    flag &&= guard\n",
+        "    flag ||= guard\n",
+        "    return total\n",
+        "}\n",
+    );
+    let path = "variable_mutations.cj";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Cangjie mutation bindings");
+    let total_binding = {
+        let matches: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == "total")
+            .collect();
+        assert_eq!(matches.len(), 1, "all writes reuse one total binding");
+        matches[0]
+    };
+    let delta_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "delta")
+        .expect("delta parameter binding");
+    let data_nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("persisted Cangjie mutation nodes");
+    let node = |kind: DataNodeKind, name: &str, line: u32| {
+        data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == kind
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted {kind:?} {name} on line {line}"))
+    };
+
+    let reassignment_target = node(DataNodeKind::Local, "total", 2);
+    let reassignment_value = node(DataNodeKind::Expr, "delta", 2);
+    assert_eq!(reassignment_target.binding_id, Some(total_binding.id));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&reassignment_value.id)
+            .expect("persisted reassignment edges")
+            .iter()
+            .any(|edge| {
+                edge.target == reassignment_target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            })
+    );
+    assert!(data_nodes.iter().all(|node| {
+        !(node.kind == DataNodeKind::VariableUse
+            && node.name.as_deref() == Some("total")
+            && node.range.start_line == 2)
+    }));
+
+    for (line, expression) in [(3, "total += delta"), (4, "total++"), (5, "total--")] {
+        let value = node(DataNodeKind::Expr, expression, line);
+        let target = node(DataNodeKind::Local, "total", line);
+        let lhs_read = node(DataNodeKind::VariableUse, "total", line);
+        assert_eq!(target.binding_id, Some(total_binding.id));
+        assert_eq!(lhs_read.binding_id, Some(total_binding.id));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&value.id)
+                .expect("persisted mutation value edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&lhs_read.id)
+                .expect("persisted mutation lhs edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == value.id
+                        && edge.kind == DataFlowKind::Read
+                        && edge.confidence == 0.75
+                })
+        );
+    }
+
+    let compound_value = node(DataNodeKind::Expr, "total += delta", 3);
+    let compound_target = node(DataNodeKind::Local, "total", 3);
+    let rhs_read = node(DataNodeKind::VariableUse, "delta", 3);
+    assert_eq!(rhs_read.binding_id, Some(delta_binding.id));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&rhs_read.id)
+            .expect("persisted compound rhs edges")
+            .iter()
+            .any(|edge| {
+                edge.target == compound_value.id
+                    && edge.kind == DataFlowKind::Read
+                    && edge.confidence == 0.75
+            })
+    );
+    let compound_target_edges = store
+        .find_dataflow_edges_by_target(&compound_target.id)
+        .expect("persisted compound target edges");
+    let unexpected_compound_sources: Vec<_> = compound_target_edges
+        .iter()
+        .filter(|edge| edge.kind == DataFlowKind::Assign && edge.source != compound_value.id)
+        .map(|edge| {
+            let source = data_nodes.iter().find(|node| node.id == edge.source);
+            (edge.clone(), source.cloned())
+        })
+        .filter(|(_, source)| {
+            source
+                .as_ref()
+                .is_some_and(|source| source.kind == DataNodeKind::Expr)
+        })
+        .collect();
+    assert!(
+        unexpected_compound_sources.is_empty(),
+        "compound RHS alone must not persist as the assigned value: {unexpected_compound_sources:?}"
+    );
+
+    let persisted_edges = store
+        .find_dataflow_edges_by_file(&file_id)
+        .expect("persisted Cangjie dataflow edges");
+    for (line, expression) in [
+        (6, "holder.value += delta"),
+        (7, "items[0] += delta"),
+        (8, "items[1]++"),
+        (10, "flag &&= guard"),
+        (11, "flag ||= guard"),
+    ] {
+        assert!(data_nodes.iter().all(|node| {
+            !(node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some(expression)
+                && node.range.start_line == line)
+        }));
+        assert!(
+            data_nodes.iter().all(|node| {
+                !(node.kind == DataNodeKind::Local && node.range.start_line == line)
+            })
+        );
+        assert!(persisted_edges.iter().all(|edge| {
+            !(edge.kind == DataFlowKind::FieldStore && edge.location.start_line == line)
+        }));
+    }
+
+    let engine = TraceEngine::new(store.clone());
+    for (line, column, expression) in [(4, 11, "total += delta"), (5, 11, "total++")] {
+        let response = engine.trace_variable(&file_id, line, column, 20);
+        assert_envelope_ok(&response, "cangjie");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("Cangjie mutation trace for {expression}"));
+        let sink = path.sink.data_node.as_ref().expect("mutation trace sink");
+        assert_eq!(sink.kind, DataNodeKind::Expr);
+        assert_eq!(sink.name.as_deref(), Some(expression));
+        assert_has_edge_kind(&path, DataFlowKind::Read);
+        let source_name = path
+            .source
+            .data_node
+            .as_ref()
+            .and_then(|node| node.name.as_deref());
+        assert!(
+            matches!(source_name, Some("seed" | "delta")),
+            "mutation trace must reach an input binding, got {source_name:?}"
+        );
+    }
+}
+
 // ────────────────────────────────────────────────────────────────
 // Ruby: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────
