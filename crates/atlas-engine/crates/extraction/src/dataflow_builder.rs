@@ -14,8 +14,8 @@
 //!
 //! # Edge-building rules
 //!
-//! - **Assign**: position-based value → target (Expr nodes between consecutive
-//!   Local/Parameter targets).
+//! - **Assign**: AST-driven value → target, including aggregate values produced
+//!   by direct-variable read-modify-write expressions.
 //! - **FieldLoad**: name-based base → field (looks up the base of an access path
 //!   among known locals/params).
 //! - **ArgToCall**: callsite-grouped call_arg → call_target (intra-procedural).
@@ -345,11 +345,10 @@ fn closest_binding_by_range<'a>(
 
 /// AST‑driven assignment edge creation.
 ///
-/// Walks the tree-sitter AST looking for `variable_declarator` and
-/// `assignment_expression` (TS/JS) or `assignment` (Python) nodes.  For
-/// each, looks up the DataNodeIds of the left‑hand target and right‑hand
-/// value by their byte range + kind, and creates an Assign edge between
-/// them.
+/// Walks the tree-sitter AST looking for declarations, assignments, and
+/// direct-variable read-modify-write expressions. For each, looks up the
+/// DataNodeIds of the target and produced value by byte range + kind, then
+/// creates an Assign edge between them.
 ///
 /// This replaces the former position‑based heuristic (sort‑by‑start_byte
 /// then gap‑fill).
@@ -363,6 +362,43 @@ fn walk_for_assign_edges(
     is_csharp: bool,
 ) {
     let kind = node.kind();
+
+    // augmented_assignment_expression / update_expression:
+    // direct target (Local) ← aggregate read-modify-write value (Expr).
+    // Language queries decide which target shapes are supported by creating
+    // the matching Local/Expr nodes; member and subscript targets therefore
+    // remain conservative without language checks here.
+    let mutation_target = match kind {
+        "augmented_assignment_expression" => node.child_by_field_name("left"),
+        "update_expression" => node.child_by_field_name("argument"),
+        _ => None,
+    };
+    if let Some(target_node) = mutation_target {
+        let value_key = NodePosKey {
+            start_byte: node.start_byte() as u32,
+            end_byte: node.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        let target_key = NodePosKey {
+            start_byte: target_node.start_byte() as u32,
+            end_byte: target_node.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        if let (Some(&source_id), Some(&target_id)) =
+            (pos_map.get(&value_key), pos_map.get(&target_key))
+        {
+            let edge_id =
+                DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+            edges.push(DataFlowEdge::new(
+                edge_id,
+                source_id,
+                target_id,
+                DataFlowKind::Assign,
+                ts_node_range(&target_node),
+                0.90,
+            ));
+        }
+    }
 
     // variable_declarator: name (Local) ← value (Expr)
     // tree-sitter-csharp ≥ 0.23 uses a flat structure: `name` field +
@@ -803,9 +839,10 @@ fn ts_node_range(ts_node: &tree_sitter::Node) -> TextRange {
 
 /// Build intra-function dataflow edges between related nodes.
 ///
-/// Assignment edges are AST‑driven: variable_declarator (name/value) and
-/// assignment_expression (left/right) provide explicit parent‑child structure.
-/// This replaces the former position‑based heuristic (Nth≈Nth target grouping).
+/// Assignment edges are AST‑driven: declarations and ordinary assignments use
+/// explicit target/value fields, while augmented/update expressions use the
+/// whole expression as their produced value. This replaces the former
+/// position‑based heuristic (Nth≈Nth target grouping).
 ///
 /// Other edge types (FieldLoad, ArgToCall, containment, ReturnValue) are
 /// constrained by function scope and (where available) binding_id to avoid

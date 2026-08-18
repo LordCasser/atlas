@@ -721,7 +721,7 @@ impl DataflowSpec for ArkTsAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort",
+                "dataflow via TS grammar; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
             ],
         )
     }

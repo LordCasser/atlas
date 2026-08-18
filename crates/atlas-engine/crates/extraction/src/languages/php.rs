@@ -286,7 +286,7 @@ impl DataflowSpec for PhpAdapter {
         _scopes: &[ScopeDef],
         edges: &mut Vec<DataFlowEdge>,
     ) -> anyhow::Result<()> {
-        walk_php_assignment_edges(ctx.root, pos_map, edges);
+        walk_php_collection_edges(ctx.root, pos_map, edges);
         Ok(())
     }
 }
@@ -609,43 +609,7 @@ fn php_foreach_parts(
     Some((children.next()?, children.next()?))
 }
 
-fn connect_php_mutation_target(
-    value: tree_sitter::Node<'_>,
-    target: tree_sitter::Node<'_>,
-    pos_map: &HashMap<NodePosKey, DataNodeId>,
-    edges: &mut Vec<DataFlowEdge>,
-) {
-    let value_key = NodePosKey {
-        start_byte: value.start_byte() as u32,
-        end_byte: value.end_byte() as u32,
-        kind: DataNodeKind::Expr,
-    };
-    let target_key = NodePosKey {
-        start_byte: target.start_byte() as u32,
-        end_byte: target.end_byte() as u32,
-        kind: DataNodeKind::Local,
-    };
-    let (Some(&source_id), Some(&target_id)) = (pos_map.get(&value_key), pos_map.get(&target_key))
-    else {
-        return;
-    };
-    if edges.iter().any(|edge| {
-        edge.source == source_id && edge.target == target_id && edge.kind == DataFlowKind::Assign
-    }) {
-        return;
-    }
-    let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-    edges.push(DataFlowEdge::new(
-        edge_id,
-        source_id,
-        target_id,
-        DataFlowKind::Assign,
-        node_range(target),
-        0.90,
-    ));
-}
-
-fn walk_php_assignment_edges(
+fn walk_php_collection_edges(
     node: tree_sitter::Node<'_>,
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
@@ -664,18 +628,9 @@ fn walk_php_assignment_edges(
         connect_php_destructure_targets(collection, value, 0.65, pos_map, edges);
     }
 
-    let mutation_target = match node.kind() {
-        "augmented_assignment_expression" => node.child_by_field_name("left"),
-        "update_expression" => node.child_by_field_name("argument"),
-        _ => None,
-    };
-    if let Some(target) = mutation_target.filter(|target| target.kind() == "variable_name") {
-        connect_php_mutation_target(node, target, pos_map, edges);
-    }
-
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_php_assignment_edges(child, pos_map, edges);
+        walk_php_collection_edges(child, pos_map, edges);
     }
 }
 

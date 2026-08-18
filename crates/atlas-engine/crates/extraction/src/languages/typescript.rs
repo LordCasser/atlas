@@ -131,7 +131,9 @@ impl DataflowSpec for TypeScriptFrontendSpec {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.60,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            vec![
+                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -359,8 +361,10 @@ pub(crate) fn normalize_ts_dataflow_builder(
 
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
+        "df.assign_value" | "df.mutation_value" => make_df_assign_value(
             file_id,
             node,
             source,

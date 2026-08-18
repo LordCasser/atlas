@@ -770,6 +770,126 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_typescript_family_variable_mutations_preserve_read_modify_write_provenance() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            (
+                "variable_mutations.ts",
+                Language::TypeScript,
+                "function mutate(seed: number, delta: number): number {\n  let total = seed;\n  total += delta;\n  total++;\n  --total;\n  items[0] += delta;\n  items[1]++;\n  return total;\n}\n",
+            ),
+            #[cfg(feature = "javascript")]
+            (
+                "variable_mutations.js",
+                Language::JavaScript,
+                "function mutate(seed, delta) {\n  let total = seed;\n  total += delta;\n  total++;\n  --total;\n  items[0] += delta;\n  items[1]++;\n  return total;\n}\n",
+            ),
+            #[cfg(feature = "arkts")]
+            (
+                "variable_mutations.ets",
+                Language::ArkTS,
+                "function mutate(seed: number, delta: number): number {\n  let total: number = seed;\n  total += delta;\n  total++;\n  --total;\n  items[0] += delta;\n  items[1]++;\n  return total;\n}\n",
+            ),
+        ];
+
+        for (path, language, source) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let total_binding = {
+                let matches: Vec<_> = facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == "total")
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "{language:?}: mutation writes must reuse the declaration binding"
+                );
+                matches[0]
+            };
+            let delta_binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == "delta")
+                .unwrap_or_else(|| panic!("{language:?}: delta parameter binding"));
+
+            let node = |kind: types::DataNodeKind, name: &str, line: u32| {
+                facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == kind
+                            && node.name.as_deref() == Some(name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing {kind:?} {name} on line {line}")
+                    })
+            };
+            for (line, expression) in [(2, "total += delta"), (3, "total++"), (4, "--total")] {
+                let target = node(types::DataNodeKind::Local, "total", line);
+                let value = node(types::DataNodeKind::Expr, expression, line);
+                let lhs_read = node(types::DataNodeKind::VariableUse, "total", line);
+                assert_eq!(target.binding_id, Some(total_binding.id), "{language:?}");
+                assert_eq!(lhs_read.binding_id, Some(total_binding.id), "{language:?}");
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == value.id
+                            && edge.target == target.id
+                            && edge.kind == types::DataFlowKind::Assign
+                            && edge.confidence == 0.90
+                    }),
+                    "{language:?}: mutation aggregate must flow to its target"
+                );
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == lhs_read.id
+                            && edge.target == value.id
+                            && edge.kind == types::DataFlowKind::Read
+                            && edge.confidence == 0.75
+                    }),
+                    "{language:?}: previous target value must flow into mutation aggregate"
+                );
+            }
+
+            let rhs_read = node(types::DataNodeKind::VariableUse, "delta", 2);
+            let compound_value = node(types::DataNodeKind::Expr, "total += delta", 2);
+            assert_eq!(rhs_read.binding_id, Some(delta_binding.id), "{language:?}");
+            assert!(
+                facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == rhs_read.id
+                        && edge.target == compound_value.id
+                        && edge.kind == types::DataFlowKind::Read
+                        && edge.confidence == 0.75
+                }),
+                "{language:?}: compound-assignment RHS must flow into mutation aggregate"
+            );
+
+            assert!(
+                facts.data_nodes.iter().all(|node| {
+                    !(matches!(
+                        node.kind,
+                        types::DataNodeKind::Local | types::DataNodeKind::Expr
+                    ) && matches!(node.range.start_line, 5 | 6))
+                }),
+                "{language:?}: member/subscript mutations remain outside the direct-variable boundary"
+            );
+        }
+    }
 }
 
 /// Verify that every language with lexical support has a compilable lexical query.

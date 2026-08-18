@@ -164,7 +164,9 @@ impl DataflowSpec for JavaScriptAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.60,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            vec![
+                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            ],
         )
     }
     fn normalize(

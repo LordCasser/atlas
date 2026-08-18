@@ -20,6 +20,14 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; Direct-variable read-modify-write expressions. The full expression is the
+;; produced value; the broad identifier capture below supplies its read inputs.
+(augmented_assignment_expression
+  left: (identifier) @df.mutation_target) @df.mutation_value
+
+(update_expression
+  argument: (identifier) @df.mutation_target) @df.mutation_value
+
 ;; Variable declarations with initializer: const name = expr
 (variable_declarator
   name: (identifier) @df.assign_target

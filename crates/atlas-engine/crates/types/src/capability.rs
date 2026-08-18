@@ -470,7 +470,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow with language-specific gaps",
+            "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
         ],
         feature_overrides: &[
             (
@@ -486,7 +486,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["AST-driven local dataflow; destructuring and async not yet path-verified"],
+                    &[
+                        "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                    ],
                 ),
             ),
             (
@@ -548,7 +550,7 @@ mod profiles {
         limitations: &[
             "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow with language-specific gaps",
+            "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
         ],
         feature_overrides: &[
             (
@@ -564,7 +566,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.60,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                    ],
                 ),
             ),
             (
@@ -994,7 +998,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort",
+                        "dataflow via TS grammar; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
                     ],
                 ),
             ),
@@ -2238,7 +2242,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow with language-specific gaps",
+                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
             ]
         );
 
@@ -2283,7 +2287,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["AST-driven local dataflow; destructuring and async not yet path-verified"],
+                vec![
+                    "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2346,7 +2352,7 @@ mod tests {
             vec![
                 "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
                 "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow with language-specific gaps",
+                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
             ]
         );
 
@@ -2391,7 +2397,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.60,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2830,7 +2838,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "dataflow via TS grammar; ArkUI trailing-block and nested callback internals remain best-effort"
+                    "dataflow via TS grammar; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative"
                 ],
             )
         );
