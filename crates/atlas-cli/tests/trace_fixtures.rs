@@ -2148,55 +2148,72 @@ fn fx_c_style_variable_mutations_persist_and_trace_read_modify_write_inputs() {
 
 #[test]
 fn fx_remaining_language_variable_mutations_persist_and_trace_read_modify_write_inputs() {
-    let cases: Vec<(&str, &str, &str, &[(u32, &str)], u32, &[(u32, u32, &str)])> = vec![
+    struct MutationCase<'a> {
+        language: &'a str,
+        path: &'a str,
+        source: &'a str,
+        mutations: &'a [(u32, &'a str)],
+        compound_line: u32,
+        trace_points: &'a [(u32, u32, &'a str)],
+    }
+
+    let cases = vec![
         #[cfg(feature = "python")]
-        (
-            "python",
-            "variable_mutations.py",
-            "def mutate(seed, delta):\n    total = seed\n    total += delta\n    return total\n",
-            &[(2, "total += delta")],
-            2,
-            &[(3, 11, "total += delta")],
-        ),
+        MutationCase {
+            language: "python",
+            path: "variable_mutations.py",
+            source: "def mutate(seed, delta):\n    total = seed\n    total += delta\n    return total\n",
+            mutations: &[(2, "total += delta")],
+            compound_line: 2,
+            trace_points: &[(3, 11, "total += delta")],
+        },
         #[cfg(feature = "go")]
-        (
-            "go",
-            "variable_mutations.go",
-            "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  return total\n}\n",
-            &[(4, "total += delta"), (5, "total++"), (6, "total--")],
-            4,
-            &[(5, 9, "total += delta"), (6, 9, "total++")],
-        ),
+        MutationCase {
+            language: "go",
+            path: "variable_mutations.go",
+            source: "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  return total\n}\n",
+            mutations: &[(4, "total += delta"), (5, "total++"), (6, "total--")],
+            compound_line: 4,
+            trace_points: &[(5, 9, "total += delta"), (6, 9, "total++")],
+        },
         #[cfg(feature = "rust")]
-        (
-            "rust",
-            "variable_mutations.rs",
-            "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    total\n}\n",
-            &[(2, "total += delta")],
-            2,
-            &[(3, 11, "total += delta")],
-        ),
+        MutationCase {
+            language: "rust",
+            path: "variable_mutations.rs",
+            source: "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    total\n}\n",
+            mutations: &[(2, "total += delta")],
+            compound_line: 2,
+            trace_points: &[(3, 11, "total += delta")],
+        },
         #[cfg(feature = "kotlin")]
-        (
-            "kotlin",
-            "VariableMutations.kt",
-            "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    return total\n}\n",
-            &[(2, "total += delta"), (3, "total++"), (4, "--total")],
-            2,
-            &[(3, 11, "total += delta"), (4, 11, "total++")],
-        ),
+        MutationCase {
+            language: "kotlin",
+            path: "VariableMutations.kt",
+            source: "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    return total\n}\n",
+            mutations: &[(2, "total += delta"), (3, "total++"), (4, "--total")],
+            compound_line: 2,
+            trace_points: &[(3, 11, "total += delta"), (4, 11, "total++")],
+        },
         #[cfg(feature = "ruby")]
-        (
-            "ruby",
-            "variable_mutations.rb",
-            "def mutate(seed, delta)\n  total = seed\n  total += delta\n  total\nend\n",
-            &[(2, "total += delta")],
-            2,
-            &[(3, 9, "total += delta")],
-        ),
+        MutationCase {
+            language: "ruby",
+            path: "variable_mutations.rb",
+            source: "def mutate(seed, delta)\n  total = seed\n  total += delta\n  total\nend\n",
+            mutations: &[(2, "total += delta")],
+            compound_line: 2,
+            trace_points: &[(3, 9, "total += delta")],
+        },
     ];
 
-    for (language, path, source, mutations, compound_line, trace_points) in cases {
+    for case in cases {
+        let MutationCase {
+            language,
+            path,
+            source,
+            mutations,
+            compound_line,
+            trace_points,
+        } = case;
         let store = index_files(&[(path, source)]);
         let file_id = FileId::generate(path);
         let bindings = store
@@ -6681,20 +6698,40 @@ fn dispatch(value: Result, fallback: Option<i32>) -> i32 {
                 && node.range.start_line == 5
         })
         .expect("persisted match scrutinee");
-    let target_ids: Vec<_> = data_nodes
+    let payload_targets: Vec<_> = data_nodes
         .iter()
         .filter(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("payload"))
-        .map(|node| node.id)
         .collect();
-    assert_eq!(target_ids.len(), 2);
+    assert_eq!(payload_targets.len(), 2);
     let subject_edges = store
         .find_dataflow_edges_by_source(&subject.id)
         .expect("persisted scrutinee edges");
-    assert!(target_ids.iter().all(|target| {
-        subject_edges
+    for target in payload_targets {
+        let projection = data_nodes
             .iter()
-            .any(|edge| edge.target == *target && edge.kind == DataFlowKind::Assign)
-    }));
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == target.range
+                    && node.access_path.as_deref() == Some("value[0]")
+            })
+            .expect("persisted payload projection");
+        assert!(subject_edges.iter().any(|edge| {
+            edge.target == projection.id
+                && edge.kind == DataFlowKind::FieldLoad
+                && edge.confidence == 0.80
+        }));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("persisted projection edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+    }
     let fallback_rhs = data_nodes
         .iter()
         .find(|node| {
@@ -6708,10 +6745,27 @@ fn dispatch(value: Result, fallback: Option<i32>) -> i32 {
         .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(extra.id))
         .expect("persisted guard-let target");
     assert_eq!(fallback_rhs.binding_id, Some(fallback.id));
+    let extra_projection = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.range == extra_target.range
+                && node.access_path.as_deref() == Some("fallback[0]")
+        })
+        .expect("persisted guard-let projection");
     assert!(
         store
             .find_dataflow_edges_by_source(&fallback_rhs.id)
             .expect("guard-let value edges")
+            .iter()
+            .any(|edge| {
+                edge.target == extra_projection.id && edge.kind == DataFlowKind::FieldLoad
+            })
+    );
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&extra_projection.id)
+            .expect("guard-let projection edges")
             .iter()
             .any(|edge| edge.target == extra_target.id && edge.kind == DataFlowKind::Assign)
     );
@@ -6735,6 +6789,7 @@ fn dispatch(value: Result, fallback: Option<i32>) -> i32 {
     assert_envelope_ok(&response, "rust");
     let path = response.result.expect("Rust match binding trace path");
     assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
     assert_source_name(&path, "value");
 
     let extra_sink = data_nodes
@@ -6755,7 +6810,238 @@ fn dispatch(value: Result, fallback: Option<i32>) -> i32 {
     assert_envelope_ok(&response, "rust");
     let path = response.result.expect("Rust guard-let trace path");
     assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
     assert_source_name(&path, "fallback");
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_structural_pattern_projections_persist_and_trace_exact_inputs() {
+    let source = r#"struct Point { x: i32, coords: (i32, i32) }
+enum Message { Pair(i32, Point), Values([i32; 3]) }
+fn inspect(value: Message, fallback: Option<(i32, i32)>) -> i32 {
+    match value {
+        Message::Pair(first, Point { x, coords: (left, ref right) })
+            if let Some((guard_left, guard_right)) = fallback
+            => first + x + left + *right + guard_left + guard_right,
+        Message::Values([head, .., tail]) => head + tail,
+    }
+}
+"#;
+    let store = index_files(&[("structural_match_projection.rs", source)]);
+    let file_id = FileId::generate("structural_match_projection.rs");
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let match_subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 3
+        })
+        .expect("persisted match subject");
+    let guard_value = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("fallback")
+                && node.range.start_line == 5
+        })
+        .expect("persisted guard-let value");
+    let engine = TraceEngine::new(store.clone());
+
+    for (name, access_path, source_node, source_name) in [
+        ("first", "value[0]", match_subject, "value"),
+        ("x", "value[1].x", match_subject, "value"),
+        ("left", "value[1].coords[0]", match_subject, "value"),
+        ("right", "value[1].coords[1]", match_subject, "value"),
+        ("guard_left", "fallback[0][0]", guard_value, "fallback"),
+        ("guard_right", "fallback[0][1]", guard_value, "fallback"),
+        ("head", "value[0][0]", match_subject, "value"),
+    ] {
+        let target = data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("persisted target {name}"));
+        let projection = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == target.range
+                    && node.access_path.as_deref() == Some(access_path)
+            })
+            .unwrap_or_else(|| panic!("persisted projection {access_path}"));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&source_node.id)
+                .expect("projection input edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == projection.id
+                        && edge.kind == DataFlowKind::FieldLoad
+                        && edge.confidence == 0.80
+                })
+        );
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("projection output edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+        let sink = data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.binding_id == target.binding_id
+                    && node.range.start_byte > target.range.end_byte
+            })
+            .max_by_key(|node| node.range.start_byte)
+            .unwrap_or_else(|| panic!("body use {name}"));
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, "rust");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("trace path for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        assert_source_name(&path, source_name);
+    }
+
+    let tail = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("tail"))
+        .expect("post-rest tail target");
+    assert!(data_nodes.iter().all(|node| {
+        node.range != tail.range
+            || node.kind != DataNodeKind::Expr
+            || node.access_path.as_deref() == Some("tail")
+    }));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&match_subject.id)
+            .expect("aggregate post-rest edges")
+            .iter()
+            .any(|edge| {
+                edge.target == tail.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.75
+            })
+    );
+    let tail_sink = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.binding_id == tail.binding_id
+                && node.range.start_byte > tail.range.end_byte
+        })
+        .max_by_key(|node| node.range.start_byte)
+        .expect("post-rest tail use");
+    let response = engine.trace_variable(
+        &file_id,
+        tail_sink.range.start_line + 1,
+        tail_sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "rust");
+    let path = response.result.expect("post-rest aggregate trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert!(
+        path.steps
+            .iter()
+            .all(|step| step.edge_kind != DataFlowKind::FieldLoad),
+        "post-rest target must not claim an exact structural projection"
+    );
+    assert_source_name(&path, "value");
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_real_closure_planner_nested_result_projection_persists_and_traces() {
+    let source = include_str!("../../atlas-engine/src/closure_planner.rs");
+    let store = index_files(&[("closure_planner.rs", source)]);
+    let file_id = FileId::generate("closure_planner.rs");
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let pattern_start = source
+        .find("Ok(Some(id)) => id")
+        .expect("real nested Result/Option pattern");
+    let target_start = pattern_start + "Ok(Some(".len();
+    let body_start = pattern_start + "Ok(Some(id)) => ".len();
+    let target = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("id")
+                && node.range.start_byte as usize == target_start
+        })
+        .expect("real ClosurePlanner nested capture");
+    let projection = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.range == target.range
+                && node.access_path.as_deref().is_some_and(|path| {
+                    path.contains("self.resolve_import_target") && path.ends_with("[0][0]")
+                })
+        })
+        .expect("real ClosurePlanner nested projection");
+    let incoming = store
+        .find_dataflow_edges_by_target(&projection.id)
+        .expect("real projection input");
+    let field_load = incoming
+        .iter()
+        .find(|edge| edge.kind == DataFlowKind::FieldLoad && edge.confidence == 0.80)
+        .expect("real projection FieldLoad");
+    let subject = store
+        .get_data_node(&field_load.source)
+        .expect("read real match subject")
+        .expect("real match subject node");
+    assert_eq!(subject.kind, DataNodeKind::Expr);
+    assert!(
+        subject
+            .name
+            .as_deref()
+            .is_some_and(|name| name.contains("self.resolve_import_target"))
+    );
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&projection.id)
+            .expect("real projection output")
+            .iter()
+            .any(|edge| {
+                edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            })
+    );
+
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("id")
+                && node.range.start_byte as usize == body_start
+        })
+        .expect("real ClosurePlanner arm-body use");
+    let engine = TraceEngine::new(store);
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "rust");
+    let path = response.result.expect("real ClosurePlanner trace path");
+    assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
 }
 
 /// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary

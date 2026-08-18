@@ -2428,75 +2428,86 @@ fn n5_focus_c_style_variable_mutations_match_index_full() {
 /// full Index for each identity while leaving a peer unit cold.
 #[test]
 fn n5_focus_remaining_language_variable_mutations_match_index_full() {
-    let cases: Vec<(&str, &str, &str, &str, &[(u32, &str)], &str, &str, &str)> = vec![
+    struct MutationCase<'a> {
+        language: &'a str,
+        path: &'a str,
+        source: &'a str,
+        function_name: &'a str,
+        mutations: &'a [(u32, &'a str)],
+        peer_path: &'a str,
+        peer_source: &'a str,
+        peer_function_name: &'a str,
+    }
+
+    let cases = vec![
         #[cfg(feature = "python")]
-        (
-            "python",
-            "variable_mutations.py",
-            "def mutate(seed, delta):\n    total = seed\n    total += delta\n    return total\n",
-            "mutate",
-            &[(2, "total += delta")],
-            "peer.py",
-            "def unrelated():\n    return 42\n",
-            "unrelated",
-        ),
+        MutationCase {
+            language: "python",
+            path: "variable_mutations.py",
+            source: "def mutate(seed, delta):\n    total = seed\n    total += delta\n    return total\n",
+            function_name: "mutate",
+            mutations: &[(2, "total += delta")],
+            peer_path: "peer.py",
+            peer_source: "def unrelated():\n    return 42\n",
+            peer_function_name: "unrelated",
+        },
         #[cfg(feature = "go")]
-        (
-            "go",
-            "variable_mutations.go",
-            "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  return total\n}\n",
-            "mutate",
-            &[(4, "total += delta"), (5, "total++"), (6, "total--")],
-            "peer.go",
-            "package mutations\nfunc unrelated() int { return 42 }\n",
-            "unrelated",
-        ),
+        MutationCase {
+            language: "go",
+            path: "variable_mutations.go",
+            source: "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  return total\n}\n",
+            function_name: "mutate",
+            mutations: &[(4, "total += delta"), (5, "total++"), (6, "total--")],
+            peer_path: "peer.go",
+            peer_source: "package mutations\nfunc unrelated() int { return 42 }\n",
+            peer_function_name: "unrelated",
+        },
         #[cfg(feature = "rust")]
-        (
-            "rust",
-            "variable_mutations.rs",
-            "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    total\n}\n",
-            "mutate",
-            &[(2, "total += delta")],
-            "peer.rs",
-            "fn unrelated() -> i32 { 42 }\n",
-            "unrelated",
-        ),
+        MutationCase {
+            language: "rust",
+            path: "variable_mutations.rs",
+            source: "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    total\n}\n",
+            function_name: "mutate",
+            mutations: &[(2, "total += delta")],
+            peer_path: "peer.rs",
+            peer_source: "fn unrelated() -> i32 { 42 }\n",
+            peer_function_name: "unrelated",
+        },
         #[cfg(feature = "kotlin")]
-        (
-            "kotlin",
-            "VariableMutations.kt",
-            "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    return total\n}\n",
-            "mutate",
-            &[(2, "total += delta"), (3, "total++"), (4, "--total")],
-            "Peer.kt",
-            "fun unrelated(): Int = 42\n",
-            "unrelated",
-        ),
+        MutationCase {
+            language: "kotlin",
+            path: "VariableMutations.kt",
+            source: "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    return total\n}\n",
+            function_name: "mutate",
+            mutations: &[(2, "total += delta"), (3, "total++"), (4, "--total")],
+            peer_path: "Peer.kt",
+            peer_source: "fun unrelated(): Int = 42\n",
+            peer_function_name: "unrelated",
+        },
         #[cfg(feature = "ruby")]
-        (
-            "ruby",
-            "variable_mutations.rb",
-            "def mutate(seed, delta)\n  total = seed\n  total += delta\n  total\nend\n",
-            "mutate",
-            &[(2, "total += delta")],
-            "peer.rb",
-            "def unrelated\n  42\nend\n",
-            "unrelated",
-        ),
+        MutationCase {
+            language: "ruby",
+            path: "variable_mutations.rb",
+            source: "def mutate(seed, delta)\n  total = seed\n  total += delta\n  total\nend\n",
+            function_name: "mutate",
+            mutations: &[(2, "total += delta")],
+            peer_path: "peer.rb",
+            peer_source: "def unrelated\n  42\nend\n",
+            peer_function_name: "unrelated",
+        },
     ];
 
-    for (
-        language,
-        path,
-        source,
-        function_name,
-        mutations,
-        peer_path,
-        peer_source,
-        peer_function_name,
-    ) in cases
-    {
+    for case in cases {
+        let MutationCase {
+            language,
+            path,
+            source,
+            function_name,
+            mutations,
+            peer_path,
+            peer_source,
+            peer_function_name,
+        } = case;
         let fixture = [(path, source), (peer_path, peer_source)];
         let indexed = setup_project(&fixture);
         let indexed_project = indexed.path().to_string_lossy().to_string();
@@ -3890,8 +3901,30 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
         .iter()
         .position(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "extra")
         .expect("guard-let target in full Index");
+    let extra_range = (
+        indexed_slice.nodes[extra_target].2,
+        indexed_slice.nodes[extra_target].3,
+    );
+    let extra_projection = indexed_slice
+        .nodes
+        .iter()
+        .position(|node| {
+            node.0 == DataNodeKind::Expr.as_str()
+                && node.1.is_empty()
+                && (node.2, node.3) == extra_range
+        })
+        .expect("guard-let projection in full Index");
     assert!(indexed_slice.edges.iter().any(|edge| {
-        edge.0 == fallback_rhs && edge.1 == extra_target && edge.2 == DataFlowKind::Assign.as_str()
+        edge.0 == fallback_rhs
+            && edge.1 == extra_projection
+            && edge.2 == DataFlowKind::FieldLoad.as_str()
+            && edge.3 == 0.80f64.to_bits()
+    }));
+    assert!(indexed_slice.edges.iter().any(|edge| {
+        edge.0 == extra_projection
+            && edge.1 == extra_target
+            && edge.2 == DataFlowKind::Assign.as_str()
+            && edge.3 == 0.90f64.to_bits()
     }));
 
     let focused = setup_project(FIXTURE);
@@ -3918,6 +3951,135 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
         indexed_bindings,
         "Rust guard-let binding activation: Focus ensure == Index full"
     );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Rust unit must stay outside the Focus window"
+    );
+}
+
+/// Rust fixed tuple/tuple-struct/struct/slice-prefix pattern projections must
+/// preserve access paths, edge confidence, and binding identity identically
+/// through cold Focus materialization and a full Index. A target after `..`
+/// remains an aggregate-flow boundary.
+#[cfg(feature = "rust")]
+#[test]
+fn n5_focus_rust_structural_pattern_projections_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "structural_match_projection.rs",
+            "struct Point { x: i32, coords: (i32, i32) }\n\
+             enum Message { Pair(i32, Point), Values([i32; 3]) }\n\
+             fn inspect(value: Message, fallback: Option<(i32, i32)>) -> i32 {\n\
+             \x20   match value {\n\
+             \x20       Message::Pair(first, Point { x, coords: (left, ref right) })\n\
+             \x20           if let Some((guard_left, guard_right)) = fallback\n\
+             \x20           => first + x + left + *right + guard_left + guard_right,\n\
+             \x20       Message::Values([head, .., tail]) => head + tail,\n\
+             \x20   }\n\
+             }\n",
+        ),
+        ("peer.rs", "fn unrelated() -> i32 {\n    42\n}\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_inspect = symbol_id_by_name(&indexed_store, "inspect");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_inspect);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_inspect);
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_inspect)
+        .expect("full Index data nodes");
+    let mut indexed_projection_paths: Vec<_> = indexed_nodes
+        .iter()
+        .filter_map(|node| {
+            (node.kind == DataNodeKind::Expr && node.name.is_none())
+                .then(|| {
+                    node.access_path
+                        .as_ref()
+                        .map(|path| (node.range.start_byte, node.range.end_byte, path.clone()))
+                })
+                .flatten()
+        })
+        .collect();
+    indexed_projection_paths.sort();
+    let expected_paths = [
+        "fallback[0][0]",
+        "fallback[0][1]",
+        "value[0]",
+        "value[0][0]",
+        "value[1].coords[0]",
+        "value[1].coords[1]",
+        "value[1].x",
+    ];
+    assert_eq!(indexed_projection_paths.len(), expected_paths.len());
+    for expected in expected_paths {
+        assert!(
+            indexed_projection_paths
+                .iter()
+                .any(|projection| projection.2 == expected),
+            "missing full Index projection {expected}"
+        );
+    }
+    let tail = indexed_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("tail"))
+        .expect("full Index post-rest tail");
+    assert!(indexed_projection_paths.iter().all(|projection| {
+        (projection.0, projection.1) != (tail.range.start_byte, tail.range.end_byte)
+    }));
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let inspect = symbol_id_by_name(&focused_store, "inspect");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&inspect)
+            .unwrap()
+            .is_empty(),
+        "Rust projection unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&inspect, Some("rust-structural-projection-parity"))
+        .expect("Focus ensure Rust structural projections");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &inspect),
+        indexed_slice,
+        "Rust structural projection dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &inspect),
+        indexed_bindings,
+        "Rust structural projection bindings: Focus ensure == Index full"
+    );
+    let mut focused_projection_paths: Vec<_> = focused_store
+        .find_data_nodes_by_function(&inspect)
+        .expect("Focus data nodes")
+        .into_iter()
+        .filter_map(|node| {
+            (node.kind == DataNodeKind::Expr && node.name.is_none())
+                .then(|| {
+                    node.access_path
+                        .map(|path| (node.range.start_byte, node.range.end_byte, path))
+                })
+                .flatten()
+        })
+        .collect();
+    focused_projection_paths.sort();
+    assert_eq!(focused_projection_paths, indexed_projection_paths);
     assert!(
         focused_store
             .find_data_nodes_by_function(&unrelated)
