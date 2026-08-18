@@ -109,16 +109,20 @@ that edge as a possible aggregate origin, not exact element/key projection or
 proof of async scheduling. `var` function-scoped loop binding semantics and
 member/subscript iteration targets remain conservative.
 
-Rust `match` scrutinees and source-ordered match-guard、`if` and `while`
-let-condition RHS values preserve exact syntactic access paths for fixed tuple、
-tuple-struct、struct and slice-prefix captures. Variable Trace can therefore
-traverse `FieldLoad` 0.80 into an anonymous projection Expr and `Assign` 0.90
-into the scoped capture. `if let`/let-chain captures activate in source order,
-remain visible through later conditions and the success block, and do not enter
-`else`; `while let` captures remain loop-scoped. Bare or `@` whole captures and
+Rust ordinary `let`/`let-else` captures join the enclosing block and activate
+only after the complete declaration. Initializers and `let-else` alternatives
+therefore keep source-earlier same-name identities；uses after the declaration
+resolve to the new binding. Direct identifiers receive whole-value Assign 0.90.
+Ordinary let initializers、`match` scrutinees and source-ordered match-guard、
+`if` and `while` let-condition RHS values preserve exact syntactic access paths
+for fixed tuple、tuple-struct、struct and slice-prefix captures. Variable Trace
+can traverse `FieldLoad` 0.80 into an anonymous projection Expr and `Assign`
+0.90 into the scoped capture. `if let`/let-chain captures activate in source
+order through later conditions and the success block, but do not enter `else`；
+`while let` captures remain loop-scoped. Whole-pattern bare/ref/`@` captures and
 targets after `..` remain aggregate Assign 0.75；runtime-length suffix projection、
-borrow/move mode and condition/guard control dependency remain explicit
-limitations.
+borrow/move mode、compiler irrefutability/type validation and condition/guard
+control dependency remain explicit limitations.
 
 ### Source encoding and positions
 
