@@ -664,7 +664,7 @@ LanguageCapabilityProfile
 | C | DataflowInterproc | ✓ | 0.73 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch 与 direct same-function `Goto` CFG；函数指针 limited depth 3；computed/unresolved goto 保守终止 |
 | C++ | DataflowInterproc | ✓ | 0.70 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、direct same-function `Goto` 与 try/catch Exception CFG；lifecycle goto 清除不可证明的 branch context；cross-scope destruction、模板/重载/ADL、catch-type selection、implicit exception 不建模 |
 | ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback 仍是显式边界 |
-| Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
+| Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | type-switch guard value 保守流向每个 case/default implicit block 的 clause-local alias；case-type projection 与 mixed short-declaration identity 保守；branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct same-function `Goto` 退出按内到外执行 using/finally cleanup，非法 region crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
 | Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与 abrupt alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` 抑制 synthetic no-match；scrutinee 保守流向 arm-local nested capture，guard/body 复用 identity；guard-let chain 按源码顺序激活 binding，RHS→capture 建立保守 Assign；结构投影、borrow/move mode、guard dependency、单段常量歧义与 macro resolution/unwind 保守；Drop 仅为 function-exit heuristic |
 | PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 inner-to-outer finally continuation）、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；loop/switch entry 与 finally-clause crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
@@ -676,6 +676,10 @@ LanguageCapabilityProfile
 - capability profile 属于 engine/analysis 边界；CLI/MCP/context 只能读取并展示。
 - 每个查询结果必须携带实际使用的语言能力信息。
 - 查询请求超出当前语言边界时，trace 内层返回 `partial_result + diagnostics`；非 trace MCP 外层返回终态 capability gap，不静默返回无法解释的空数组。
+
+函数级 Focus 物化依赖持久化事实自身携带 owner：`BindingDef` 与 `DataNode`
+共享“最内层 enclosing callable”区间解析，包含零长度的隐式声明点；Index、Focus、
+TUI/MCP 消费层不得按名字或展示位置重新推断函数归属。
 - 低置信度 fallback 必须带 `confidence`、`strategy` 和 `provenance`。
 
 ### 9.3 FeatureMatrix 能力门控

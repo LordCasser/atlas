@@ -6,6 +6,18 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### Go dataflow
+
+- Model a type-switch alias as one distinct binding in every case/default
+  clause's implicit block. The guard value flows conservatively to each alias,
+  while the alias identifier in the guard is not misclassified as a read.
+- Cover extraction, SQLite Trace, and Focus-vs-full-Index parity with the Go
+  standard library's `context.stringify` shape. Shared lexical post-processing
+  now assigns every function-local `BindingDef` to its innermost callable, so
+  function-unit materialization cannot silently drop bindings.
+- Case-type projection and mixed short declarations that combine existing and
+  new names remain explicit precision boundaries.
+
 ### Rust dataflow
 
 - Model `match` guard `let` chains with source-ordered binding activation:

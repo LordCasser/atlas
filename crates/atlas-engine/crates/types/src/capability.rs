@@ -1148,8 +1148,8 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
-            "AST-driven local dataflow with language-specific gaps",
+            "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
+            "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
             "generic type parameters not captured in dataflow layer",
             "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
         ],
@@ -1159,7 +1159,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
                     ],
                 ),
             ),
@@ -1167,7 +1167,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.78,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1175,7 +1177,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
+                        "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
                     ],
                 ),
             ),
@@ -1978,8 +1980,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested expressions",
-                "AST-driven local dataflow with language-specific gaps",
+                "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
+                "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
                 "generic type parameters not captured in dataflow layer",
                 "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
             ]
@@ -2018,7 +2020,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative"
                 ],
             )
         );
@@ -2026,7 +2028,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.78,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2034,7 +2038,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested expressions"
+                    "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative"
                 ],
             )
         );
