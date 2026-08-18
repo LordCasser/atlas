@@ -543,14 +543,14 @@ impl Store {
                AND l.unit_id IS NULL",
         );
 
-        if let Ok(mut stmt) = conn.prepare(&cap_sql) {
-            if let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+        if let Ok(mut stmt) = conn.prepare(&cap_sql)
+            && let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            }) {
-                for (cap_mask_i64, layer) in rows.flatten() {
-                    aggregated |= cap_mask_i64 as u16;
-                    aggregated |= FactCoverage::from_layers(&[layer.as_str()]).bits();
-                }
+            })
+        {
+            for (cap_mask_i64, layer) in rows.flatten() {
+                aggregated |= cap_mask_i64 as u16;
+                aggregated |= FactCoverage::from_layers(&[layer.as_str()]).bits();
             }
         }
 
@@ -567,10 +567,10 @@ impl Store {
                   LIMIT 1",
             );
 
-            if let Ok(mut stmt) = conn.prepare(&edge_sql) {
-                if stmt.query_row(params.as_slice(), |_| Ok(())).is_ok() {
-                    aggregated |= FactCoverage::CALL_EDGES;
-                }
+            if let Ok(mut stmt) = conn.prepare(&edge_sql)
+                && stmt.query_row(params.as_slice(), |_| Ok(())).is_ok()
+            {
+                aggregated |= FactCoverage::CALL_EDGES;
             }
         }
 

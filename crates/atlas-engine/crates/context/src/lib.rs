@@ -296,26 +296,26 @@ impl ContextBuilder {
     /// re-parsing). Otherwise falls back to `TextRange`-based line extraction.
     fn read_source_snippet(&self, sym: &SymbolDef) -> Option<SourceSnippet> {
         // Primary path: AST-aware extraction via the injected reader.
-        if let Some(ref source_fn) = self.source_fn {
-            if let Some(text) = source_fn.read_source(&sym.id) {
-                let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-                let total_lines = all_lines.len() as u32;
-                const MAX_CONTEXT_LINES: usize = 60;
-                let truncated = all_lines.len() > MAX_CONTEXT_LINES;
-                let lines = if truncated {
-                    all_lines.into_iter().take(MAX_CONTEXT_LINES).collect()
-                } else {
-                    all_lines
-                };
-                return Some(SourceSnippet {
-                    lines,
-                    start_line: sym.range.start_line,
-                    total_lines,
-                    truncated,
-                });
-            }
-            // Fall through to TextRange fallback if AST extraction returns None.
+        if let Some(ref source_fn) = self.source_fn
+            && let Some(text) = source_fn.read_source(&sym.id)
+        {
+            let all_lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+            let total_lines = all_lines.len() as u32;
+            const MAX_CONTEXT_LINES: usize = 60;
+            let truncated = all_lines.len() > MAX_CONTEXT_LINES;
+            let lines = if truncated {
+                all_lines.into_iter().take(MAX_CONTEXT_LINES).collect()
+            } else {
+                all_lines
+            };
+            return Some(SourceSnippet {
+                lines,
+                start_line: sym.range.start_line,
+                total_lines,
+                truncated,
+            });
         }
+        // Fall through to TextRange fallback if AST extraction returns None.
 
         // Fallback: TextRange-based extraction (requires project_root).
         let root = self.project_root.as_ref()?;

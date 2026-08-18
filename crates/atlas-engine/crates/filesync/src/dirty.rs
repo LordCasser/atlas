@@ -119,10 +119,10 @@ fn build_dirty_set_with_required_capability(
             }
         }
         // Report progress every 50 files or on the last file
-        if idx % 50 == 0 || idx + 1 == total {
-            if let Some(ref cb) = on_progress {
-                cb((idx + 1) as u64);
-            }
+        if (idx % 50 == 0 || idx + 1 == total)
+            && let Some(ref cb) = on_progress
+        {
+            cb((idx + 1) as u64);
         }
     }
 
@@ -209,7 +209,7 @@ mod tests {
 
         let dirty = build_dirty_set_for_mode(
             &store,
-            &[path.clone()],
+            std::slice::from_ref(&path),
             dir.path(),
             &ExtractionMode::Structural,
             None,
@@ -252,7 +252,7 @@ mod tests {
 
         let structural = build_dirty_set_for_mode(
             &store,
-            &[path.clone()],
+            std::slice::from_ref(&path),
             dir.path(),
             &ExtractionMode::Structural,
             None,

@@ -118,13 +118,11 @@ impl AliasTable {
                 if let AliasTarget::Local {
                     name: aliased_local,
                 } = target
+                    && let Some(next) = table.mapping.get(aliased_local)
+                    && next != target
                 {
-                    if let Some(next) = table.mapping.get(aliased_local) {
-                        if next != target {
-                            table.mapping.insert(local.clone(), next.clone());
-                            changed = true;
-                        }
-                    }
+                    table.mapping.insert(local.clone(), next.clone());
+                    changed = true;
                 }
             }
         }

@@ -369,19 +369,19 @@ fn score_single_candidate(
     }
 
     // Kind scoring
-    if let Some(ref sel_kind) = sel.kind {
-        if sel_kind.eq_ignore_ascii_case(symbol_def.kind.as_str()) {
-            score += SCORE_KIND_EXACT;
-            reasons.push("kind_exact".into());
-        }
+    if let Some(ref sel_kind) = sel.kind
+        && sel_kind.eq_ignore_ascii_case(symbol_def.kind.as_str())
+    {
+        score += SCORE_KIND_EXACT;
+        reasons.push("kind_exact".into());
     }
 
     // Language scoring
-    if let Some(ref sel_lang) = sel.language {
-        if sel_lang.eq_ignore_ascii_case(symbol_def.language.as_str()) {
-            score += SCORE_LANGUAGE_EXACT;
-            reasons.push("language_exact".into());
-        }
+    if let Some(ref sel_lang) = sel.language
+        && sel_lang.eq_ignore_ascii_case(symbol_def.language.as_str())
+    {
+        score += SCORE_LANGUAGE_EXACT;
+        reasons.push("language_exact".into());
     }
 
     CandidateScore {
@@ -441,22 +441,22 @@ pub fn compute_ignored_mismatches(
         }
     }
 
-    if let Some(sel_line) = sel.line {
-        if resolved_line != sel_line {
-            mismatches.push("line".into());
-        }
+    if let Some(sel_line) = sel.line
+        && resolved_line != sel_line
+    {
+        mismatches.push("line".into());
     }
 
-    if let Some(ref sel_kind) = sel.kind {
-        if !sel_kind.eq_ignore_ascii_case(sym.kind.as_str()) {
-            mismatches.push("kind".into());
-        }
+    if let Some(ref sel_kind) = sel.kind
+        && !sel_kind.eq_ignore_ascii_case(sym.kind.as_str())
+    {
+        mismatches.push("kind".into());
     }
 
-    if let Some(ref sel_lang) = sel.language {
-        if !sel_lang.eq_ignore_ascii_case(sym.language.as_str()) {
-            mismatches.push("language".into());
-        }
+    if let Some(ref sel_lang) = sel.language
+        && !sel_lang.eq_ignore_ascii_case(sym.language.as_str())
+    {
+        mismatches.push("language".into());
     }
 
     mismatches
@@ -546,7 +546,7 @@ pub(crate) fn score_candidates(
         })
         .collect();
 
-    scored.sort_by(|a, b| b.score.cmp(&a.score));
+    scored.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
     Ok(scored)
 }
 

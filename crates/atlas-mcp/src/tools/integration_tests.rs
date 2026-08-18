@@ -901,7 +901,7 @@ struct MainPage {
                         gt.total_callees,
                         pct,
                         focus_callee_names = focus_callee_names,
-                        gt_callee_names = &gt.callee_names,
+                        gt_callee_names = gt.callee_names,
                     );
                 }
             }

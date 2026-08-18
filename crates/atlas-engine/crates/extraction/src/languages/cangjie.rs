@@ -290,12 +290,11 @@ fn qualified_name_from_node_cj(
     let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
-        if parent.kind() == "classDefinition" {
-            if let Some(child) = parent.child_by_field_name("className") {
-                if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                    parts.push(class_name.to_string());
-                }
-            }
+        if parent.kind() == "classDefinition"
+            && let Some(child) = parent.child_by_field_name("className")
+            && let Ok(class_name) = child.utf8_text(source.as_bytes())
+        {
+            parts.push(class_name.to_string());
         }
         current = parent;
     }
@@ -575,16 +574,16 @@ fn is_cangjie_call_expr(node: tree_sitter::Node) -> bool {
     // Simple call:  postfixExpression(atomicVariable, callSuffix)
     // Method call:  postfixExpression(fieldAccess, callSuffix)
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if child.kind() == "callSuffix" {
-                // Also check that we have a callable target (atomicVariable or fieldAccess)
-                let has_target = (0..node.child_count()).any(|j| {
-                    node.child(j as u32)
-                        .is_some_and(|c| c.kind() == "atomicVariable" || c.kind() == "fieldAccess")
-                });
-                if has_target {
-                    return true;
-                }
+        if let Some(child) = node.child(i as u32)
+            && child.kind() == "callSuffix"
+        {
+            // Also check that we have a callable target (atomicVariable or fieldAccess)
+            let has_target = (0..node.child_count()).any(|j| {
+                node.child(j as u32)
+                    .is_some_and(|c| c.kind() == "atomicVariable" || c.kind() == "fieldAccess")
+            });
+            if has_target {
+                return true;
             }
         }
     }

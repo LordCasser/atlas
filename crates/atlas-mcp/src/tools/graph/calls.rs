@@ -221,10 +221,10 @@ impl ToolRouter {
             }
             if !has_repo_call_graph {
                 for caller_id in self.candidate_incoming_neighbors(&root_id, &call_edge_kinds) {
-                    if seen.insert(caller_id) {
-                        if let Some(node) = self.symbol_json_by_id(&caller_id) {
-                            all_callers.push(node);
-                        }
+                    if seen.insert(caller_id)
+                        && let Some(node) = self.symbol_json_by_id(&caller_id)
+                    {
+                        all_callers.push(node);
                     }
                 }
             }
@@ -240,10 +240,10 @@ impl ToolRouter {
             "truncated": total_callers > nodes.len(),
             "callers": nodes,
         });
-        if let Some(rm) = resolution_meta_opt {
-            if symbol_ids.len() > 1 {
-                resp["resolution"] = rm;
-            }
+        if let Some(rm) = resolution_meta_opt
+            && symbol_ids.len() > 1
+        {
+            resp["resolution"] = rm;
         }
         if !has_repo_call_graph {
             resp["note"] = json!(
@@ -362,10 +362,10 @@ impl ToolRouter {
             }
             if !has_repo_call_graph {
                 for callee_id in self.candidate_outgoing_neighbors(&root_id, &call_edge_kinds) {
-                    if seen.insert(callee_id) {
-                        if let Some(node) = self.symbol_json_by_id(&callee_id) {
-                            all_callees.push(node);
-                        }
+                    if seen.insert(callee_id)
+                        && let Some(node) = self.symbol_json_by_id(&callee_id)
+                    {
+                        all_callees.push(node);
                     }
                 }
             }
@@ -395,10 +395,10 @@ impl ToolRouter {
                 ));
             }
         }
-        if let Some(rm) = resolution_meta_opt {
-            if symbol_ids.len() > 1 {
-                resp["resolution"] = rm;
-            }
+        if let Some(rm) = resolution_meta_opt
+            && symbol_ids.len() > 1
+        {
+            resp["resolution"] = rm;
         }
         if !has_repo_call_graph {
             resp["note"] = json!(
@@ -646,10 +646,10 @@ impl ToolRouter {
             "truncated": total_nodes >= limit,
             "hops": hops,
         });
-        if let Some(rm) = resolution_meta_opt {
-            if symbol_ids.len() > 1 {
-                resp["resolution"] = rm;
-            }
+        if let Some(rm) = resolution_meta_opt
+            && symbol_ids.len() > 1
+        {
+            resp["resolution"] = rm;
         }
         {
             let active = self.project();

@@ -84,10 +84,10 @@ pub fn init(verbosity: Verbosity, format: LogFormat) {
 fn build_env_filter(verbosity: Verbosity) -> EnvFilter {
     // Check ATLAS_LOG first, then RUST_LOG
     for var in &["ATLAS_LOG", "RUST_LOG"] {
-        if let Ok(val) = std::env::var(var) {
-            if !val.is_empty() {
-                return EnvFilter::new(val);
-            }
+        if let Ok(val) = std::env::var(var)
+            && !val.is_empty()
+        {
+            return EnvFilter::new(val);
         }
     }
 

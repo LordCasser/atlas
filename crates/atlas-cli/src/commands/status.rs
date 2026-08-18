@@ -113,32 +113,32 @@ fn print_capability_summary(files_by_language: &[(String, i64)]) {
 
 /// Show the indexed scope when set in project metadata.
 fn print_indexed_scope(ctx: &crate::runtime::CommandContext) {
-    if let Ok(Some(json)) = ctx.store.get_metadata("indexed_scope") {
-        if let Ok(scope) = serde_json::from_str::<serde_json::Value>(&json) {
-            let patterns = [
-                ("include", scope.get("include")),
-                ("exclude", scope.get("exclude")),
-            ];
-            let has_patterns = patterns.iter().any(|(_, value)| {
-                value
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|values| !values.is_empty())
-            });
-            if !has_patterns {
-                return;
-            }
+    if let Ok(Some(json)) = ctx.store.get_metadata("indexed_scope")
+        && let Ok(scope) = serde_json::from_str::<serde_json::Value>(&json)
+    {
+        let patterns = [
+            ("include", scope.get("include")),
+            ("exclude", scope.get("exclude")),
+        ];
+        let has_patterns = patterns.iter().any(|(_, value)| {
+            value
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|values| !values.is_empty())
+        });
+        if !has_patterns {
+            return;
+        }
 
-            println!();
-            println!("  Index scope:");
-            for (kind, value) in patterns {
-                for pattern in value
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(serde_json::Value::as_str)
-                {
-                    println!("    - {kind}: {pattern}");
-                }
+        println!();
+        println!("  Index scope:");
+        for (kind, value) in patterns {
+            for pattern in value
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+            {
+                println!("    - {kind}: {pattern}");
             }
         }
     }

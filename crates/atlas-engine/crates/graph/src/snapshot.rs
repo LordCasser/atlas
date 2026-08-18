@@ -649,10 +649,10 @@ impl GraphSnapshot {
             .iter()
             .filter_map(|&eix| {
                 let edge = &self.edges[eix];
-                if let Some(kinds) = kind_filter {
-                    if !kinds.contains(&edge.kind) {
-                        return None;
-                    }
+                if let Some(kinds) = kind_filter
+                    && !kinds.contains(&edge.kind)
+                {
+                    return None;
                 }
                 Some((edge.target_ix, eix))
             })
@@ -668,10 +668,10 @@ impl GraphSnapshot {
             .iter()
             .filter_map(|&eix| {
                 let edge = &self.edges[eix];
-                if let Some(kinds) = kind_filter {
-                    if !kinds.contains(&edge.kind) {
-                        return None;
-                    }
+                if let Some(kinds) = kind_filter
+                    && !kinds.contains(&edge.kind)
+                {
+                    return None;
                 }
                 Some((edge.source_ix, eix))
             })
@@ -1078,17 +1078,17 @@ impl GraphSnapshot {
         }
         if depth >= max_depth && !current.is_empty() {
             for id in current {
-                if visited.insert(id) {
-                    if let Some(ix) = self.id_to_idx.get(&id) {
-                        let outgoing =
-                            self.neighbors(*ix, TraversalDirection::Outgoing, edge_kind_filter);
-                        frontier.push(FrontierNode {
-                            symbol_id: id,
-                            qname: self.nodes[*ix].qualified_name.clone(),
-                            depth,
-                            outgoing_call_count: outgoing.len(),
-                        });
-                    }
+                if visited.insert(id)
+                    && let Some(ix) = self.id_to_idx.get(&id)
+                {
+                    let outgoing =
+                        self.neighbors(*ix, TraversalDirection::Outgoing, edge_kind_filter);
+                    frontier.push(FrontierNode {
+                        symbol_id: id,
+                        qname: self.nodes[*ix].qualified_name.clone(),
+                        depth,
+                        outgoing_call_count: outgoing.len(),
+                    });
                 }
             }
         }
@@ -1381,16 +1381,16 @@ impl GraphSnapshot {
                 continue;
             }
             for eix in self.edge_iter(cur, direction) {
-                if let Some(excl) = excluded_edges {
-                    if excl.contains(&eix) {
-                        continue;
-                    }
+                if let Some(excl) = excluded_edges
+                    && excl.contains(&eix)
+                {
+                    continue;
                 }
                 let edge = &self.edges[eix];
-                if let Some(kinds) = edge_kind_filter {
-                    if !kinds.contains(&edge.kind) {
-                        continue;
-                    }
+                if let Some(kinds) = edge_kind_filter
+                    && !kinds.contains(&edge.kind)
+                {
+                    continue;
                 }
                 let nb = if edge.source_ix == cur {
                     edge.target_ix

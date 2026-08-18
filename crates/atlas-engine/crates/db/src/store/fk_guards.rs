@@ -180,10 +180,10 @@ pub(crate) fn filter_data_nodes(
         })
         .map(|n| {
             let mut n = n.clone();
-            if let Some(bid) = n.binding_id {
-                if !valid_binding_ids.contains(&bid) {
-                    n.binding_id = None;
-                }
+            if let Some(bid) = n.binding_id
+                && !valid_binding_ids.contains(&bid)
+            {
+                n.binding_id = None;
             }
             n
         })

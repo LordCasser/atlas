@@ -184,15 +184,15 @@ pub fn compose_effects(
             .filter(|dn| dn.kind == DataNodeKind::CallTarget)
             .filter_map(|dn| {
                 let mut candidates = Vec::new();
-                if let Some(ap) = dn.access_path.as_deref() {
-                    if !ap.is_empty() {
-                        candidates.push(ap);
-                    }
+                if let Some(ap) = dn.access_path.as_deref()
+                    && !ap.is_empty()
+                {
+                    candidates.push(ap);
                 }
-                if let Some(n) = dn.name.as_deref() {
-                    if !n.is_empty() {
-                        candidates.push(n);
-                    }
+                if let Some(n) = dn.name.as_deref()
+                    && !n.is_empty()
+                {
+                    candidates.push(n);
                 }
                 if candidates.is_empty() {
                     None
@@ -326,7 +326,7 @@ pub fn compose_effects(
             .iter()
             .any(|dn| matches!(dn.kind, DataNodeKind::CleanupReturn));
         if has_cleanup_return {
-            for (_node_id, node_effects) in node_effects.iter_mut() {
+            for node_effects in node_effects.values_mut() {
                 for eff in node_effects.iter_mut() {
                     if matches!(eff.kind, SemanticEffectKind::Free { .. }) {
                         eff.consumption_style = Some(ConsumptionStyle::Deferred);
@@ -586,30 +586,29 @@ fn resolve_store_effect(
 
                     // If the value source is a CallReturn that is an alloc, also emit
                     // an Alloc effect chained through a local.
-                    if let ValueSource::CallReturn { callee } = &value_source {
-                        if let Some(rc) = contract.classify_return(callee) {
-                            if matches!(rc, ReturnContract::NewOwned | ReturnContract::MaybeOwned) {
-                                // Find intermediate local if any
-                                let local_name = find_intermediate_local_name(*source_id, dfi);
-                                let confidence = match rc {
-                                    ReturnContract::NewOwned => 0.85,
-                                    ReturnContract::MaybeOwned => 0.6,
-                                    _ => 0.85,
-                                };
-                                let eligible = contract.eligible_for_implicit_cleanup(callee);
-                                let mut eff = make_effect(
-                                    cfg_node_id,
-                                    effects.len() as u32,
-                                    SemanticEffectKind::Alloc {
-                                        target: PlaceRef::Local { name: local_name },
-                                        callee: callee.clone(),
-                                    },
-                                    confidence,
-                                );
-                                eff.eligible_for_implicit_cleanup = Some(eligible);
-                                effects.push(eff);
-                            }
-                        }
+                    if let ValueSource::CallReturn { callee } = &value_source
+                        && let Some(rc) = contract.classify_return(callee)
+                        && matches!(rc, ReturnContract::NewOwned | ReturnContract::MaybeOwned)
+                    {
+                        // Find intermediate local if any
+                        let local_name = find_intermediate_local_name(*source_id, dfi);
+                        let confidence = match rc {
+                            ReturnContract::NewOwned => 0.85,
+                            ReturnContract::MaybeOwned => 0.6,
+                            _ => 0.85,
+                        };
+                        let eligible = contract.eligible_for_implicit_cleanup(callee);
+                        let mut eff = make_effect(
+                            cfg_node_id,
+                            effects.len() as u32,
+                            SemanticEffectKind::Alloc {
+                                target: PlaceRef::Local { name: local_name },
+                                callee: callee.clone(),
+                            },
+                            confidence,
+                        );
+                        eff.eligible_for_implicit_cleanup = Some(eligible);
+                        effects.push(eff);
                     }
                 }
             }
@@ -856,19 +855,16 @@ fn find_intermediate_local_name(source_id: DataNodeId, dfi: &DfIndex) -> String 
     }
 
     // Try one more step
-    if let Some(edges) = dfi.target_edges.get(&source_id) {
-        if let Some((DataFlowKind::Assign, prev)) =
+    if let Some(edges) = dfi.target_edges.get(&source_id)
+        && let Some((DataFlowKind::Assign, prev)) =
             edges.iter().find(|(k, _)| *k == DataFlowKind::Assign)
-        {
-            if let Some(prev_dn) = dfi.nodes.get(prev) {
-                if matches!(
-                    prev_dn.kind,
-                    DataNodeKind::Local | DataNodeKind::VariableUse
-                ) {
-                    return prev_dn.name.clone().unwrap_or_else(|| "?".to_string());
-                }
-            }
-        }
+        && let Some(prev_dn) = dfi.nodes.get(prev)
+        && matches!(
+            prev_dn.kind,
+            DataNodeKind::Local | DataNodeKind::VariableUse
+        )
+    {
+        return prev_dn.name.clone().unwrap_or_else(|| "?".to_string());
     }
 
     "?".to_string()

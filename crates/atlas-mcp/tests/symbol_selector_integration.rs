@@ -910,13 +910,13 @@ fn check_no_hex_id(value: &serde_json::Value, context: &str) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map {
-                if key == "id" || key == "symbol_id" {
-                    if let Some(s) = val.as_str() {
-                        assert!(
-                            !is_hex64(s),
-                            "{context}: field '{key}' contains 64-char hex string: {s}",
-                        );
-                    }
+                if (key == "id" || key == "symbol_id")
+                    && let Some(s) = val.as_str()
+                {
+                    assert!(
+                        !is_hex64(s),
+                        "{context}: field '{key}' contains 64-char hex string: {s}",
+                    );
                 }
                 check_no_hex_id(val, context);
             }

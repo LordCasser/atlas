@@ -116,21 +116,21 @@ impl ParseWorkerPool {
         let file_path_str = file_path.to_string_lossy().to_string();
 
         // 1. Size check
-        if let Some(max_size) = self.config.max_file_size_bytes {
-            if source.len() as u64 > max_size {
-                let err = ExtractionError {
-                    file_path: file_path_str,
-                    category: FailureCategory::MaxFileSizeExceeded,
-                    message: format!(
-                        "File size {} bytes exceeds limit {} bytes",
-                        source.len(),
-                        max_size
-                    ),
-                };
-                self.record_error(err.clone());
-                *self.skipped.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-                return Err(err);
-            }
+        if let Some(max_size) = self.config.max_file_size_bytes
+            && source.len() as u64 > max_size
+        {
+            let err = ExtractionError {
+                file_path: file_path_str,
+                category: FailureCategory::MaxFileSizeExceeded,
+                message: format!(
+                    "File size {} bytes exceeds limit {} bytes",
+                    source.len(),
+                    max_size
+                ),
+            };
+            self.record_error(err.clone());
+            *self.skipped.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            return Err(err);
         }
 
         // 2. Extract with panic isolation

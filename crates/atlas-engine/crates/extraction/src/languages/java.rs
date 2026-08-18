@@ -258,10 +258,10 @@ fn qualified_name_from_node_java(
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class_declaration" | "interface_declaration" | "enum_declaration" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(class_name.to_string());
-                    }
+                if let Some(child) = parent.child_by_field_name("name")
+                    && let Ok(class_name) = child.utf8_text(source.as_bytes())
+                {
+                    parts.push(class_name.to_string());
                 }
             }
             _ => {}

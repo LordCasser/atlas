@@ -885,7 +885,7 @@ mod tests {
         let without_rules = ar.compose_effects_for(
             &nodes,
             &edges,
-            &[call_target.clone()],
+            std::slice::from_ref(&call_target),
             &[],
             Language::C,
             None,

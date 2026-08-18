@@ -2521,7 +2521,9 @@ fn test_scoped_resolution_does_not_pollute_references_table() {
         10,
         16,
     );
-    store.insert_references(&[ref_use.clone()]).unwrap();
+    store
+        .insert_references(std::slice::from_ref(&ref_use))
+        .unwrap();
 
     let engine = test_engine(store.clone());
 

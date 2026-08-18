@@ -252,66 +252,67 @@ fn walk_rust_language_edges(
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
 ) {
-    if node.kind() == "let_declaration" {
-        if let (Some(pattern_node), Some(value_node)) = (
+    if node.kind() == "let_declaration"
+        && let (Some(pattern_node), Some(value_node)) = (
             node.child_by_field_name("pattern"),
             node.child_by_field_name("value"),
-        ) {
-            let value_key = NodePosKey {
-                start_byte: value_node.start_byte() as u32,
-                end_byte: value_node.end_byte() as u32,
-                kind: DataNodeKind::Expr,
-            };
-            if let Some(&source_id) = pos_map.get(&value_key) {
-                if pattern_node.kind() == "identifier" {
-                    let name_key = NodePosKey {
-                        start_byte: pattern_node.start_byte() as u32,
-                        end_byte: pattern_node.end_byte() as u32,
-                        kind: DataNodeKind::Local,
-                    };
-                    if let Some(&target_id) = pos_map.get(&name_key) {
-                        let eid = DataFlowEdgeId::generate(
-                            &source_id,
-                            &target_id,
-                            DataFlowKind::Assign.as_str(),
-                        );
-                        edges.push(DataFlowEdge::new(
-                            eid,
-                            source_id,
-                            target_id,
-                            DataFlowKind::Assign,
-                            node_range(pattern_node),
-                            0.90,
-                        ));
-                    }
-                } else if matches!(
-                    pattern_node.kind(),
-                    "tuple_pattern" | "tuple_struct_pattern"
-                ) {
-                    for i in 0..pattern_node.child_count() {
-                        if let Some(child) = pattern_node.child(i as u32) {
-                            if child.is_named() && child.kind() == "identifier" {
-                                let child_key = NodePosKey {
-                                    start_byte: child.start_byte() as u32,
-                                    end_byte: child.end_byte() as u32,
-                                    kind: DataNodeKind::Local,
-                                };
-                                if let Some(&target_id) = pos_map.get(&child_key) {
-                                    let eid = DataFlowEdgeId::generate(
-                                        &source_id,
-                                        &target_id,
-                                        DataFlowKind::Assign.as_str(),
-                                    );
-                                    edges.push(DataFlowEdge::new(
-                                        eid,
-                                        source_id,
-                                        target_id,
-                                        DataFlowKind::Assign,
-                                        node_range(child),
-                                        0.90,
-                                    ));
-                                }
-                            }
+        )
+    {
+        let value_key = NodePosKey {
+            start_byte: value_node.start_byte() as u32,
+            end_byte: value_node.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&value_key) {
+            if pattern_node.kind() == "identifier" {
+                let name_key = NodePosKey {
+                    start_byte: pattern_node.start_byte() as u32,
+                    end_byte: pattern_node.end_byte() as u32,
+                    kind: DataNodeKind::Local,
+                };
+                if let Some(&target_id) = pos_map.get(&name_key) {
+                    let eid = DataFlowEdgeId::generate(
+                        &source_id,
+                        &target_id,
+                        DataFlowKind::Assign.as_str(),
+                    );
+                    edges.push(DataFlowEdge::new(
+                        eid,
+                        source_id,
+                        target_id,
+                        DataFlowKind::Assign,
+                        node_range(pattern_node),
+                        0.90,
+                    ));
+                }
+            } else if matches!(
+                pattern_node.kind(),
+                "tuple_pattern" | "tuple_struct_pattern"
+            ) {
+                for i in 0..pattern_node.child_count() {
+                    if let Some(child) = pattern_node.child(i as u32)
+                        && child.is_named()
+                        && child.kind() == "identifier"
+                    {
+                        let child_key = NodePosKey {
+                            start_byte: child.start_byte() as u32,
+                            end_byte: child.end_byte() as u32,
+                            kind: DataNodeKind::Local,
+                        };
+                        if let Some(&target_id) = pos_map.get(&child_key) {
+                            let eid = DataFlowEdgeId::generate(
+                                &source_id,
+                                &target_id,
+                                DataFlowKind::Assign.as_str(),
+                            );
+                            edges.push(DataFlowEdge::new(
+                                eid,
+                                source_id,
+                                target_id,
+                                DataFlowKind::Assign,
+                                node_range(child),
+                                0.90,
+                            ));
                         }
                     }
                 }
@@ -465,18 +466,18 @@ fn qualified_name_from_node_rust(
                     }
                 } else if parent.kind() == "impl_item" {
                     // impl block for a type — extract the type name from impl type
-                    if let Some(impl_type) = parent.child_by_field_name("type") {
-                        if let Ok(type_str) = impl_type.utf8_text(source.as_bytes()) {
-                            parts.push(type_str.to_string());
-                        }
+                    if let Some(impl_type) = parent.child_by_field_name("type")
+                        && let Ok(type_str) = impl_type.utf8_text(source.as_bytes())
+                    {
+                        parts.push(type_str.to_string());
                     }
                 }
             }
             "mod_item" => {
-                if let Some(mod_name) = parent.child_by_field_name("name") {
-                    if let Ok(mod_str) = mod_name.utf8_text(source.as_bytes()) {
-                        parts.push(mod_str.to_string());
-                    }
+                if let Some(mod_name) = parent.child_by_field_name("name")
+                    && let Ok(mod_str) = mod_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(mod_str.to_string());
                 }
             }
             _ => {}

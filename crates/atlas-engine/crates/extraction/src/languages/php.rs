@@ -308,17 +308,17 @@ fn qualified_name_from_node_php(
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class_declaration" | "interface_declaration" | "trait_declaration" => {
-                if let Some(type_name) = parent.child_by_field_name("name") {
-                    if let Ok(type_str) = type_name.utf8_text(source.as_bytes()) {
-                        parts.push(type_str.to_string());
-                    }
+                if let Some(type_name) = parent.child_by_field_name("name")
+                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(type_str.to_string());
                 }
             }
             "namespace_definition" => {
-                if let Some(ns_name) = parent.child_by_field_name("name") {
-                    if let Ok(ns_str) = ns_name.utf8_text(source.as_bytes()) {
-                        parts.push(ns_str.to_string());
-                    }
+                if let Some(ns_name) = parent.child_by_field_name("name")
+                    && let Ok(ns_str) = ns_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(ns_str.to_string());
                 }
             }
             _ => {}
@@ -670,14 +670,13 @@ fn normalize_php_dataflow_builder(
                 return (None, None);
             }
             // Skip left-hand side of assignment (already captured as df.assign_target)
-            if let Some(parent) = node.parent() {
-                if parent.kind() == "assignment_expression"
-                    && parent
-                        .child_by_field_name("left")
-                        .is_some_and(|n| n.id() == node.id())
-                {
-                    return (None, None);
-                }
+            if let Some(parent) = node.parent()
+                && parent.kind() == "assignment_expression"
+                && parent
+                    .child_by_field_name("left")
+                    .is_some_and(|n| n.id() == node.id())
+            {
+                return (None, None);
             }
             // Skip superglobals (already captured as df.superglobal)
             let text = node_text(node, source).unwrap_or_default();

@@ -239,12 +239,11 @@ fn find_callsite_for_position(
     column: u32,
 ) -> anyhow::Result<Option<Callsite>> {
     // Strategy 1: direct lookup via reference
-    if let Some(r) = reference {
-        if r.kind == ReferenceKind::Call {
-            if let Some(cs) = store.find_callsite_by_reference_id(&r.id)? {
-                return Ok(Some(cs));
-            }
-        }
+    if let Some(r) = reference
+        && r.kind == ReferenceKind::Call
+        && let Some(cs) = store.find_callsite_by_reference_id(&r.id)?
+    {
+        return Ok(Some(cs));
     }
 
     // Strategy 2: fallback — find any callsite in this file whose range

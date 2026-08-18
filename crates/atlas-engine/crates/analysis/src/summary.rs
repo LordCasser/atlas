@@ -166,13 +166,11 @@ impl SummaryBuilder {
                                     // Record call-arg flow if callsite info available.
                                     // Use stored arg_index from DataNode (populated during
                                     // extraction backfill) instead of deriving positionally.
-                                    if let Some(target_node) = target_node {
-                                        if let Some(cs_id) = target_node.callsite_id {
-                                            let arg_idx =
-                                                target_node.arg_index.unwrap_or(0) as usize;
-                                            call_arg_entries
-                                                .push((cs_id, arg_idx, target_id, current));
-                                        }
+                                    if let Some(target_node) = target_node
+                                        && let Some(cs_id) = target_node.callsite_id
+                                    {
+                                        let arg_idx = target_node.arg_index.unwrap_or(0) as usize;
+                                        call_arg_entries.push((cs_id, arg_idx, target_id, current));
                                     }
                                 }
                                 DataNodeKind::Field => {

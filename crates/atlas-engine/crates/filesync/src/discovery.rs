@@ -69,10 +69,9 @@ pub fn discover_files_bounded(
 
     if let Some((files, complete, raw_count)) =
         discover_via_git_bounded(root, config, &atlasignore_patterns, max_files, deadline)?
+        && (raw_count > 0 || !complete)
     {
-        if raw_count > 0 || !complete {
-            return Ok((files, complete));
-        }
+        return Ok((files, complete));
     }
 
     discover_via_walk_bounded(root, config, &atlasignore_patterns, max_files, deadline)
@@ -365,10 +364,10 @@ fn walk_dir(dir: &Path, root: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result
                 continue;
             }
             walk_dir(&path, root, files)?;
-        } else if meta.is_file() {
-            if let Ok(rel) = path.strip_prefix(root) {
-                files.push(rel.to_path_buf());
-            }
+        } else if meta.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            files.push(rel.to_path_buf());
         }
     }
     Ok(())

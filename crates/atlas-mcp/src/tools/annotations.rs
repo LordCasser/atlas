@@ -159,24 +159,24 @@ impl ToolRouter {
             .find_symbol_by_id(&target_id)
             .ok()
             .flatten();
-        if let Some(sym) = &target_sym {
-            if !matches!(
+        if let Some(sym) = &target_sym
+            && !matches!(
                 sym.kind,
                 atlas_engine::SymbolKind::Function | atlas_engine::SymbolKind::Method
-            ) {
-                return (
-                    json!({
-                        "error": format!(
-                            "Expected a Function or Method symbol as the target, but '{}' is a '{}'. \
-                             Function-pointer dispatch annotations map a struct field to a concrete \
-                             function implementation.",
-                            target_qname, sym.kind.as_str()
-                        )
-                    })
-                    .to_string(),
-                    true,
-                );
-            }
+            )
+        {
+            return (
+                json!({
+                    "error": format!(
+                        "Expected a Function or Method symbol as the target, but '{}' is a '{}'. \
+                         Function-pointer dispatch annotations map a struct field to a concrete \
+                         function implementation.",
+                        target_qname, sym.kind.as_str()
+                    )
+                })
+                .to_string(),
+                true,
+            );
         }
 
         // Extract field_name from qualified name (last segment after dot/::)

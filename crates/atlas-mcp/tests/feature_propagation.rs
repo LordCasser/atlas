@@ -33,15 +33,17 @@ mod default_build {
     /// When built with default features, all three core languages are enabled.
     #[test]
     fn core_languages_enabled() {
-        assert!(
-            cfg!(feature = "typescript"),
-            "typescript feature should be enabled"
-        );
-        assert!(
-            cfg!(feature = "javascript"),
-            "javascript feature should be enabled"
-        );
-        assert!(cfg!(feature = "python"), "python feature should be enabled");
+        let enabled = atlas_engine::Language::enabled_languages();
+        for language in [
+            atlas_engine::Language::TypeScript,
+            atlas_engine::Language::JavaScript,
+            atlas_engine::Language::Python,
+        ] {
+            assert!(
+                enabled.contains(&language),
+                "{language:?} should be enabled"
+            );
+        }
     }
 
     /// The engine's frontend should be creatable for TypeScript.
@@ -200,8 +202,8 @@ mod cangjie_build {
     #[test]
     fn cangjie_feature_enabled() {
         assert!(
-            cfg!(feature = "cangjie"),
-            "cangjie feature should be enabled"
+            atlas_engine::Language::enabled_languages().contains(&atlas_engine::Language::Cangjie),
+            "cangjie should be enabled"
         );
     }
 

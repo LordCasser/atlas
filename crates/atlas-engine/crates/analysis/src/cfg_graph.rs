@@ -140,7 +140,7 @@ mod tests {
         let exit = CfgNode::exit(&fid);
         let nodes = vec![entry.clone(), exit.clone()];
         let edge = CfgEdge::new(&entry.id, &exit.id, CfgEdgeKind::Normal);
-        let graph = CfgGraph::build(&nodes, &[edge.clone()]).unwrap();
+        let graph = CfgGraph::build(&nodes, std::slice::from_ref(&edge)).unwrap();
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.entry, entry.id);
         assert_eq!(graph.exit, exit.id);

@@ -914,13 +914,13 @@ impl Store {
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
                 Err(e) => return Err(e.into()),
             };
-            if let Some(ref db_hash) = db_hash {
-                if db_hash != &facts.file.content_hash {
-                    tx.execute(
-                        "UPDATE files SET content_hash = ?1 WHERE file_id = ?2",
-                        params![facts.file.content_hash, file_id],
-                    )?;
-                }
+            if let Some(ref db_hash) = db_hash
+                && db_hash != &facts.file.content_hash
+            {
+                tx.execute(
+                    "UPDATE files SET content_hash = ?1 WHERE file_id = ?2",
+                    params![facts.file.content_hash, file_id],
+                )?;
             }
 
             // Upsert symbols with resolution_symbols layer tag
@@ -1357,7 +1357,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let sym = test_symbol(file.file_id, "MyClass", SymbolKind::Class);
-        store.insert_symbols(&[sym.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
 
         let found = store.find_symbol_by_id(&sym.id).unwrap().unwrap();
         assert_eq!(found.name, "MyClass");
@@ -1371,7 +1371,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let sym = test_symbol(file.file_id, "target", SymbolKind::Function);
-        store.insert_symbols(&[sym.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
 
         let range = TextRange {
             start_byte: 50,
@@ -1451,7 +1451,9 @@ mod tests {
             binding_id: None,
             resolved: None,
         };
-        store.insert_references(&[reference.clone()]).unwrap();
+        store
+            .insert_references(std::slice::from_ref(&reference))
+            .unwrap();
         store.insert_closure_generation("cl_usages").unwrap();
         store
             .insert_reference_resolution(
@@ -1487,7 +1489,7 @@ mod tests {
         store.upsert_file(&file).unwrap();
 
         let sym = test_symbol(file.file_id, "Foo", SymbolKind::Struct);
-        store.insert_symbols(&[sym.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
 
         // Two decoration references for @Component, one call reference named
         // "Component" (should NOT match the decoration query).
@@ -3246,7 +3248,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[sym_b.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym_b)).unwrap();
 
         // Self-edge (symbol calls itself) — verifies the query handles same source+target
         let edge_id = EdgeId::generate(

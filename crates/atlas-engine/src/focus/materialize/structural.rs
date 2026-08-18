@@ -159,10 +159,9 @@ impl DefaultCandidateProvider {
             }
             if let Some(file_id) =
                 resolve_or_inventory_candidate(&self.store, &project_root, &line)?
+                && seen.insert(file_id)
             {
-                if seen.insert(file_id) {
-                    file_ids.push(file_id);
-                }
+                file_ids.push(file_id);
             }
         }
         Ok(file_ids)
@@ -822,10 +821,10 @@ impl LazyStructuralService {
         }
 
         // CP5: check cancellation before extraction.
-        if let Some(t) = token {
-            if t.is_cancelled() {
-                return Ok(ReindexOutcome::Cancelled);
-            }
+        if let Some(t) = token
+            && t.is_cancelled()
+        {
+            return Ok(ReindexOutcome::Cancelled);
         }
 
         // Extract BEFORE any destructive invalidation — if extraction fails,
@@ -855,10 +854,10 @@ impl LazyStructuralService {
 
         // CP6: check cancellation before DB write — most critical checkpoint;
         // prevents completed extraction from writing to DB when budget exhausted.
-        if let Some(t) = token {
-            if t.is_cancelled() {
-                return Ok(ReindexOutcome::Cancelled);
-            }
+        if let Some(t) = token
+            && t.is_cancelled()
+        {
+            return Ok(ReindexOutcome::Cancelled);
         }
 
         // Invalidate cross-file references, delete outgoing edges, and
@@ -990,10 +989,10 @@ impl LazyStructuralService {
                 continue;
             }
             let file_id = resolve_or_inventory_candidate(&self.store, project_root, &rel)?;
-            if let Some(file_id) = file_id {
-                if seen.insert(file_id) {
-                    file_ids.push(file_id);
-                }
+            if let Some(file_id) = file_id
+                && seen.insert(file_id)
+            {
+                file_ids.push(file_id);
             }
         }
         Ok(file_ids)

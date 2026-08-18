@@ -455,14 +455,13 @@ impl ToolRouter {
             "file": self.project().store_query_runtime.resolve_file_path(&sym.file_id),
             "range": { "line": sym.range.start_line, "column": sym.range.start_column },
         });
-        if include_code {
-            if let Some(src) = self
+        if include_code
+            && let Some(src) = self
                 .project()
                 .store_query_runtime
                 .read_symbol_source(&sym.id)
-            {
-                result["source"] = json!(src);
-            }
+        {
+            result["source"] = json!(src);
         }
         // Surface include_roots and lazy-structural warnings to the caller.
         add_json_warnings(&mut result, root_warnings, lazy_warnings);
@@ -754,12 +753,13 @@ impl ToolRouter {
 
                 let (mut result, is_error) =
                     self.handle_symbol_detail(&serde_json::Value::Object(mapped));
-                if !warnings.is_empty() && !is_error {
-                    if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result) {
-                        add_json_warnings(&mut parsed, warnings.clone(), vec![]);
-                        if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
-                            result = pretty;
-                        }
+                if !warnings.is_empty()
+                    && !is_error
+                    && let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&result)
+                {
+                    add_json_warnings(&mut parsed, warnings.clone(), vec![]);
+                    if let Ok(pretty) = serde_json::to_string_pretty(&parsed) {
+                        result = pretty;
                     }
                 }
                 (result, is_error)

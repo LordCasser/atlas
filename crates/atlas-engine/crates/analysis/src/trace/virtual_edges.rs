@@ -140,21 +140,21 @@ impl TraceEdgeProvider for RuntimeEdgeProvider {
                             Some(dn_id) => dn_id,
                             None => continue,
                         };
-                        if let Some(param_idx) = param_index {
-                            if arg_idx == param_idx {
-                                edges.push(TraceEdge {
-                                    source_id: *arg_dn_id,
-                                    target_id: *target_id,
-                                    kind: DataFlowKind::ArgToParam,
-                                    confidence: 0.67,
-                                    provenance: format!(
-                                        "direct caller arg[{}] at callsite {} → callee param[{}]",
-                                        arg_idx,
-                                        hex::encode(cs.id.as_bytes()),
-                                        param_idx,
-                                    ),
-                                });
-                            }
+                        if let Some(param_idx) = param_index
+                            && arg_idx == param_idx
+                        {
+                            edges.push(TraceEdge {
+                                source_id: *arg_dn_id,
+                                target_id: *target_id,
+                                kind: DataFlowKind::ArgToParam,
+                                confidence: 0.67,
+                                provenance: format!(
+                                    "direct caller arg[{}] at callsite {} → callee param[{}]",
+                                    arg_idx,
+                                    hex::encode(cs.id.as_bytes()),
+                                    param_idx,
+                                ),
+                            });
                         }
                     }
                 }
@@ -175,26 +175,21 @@ impl TraceEdgeProvider for RuntimeEdgeProvider {
                                 None => continue,
                             };
                             // Check if this argument is a call result
-                            if let Ok(Some(arg_dn)) = store.get_data_node(arg_dn_id) {
-                                if arg_dn.kind == DataNodeKind::CallReturn
-                                    || arg_dn.kind == DataNodeKind::Expr
+                            if let Ok(Some(arg_dn)) = store.get_data_node(arg_dn_id)
+                                && (arg_dn.kind == DataNodeKind::CallReturn
+                                    || arg_dn.kind == DataNodeKind::Expr)
+                                && let Some(inner_csid) = arg_dn.callsite_id
+                                && let Ok(inner_rcs) =
+                                    store.find_resolved_callsites_by_id(&inner_csid)
+                                && let Some(inner_rc) = inner_rcs.first()
+                            {
+                                let inner_callee = &inner_rc.callee;
+                                if let Ok(inner_summary) =
+                                    crate::summary::SummaryBuilder::build(store, inner_callee, None)
                                 {
-                                    if let Some(inner_csid) = arg_dn.callsite_id {
-                                        if let Ok(inner_rcs) =
-                                            store.find_resolved_callsites_by_id(&inner_csid)
-                                        {
-                                            if let Some(inner_rc) = inner_rcs.first() {
-                                                let inner_callee = &inner_rc.callee;
-                                                if let Ok(inner_summary) =
-                                                    crate::summary::SummaryBuilder::build(
-                                                        store,
-                                                        inner_callee,
-                                                        None,
-                                                    )
-                                                {
-                                                    for rf in &inner_summary.return_flows {
-                                                        for src_id in &rf.sources {
-                                                            edges.push(TraceEdge {
+                                    for rf in &inner_summary.return_flows {
+                                        for src_id in &rf.sources {
+                                            edges.push(TraceEdge {
                                                                 source_id: *src_id,
                                                                 target_id: *target_id,
                                                                 kind: DataFlowKind::ReturnToCall,
@@ -205,10 +200,6 @@ impl TraceEdgeProvider for RuntimeEdgeProvider {
                                                                     hex::encode(inner_csid.as_bytes()),
                                                                 ),
                                                             });
-                                                        }
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
@@ -672,7 +663,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[sym.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
         sym.id
     }
 

@@ -243,10 +243,10 @@ impl GraphEngine {
         for &nix in node_ixs {
             for &eix in &self.snapshot.nodes[nix].outgoing {
                 let edge = self.snapshot.edge(eix);
-                if edge.kind == EdgeKind::Imports || edge.kind == EdgeKind::Includes {
-                    if let Some(dep_node) = self.snapshot.node_by_id(&edge.target) {
-                        deps.insert(dep_node.file_id);
-                    }
+                if (edge.kind == EdgeKind::Imports || edge.kind == EdgeKind::Includes)
+                    && let Some(dep_node) = self.snapshot.node_by_id(&edge.target)
+                {
+                    deps.insert(dep_node.file_id);
                 }
             }
         }

@@ -282,7 +282,7 @@ mod tests {
     fn test_forward_source_equals_target() {
         let h = TestHarness::new();
         let a = h.make_fun("a");
-        h.seed(&[a.clone()]);
+        h.seed(std::slice::from_ref(&a));
         // source == target: trivial path → None
         let result = ForwardPathExplorer::explore(h.store_ref(), &a.id, &a.id, 10).unwrap();
         assert!(result.is_none(), "source == target should return None");

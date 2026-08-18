@@ -512,10 +512,10 @@ fn walk_py_match_edges(
     if node.kind() == "match_statement" {
         let mut subjects = Vec::new();
         for index in 0..node.child_count() {
-            if node.field_name_for_child(index as u32) == Some("subject") {
-                if let Some(subject) = node.child(index as u32) {
-                    subjects.push(subject);
-                }
+            if node.field_name_for_child(index as u32) == Some("subject")
+                && let Some(subject) = node.child(index as u32)
+            {
+                subjects.push(subject);
             }
         }
 
@@ -639,15 +639,14 @@ fn qualified_name_from_node_py(
     let mut current = node;
 
     while let Some(parent) = current.parent() {
-        if parent.kind() == "class_definition" {
-            if let Some(child) = parent.child_by_field_name("name") {
-                if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                    // Skip if the class name equals the current segment's name
-                    // to avoid double-counting when starting from the name child.
-                    if class_name != name {
-                        parts.push(class_name.to_string());
-                    }
-                }
+        if parent.kind() == "class_definition"
+            && let Some(child) = parent.child_by_field_name("name")
+            && let Ok(class_name) = child.utf8_text(source.as_bytes())
+        {
+            // Skip if the class name equals the current segment's name
+            // to avoid double-counting when starting from the name child.
+            if class_name != name {
+                parts.push(class_name.to_string());
             }
         }
         current = parent;
@@ -777,19 +776,19 @@ fn extract_module_from_import_ancestor(node: tree_sitter::Node, source: &str) ->
         match parent.kind() {
             "import_statement" => {
                 // `import foo` — module is the name/dotted_name field
-                if let Some(name_child) = parent.child_by_field_name("name") {
-                    if let Some(m) = node_text(name_child, source) {
-                        return m;
-                    }
+                if let Some(name_child) = parent.child_by_field_name("name")
+                    && let Some(m) = node_text(name_child, source)
+                {
+                    return m;
                 }
                 break;
             }
             "import_from_statement" => {
                 // `from foo import bar` — module is the module_name field
-                if let Some(module_name) = parent.child_by_field_name("module_name") {
-                    if let Some(m) = node_text(module_name, source) {
-                        return m;
-                    }
+                if let Some(module_name) = parent.child_by_field_name("module_name")
+                    && let Some(m) = node_text(module_name, source)
+                {
+                    return m;
                 }
                 break;
             }

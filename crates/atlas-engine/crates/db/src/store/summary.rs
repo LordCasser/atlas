@@ -160,10 +160,10 @@ impl SummaryStore {
                 results.push((sym.id, summary));
             }
             // Report progress every 100 functions or on the last one
-            if idx % 100 == 0 || idx + 1 == total {
-                if let Some(ref cb) = on_progress {
-                    cb((idx + 1) as u64);
-                }
+            if (idx % 100 == 0 || idx + 1 == total)
+                && let Some(ref cb) = on_progress
+            {
+                cb((idx + 1) as u64);
             }
         }
 
@@ -603,7 +603,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[func_sym.clone()])?;
+        store.insert_symbols(std::slice::from_ref(&func_sym))?;
 
         // Build summary via build_for_function
         let function_id = func_sym.id;
@@ -698,7 +698,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[func_sym.clone()])?;
+        store.insert_symbols(std::slice::from_ref(&func_sym))?;
 
         let function_id = func_sym.id;
         let summary = test_summary(&function_id, &file_id);
@@ -932,7 +932,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".into(),
         };
-        store.insert_symbols(&[func_sym.clone()])?;
+        store.insert_symbols(std::slice::from_ref(&func_sym))?;
 
         // build_fn reads from the store via &dyn TraceStore — internally
         // calls lock_read().  On in-memory DBs this would deadlock if the

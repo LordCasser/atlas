@@ -670,12 +670,11 @@ impl ToolRouter {
         Option<atlas_engine::focus::runtime::FocusResult>,
         Vec<String>,
     ) {
-        if let Some(result) = self.replay_focus_result.as_ref() {
-            if result.pending_extraction_job_ids.is_empty()
-                || self.active_extraction_job_count(&result.pending_extraction_job_ids) > 0
-            {
-                return (Some(result.clone()), vec![]);
-            }
+        if let Some(result) = self.replay_focus_result.as_ref()
+            && (result.pending_extraction_job_ids.is_empty()
+                || self.active_extraction_job_count(&result.pending_extraction_job_ids) > 0)
+        {
+            return (Some(result.clone()), vec![]);
         }
 
         // No intent means there is no query strength from which to decide

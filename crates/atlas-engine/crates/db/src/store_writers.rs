@@ -1399,7 +1399,7 @@ mod tests {
         let conn = in_memory_conn_with_edges();
 
         let edge = make_raw_edge(0, true);
-        write_edges(&conn, &[edge.clone()]).unwrap();
+        write_edges(&conn, std::slice::from_ref(&edge)).unwrap();
 
         let mut stmt = conn
             .prepare(

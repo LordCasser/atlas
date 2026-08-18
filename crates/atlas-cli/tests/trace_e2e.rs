@@ -1841,9 +1841,9 @@ fn p5_ts_param_slice_caller_evidence_combined() {
         );
         // snippet requires a workspace root (TraceEngine::new_with_root).
         // In-memory store tests cannot provide it; CLI e2e tests verify snippet.
-        if ev.snippet.is_some() {
+        if let Some(snippet) = &ev.snippet {
             assert!(
-                !ev.snippet.as_ref().unwrap().is_empty(),
+                !snippet.is_empty(),
                 "step {i}: evidence.snippet must not be empty when present"
             );
         }
@@ -2006,9 +2006,9 @@ fn p5_js_param_slice_caller_evidence_combined() {
             "JS step {i}: evidence.file_path must be set"
         );
         // snippet requires workspace root; CLI e2e tests verify it.
-        if ev.snippet.is_some() {
+        if let Some(snippet) = &ev.snippet {
             assert!(
-                !ev.snippet.as_ref().unwrap().is_empty(),
+                !snippet.is_empty(),
                 "JS step {i}: snippet must not be empty when present"
             );
         }
@@ -2133,9 +2133,9 @@ fn p5_py_param_slice_caller_evidence_combined() {
                 "Python step {i}: evidence.file_path must be set"
             );
             // snippet requires workspace root; CLI e2e tests verify it.
-            if ev.snippet.is_some() {
+            if let Some(snippet) = &ev.snippet {
                 assert!(
-                    !ev.snippet.as_ref().unwrap().is_empty(),
+                    !snippet.is_empty(),
                     "Python step {i}: snippet must not be empty when present"
                 );
             }
@@ -2166,27 +2166,27 @@ fn p5_py_param_slice_caller_evidence_combined() {
         .expect("Python compute symbol not found");
 
     let caller_resp = engine.trace_callers(&compute_sym.id, 10);
-    if caller_resp.ok {
-        if let Some(ref chain) = caller_resp.result {
-            assert!(!chain.steps.is_empty(), "Python should have caller steps");
-            assert_eq!(
-                chain.target.name, "compute",
-                "Python chain target should be compute"
+    if caller_resp.ok
+        && let Some(ref chain) = caller_resp.result
+    {
+        assert!(!chain.steps.is_empty(), "Python should have caller steps");
+        assert_eq!(
+            chain.target.name, "compute",
+            "Python chain target should be compute"
+        );
+        for (i, step) in chain.steps.iter().enumerate() {
+            let ev = step
+                .evidence
+                .as_ref()
+                .unwrap_or_else(|| panic!("Python caller step {i}: evidence must exist"));
+            assert!(
+                !ev.file_path.is_empty(),
+                "Python caller step {i}: file_path must be set"
             );
-            for (i, step) in chain.steps.iter().enumerate() {
-                let ev = step
-                    .evidence
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("Python caller step {i}: evidence must exist"));
-                assert!(
-                    !ev.file_path.is_empty(),
-                    "Python caller step {i}: file_path must be set"
-                );
-                assert!(
-                    ev.symbol_name.is_some(),
-                    "Python caller step {i}: symbol_name must be set (provenance)"
-                );
-            }
+            assert!(
+                ev.symbol_name.is_some(),
+                "Python caller step {i}: symbol_name must be set (provenance)"
+            );
         }
     }
 }

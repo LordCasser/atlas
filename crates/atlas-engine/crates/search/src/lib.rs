@@ -164,10 +164,10 @@ impl SearchEngine {
             let mut candidates: Vec<(SymbolDef, usize)> = Vec::new();
             for sym in &all_symbols {
                 // Apply kind filter at scan level for consistent behavior
-                if let Some(kind) = options.kind_filter {
-                    if sym.kind != kind {
-                        continue;
-                    }
+                if let Some(kind) = options.kind_filter
+                    && sym.kind != kind
+                {
+                    continue;
                 }
                 let name_lower = sym.name.to_lowercase();
                 let name_snake = to_snake_case(&normalize_name_for_search(&sym.name));

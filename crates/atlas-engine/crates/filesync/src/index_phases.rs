@@ -506,10 +506,10 @@ pub fn phase_extract_parallel_cancellable(
             .par_iter()
             .filter_map(|rel_path| {
                 // Check cancel token before processing this file
-                if let Some(token) = cancel_token {
-                    if token.load(Ordering::Relaxed) {
-                        return None;
-                    }
+                if let Some(token) = cancel_token
+                    && token.load(Ordering::Relaxed)
+                {
+                    return None;
                 }
 
                 let abs_path = root.join(rel_path);
@@ -533,10 +533,10 @@ pub fn phase_extract_parallel_cancellable(
                 // Per-file progress: throttled to every 50 items to avoid
                 // AtomicUsize contention across rayon threads.
                 let c = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                if let Some(cb) = on_file_progress {
-                    if c % 50 == 0 || c == total {
-                        cb(c, total);
-                    }
+                if let Some(cb) = on_file_progress
+                    && (c.is_multiple_of(50) || c == total)
+                {
+                    cb(c, total);
                 }
 
                 result
@@ -980,10 +980,10 @@ pub fn phase_resolve_and_build(
     // Surface the serial post-passes (callback/decorator detection, edge write)
     // that run after the parallel loop has already reached 100%.
     let on_stage = |name: &str| {
-        if let Some(ps_mutex) = progress {
-            if let Ok(mut ps) = ps_mutex.lock() {
-                ps.set_message(name.to_string());
-            }
+        if let Some(ps_mutex) = progress
+            && let Ok(mut ps) = ps_mutex.lock()
+        {
+            ps.set_message(name.to_string());
         }
     };
 

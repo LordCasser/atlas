@@ -412,12 +412,11 @@ impl TraceEngine {
                 .filter(|c| c["in_project"].as_bool().unwrap_or(false))
                 .collect();
 
-            if in_project_candidates.len() == 1 {
-                if let Some(hex) = in_project_candidates[0]["hex_id"].as_str() {
-                    if let Ok(target_id) = hex.parse::<SymbolId>() {
-                        return self.trace_callers(&target_id, max_depth);
-                    }
-                }
+            if in_project_candidates.len() == 1
+                && let Some(hex) = in_project_candidates[0]["hex_id"].as_str()
+                && let Ok(target_id) = hex.parse::<SymbolId>()
+            {
+                return self.trace_callers(&target_id, max_depth);
             }
 
             let candidate_names: Vec<&str> = symbols
@@ -690,18 +689,17 @@ impl TraceEngine {
                 self.build_step_evidence_with_context(&step.file_id, &step.caller, callsite_line);
 
             // Caller snippet: the line where the call is made, with context.
-            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.caller) {
-                if let Some(ref fp) = self.resolve_file_path(&sym.file_id) {
-                    if let Some(cs_line) = callsite_line {
-                        step.caller_snippet = self.extract_context_snippet(fp, cs_line, 3);
-                    }
-                }
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.caller)
+                && let Some(ref fp) = self.resolve_file_path(&sym.file_id)
+                && let Some(cs_line) = callsite_line
+            {
+                step.caller_snippet = self.extract_context_snippet(fp, cs_line, 3);
             }
             // Callee snippet: first line of the callee definition (signature).
-            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.callee) {
-                if let Some(ref fp) = self.resolve_file_path(&sym.file_id) {
-                    step.callee_snippet = self.extract_snippet(fp, sym.range.start_line);
-                }
+            if let Ok(Some(sym)) = self.store.find_symbol_by_id(&step.callee)
+                && let Some(ref fp) = self.resolve_file_path(&sym.file_id)
+            {
+                step.callee_snippet = self.extract_snippet(fp, sym.range.start_line);
             }
         }
     }

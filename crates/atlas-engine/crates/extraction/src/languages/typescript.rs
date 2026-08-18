@@ -725,17 +725,17 @@ fn qualified_name_from_node(
             | "class"
             | "interface_declaration"
             | "enum_declaration" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(class_name.to_string());
-                    }
+                if let Some(child) = parent.child_by_field_name("name")
+                    && let Ok(class_name) = child.utf8_text(source.as_bytes())
+                {
+                    parts.push(class_name.to_string());
                 }
             }
             "namespace_declaration" | "module" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(ns_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(ns_name.to_string());
-                    }
+                if let Some(child) = parent.child_by_field_name("name")
+                    && let Ok(ns_name) = child.utf8_text(source.as_bytes())
+                {
+                    parts.push(ns_name.to_string());
                 }
             }
             _ => {}
@@ -888,12 +888,12 @@ fn extract_module_from_ancestor(node: tree_sitter::Node, source: &str) -> String
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "import_statement" {
-            if let Some(source_child) = parent.child_by_field_name("source") {
-                if let Some(module_path) = node_text(source_child, source) {
-                    return module_path
-                        .trim_matches(|c| c == '"' || c == '\'')
-                        .to_string();
-                }
+            if let Some(source_child) = parent.child_by_field_name("source")
+                && let Some(module_path) = node_text(source_child, source)
+            {
+                return module_path
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string();
             }
             break;
         }
@@ -907,12 +907,12 @@ fn extract_export_module_from_ancestor(node: tree_sitter::Node, source: &str) ->
     let mut current = node;
     while let Some(parent) = current.parent() {
         if parent.kind() == "export_statement" {
-            if let Some(source_child) = parent.child_by_field_name("source") {
-                if let Some(module_path) = node_text(source_child, source) {
-                    return module_path
-                        .trim_matches(|c| c == '"' || c == '\'')
-                        .to_string();
-                }
+            if let Some(source_child) = parent.child_by_field_name("source")
+                && let Some(module_path) = node_text(source_child, source)
+            {
+                return module_path
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string();
             }
             break;
         }
@@ -933,20 +933,17 @@ fn extract_require_module_from_variable_declarator(
     let mut current = node.parent();
     while let Some(parent) = current {
         if parent.kind() == "variable_declarator" {
-            if let Some(value) = parent.child_by_field_name("value") {
-                if let Some(args) = value.child_by_field_name("arguments") {
-                    // Find the first string child of the arguments node
-                    let count = args.child_count();
-                    for i in 0..count {
-                        if let Some(child) = args.child(i as u32) {
-                            if child.kind() == "string" {
-                                if let Some(text) = node_text(child, source) {
-                                    return text
-                                        .trim_matches(|c| c == '"' || c == '\'')
-                                        .to_string();
-                                }
-                            }
-                        }
+            if let Some(value) = parent.child_by_field_name("value")
+                && let Some(args) = value.child_by_field_name("arguments")
+            {
+                // Find the first string child of the arguments node
+                let count = args.child_count();
+                for i in 0..count {
+                    if let Some(child) = args.child(i as u32)
+                        && child.kind() == "string"
+                        && let Some(text) = node_text(child, source)
+                    {
+                        return text.trim_matches(|c| c == '"' || c == '\'').to_string();
                     }
                 }
             }

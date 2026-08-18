@@ -653,10 +653,10 @@ impl ClosureEngine {
                         arr.copy_from_slice(target_blob);
                         let target_sym_id = SymbolId::from_bytes(arr);
                         relevant_symbols.insert(target_sym_id);
-                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&target_sym_id) {
-                            if !closure.visited.contains(&file_id) {
-                                result.insert(file_id);
-                            }
+                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&target_sym_id)
+                            && !closure.visited.contains(&file_id)
+                        {
+                            result.insert(file_id);
                         }
                     }
                 }
@@ -687,10 +687,10 @@ impl ClosureEngine {
                         arr.copy_from_slice(source_blob);
                         let source_sym_id = SymbolId::from_bytes(arr);
                         relevant_symbols.insert(source_sym_id);
-                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&source_sym_id) {
-                            if !closure.visited.contains(&file_id) {
-                                result.insert(file_id);
-                            }
+                        if let Ok(Some(file_id)) = self.store.find_symbol_file(&source_sym_id)
+                            && !closure.visited.contains(&file_id)
+                        {
+                            result.insert(file_id);
                         }
                     }
                 }

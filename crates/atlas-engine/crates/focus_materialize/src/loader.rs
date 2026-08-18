@@ -45,10 +45,11 @@ fn structural_facts_fresh(store: &Store, file_id: &FileId) -> bool {
         return false;
     };
     for layer in [LAYER_STRUCTURAL, LAYER_DATAFLOW] {
-        if let Ok(Some((status, hash))) = store.get_file_extraction_state(file_id, layer) {
-            if status == STATUS_COMPLETE && hash == file.content_hash {
-                return true;
-            }
+        if let Ok(Some((status, hash))) = store.get_file_extraction_state(file_id, layer)
+            && status == STATUS_COMPLETE
+            && hash == file.content_hash
+        {
+            return true;
         }
     }
     false
@@ -277,10 +278,10 @@ impl LazyDataflowLoader {
                 // joins (update_callsite_arg_data_nodes,
                 // find_data_nodes_by_callsite) operate on real IDs.
                 for dn in &mut unit_payload.data_nodes {
-                    if let Some(ref provisional) = dn.callsite_id {
-                        if let Some(real) = cs_id_map.get(provisional) {
-                            dn.callsite_id = Some(*real);
-                        }
+                    if let Some(ref provisional) = dn.callsite_id
+                        && let Some(real) = cs_id_map.get(provisional)
+                    {
+                        dn.callsite_id = Some(*real);
                     }
                 }
 

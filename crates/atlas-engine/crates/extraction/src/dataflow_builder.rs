@@ -301,15 +301,15 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
                 let mut found: Option<&BindingId> = None;
                 let mut current = Some(scope_id);
                 while let Some(sid) = current {
-                    if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
-                        if let Some(b) = crate::languages::shared::latest_visible_binding(
+                    if let Some(bindings_in_scope) = scope_bindings.get(&sid)
+                        && let Some(b) = crate::languages::shared::latest_visible_binding(
                             bindings_in_scope.iter().copied(),
                             name,
                             node.range.start_byte,
-                        ) {
-                            found = Some(&b.id);
-                            break;
-                        }
+                        )
+                    {
+                        found = Some(&b.id);
+                        break;
                     }
                     current = parent_map.get(&sid).and_then(|&maybe_parent| maybe_parent);
                 }
@@ -585,99 +585,96 @@ fn walk_for_assign_edges(
     }
 
     // ── assignment_expression / assignment: left ← right ──────────────
-    if kind == "assignment_expression" || kind == "assignment" {
-        if let (Some(left_node), Some(right_node)) = (
+    if (kind == "assignment_expression" || kind == "assignment")
+        && let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
-        ) {
-            let left_start = left_node.start_byte() as u32;
-            let left_end = left_node.end_byte() as u32;
-            // Try simple (non‑destructuring) target first
-            if let Some(&id) = pos_map.get(&NodePosKey {
-                start_byte: left_start,
-                end_byte: left_end,
-                kind: DataNodeKind::Field,
-            }) {
-                let right_key = NodePosKey {
-                    start_byte: right_node.start_byte() as u32,
-                    end_byte: right_node.end_byte() as u32,
-                    kind: DataNodeKind::Expr,
-                };
-                if let Some(&source_id) = pos_map.get(&right_key) {
-                    let eid = DataFlowEdgeId::generate(
-                        &source_id,
-                        &id,
-                        DataFlowKind::FieldStore.as_str(),
-                    );
-                    edges.push(DataFlowEdge::new(
-                        eid,
-                        source_id,
-                        id,
-                        DataFlowKind::FieldStore,
-                        ts_node_range(&left_node),
-                        0.90,
-                    ));
-                }
-            } else if let Some(&id) = pos_map.get(&NodePosKey {
-                start_byte: left_start,
-                end_byte: left_end,
-                kind: DataNodeKind::Local,
-            }) {
-                let right_key = NodePosKey {
-                    start_byte: right_node.start_byte() as u32,
-                    end_byte: right_node.end_byte() as u32,
-                    kind: DataNodeKind::Expr,
-                };
-                if let Some(&source_id) = pos_map.get(&right_key) {
-                    let eid =
-                        DataFlowEdgeId::generate(&source_id, &id, DataFlowKind::Assign.as_str());
-                    edges.push(DataFlowEdge::new(
-                        eid,
-                        source_id,
-                        id,
-                        DataFlowKind::Assign,
-                        ts_node_range(&left_node),
-                        0.90,
-                    ));
-                }
+        )
+    {
+        let left_start = left_node.start_byte() as u32;
+        let left_end = left_node.end_byte() as u32;
+        // Try simple (non‑destructuring) target first
+        if let Some(&id) = pos_map.get(&NodePosKey {
+            start_byte: left_start,
+            end_byte: left_end,
+            kind: DataNodeKind::Field,
+        }) {
+            let right_key = NodePosKey {
+                start_byte: right_node.start_byte() as u32,
+                end_byte: right_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let Some(&source_id) = pos_map.get(&right_key) {
+                let eid =
+                    DataFlowEdgeId::generate(&source_id, &id, DataFlowKind::FieldStore.as_str());
+                edges.push(DataFlowEdge::new(
+                    eid,
+                    source_id,
+                    id,
+                    DataFlowKind::FieldStore,
+                    ts_node_range(&left_node),
+                    0.90,
+                ));
             }
-            // Destructuring assignment: a, b = expr
-            // The left node is pattern_list / tuple_pattern / list_pattern.
-            // Create Assign edges from the RHS expression to each identifier target.
-            else if matches!(
-                left_node.kind(),
-                "pattern_list" | "tuple_pattern" | "list_pattern"
-            ) {
-                let right_key = NodePosKey {
-                    start_byte: right_node.start_byte() as u32,
-                    end_byte: right_node.end_byte() as u32,
-                    kind: DataNodeKind::Expr,
-                };
-                if let Some(&source_id) = pos_map.get(&right_key) {
-                    for i in 0..left_node.child_count() {
-                        if let Some(child) = left_node.child(i as u32) {
-                            if child.is_named() && child.kind() == "identifier" {
-                                let child_key = NodePosKey {
-                                    start_byte: child.start_byte() as u32,
-                                    end_byte: child.end_byte() as u32,
-                                    kind: DataNodeKind::Local,
-                                };
-                                if let Some(&target_id) = pos_map.get(&child_key) {
-                                    let eid = DataFlowEdgeId::generate(
-                                        &source_id,
-                                        &target_id,
-                                        DataFlowKind::Assign.as_str(),
-                                    );
-                                    edges.push(DataFlowEdge::new(
-                                        eid,
-                                        source_id,
-                                        target_id,
-                                        DataFlowKind::Assign,
-                                        ts_node_range(&child),
-                                        0.90,
-                                    ));
-                                }
-                            }
+        } else if let Some(&id) = pos_map.get(&NodePosKey {
+            start_byte: left_start,
+            end_byte: left_end,
+            kind: DataNodeKind::Local,
+        }) {
+            let right_key = NodePosKey {
+                start_byte: right_node.start_byte() as u32,
+                end_byte: right_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let Some(&source_id) = pos_map.get(&right_key) {
+                let eid = DataFlowEdgeId::generate(&source_id, &id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    eid,
+                    source_id,
+                    id,
+                    DataFlowKind::Assign,
+                    ts_node_range(&left_node),
+                    0.90,
+                ));
+            }
+        }
+        // Destructuring assignment: a, b = expr
+        // The left node is pattern_list / tuple_pattern / list_pattern.
+        // Create Assign edges from the RHS expression to each identifier target.
+        else if matches!(
+            left_node.kind(),
+            "pattern_list" | "tuple_pattern" | "list_pattern"
+        ) {
+            let right_key = NodePosKey {
+                start_byte: right_node.start_byte() as u32,
+                end_byte: right_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let Some(&source_id) = pos_map.get(&right_key) {
+                for i in 0..left_node.child_count() {
+                    if let Some(child) = left_node.child(i as u32)
+                        && child.is_named()
+                        && child.kind() == "identifier"
+                    {
+                        let child_key = NodePosKey {
+                            start_byte: child.start_byte() as u32,
+                            end_byte: child.end_byte() as u32,
+                            kind: DataNodeKind::Local,
+                        };
+                        if let Some(&target_id) = pos_map.get(&child_key) {
+                            let eid = DataFlowEdgeId::generate(
+                                &source_id,
+                                &target_id,
+                                DataFlowKind::Assign.as_str(),
+                            );
+                            edges.push(DataFlowEdge::new(
+                                eid,
+                                source_id,
+                                target_id,
+                                DataFlowKind::Assign,
+                                ts_node_range(&child),
+                                0.90,
+                            ));
                         }
                     }
                 }
@@ -686,46 +683,43 @@ fn walk_for_assign_edges(
     }
 
     // ── C/C++: init_declarator (int x = expr) ──────────────────────────
-    if kind == "init_declarator" {
-        if let (Some(name_node), Some(value_node)) = (
+    if kind == "init_declarator"
+        && let (Some(name_node), Some(value_node)) = (
             node.child_by_field_name("declarator"),
             node.child_by_field_name("value"),
-        ) {
-            // declarator may be an identifier or pointer_declarator wrapping one
-            let actual_name = if name_node.kind() == "identifier" {
-                Some(name_node)
-            } else {
-                // pointer_declarator, array_declarator, etc. — find inner identifier
-                find_identifier_child(name_node)
+        )
+    {
+        // declarator may be an identifier or pointer_declarator wrapping one
+        let actual_name = if name_node.kind() == "identifier" {
+            Some(name_node)
+        } else {
+            // pointer_declarator, array_declarator, etc. — find inner identifier
+            find_identifier_child(name_node)
+        };
+        if let Some(id_node) = actual_name {
+            let name_key = NodePosKey {
+                start_byte: id_node.start_byte() as u32,
+                end_byte: id_node.end_byte() as u32,
+                kind: DataNodeKind::Local,
             };
-            if let Some(id_node) = actual_name {
-                let name_key = NodePosKey {
-                    start_byte: id_node.start_byte() as u32,
-                    end_byte: id_node.end_byte() as u32,
-                    kind: DataNodeKind::Local,
-                };
-                let value_key = NodePosKey {
-                    start_byte: value_node.start_byte() as u32,
-                    end_byte: value_node.end_byte() as u32,
-                    kind: DataNodeKind::Expr,
-                };
-                if let (Some(&target_id), Some(&source_id)) =
-                    (pos_map.get(&name_key), pos_map.get(&value_key))
-                {
-                    let edge_id = DataFlowEdgeId::generate(
-                        &source_id,
-                        &target_id,
-                        DataFlowKind::Assign.as_str(),
-                    );
-                    edges.push(DataFlowEdge::new(
-                        edge_id,
-                        source_id,
-                        target_id,
-                        DataFlowKind::Assign,
-                        ts_node_range(&id_node),
-                        0.90,
-                    ));
-                }
+            let value_key = NodePosKey {
+                start_byte: value_node.start_byte() as u32,
+                end_byte: value_node.end_byte() as u32,
+                kind: DataNodeKind::Expr,
+            };
+            if let (Some(&target_id), Some(&source_id)) =
+                (pos_map.get(&name_key), pos_map.get(&value_key))
+            {
+                let edge_id =
+                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+                edges.push(DataFlowEdge::new(
+                    edge_id,
+                    source_id,
+                    target_id,
+                    DataFlowKind::Assign,
+                    ts_node_range(&id_node),
+                    0.90,
+                ));
             }
         }
     }
@@ -795,10 +789,10 @@ fn find_identifier_child(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
         return Some(node);
     }
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            if let Some(found) = find_identifier_child(child) {
-                return Some(found);
-            }
+        if let Some(child) = node.child(i as u32)
+            && let Some(found) = find_identifier_child(child)
+        {
+            return Some(found);
         }
     }
     None
@@ -928,27 +922,27 @@ fn build_dataflow_edges(
 
         for arg in &call_args {
             // Primary strategy: match by callsite_id group
-            if let Some(cid) = arg.callsite_id {
-                if let Some(matching_targets) = targets_by_group.get(&Some(cid)) {
-                    for target in matching_targets {
-                        if target.function_id == arg.function_id {
-                            let edge_id = DataFlowEdgeId::generate(
-                                &arg.id,
-                                &target.id,
-                                DataFlowKind::ArgToCall.as_str(),
-                            );
-                            edges.push(DataFlowEdge::new(
-                                edge_id,
-                                arg.id,
-                                target.id,
-                                DataFlowKind::ArgToCall,
-                                arg.range,
-                                0.75,
-                            ));
-                        }
+            if let Some(cid) = arg.callsite_id
+                && let Some(matching_targets) = targets_by_group.get(&Some(cid))
+            {
+                for target in matching_targets {
+                    if target.function_id == arg.function_id {
+                        let edge_id = DataFlowEdgeId::generate(
+                            &arg.id,
+                            &target.id,
+                            DataFlowKind::ArgToCall.as_str(),
+                        );
+                        edges.push(DataFlowEdge::new(
+                            edge_id,
+                            arg.id,
+                            target.id,
+                            DataFlowKind::ArgToCall,
+                            arg.range,
+                            0.75,
+                        ));
                     }
-                    continue; // matched by group — skip fallback
                 }
+                continue; // matched by group — skip fallback
             }
 
             // Fallback: "most recent preceding target" heuristic

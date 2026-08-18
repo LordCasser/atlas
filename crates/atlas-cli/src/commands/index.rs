@@ -105,10 +105,10 @@ pub fn run_with_options(
         .unwrap_or_else(|e| Err(anyhow::anyhow!("Worker thread panicked: {e:?}")));
 
     // Report worker result (whether it completed or was interrupted).
-    if let Err(ref e) = worker_result {
-        if was_interrupted {
-            tracing::warn!("worker thread returned error during interrupt: {:?}", e);
-        }
+    if let Err(ref e) = worker_result
+        && was_interrupted
+    {
+        tracing::warn!("worker thread returned error during interrupt: {:?}", e);
     }
 
     if was_interrupted {

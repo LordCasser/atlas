@@ -278,17 +278,17 @@ fn qualified_name_from_node_cpp(name: &str, node: tree_sitter::Node, source: &st
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class_specifier" | "struct_specifier" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(class_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(class_name.to_string());
-                    }
+                if let Some(child) = parent.child_by_field_name("name")
+                    && let Ok(class_name) = child.utf8_text(source.as_bytes())
+                {
+                    parts.push(class_name.to_string());
                 }
             }
             "namespace_definition" => {
-                if let Some(child) = parent.child_by_field_name("name") {
-                    if let Ok(ns_name) = child.utf8_text(source.as_bytes()) {
-                        parts.push(ns_name.to_string());
-                    }
+                if let Some(child) = parent.child_by_field_name("name")
+                    && let Ok(ns_name) = child.utf8_text(source.as_bytes())
+                {
+                    parts.push(ns_name.to_string());
                 }
             }
             _ => {}

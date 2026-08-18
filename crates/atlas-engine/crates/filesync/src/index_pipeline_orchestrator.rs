@@ -186,14 +186,14 @@ impl IndexPipeline {
         });
 
         let deleted_count = dirty_set.deleted.len();
-        if !dirty_set.deleted.is_empty() {
-            if let Err(e) = phase_cleanup_stale(&self.store, &dirty_set.deleted) {
-                sink.emit(ProgressEvent::Warning {
-                    phase: PhaseName::Cleanup,
-                    message: format!("{e:#}"),
-                });
-                return Err(e);
-            }
+        if !dirty_set.deleted.is_empty()
+            && let Err(e) = phase_cleanup_stale(&self.store, &dirty_set.deleted)
+        {
+            sink.emit(ProgressEvent::Warning {
+                phase: PhaseName::Cleanup,
+                message: format!("{e:#}"),
+            });
+            return Err(e);
         }
 
         // Convert dirty paths to FileIds for per-ID cleanup before re-extraction.
@@ -213,14 +213,14 @@ impl IndexPipeline {
             }
         };
         let stale_count = stale_ids.len();
-        if !stale_ids.is_empty() {
-            if let Err(e) = phase_cleanup_file_ids(&self.store, &stale_ids) {
-                sink.emit(ProgressEvent::Warning {
-                    phase: PhaseName::Cleanup,
-                    message: format!("{e:#}"),
-                });
-                return Err(e);
-            }
+        if !stale_ids.is_empty()
+            && let Err(e) = phase_cleanup_file_ids(&self.store, &stale_ids)
+        {
+            sink.emit(ProgressEvent::Warning {
+                phase: PhaseName::Cleanup,
+                message: format!("{e:#}"),
+            });
+            return Err(e);
         }
 
         sink.emit(ProgressEvent::PhaseFinished {

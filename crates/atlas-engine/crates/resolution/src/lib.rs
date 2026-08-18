@@ -169,28 +169,12 @@ fn resolve_one_core(
             // Try fuzzy-with-proximity before full global scan.
             if let Some(fid) = proximity_file_id {
                 let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
-                if !fuzzy_prox.is_empty() {
-                    if let Some(matched) =
+                if !fuzzy_prox.is_empty()
+                    && let Some(matched) =
                         name_matcher.best_match(&fuzzy_prox, &reference.name, Confidence::new(0.4))
-                    {
-                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                        S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return Some(ResolvedTarget {
-                            symbol_id: matched.symbol_id,
-                            confidence: matched.confidence,
-                            strategy: ResolutionStrategy::FuzzyMatch,
-                            provenance: Provenance::Heuristic,
-                        });
-                    }
-                }
-            }
-            let fuzzy = idx.fuzzy_search(&reference.name, 2);
-            if !fuzzy.is_empty() {
-                if let Some(matched) =
-                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
                 {
                     S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
                     return Some(ResolvedTarget {
                         symbol_id: matched.symbol_id,
                         confidence: matched.confidence,
@@ -198,6 +182,20 @@ fn resolve_one_core(
                         provenance: Provenance::Heuristic,
                     });
                 }
+            }
+            let fuzzy = idx.fuzzy_search(&reference.name, 2);
+            if !fuzzy.is_empty()
+                && let Some(matched) =
+                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
+            {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
             }
         }
     }
@@ -227,46 +225,40 @@ pub(crate) fn resolve_contextual_strategies(
     // Strategy 2: Scope-local exact match
     {
         let _timer = StrategyTimer::new(&S2_TIME_NS);
-        if let Some(scope_id) = reference.scope_id {
-            if let Some(sym) = ctx
+        if let Some(scope_id) = reference.scope_id
+            && let Some(sym) = ctx
                 .lookup_scoped(scope_id, &reference.name)
                 .filter(|sym| scoped_kind_is_compatible(reference.kind, sym.kind))
-            {
-                S2_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(ResolvedTarget {
-                    symbol_id: sym.id,
-                    confidence: Confidence::certain(),
-                    strategy: ResolutionStrategy::ExactMatch,
-                    provenance: Provenance::TreeSitter,
-                });
-            }
+        {
+            S2_COUNT.fetch_add(1, Ordering::Relaxed);
+            return Some(ResolvedTarget {
+                symbol_id: sym.id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::ExactMatch,
+                provenance: Provenance::TreeSitter,
+            });
         }
     }
 
     // Strategy 3: Container/class-local
     {
         let _timer = StrategyTimer::new(&S3_TIME_NS);
-        if let Some(source_sym) = reference.source_symbol {
-            if let Some(source) = ctx.symbols_by_id.get(&source_sym) {
-                if let Some(container) = source.container {
-                    if let Some(container_sym) = ctx.symbols_by_id.get(&container) {
-                        if let Some(scope) = container_sym.scope_id {
-                            if let Some(sym) = ctx
-                                .lookup_scoped(scope, &reference.name)
-                                .filter(|sym| scoped_kind_is_compatible(reference.kind, sym.kind))
-                            {
-                                S3_COUNT.fetch_add(1, Ordering::Relaxed);
-                                return Some(ResolvedTarget {
-                                    symbol_id: sym.id,
-                                    confidence: Confidence::certain(),
-                                    strategy: ResolutionStrategy::ExactMatch,
-                                    provenance: Provenance::TreeSitter,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(source_sym) = reference.source_symbol
+            && let Some(source) = ctx.symbols_by_id.get(&source_sym)
+            && let Some(container) = source.container
+            && let Some(container_sym) = ctx.symbols_by_id.get(&container)
+            && let Some(scope) = container_sym.scope_id
+            && let Some(sym) = ctx
+                .lookup_scoped(scope, &reference.name)
+                .filter(|sym| scoped_kind_is_compatible(reference.kind, sym.kind))
+        {
+            S3_COUNT.fetch_add(1, Ordering::Relaxed);
+            return Some(ResolvedTarget {
+                symbol_id: sym.id,
+                confidence: Confidence::certain(),
+                strategy: ResolutionStrategy::ExactMatch,
+                provenance: Provenance::TreeSitter,
+            });
         }
     }
 
@@ -300,42 +292,39 @@ pub(crate) fn resolve_contextual_strategies(
                 let import_local = import.local_name.as_deref().unwrap_or("");
                 let matches_by_alias = !import_local.is_empty() && import_local == reference.name;
 
-                if let Ok(candidates) = import_resolver.resolve_import(import) {
-                    if let Ok(chain_candidates) =
+                if let Ok(candidates) = import_resolver.resolve_import(import)
+                    && let Ok(chain_candidates) =
                         import_resolver.resolve_through_reexports(import, candidates.clone())
+                {
+                    let chain_remapped = chain_candidates
+                        .iter()
+                        .any(|candidate| !candidates.iter().any(|c| c.id == candidate.id));
+                    let compatible = chain_candidates
+                        .iter()
+                        .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if (matches_by_alias || chain_remapped)
+                        && let Some(first) = compatible.first()
                     {
-                        let chain_remapped = chain_candidates
-                            .iter()
-                            .any(|candidate| !candidates.iter().any(|c| c.id == candidate.id));
-                        let compatible = chain_candidates
-                            .iter()
-                            .filter(|symbol| scoped_kind_is_compatible(reference.kind, symbol.kind))
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if matches_by_alias || chain_remapped {
-                            if let Some(first) = compatible.first() {
-                                S5_COUNT.fetch_add(1, Ordering::Relaxed);
-                                return Some(ResolvedTarget {
-                                    symbol_id: first.id,
-                                    confidence: Confidence::new(0.8),
-                                    strategy: ResolutionStrategy::ImportResolved,
-                                    provenance: Provenance::Heuristic,
-                                });
-                            }
-                        }
-                        if let Some(matched) = name_matcher.best_match(
-                            &compatible,
-                            &reference.name,
-                            Confidence::certain(),
-                        ) {
-                            S5_COUNT.fetch_add(1, Ordering::Relaxed);
-                            return Some(ResolvedTarget {
-                                symbol_id: matched.symbol_id,
-                                confidence: Confidence::new(0.8),
-                                strategy: ResolutionStrategy::ImportResolved,
-                                provenance: Provenance::Heuristic,
-                            });
-                        }
+                        S5_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(ResolvedTarget {
+                            symbol_id: first.id,
+                            confidence: Confidence::new(0.8),
+                            strategy: ResolutionStrategy::ImportResolved,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                    if let Some(matched) =
+                        name_matcher.best_match(&compatible, &reference.name, Confidence::certain())
+                    {
+                        S5_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: Confidence::new(0.8),
+                            strategy: ResolutionStrategy::ImportResolved,
+                            provenance: Provenance::Heuristic,
+                        });
                     }
                 }
             }
@@ -590,20 +579,19 @@ impl ResolutionSession {
         }
         if should_run_fuzzy_fallback_for_reference(reference) {
             let fuzzy = self.global_index.fuzzy_search(&reference.name, 2);
-            if !fuzzy.is_empty() {
-                if let Some(matched) =
+            if !fuzzy.is_empty()
+                && let Some(matched) =
                     self.name_matcher
                         .best_match(&fuzzy, &reference.name, Confidence::new(0.4))
-                {
-                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return Some(ResolvedTarget {
-                        symbol_id: matched.symbol_id,
-                        confidence: matched.confidence,
-                        strategy: ResolutionStrategy::FuzzyMatch,
-                        provenance: Provenance::Heuristic,
-                    });
-                }
+            {
+                S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
+                return Some(ResolvedTarget {
+                    symbol_id: matched.symbol_id,
+                    confidence: matched.confidence,
+                    strategy: ResolutionStrategy::FuzzyMatch,
+                    provenance: Provenance::Heuristic,
+                });
             }
         }
         MISS_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -1415,10 +1403,10 @@ impl ReferenceResolver {
             }
         }
 
-        if !batch.is_empty() {
-            if let Err(e) = self.store.batch_insert_reference_resolutions(&batch) {
-                stats.add_warning(format!("batch insert failed: {e}"));
-            }
+        if !batch.is_empty()
+            && let Err(e) = self.store.batch_insert_reference_resolutions(&batch)
+        {
+            stats.add_warning(format!("batch insert failed: {e}"));
         }
 
         Ok((resolved_pairs, stats))

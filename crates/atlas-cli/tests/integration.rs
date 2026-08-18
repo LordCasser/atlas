@@ -832,10 +832,10 @@ function main() {
 
     let mut args_with_data_node = 0usize;
     for (i, arg) in call_cs.args.iter().enumerate() {
-        if arg.data_node_id.is_some() {
+        if let Some(data_node_id) = arg.data_node_id.as_ref() {
             args_with_data_node += 1;
             // Sanity: the data_node_id should point to a real DataNode
-            let dn = store.get_data_node(&arg.data_node_id.unwrap()).unwrap();
+            let dn = store.get_data_node(data_node_id).unwrap();
             assert!(
                 dn.is_some(),
                 "arg[{i}].data_node_id → DataNode not found in DB"
@@ -953,14 +953,15 @@ function main(): number {
     for (src_id, edge) in &arg_to_call_edges {
         let src_node = nodes.iter().find(|n| n.id == *src_id);
         let tgt_node = nodes.iter().find(|n| n.id == edge.target);
-        if let (Some(src), Some(tgt)) = (src_node, tgt_node) {
-            if src.callsite_id != tgt.callsite_id && src.callsite_id.is_some() {
-                mismatches += 1;
-                eprintln!(
-                    "MISMATCH: src={:?} (cs_id={:?}) -> tgt={:?} (cs_id={:?})",
-                    src.access_path, src.callsite_id, tgt.access_path, tgt.callsite_id
-                );
-            }
+        if let (Some(src), Some(tgt)) = (src_node, tgt_node)
+            && src.callsite_id != tgt.callsite_id
+            && src.callsite_id.is_some()
+        {
+            mismatches += 1;
+            eprintln!(
+                "MISMATCH: src={:?} (cs_id={:?}) -> tgt={:?} (cs_id={:?})",
+                src.access_path, src.callsite_id, tgt.access_path, tgt.callsite_id
+            );
         }
     }
     assert_eq!(
@@ -984,10 +985,10 @@ function main(): number {
     if let Some(arg_20) = arg_20 {
         let mut edges_to_20 = Vec::new();
         for ca in &call_args {
-            if ca.id == arg_20.id {
-                if let Ok(edges) = store.find_dataflow_edges_by_source(&ca.id) {
-                    edges_to_20.extend(edges);
-                }
+            if ca.id == arg_20.id
+                && let Ok(edges) = store.find_dataflow_edges_by_source(&ca.id)
+            {
+                edges_to_20.extend(edges);
             }
         }
         // arg 20 should have edges targeting foo-related nodes (not bar)
@@ -1165,10 +1166,10 @@ function bar() {
             for edge in &edges {
                 let src_fn = node_fn.get(&edge.source);
                 let tgt_fn = node_fn.get(&edge.target);
-                if let (Some(&sf), Some(&tf)) = (src_fn, tgt_fn) {
-                    if sf != tf {
-                        cross_fn_edges.push((edge.source, edge.target));
-                    }
+                if let (Some(&sf), Some(&tf)) = (src_fn, tgt_fn)
+                    && sf != tf
+                {
+                    cross_fn_edges.push((edge.source, edge.target));
                 }
             }
         }
@@ -2643,17 +2644,16 @@ class MultiDemo
         if let Some(exit_node) = cfg_nodes
             .iter()
             .find(|n| n.kind == atlas_engine::CfgNodeKind::Exit)
+            && let Some(exit_effects) = effects.get(&exit_node.id)
         {
-            if let Some(exit_effects) = effects.get(&exit_node.id) {
-                let has_scope_exit_free = exit_effects.iter().any(|eff| {
-                    matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
+            let has_scope_exit_free = exit_effects.iter().any(|eff| {
+                matches!(&eff.kind, SemanticEffectKind::Free { callee, .. }
                         if callee.contains("<scope-exit>") || callee.contains("<block-exit>"))
-                });
-                assert!(
-                    !has_scope_exit_free,
-                    "Exit node should NOT have scope/block-exit Frees when BlockExit was reached"
-                );
-            }
+            });
+            assert!(
+                !has_scope_exit_free,
+                "Exit node should NOT have scope/block-exit Frees when BlockExit was reached"
+            );
         }
     }
 }

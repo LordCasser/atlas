@@ -45,7 +45,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     // 0. Collect Return/Escape value names (to skip auto-free for escaped resources)
     let mut escaped_locals: HashSet<String> = HashSet::new();
     let mut escaped_call_returns: HashSet<String> = HashSet::new();
-    for (_node_id, node_effects) in effects.iter() {
+    for node_effects in effects.values() {
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Return { value } => {
@@ -64,7 +64,7 @@ pub fn run_scope_exit_pass(effects: &mut HashMap<CfgNodeId, Vec<SemanticEffect>>
     // (node_id, effect_order, place, callee, managed_scope_start_byte, eligible)
     let mut freed_places: Vec<PlaceRef> = Vec::new();
 
-    for (_node_id, node_effects) in effects.iter() {
+    for node_effects in effects.values() {
         for effect in node_effects {
             match &effect.kind {
                 SemanticEffectKind::Alloc { target, callee } => {

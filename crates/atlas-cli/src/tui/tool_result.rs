@@ -397,11 +397,11 @@ fn format_named_value(
 ) {
     let indent = "  ".repeat(depth);
     let label = humanize_key(key);
-    if matches!(key, "sourceExcerpt" | "source_excerpt") {
-        if let Some(object) = value.as_object() {
-            format_source_excerpt(object, depth, lines);
-            return;
-        }
+    if matches!(key, "sourceExcerpt" | "source_excerpt")
+        && let Some(object) = value.as_object()
+    {
+        format_source_excerpt(object, depth, lines);
+        return;
     }
     match value {
         Value::Null => {}

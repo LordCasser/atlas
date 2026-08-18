@@ -384,10 +384,10 @@ fn qualified_name_from_node_ruby(
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class" | "module" => {
-                if let Some(type_name) = parent.child_by_field_name("name") {
-                    if let Ok(type_str) = type_name.utf8_text(source.as_bytes()) {
-                        parts.push(type_str.to_string());
-                    }
+                if let Some(type_name) = parent.child_by_field_name("name")
+                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(type_str.to_string());
                 }
             }
             _ => {}
@@ -453,13 +453,13 @@ fn ruby_import_info(
 fn find_ancestor_method_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        if parent.kind() == "call" {
-            if let Some(method) = parent.child_by_field_name("method") {
-                return method
-                    .utf8_text(source.as_bytes())
-                    .ok()
-                    .map(|s| s.to_string());
-            }
+        if parent.kind() == "call"
+            && let Some(method) = parent.child_by_field_name("method")
+        {
+            return method
+                .utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| s.to_string());
         }
         current = parent.parent();
     }

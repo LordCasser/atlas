@@ -165,12 +165,13 @@ pub(crate) fn arkts_decorator_fallback(
         while ignored.get(ignored_index).is_some_and(|(_, end)| *end <= i) {
             ignored_index += 1;
         }
-        if let Some((start, end)) = ignored.get(ignored_index).copied() {
-            if i >= start && i < end {
-                i = end;
-                ignored_index += 1;
-                continue;
-            }
+        if let Some((start, end)) = ignored.get(ignored_index).copied()
+            && i >= start
+            && i < end
+        {
+            i = end;
+            ignored_index += 1;
+            continue;
         }
 
         if bytes[i] == b'@' {
@@ -214,12 +215,12 @@ pub(crate) fn arkts_decorator_fallback(
                 let mut p = scan + 1;
                 let mut argument_ignored_index = ignored.partition_point(|(_, end)| *end <= p);
                 while p < bytes.len() && depth > 0 {
-                    if let Some((start, end)) = ignored.get(argument_ignored_index).copied() {
-                        if p >= start {
-                            p = end.max(p + 1);
-                            argument_ignored_index += 1;
-                            continue;
-                        }
+                    if let Some((start, end)) = ignored.get(argument_ignored_index).copied()
+                        && p >= start
+                    {
+                        p = end.max(p + 1);
+                        argument_ignored_index += 1;
+                        continue;
                     }
                     match bytes[p] {
                         b'(' => depth += 1,
@@ -371,12 +372,12 @@ fn matching_brace_end(
     let mut depth = 0_u32;
     let mut offset = open;
     while offset < bytes.len() {
-        if let Some((start, end)) = ignored.get(ignored_index).copied() {
-            if offset >= start {
-                offset = end.max(offset + 1);
-                ignored_index += 1;
-                continue;
-            }
+        if let Some((start, end)) = ignored.get(ignored_index).copied()
+            && offset >= start
+        {
+            offset = end.max(offset + 1);
+            ignored_index += 1;
+            continue;
         }
         match bytes[offset] {
             b'{' => depth += 1,
@@ -574,17 +575,16 @@ fn nested_method_header_ranges(root: tree_sitter::Node<'_>) -> Vec<(usize, usize
             && node
                 .parent()
                 .is_none_or(|parent| parent.kind() != "class_body")
-        {
-            if let (Some(name), Some(parameters)) = (
+            && let (Some(name), Some(parameters)) = (
                 node.child_by_field_name("name")
                     .filter(|name| name.kind() == "property_identifier"),
                 node.child_by_field_name("parameters"),
-            ) {
-                let start = name.start_byte();
-                let end = parameters.end_byte();
-                if end.saturating_sub(start) >= 5 {
-                    ranges.push((start, end));
-                }
+            )
+        {
+            let start = name.start_byte();
+            let end = parameters.end_byte();
+            if end.saturating_sub(start) >= 5 {
+                ranges.push((start, end));
             }
         }
         let mut cursor = node.walk();

@@ -676,10 +676,10 @@ pub fn extract_file_with_mode(
             .collect();
 
     for dn in data_nodes.iter_mut() {
-        if let Some(ref provisional) = dn.callsite_id {
-            if let Some(real) = cs_id_map.get(provisional) {
-                dn.callsite_id = Some(*real);
-            }
+        if let Some(ref provisional) = dn.callsite_id
+            && let Some(real) = cs_id_map.get(provisional)
+        {
+            dn.callsite_id = Some(*real);
         }
     }
 
@@ -885,12 +885,12 @@ fn extend_decorated_symbol_ranges(
         let symbol = &mut symbols[idx];
 
         // Extend range to include the leftmost decorator (all languages).
-        if let Some(first) = decorators.first() {
-            if first.range.start_byte < symbol.range.start_byte {
-                symbol.range.start_byte = first.range.start_byte;
-                symbol.range.start_line = first.range.start_line;
-                symbol.range.start_column = first.range.start_column;
-            }
+        if let Some(first) = decorators.first()
+            && first.range.start_byte < symbol.range.start_byte
+        {
+            symbol.range.start_byte = first.range.start_byte;
+            symbol.range.start_line = first.range.start_line;
+            symbol.range.start_column = first.range.start_column;
         }
 
         if matches!(
@@ -1133,15 +1133,15 @@ fn build_reference_binding_uses(
             Some(mut sid) => {
                 let mut found = None;
                 loop {
-                    if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
-                        if let Some(b) = super::languages::shared::latest_visible_binding(
+                    if let Some(bindings_in_scope) = scope_bindings.get(&sid)
+                        && let Some(b) = super::languages::shared::latest_visible_binding(
                             bindings_in_scope.iter().copied(),
                             &name,
                             range.start_byte,
-                        ) {
-                            found = Some(b.id);
-                            break;
-                        }
+                        )
+                    {
+                        found = Some(b.id);
+                        break;
                     }
                     let parent = parent_map.get(&sid).and_then(|&maybe_p| maybe_p);
                     match parent {

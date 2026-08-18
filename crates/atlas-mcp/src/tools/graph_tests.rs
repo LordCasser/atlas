@@ -1275,7 +1275,7 @@ fn resolution_to_symbol_ids_uses_direct_symbol_id() {
     use atlas_engine::symbol_selector::{ScoredCandidate, SymbolSelector};
     let sid1 = atlas_engine::SymbolId::from_bytes([1u8; 32]);
     let sid2 = atlas_engine::SymbolId::from_bytes([2u8; 32]);
-    let candidates = vec![
+    let candidates = [
         ScoredCandidate {
             qualified_name: "test_fn".into(),
             file_path: "src/a.rs".into(),

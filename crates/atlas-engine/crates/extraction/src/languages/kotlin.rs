@@ -305,13 +305,13 @@ fn walk_kotlin_assign_edges(
         let mut name_node: Option<tree_sitter::Node> = None;
         let mut value_node: Option<tree_sitter::Node> = None;
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.is_named() {
-                    if child.kind() == "simple_identifier" && name_node.is_none() {
-                        name_node = Some(child);
-                    } else if value_node.is_none() {
-                        value_node = Some(child);
-                    }
+            if let Some(child) = node.child(i as u32)
+                && child.is_named()
+            {
+                if child.kind() == "simple_identifier" && name_node.is_none() {
+                    name_node = Some(child);
+                } else if value_node.is_none() {
+                    value_node = Some(child);
                 }
             }
         }
@@ -355,12 +355,11 @@ fn walk_kotlin_assign_edges(
                 } else if found_eq && value.is_none() {
                     value = Some(child);
                 }
-            } else if !found_eq {
-                if let Ok(t) = child.utf8_text(source.as_bytes()) {
-                    if t == "=" {
-                        found_eq = true;
-                    }
-                }
+            } else if !found_eq
+                && let Ok(t) = child.utf8_text(source.as_bytes())
+                && t == "="
+            {
+                found_eq = true;
             }
         }
         if let (Some(t), Some(v)) = (target, value) {
@@ -435,10 +434,10 @@ fn qualified_name_from_node_kotlin(
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class_declaration" | "object_declaration" => {
-                if let Some(type_name) = parent.child_by_field_name("name") {
-                    if let Ok(type_str) = type_name.utf8_text(source.as_bytes()) {
-                        parts.push(type_str.to_string());
-                    }
+                if let Some(type_name) = parent.child_by_field_name("name")
+                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(type_str.to_string());
                 }
             }
             _ => {}

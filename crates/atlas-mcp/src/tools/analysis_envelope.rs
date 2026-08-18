@@ -289,12 +289,11 @@ impl AnalysisEnvelope {
 
         // Gaps describe permanent terminal limitations. While retry guidance
         // is present, pending work can still change the result.
-        if self.analysis_retry_after_ms.is_none() {
-            if let Some(ref records) = self.gap_records {
-                if !records.is_empty() {
-                    body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
-                }
-            }
+        if self.analysis_retry_after_ms.is_none()
+            && let Some(ref records) = self.gap_records
+            && !records.is_empty()
+        {
+            body["gaps"] = serde_json::to_value(records).unwrap_or(json!([]));
         }
 
         // 8. Store snapshot

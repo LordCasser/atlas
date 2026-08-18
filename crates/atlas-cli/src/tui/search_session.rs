@@ -46,10 +46,10 @@ pub(crate) fn parse_query(raw_query: &str) -> ParsedSearch {
 
     // Start with freetext or name_filter as the search term
     let mut search_term = engineered.freetext;
-    if search_term.is_empty() {
-        if let Some(ref name) = engineered.name_filter {
-            search_term = name.clone();
-        }
+    if search_term.is_empty()
+        && let Some(ref name) = engineered.name_filter
+    {
+        search_term = name.clone();
     }
 
     let final_term = if search_term.is_empty() {

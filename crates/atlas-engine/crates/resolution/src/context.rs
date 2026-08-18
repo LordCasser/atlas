@@ -262,10 +262,10 @@ impl GlobalSymbolIndex {
         // ── Cache check ──
         let lower = name.to_lowercase();
         let cache_key = (lower, file_id);
-        if let Ok(cache) = self.proximity_cache.lock() {
-            if let Some(cached) = cache.get(&cache_key) {
-                return cached.clone();
-            }
+        if let Ok(cache) = self.proximity_cache.lock()
+            && let Some(cached) = cache.get(&cache_key)
+        {
+            return cached.clone();
         }
 
         let candidates = self.find_by_name(name);
@@ -315,10 +315,10 @@ impl GlobalSymbolIndex {
         let key = (lower.clone(), max_distance);
 
         // ── Cache check ──
-        if let Ok(cache) = self.fuzzy_cache.lock() {
-            if let Some(cached) = cache.get(&key) {
-                return cached.clone();
-            }
+        if let Ok(cache) = self.fuzzy_cache.lock()
+            && let Some(cached) = cache.get(&key)
+        {
+            return cached.clone();
         }
 
         let name_len = lower.len();

@@ -27,19 +27,17 @@ impl ToolRouter {
         let column = get_u64(args, "column");
 
         // Validate file_path length
-        if let Some(fp) = file_path {
-            if fp.len() > MAX_FILE_PATH_LENGTH {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_point",
-                    &format!(
-                        "file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"
-                    ),
-                );
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
+        if let Some(fp) = file_path
+            && fp.len() > MAX_FILE_PATH_LENGTH
+        {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_point",
+                &format!("file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"),
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         }
 
         // Parse include_roots
@@ -145,19 +143,17 @@ impl ToolRouter {
         let max_depth = bounded_usize_arg(args, "max_depth", 30, 100);
 
         // Validate file_path length
-        if let Some(fp) = file_path {
-            if fp.len() > MAX_FILE_PATH_LENGTH {
-                let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
-                    "trace_variable",
-                    &format!(
-                        "file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"
-                    ),
-                );
-                return (
-                    serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
-                    true,
-                );
-            }
+        if let Some(fp) = file_path
+            && fp.len() > MAX_FILE_PATH_LENGTH
+        {
+            let resp: TraceQueryResponse<()> = TraceQueryResponse::err(
+                "trace_variable",
+                &format!("file_path exceeds maximum length of {MAX_FILE_PATH_LENGTH} characters"),
+            );
+            return (
+                serde_json::to_string(&resp).unwrap_or_else(|e| e.to_string()),
+                true,
+            );
         }
 
         // Parse include_roots
@@ -394,13 +390,13 @@ impl ToolRouter {
         resp.partial_result = resp.partial_result || lazy_partial;
 
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        if let Some(ref resolved) = resolved_symbol {
-            if let Some(obj) = resp_value.as_object_mut() {
-                obj.insert(
-                    "resolved_symbol".to_string(),
-                    serde_json::to_value(resolved).unwrap_or(json!(null)),
-                );
-            }
+        if let Some(ref resolved) = resolved_symbol
+            && let Some(obj) = resp_value.as_object_mut()
+        {
+            obj.insert(
+                "resolved_symbol".to_string(),
+                serde_json::to_value(resolved).unwrap_or(json!(null)),
+            );
         }
 
         lr.with_is_error(is_error).build(resp_value, self)
@@ -634,21 +630,21 @@ impl ToolRouter {
         }
 
         let mut resp_value = serde_json::to_value(&resp).unwrap_or(json!({}));
-        if let Some(ref resolved) = resolved_from {
-            if let Some(obj) = resp_value.as_object_mut() {
-                obj.insert(
-                    "resolved_from".to_string(),
-                    serde_json::to_value(resolved).unwrap_or(json!(null)),
-                );
-            }
+        if let Some(ref resolved) = resolved_from
+            && let Some(obj) = resp_value.as_object_mut()
+        {
+            obj.insert(
+                "resolved_from".to_string(),
+                serde_json::to_value(resolved).unwrap_or(json!(null)),
+            );
         }
-        if let Some(ref resolved) = resolved_to {
-            if let Some(obj) = resp_value.as_object_mut() {
-                obj.insert(
-                    "resolved_to".to_string(),
-                    serde_json::to_value(resolved).unwrap_or(json!(null)),
-                );
-            }
+        if let Some(ref resolved) = resolved_to
+            && let Some(obj) = resp_value.as_object_mut()
+        {
+            obj.insert(
+                "resolved_to".to_string(),
+                serde_json::to_value(resolved).unwrap_or(json!(null)),
+            );
         }
 
         lr.with_is_error(is_error).build(resp_value, self)

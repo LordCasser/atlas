@@ -1163,10 +1163,10 @@ impl CfgContext<'_> {
             if child.kind() == "lambda_literal" {
                 return Some(child);
             }
-            if child.child_count() > 0 {
-                if let Some(found) = self.find_lambda_literal(&child) {
-                    return Some(found);
-                }
+            if child.child_count() > 0
+                && let Some(found) = self.find_lambda_literal(&child)
+            {
+                return Some(found);
             }
         }
         None
@@ -1186,10 +1186,10 @@ impl CfgContext<'_> {
             if child.kind() == "call_suffix" {
                 continue;
             }
-            if let Ok(text) = child.utf8_text(self.source) {
-                if text.ends_with(".use") {
-                    return true;
-                }
+            if let Ok(text) = child.utf8_text(self.source)
+                && text.ends_with(".use")
+            {
+                return true;
             }
         }
         false
@@ -1233,10 +1233,10 @@ impl CfgContext<'_> {
     fn extract_callee_name(&self, call_node: &Node) -> Option<String> {
         let mut cursor = call_node.walk();
         for child in call_node.named_children(&mut cursor) {
-            if child.kind() == "identifier" || child.kind() == "field_expression" {
-                if let Ok(text) = child.utf8_text(self.source) {
-                    return Some(text.to_string());
-                }
+            if (child.kind() == "identifier" || child.kind() == "field_expression")
+                && let Ok(text) = child.utf8_text(self.source)
+            {
+                return Some(text.to_string());
             }
         }
         None
@@ -1778,10 +1778,10 @@ impl CfgContext<'_> {
                     }
                     if self.edges.len() > saved_edge_count {
                         self.retag_edge(saved_edge_count, CfgEdgeKind::TrueBranch);
-                        if let Some(tail) = self.prev_node_id.take() {
-                            if tail != clause_branch {
-                                chained_alt_tails.push(tail);
-                            }
+                        if let Some(tail) = self.prev_node_id.take()
+                            && tail != clause_branch
+                        {
+                            chained_alt_tails.push(tail);
                         }
                     } else {
                         direct_join_edges.push((clause_branch, CfgEdgeKind::TrueBranch));
@@ -1796,10 +1796,10 @@ impl CfgContext<'_> {
                     }
                     if self.edges.len() > saved_edge_count {
                         self.retag_edge(saved_edge_count, CfgEdgeKind::FalseBranch);
-                        if let Some(tail) = self.prev_node_id.take() {
-                            if tail != false_source {
-                                chained_alt_tails.push(tail);
-                            }
+                        if let Some(tail) = self.prev_node_id.take()
+                            && tail != false_source
+                        {
+                            chained_alt_tails.push(tail);
                         }
                     } else {
                         direct_join_edges.push((false_source, CfgEdgeKind::FalseBranch));
@@ -1836,16 +1836,16 @@ impl CfgContext<'_> {
         let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1, None);
 
         // Connect consequence tail → Join (if branch didn't end with return/throw)
-        if let Some(ref last) = cons_end {
-            if *last != branch_id {
-                self.add_edge(last, &join_id, CfgEdgeKind::Normal);
-            }
+        if let Some(ref last) = cons_end
+            && *last != branch_id
+        {
+            self.add_edge(last, &join_id, CfgEdgeKind::Normal);
         }
         // Connect alternative tail → Join
-        if let Some(ref last) = alt_end {
-            if *last != branch_id {
-                self.add_edge(last, &join_id, CfgEdgeKind::Normal);
-            }
+        if let Some(ref last) = alt_end
+            && *last != branch_id
+        {
+            self.add_edge(last, &join_id, CfgEdgeKind::Normal);
         }
         for tail in &chained_alt_tails {
             self.add_edge(tail, &join_id, CfgEdgeKind::Normal);

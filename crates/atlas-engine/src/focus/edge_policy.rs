@@ -34,10 +34,10 @@ impl EdgeConflictPolicy {
         fanout: Option<usize>,
     ) -> EdgeResolution {
         // High fanout names never produce canonical edges
-        if let Some(count) = fanout {
-            if count > 20 {
-                return EdgeResolution::KeepAsCandidates;
-            }
+        if let Some(count) = fanout
+            && count > 20
+        {
+            return EdgeResolution::KeepAsCandidates;
         }
 
         let existing = match existing {
@@ -127,10 +127,10 @@ pub enum EdgePersistence {
 
 impl EdgePersistence {
     pub fn from_confidence(confidence: SemanticConfidence, fanout: Option<usize>) -> Self {
-        if let Some(count) = fanout {
-            if count > 20 {
-                return EdgePersistence::Gap;
-            }
+        if let Some(count) = fanout
+            && count > 20
+        {
+            return EdgePersistence::Gap;
         }
         match confidence {
             SemanticConfidence::Certain | SemanticConfidence::High => EdgePersistence::Canonical,

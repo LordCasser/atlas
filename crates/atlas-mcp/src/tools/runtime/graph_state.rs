@@ -71,15 +71,15 @@ impl GraphState {
     }
 
     pub(crate) fn swap_graph(&self, store: &Store, graph: Arc<GraphEngine>) {
-        if let Ok(mut g) = self.search.lock() {
-            if let Some(ref mut s) = *g {
-                s.refresh_graph(Arc::clone(&graph));
-            }
+        if let Ok(mut g) = self.search.lock()
+            && let Some(ref mut s) = *g
+        {
+            s.refresh_graph(Arc::clone(&graph));
         }
-        if let Ok(mut g) = self.context.lock() {
-            if let Some(ref mut c) = *g {
-                c.refresh_graph(graph);
-            }
+        if let Ok(mut g) = self.context.lock()
+            && let Some(ref mut c) = *g
+        {
+            c.refresh_graph(graph);
         }
         *self.last_graph_signature.lock().unwrap() = store.index_signature().unwrap_or_default();
     }
@@ -167,15 +167,15 @@ impl GraphState {
         new_snapshot.replace_files_in_place(store, file_ids, 0.3, &file_paths)?;
 
         let new_graph = Arc::new(GraphEngine::from_snapshot(new_snapshot));
-        if let Ok(mut g) = self.search.lock() {
-            if let Some(ref mut s) = *g {
-                s.refresh_graph(Arc::clone(&new_graph));
-            }
+        if let Ok(mut g) = self.search.lock()
+            && let Some(ref mut s) = *g
+        {
+            s.refresh_graph(Arc::clone(&new_graph));
         }
-        if let Ok(mut g) = self.context.lock() {
-            if let Some(ref mut c) = *g {
-                c.refresh_graph(new_graph);
-            }
+        if let Ok(mut g) = self.context.lock()
+            && let Some(ref mut c) = *g
+        {
+            c.refresh_graph(new_graph);
         }
         *self.last_graph_signature.lock().unwrap() = store.index_signature().unwrap_or_default();
         Ok(())

@@ -94,7 +94,7 @@ mod tests {
             namespace_path: vec![],
             layer: "structural".to_string(),
         };
-        store.insert_symbols(&[sym.clone()]).unwrap();
+        store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
 
         (sym_id, file_id, sym)
     }

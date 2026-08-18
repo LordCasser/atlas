@@ -100,11 +100,11 @@ impl PathAliasResolver {
     /// 3. If baseUrl is set, prepend it to relative paths
     pub fn resolve(&self, import_path: &str) -> Option<String> {
         // Strategy 1: Exact match (no wildcard) — first valid substitution wins.
-        if let Some(substitutions) = self.paths.get(import_path) {
-            if let Some(sub) = substitutions.first() {
-                let resolved = self.apply_base_url(sub);
-                return Some(resolved);
-            }
+        if let Some(substitutions) = self.paths.get(import_path)
+            && let Some(sub) = substitutions.first()
+        {
+            let resolved = self.apply_base_url(sub);
+            return Some(resolved);
         }
 
         // Strategy 2: Wildcard pattern match

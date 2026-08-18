@@ -260,17 +260,17 @@ fn qualified_name_from_node_csharp(
             | "struct_declaration"
             | "interface_declaration"
             | "enum_declaration" => {
-                if let Some(type_name) = parent.child_by_field_name("name") {
-                    if let Ok(type_str) = type_name.utf8_text(source.as_bytes()) {
-                        parts.push(type_str.to_string());
-                    }
+                if let Some(type_name) = parent.child_by_field_name("name")
+                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(type_str.to_string());
                 }
             }
             "namespace_declaration" => {
-                if let Some(ns_name) = parent.child_by_field_name("name") {
-                    if let Ok(ns_str) = ns_name.utf8_text(source.as_bytes()) {
-                        parts.push(ns_str.to_string());
-                    }
+                if let Some(ns_name) = parent.child_by_field_name("name")
+                    && let Ok(ns_str) = ns_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(ns_str.to_string());
                 }
             }
             _ => {}

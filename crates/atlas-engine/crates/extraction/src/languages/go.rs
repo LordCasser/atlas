@@ -274,60 +274,60 @@ fn walk_go_assign_edges(
     }
 
     // short_var_declaration: x := expr
-    if kind == "short_var_declaration" {
-        if let (Some(left_list), Some(right_list)) = (
+    if kind == "short_var_declaration"
+        && let (Some(left_list), Some(right_list)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
-        ) {
-            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
-        }
+        )
+    {
+        create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
     }
 
     // assignment_statement: x = expr
-    if kind == "assignment_statement" {
-        if let (Some(left_list), Some(right_list)) = (
+    if kind == "assignment_statement"
+        && let (Some(left_list), Some(right_list)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
-        ) {
-            create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
-        }
+        )
+    {
+        create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
     }
 
     // var_spec: var x = expr
-    if kind == "var_spec" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            let name_key = NodePosKey {
-                start_byte: name_node.start_byte() as u32,
-                end_byte: name_node.end_byte() as u32,
-                kind: DataNodeKind::Local,
-            };
-            if let Some(val_list) = node.child_by_field_name("value") {
-                for i in 0..val_list.child_count() {
-                    if let Some(val_node) = val_list.child(i as u32) {
-                        if val_node.is_named() {
-                            let value_key = NodePosKey {
-                                start_byte: val_node.start_byte() as u32,
-                                end_byte: val_node.end_byte() as u32,
-                                kind: DataNodeKind::Expr,
-                            };
-                            if let (Some(&target_id), Some(&source_id)) =
-                                (pos_map.get(&name_key), pos_map.get(&value_key))
-                            {
-                                let edge_id = DataFlowEdgeId::generate(
-                                    &source_id,
-                                    &target_id,
-                                    DataFlowKind::Assign.as_str(),
-                                );
-                                edges.push(DataFlowEdge::new(
-                                    edge_id,
-                                    source_id,
-                                    target_id,
-                                    DataFlowKind::Assign,
-                                    node_range(name_node),
-                                    0.90,
-                                ));
-                            }
-                        }
+    if kind == "var_spec"
+        && let Some(name_node) = node.child_by_field_name("name")
+    {
+        let name_key = NodePosKey {
+            start_byte: name_node.start_byte() as u32,
+            end_byte: name_node.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        if let Some(val_list) = node.child_by_field_name("value") {
+            for i in 0..val_list.child_count() {
+                if let Some(val_node) = val_list.child(i as u32)
+                    && val_node.is_named()
+                {
+                    let value_key = NodePosKey {
+                        start_byte: val_node.start_byte() as u32,
+                        end_byte: val_node.end_byte() as u32,
+                        kind: DataNodeKind::Expr,
+                    };
+                    if let (Some(&target_id), Some(&source_id)) =
+                        (pos_map.get(&name_key), pos_map.get(&value_key))
+                    {
+                        let edge_id = DataFlowEdgeId::generate(
+                            &source_id,
+                            &target_id,
+                            DataFlowKind::Assign.as_str(),
+                        );
+                        edges.push(DataFlowEdge::new(
+                            edge_id,
+                            source_id,
+                            target_id,
+                            DataFlowKind::Assign,
+                            node_range(name_node),
+                            0.90,
+                        ));
                     }
                 }
             }
@@ -436,12 +436,11 @@ fn qualified_name_from_node_go(
         match parent.kind() {
             "type_declaration" => {
                 // Find the type_spec containing our node to get the type name
-                if let Some(type_spec) = find_ancestor_type_spec(&parent, current) {
-                    if let Some(type_name) = type_spec.child_by_field_name("name") {
-                        if let Ok(type_str) = type_name.utf8_text(source.as_bytes()) {
-                            parts.push(type_str.to_string());
-                        }
-                    }
+                if let Some(type_spec) = find_ancestor_type_spec(&parent, current)
+                    && let Some(type_name) = type_spec.child_by_field_name("name")
+                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                {
+                    parts.push(type_str.to_string());
                 }
             }
             "source_file" => {

@@ -221,15 +221,16 @@ impl ScopedSearchService {
             .store
             .count_file_inventory_in_scope(&normalized_scope)
             .unwrap_or(0);
-        if scope_file_count == 0 && inventory_scope_count == 0 {
-            if let Some(root) = &self.project_root {
-                inventory_discovery_complete =
-                    seed_file_inventory_from_scope(&self.store, root, &normalized_scope)?;
-                inventory_scope_count = self
-                    .store
-                    .count_file_inventory_in_scope(&normalized_scope)
-                    .unwrap_or(0);
-            }
+        if scope_file_count == 0
+            && inventory_scope_count == 0
+            && let Some(root) = &self.project_root
+        {
+            inventory_discovery_complete =
+                seed_file_inventory_from_scope(&self.store, root, &normalized_scope)?;
+            inventory_scope_count = self
+                .store
+                .count_file_inventory_in_scope(&normalized_scope)
+                .unwrap_or(0);
         }
         if inventory_scope_count > scope_file_count {
             scope_file_count = inventory_scope_count;

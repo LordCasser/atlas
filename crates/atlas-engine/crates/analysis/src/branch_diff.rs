@@ -393,10 +393,8 @@ impl BranchDiffEngine {
                             summary.writes.push(path.clone());
                         }
                     }
-                    SemanticEffectKind::Call { callee } => {
-                        if !summary.calls.contains(callee) {
-                            summary.calls.push(callee.clone());
-                        }
+                    SemanticEffectKind::Call { callee } if !summary.calls.contains(callee) => {
+                        summary.calls.push(callee.clone());
                     }
                     _ => {}
                 }

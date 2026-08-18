@@ -380,10 +380,11 @@ impl Store {
                 None
             }
         };
-        if let Some((existing_pid, _ts)) = existing {
-            if existing_pid != pid as i64 && is_process_alive(existing_pid) {
-                return Ok(Some(existing_pid as u32));
-            }
+        if let Some((existing_pid, _ts)) = existing
+            && existing_pid != pid as i64
+            && is_process_alive(existing_pid)
+        {
+            return Ok(Some(existing_pid as u32));
         }
         Ok(None)
     }
@@ -417,13 +418,13 @@ impl Store {
             }
         };
 
-        if let Some(existing_pid) = existing {
-            if existing_pid == pid as i64 {
-                conn.execute(
-                    "DELETE FROM project_metadata WHERE key = 'exclusive_lock_pid'",
-                    [],
-                )?;
-            }
+        if let Some(existing_pid) = existing
+            && existing_pid == pid as i64
+        {
+            conn.execute(
+                "DELETE FROM project_metadata WHERE key = 'exclusive_lock_pid'",
+                [],
+            )?;
         }
         Ok(())
     }

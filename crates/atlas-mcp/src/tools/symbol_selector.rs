@@ -135,13 +135,13 @@ pub(crate) fn parse_symbol_input(
     match &val {
         serde_json::Value::String(s) => {
             let trimmed = s.trim_start();
-            if trimmed.starts_with('{') {
-                if let Ok(sel) = serde_json::from_str::<SymbolSelector>(s) {
-                    return Ok(SymbolInput::Selector(sel));
-                }
-                // parse failure → treat as a plain name
-                // (e.g. a function literally named `{something}`)
+            if trimmed.starts_with('{')
+                && let Ok(sel) = serde_json::from_str::<SymbolSelector>(s)
+            {
+                return Ok(SymbolInput::Selector(sel));
             }
+            // parse failure → treat as a plain name
+            // (e.g. a function literally named `{something}`)
             Ok(SymbolInput::Name(s.clone()))
         }
         serde_json::Value::Object(_) => {

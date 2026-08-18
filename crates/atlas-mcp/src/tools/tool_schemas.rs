@@ -441,17 +441,17 @@ pub(crate) fn merge_edge_deps(
         if arr.is_empty() {
             return;
         }
-        if let Some(deps) = value.get_mut(list_field) {
-            if let Some(existing) = deps.as_array_mut() {
-                for dep in arr {
-                    existing.push(dep.clone());
-                }
+        if let Some(deps) = value.get_mut(list_field)
+            && let Some(existing) = deps.as_array_mut()
+        {
+            for dep in arr {
+                existing.push(dep.clone());
             }
         }
-        if let Some(total) = value.get_mut(total_field) {
-            if let Some(n) = total.as_u64() {
-                *total = serde_json::json!(n + arr.len() as u64);
-            }
+        if let Some(total) = value.get_mut(total_field)
+            && let Some(n) = total.as_u64()
+        {
+            *total = serde_json::json!(n + arr.len() as u64);
         }
     }
 }

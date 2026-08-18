@@ -241,12 +241,11 @@ fn qualified_name_from_node_c(name: &str, node: tree_sitter::Node, source: &str)
     let mut current = node.parent().unwrap_or(node);
 
     while let Some(parent) = current.parent() {
-        if parent.kind() == "struct_specifier" {
-            if let Some(child) = parent.child_by_field_name("name") {
-                if let Ok(struct_name) = child.utf8_text(source.as_bytes()) {
-                    parts.push(struct_name.to_string());
-                }
-            }
+        if parent.kind() == "struct_specifier"
+            && let Some(child) = parent.child_by_field_name("name")
+            && let Ok(struct_name) = child.utf8_text(source.as_bytes())
+        {
+            parts.push(struct_name.to_string());
         }
         current = parent;
     }

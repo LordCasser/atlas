@@ -232,8 +232,7 @@ fn find_node<'a>(
 ) -> &'a atlas_engine::dataflow::DataNode {
     nodes
         .iter()
-        .filter(|n| n.name.as_deref() == Some(name))
-        .next_back()
+        .rfind(|n| n.name.as_deref() == Some(name))
         .unwrap_or_else(|| panic!("data node '{name}' not found"))
 }
 
@@ -2029,8 +2028,7 @@ fn fx_py_match_capture_bindings_persist_and_trace_from_subject() {
 
     let sink = data_nodes
         .iter()
-        .filter(|node| node.name.as_deref() == Some("alias"))
-        .next_back()
+        .rfind(|node| node.name.as_deref() == Some("alias"))
         .expect("body alias use");
     let engine = TraceEngine::new(store.clone());
     let response = engine.trace_variable(
@@ -2126,8 +2124,7 @@ end
 
     let sink = data_nodes
         .iter()
-        .filter(|node| node.name.as_deref() == Some("whole"))
-        .next_back()
+        .rfind(|node| node.name.as_deref() == Some("whole"))
         .expect("body whole use");
     let engine = TraceEngine::new(store.clone());
     let response = engine.trace_variable(
