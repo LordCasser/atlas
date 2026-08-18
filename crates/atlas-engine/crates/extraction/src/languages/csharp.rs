@@ -196,7 +196,7 @@ impl LexicalBindingSpec for CSharpAdapter {
         FeatureSupport::supported_with_limitations(
             0.72,
             vec![
-                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
+                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
             ],
         )
     }
@@ -213,7 +213,7 @@ impl DataflowSpec for CSharpAdapter {
         FeatureSupport::supported_with_limitations(
             0.72,
             vec![
-                "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+                "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
             ],
         )
     }
@@ -407,6 +407,9 @@ fn csharp_binding_kind(capture_name: &str) -> Option<BindingKind> {
 fn is_csharp_pattern_binding_node(node: tree_sitter::Node<'_>) -> bool {
     node.kind() == "identifier"
         && node.parent().is_some_and(|parent| {
+            if parent.kind() == "parenthesized_variable_designation" {
+                return true;
+            }
             matches!(
                 parent.kind(),
                 "declaration_pattern" | "recursive_pattern" | "var_pattern"
@@ -432,6 +435,26 @@ fn collect_csharp_pattern_bindings<'tree>(
 
 fn is_csharp_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
     node.kind() == "pattern" || node.kind().ends_with("_pattern")
+}
+
+fn csharp_pattern_binding_confidence(
+    target: tree_sitter::Node<'_>,
+    pattern_owner: tree_sitter::Node<'_>,
+) -> f64 {
+    let mut current = target.parent();
+    while let Some(node) = current {
+        if matches!(
+            node.kind(),
+            "parenthesized_variable_designation" | "subpattern" | "list_pattern"
+        ) {
+            return 0.72;
+        }
+        if node == pattern_owner {
+            break;
+        }
+        current = node.parent();
+    }
+    0.80
 }
 
 fn connect_csharp_pattern_bindings(
@@ -475,7 +498,7 @@ fn connect_csharp_pattern_bindings(
             target_id,
             DataFlowKind::Assign,
             node_range(target),
-            0.80,
+            csharp_pattern_binding_confidence(target, pattern_owner),
         ));
     }
 }
@@ -1135,5 +1158,86 @@ mod tests {
                 .iter()
                 .all(|edge| { edge.source != outer_subject.id || edge.target != inner_target.id })
         );
+    }
+
+    #[test]
+    fn test_nested_designations_keep_identity_and_conservative_subject_flow() {
+        let source = concat!(
+            "class NestedDesignation {\n",
+            "  static int Dispatch(object input) {\n",
+            "    return input switch {\n",
+            "      var (first, (second, third)) when second != null\n",
+            "        => Consume(first, second, third),\n",
+            "      Order { Customer.Address.City: var city, Values: [var head, var tail] }\n",
+            "        => Consume(city, head, tail),\n",
+            "      _ => 0,\n",
+            "    };\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("NestedDesignation.cs");
+        let facts = crate::extract_file_with_mode(
+            &csharp_frontend(),
+            file_id,
+            std::path::Path::new("NestedDesignation.cs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract C# nested designations");
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == 2
+            })
+            .expect("switch subject");
+
+        for name in ["first", "second", "third", "city", "head", "tail"] {
+            let binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap_or_else(|| panic!("missing {name} binding"));
+            assert!(binding.function_id.is_some(), "{name} function owner");
+
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(name)
+                        && node.binding_id == Some(binding.id)
+                })
+                .unwrap_or_else(|| panic!("missing {name} target"));
+            let edge = facts
+                .dataflow_edges
+                .iter()
+                .find(|edge| {
+                    edge.source == subject.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                })
+                .unwrap_or_else(|| panic!("missing subject flow to {name}"));
+            assert_eq!(edge.confidence, 0.72, "{name} projected flow");
+            assert!(facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse || node.range != target.range
+            }));
+
+            let uses: Vec<_> = facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.name == name)
+                .collect();
+            assert!(
+                uses.len() >= 2,
+                "declaration and body use for {name}: {uses:?}"
+            );
+            assert!(uses.iter().all(|use_| use_.binding_id == Some(binding.id)));
+        }
     }
 }

@@ -1238,8 +1238,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
-            "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+            "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
+            "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
             "partial classes across files not merged",
         ],
         feature_overrides: &[
@@ -1248,7 +1248,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
+                        "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
                     ],
                 ),
             ),
@@ -1257,7 +1257,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+                        "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1266,7 +1266,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "scope-chain-aware use-def with arm-local switch pattern identities; definite-assignment and nested designation semantics remain conservative",
+                        "scope-chain-aware use-def with arm-local switch pattern identities, including parenthesized nested designations; definite-assignment remains conservative",
                     ],
                 ),
             ),
@@ -3008,8 +3008,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
-                "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
+                "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
                 "partial classes across files not merged",
             ]
         );
@@ -3047,7 +3047,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative"
+                    "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative"
                 ],
             )
         );
@@ -3056,7 +3056,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative"
+                    "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3065,7 +3065,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "scope-chain-aware use-def with arm-local switch pattern identities; definite-assignment and nested designation semantics remain conservative"
+                    "scope-chain-aware use-def with arm-local switch pattern identities, including parenthesized nested designations; definite-assignment remains conservative"
                 ],
             )
         );

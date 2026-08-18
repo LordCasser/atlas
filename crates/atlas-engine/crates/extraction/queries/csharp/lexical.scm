@@ -31,3 +31,7 @@
 
 (var_pattern
   name: (identifier) @lexical.pattern)
+
+;; --- Nested variable designations (var (first, (second, third))) ---
+(parenthesized_variable_designation
+  (identifier) @lexical.pattern)

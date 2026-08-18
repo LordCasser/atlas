@@ -85,5 +85,8 @@
 (var_pattern
   name: (identifier) @df.pattern_target)
 
+(parenthesized_variable_designation
+  (identifier) @df.pattern_target)
+
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
