@@ -10,6 +10,32 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+(assignment_expression
+  left: (identifier) @df.mutation_target
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>=" ">>>=" "??="]
+  right: (_)) @df.mutation_value
+
+(assignment_expression
+  left: (identifier) @df.mutation_read
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>=" ">>>=" "??="])
+
+(postfix_unary_expression
+  (identifier) @df.mutation_target
+  ["++" "--"]) @df.mutation_value
+
+(postfix_unary_expression
+  (identifier) @df.mutation_read
+  ["++" "--"])
+
+(prefix_unary_expression
+  ["++" "--"]
+  (identifier) @df.mutation_target) @df.mutation_value
+
+(prefix_unary_expression
+  ["++" "--"]
+  (identifier) @df.mutation_read)
+
 ;; --- Field/property assignment: obj.Member = value ---
 (assignment_expression
   left: (member_access_expression) @df.assign_field_target

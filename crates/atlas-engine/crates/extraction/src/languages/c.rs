@@ -196,7 +196,9 @@ impl DataflowSpec for CAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.73,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            vec![
+                "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets and prefix/postfix result timing remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -374,8 +376,10 @@ fn normalize_c_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => {
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
+        "df.assign_value" | "df.mutation_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
@@ -467,11 +471,13 @@ fn normalize_c_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["type_definition", "struct_specifier", "enum_specifier"],
-            ) {
+        "df.identifier_use" | "df.mutation_read" => {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &["type_definition", "struct_specifier", "enum_specifier"],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

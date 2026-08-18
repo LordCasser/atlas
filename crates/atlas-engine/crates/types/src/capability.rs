@@ -713,7 +713,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
-            "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+            "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); member/array mutation targets, numeric promotion/boxing, prefix/postfix result timing, exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
         ],
         feature_overrides: &[
             (
@@ -730,7 +730,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.75,
                     &[
-                        "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+                        "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); member/array mutation targets, numeric promotion/boxing, prefix/postfix result timing, exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -803,7 +803,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support",
-            "AST-driven local dataflow with language-specific gaps",
+            "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets and prefix/postfix result timing remain conservative",
             "macro expansion and #include resolution may produce incomplete facts",
             "function pointer calls resolved via local def-use chain (depth 3); inter-procedural pointer flow not tracked",
         ],
@@ -828,7 +828,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.73,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets and prefix/postfix result timing remain conservative",
+                    ],
                 ),
             ),
             (
@@ -894,7 +896,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support",
-            "AST-driven local dataflow with language-specific gaps",
+            "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets, overloaded-operator dispatch/conversions, and prefix/postfix result timing remain conservative",
             "template instantiation not followed",
             "ADL and overload resolution not modeled",
         ],
@@ -910,7 +912,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.70,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets, overloaded-operator dispatch/conversions, and prefix/postfix result timing remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1245,7 +1249,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
-            "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
+            "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); member/element mutation targets, ??= conditional execution, overloaded/dynamic operator dispatch, prefix/postfix result timing, exact structural projection, and guard control dependencies remain conservative",
             "partial classes across files not merged",
         ],
         feature_overrides: &[
@@ -1263,7 +1267,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
+                        "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); member/element mutation targets, ??= conditional execution, overloaded/dynamic operator dispatch, prefix/postfix result timing, exact structural projection, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -2462,7 +2466,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware parameter/local/foreach/catch/lambda binding plus if-condition instanceof and arrow-switch type/record pattern captures; Java rejects overlapping local redeclaration, while sibling blocks and switch rules retain distinct identities; flow-sensitive boolean scope, colon-group patterns, and definite assignment remain conservative",
-                "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); member/array mutation targets, numeric promotion/boxing, prefix/postfix result timing, exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
             ]
         );
 
@@ -2508,7 +2512,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.75,
                 vec![
-                    "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative"
+                    "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); member/array mutation targets, numeric promotion/boxing, prefix/postfix result timing, exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -2574,7 +2578,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with shadowing support",
-                "AST-driven local dataflow with language-specific gaps",
+                "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets and prefix/postfix result timing remain conservative",
                 "macro expansion and #include resolution may produce incomplete facts",
                 "function pointer calls resolved via local def-use chain (depth 3); inter-procedural pointer flow not tracked",
             ]
@@ -2624,7 +2628,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.73,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets and prefix/postfix result timing remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2684,7 +2690,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with shadowing support",
-                "AST-driven local dataflow with language-specific gaps",
+                "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets, overloaded-operator dispatch/conversions, and prefix/postfix result timing remain conservative",
                 "template instantiation not followed",
                 "ADL and overload resolution not modeled",
             ]
@@ -2729,7 +2735,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.70,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow; direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90), and compound RHS-only writes are suppressed; field/subscript/pointer mutation targets, overloaded-operator dispatch/conversions, and prefix/postfix result timing remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3021,7 +3029,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures and parenthesized nested designations are arm-scoped, while definite-assignment remains conservative",
-                "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); member/element mutation targets, ??= conditional execution, overloaded/dynamic operator dispatch, prefix/postfix result timing, exact structural projection, and guard control dependencies remain conservative",
                 "partial classes across files not merged",
             ]
         );
@@ -3068,7 +3076,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative"
+                    "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); member/element mutation targets, ??= conditional execution, overloaded/dynamic operator dispatch, prefix/postfix result timing, exact structural projection, and guard control dependencies remain conservative"
                 ],
             )
         );

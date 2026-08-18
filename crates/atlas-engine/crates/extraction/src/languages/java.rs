@@ -217,7 +217,7 @@ impl DataflowSpec for JavaAdapter {
         FeatureSupport::supported_with_limitations(
             0.75,
             vec![
-                "AST-driven local dataflow with conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and conservative tested-value/selector flow to supported instanceof and arrow-switch pattern captures (0.75); member/array mutation targets, numeric promotion/boxing, prefix/postfix result timing, exact record-component projection, flow-sensitive boolean scope, colon-group patterns, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -630,7 +630,9 @@ fn normalize_java_dataflow_builder(
 
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
         "df.pattern_target" => {
             if java_pattern_binding_owner(node).is_some() {
                 make_df_assign_target(file_id, node, source, range)
@@ -638,7 +640,7 @@ fn normalize_java_dataflow_builder(
                 (None, None)
             }
         }
-        "df.assign_value" => make_df_assign_value(
+        "df.assign_value" | "df.mutation_value" => make_df_assign_value(
             file_id,
             node,
             source,
@@ -748,18 +750,20 @@ fn normalize_java_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
+        "df.identifier_use" | "df.mutation_read" => {
             if is_java_pattern_binding_syntax(node) {
                 return (None, None);
             }
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &[
-                    "object_creation_expression",
-                    "type_identifier",
-                    "method_invocation",
-                ],
-            ) {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &[
+                        "object_creation_expression",
+                        "type_identifier",
+                        "method_invocation",
+                    ],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

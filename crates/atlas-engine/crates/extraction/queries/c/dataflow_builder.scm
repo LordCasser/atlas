@@ -13,6 +13,22 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+(assignment_expression
+  left: (identifier) @df.mutation_target
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>="]
+  right: (_)) @df.mutation_value
+
+(assignment_expression
+  left: (identifier) @df.mutation_read
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>="])
+
+(update_expression
+  argument: (identifier) @df.mutation_target) @df.mutation_value
+
+(update_expression
+  argument: (identifier) @df.mutation_read)
+
 ;; --- Local variable declarations with initializer ---
 (init_declarator
   declarator: (identifier) @df.assign_target

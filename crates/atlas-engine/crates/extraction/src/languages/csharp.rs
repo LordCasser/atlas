@@ -213,7 +213,7 @@ impl DataflowSpec for CSharpAdapter {
         FeatureSupport::supported_with_limitations(
             0.72,
             vec![
-                "AST-driven local dataflow with pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); exact structural projection and guard control dependencies remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90) and pattern subject-to-capture flow; direct captures use whole-subject flow (0.80), while nested designation/property/list captures use conservative aggregate flow (0.72); member/element mutation targets, ??= conditional execution, overloaded/dynamic operator dispatch, prefix/postfix result timing, exact structural projection, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -592,10 +592,10 @@ fn normalize_csharp_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" | "df.pattern_target" => {
+        "df.assign_target" | "df.pattern_target" | "df.mutation_target" => {
             make_df_assign_target(file_id, node, source, range)
         }
-        "df.assign_value" | "df.pattern_value" => make_df_assign_value(
+        "df.assign_value" | "df.pattern_value" | "df.mutation_value" => make_df_assign_value(
             file_id,
             node,
             source,
@@ -704,14 +704,16 @@ fn normalize_csharp_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
+        "df.identifier_use" | "df.mutation_read" => {
             if is_csharp_pattern_binding_node(node) {
                 return (None, None);
             }
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["using_directive", "namespace_declaration"],
-            ) {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &["using_directive", "namespace_declaration"],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

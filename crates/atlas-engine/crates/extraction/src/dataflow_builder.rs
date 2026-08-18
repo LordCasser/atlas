@@ -362,15 +362,23 @@ fn walk_for_assign_edges(
     is_csharp: bool,
 ) {
     let kind = node.kind();
+    let is_compound_assignment = kind == "assignment_expression"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| operator.kind() != "=");
 
-    // augmented_assignment_expression / update_expression:
+    // Compound assignment / update expression:
     // direct target (Local) ← aggregate read-modify-write value (Expr).
     // Language queries decide which target shapes are supported by creating
     // the matching Local/Expr nodes; member and subscript targets therefore
     // remain conservative without language checks here.
     let mutation_target = match kind {
+        "assignment_expression" if is_compound_assignment => node.child_by_field_name("left"),
         "augmented_assignment_expression" => node.child_by_field_name("left"),
-        "update_expression" => node.child_by_field_name("argument"),
+        "update_expression" => node
+            .child_by_field_name("argument")
+            .or_else(|| node.named_child(0)),
+        "prefix_unary_expression" | "postfix_unary_expression" => node.named_child(0),
         _ => None,
     };
     if let Some(target_node) = mutation_target {
@@ -613,6 +621,7 @@ fn walk_for_assign_edges(
 
     // ── assignment_expression / assignment: left ← right ──────────────
     if (kind == "assignment_expression" || kind == "assignment")
+        && !is_compound_assignment
         && let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
