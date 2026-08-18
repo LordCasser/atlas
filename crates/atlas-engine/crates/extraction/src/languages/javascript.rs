@@ -165,7 +165,7 @@ impl DataflowSpec for JavaScriptAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
             ],
         )
     }

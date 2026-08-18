@@ -892,6 +892,112 @@ mod tests {
     }
 
     #[test]
+    fn test_typescript_family_logical_assignments_preserve_may_provenance() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            (
+                "logical_assignments.ts",
+                Language::TypeScript,
+                "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            ),
+            #[cfg(feature = "javascript")]
+            (
+                "logical_assignments.js",
+                Language::JavaScript,
+                "function initialize(seed, fallback, guard) {\n  let value = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            ),
+            #[cfg(feature = "arkts")]
+            (
+                "logical_assignments.ets",
+                Language::ArkTS,
+                "function initialize(seed: number | undefined, fallback: number, guard: number): number {\n  let value: number | undefined = seed;\n  value ??= fallback;\n  value ||= fallback;\n  value &&= guard;\n  holder.value ??= fallback;\n  items[0] ||= guard;\n  return value;\n}\n",
+            ),
+        ];
+
+        for (path, language, source) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let value_binding = {
+                let matches: Vec<_> = facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == "value")
+                    .collect();
+                assert_eq!(matches.len(), 1, "{language:?}: one value binding");
+                matches[0]
+            };
+            let node = |kind: types::DataNodeKind, name: &str, line: u32| {
+                facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == kind
+                            && node.name.as_deref() == Some(name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing {kind:?} {name} on line {line}")
+                    })
+            };
+
+            for (line, expression, rhs_name) in [
+                (2, "value ??= fallback", "fallback"),
+                (3, "value ||= fallback", "fallback"),
+                (4, "value &&= guard", "guard"),
+            ] {
+                let merged_value = node(types::DataNodeKind::Expr, expression, line);
+                let target = node(types::DataNodeKind::Local, "value", line);
+                let old_value = node(types::DataNodeKind::VariableUse, "value", line);
+                let conditional_rhs = node(types::DataNodeKind::VariableUse, rhs_name, line);
+                assert_eq!(target.binding_id, Some(value_binding.id), "{language:?}");
+                assert_eq!(old_value.binding_id, Some(value_binding.id), "{language:?}");
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == merged_value.id
+                        && edge.target == target.id
+                        && edge.kind == types::DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                }));
+                for possible_origin in [old_value, conditional_rhs] {
+                    assert!(
+                        facts.dataflow_edges.iter().any(|edge| {
+                            edge.source == possible_origin.id
+                                && edge.target == merged_value.id
+                                && edge.kind == types::DataFlowKind::Read
+                                && edge.confidence == 0.75
+                        }),
+                        "{language:?}: {expression} must preserve possible origin {:?}",
+                        possible_origin.name
+                    );
+                }
+            }
+
+            for (line, expression) in [(5, "holder.value ??= fallback"), (6, "items[0] ||= guard")]
+            {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        !(matches!(
+                            node.kind,
+                            types::DataNodeKind::Local | types::DataNodeKind::Expr
+                        ) && node.range.start_line == line)
+                    }),
+                    "{language:?}: unsupported logical target {expression} must not become a local write"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_c_style_variable_mutations_preserve_read_modify_write_provenance() {
         let cases = vec![
             #[cfg(feature = "c")]
@@ -1058,67 +1164,84 @@ mod tests {
 
     #[test]
     fn test_remaining_language_variable_mutations_preserve_read_modify_write_provenance() {
-        let cases: Vec<(&str, Language, &str, &[(u32, &str)], u32, &[(u32, &str)])> = vec![
+        struct MutationCase<'a> {
+            path: &'a str,
+            language: Language,
+            source: &'a str,
+            mutations: &'a [(u32, &'a str)],
+            compound_line: u32,
+            conservative: &'a [(u32, &'a str)],
+        }
+
+        let cases = vec![
             #[cfg(feature = "python")]
-            (
-                "variable_mutations.py",
-                Language::Python,
-                "def mutate(seed, delta):\n    total = seed\n    total += delta\n    holder.value += delta\n    items[0] += delta\n    return total\n",
-                &[(2, "total += delta")],
-                2,
-                &[(3, "holder.value += delta"), (4, "items[0] += delta")],
-            ),
+            MutationCase {
+                path: "variable_mutations.py",
+                language: Language::Python,
+                source: "def mutate(seed, delta):\n    total = seed\n    total += delta\n    holder.value += delta\n    items[0] += delta\n    return total\n",
+                mutations: &[(2, "total += delta")],
+                compound_line: 2,
+                conservative: &[(3, "holder.value += delta"), (4, "items[0] += delta")],
+            },
             #[cfg(feature = "go")]
-            (
-                "variable_mutations.go",
-                Language::Go,
-                "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  holder.value += delta\n  items[0] += delta\n  items[1]++\n  return total\n}\n",
-                &[(4, "total += delta"), (5, "total++"), (6, "total--")],
-                4,
-                &[
+            MutationCase {
+                path: "variable_mutations.go",
+                language: Language::Go,
+                source: "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  holder.value += delta\n  items[0] += delta\n  items[1]++\n  return total\n}\n",
+                mutations: &[(4, "total += delta"), (5, "total++"), (6, "total--")],
+                compound_line: 4,
+                conservative: &[
                     (7, "holder.value += delta"),
                     (8, "items[0] += delta"),
                     (9, "items[1]++"),
                 ],
-            ),
+            },
             #[cfg(feature = "rust")]
-            (
-                "variable_mutations.rs",
-                Language::Rust,
-                "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    holder.value += delta;\n    items[0] += delta;\n    total\n}\n",
-                &[(2, "total += delta")],
-                2,
-                &[(3, "holder.value += delta"), (4, "items[0] += delta")],
-            ),
+            MutationCase {
+                path: "variable_mutations.rs",
+                language: Language::Rust,
+                source: "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    holder.value += delta;\n    items[0] += delta;\n    total\n}\n",
+                mutations: &[(2, "total += delta")],
+                compound_line: 2,
+                conservative: &[(3, "holder.value += delta"), (4, "items[0] += delta")],
+            },
             #[cfg(feature = "kotlin")]
-            (
-                "VariableMutations.kt",
-                Language::Kotlin,
-                "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    holder.value += delta\n    items[0] += delta\n    items[1]++\n    return total\n}\n",
-                &[(2, "total += delta"), (3, "total++"), (4, "--total")],
-                2,
-                &[
+            MutationCase {
+                path: "VariableMutations.kt",
+                language: Language::Kotlin,
+                source: "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    holder.value += delta\n    items[0] += delta\n    items[1]++\n    return total\n}\n",
+                mutations: &[(2, "total += delta"), (3, "total++"), (4, "--total")],
+                compound_line: 2,
+                conservative: &[
                     (5, "holder.value += delta"),
                     (6, "items[0] += delta"),
                     (7, "items[1]++"),
                 ],
-            ),
+            },
             #[cfg(feature = "ruby")]
-            (
-                "variable_mutations.rb",
-                Language::Ruby,
-                "def mutate(seed, delta)\n  total = seed\n  total += delta\n  holder.value += delta\n  items[0] += delta\n  total ||= delta\n  total\nend\n",
-                &[(2, "total += delta")],
-                2,
-                &[
+            MutationCase {
+                path: "variable_mutations.rb",
+                language: Language::Ruby,
+                source: "def mutate(seed, delta)\n  total = seed\n  total += delta\n  holder.value += delta\n  items[0] += delta\n  total ||= delta\n  total\nend\n",
+                mutations: &[(2, "total += delta")],
+                compound_line: 2,
+                conservative: &[
                     (3, "holder.value += delta"),
                     (4, "items[0] += delta"),
                     (5, "total ||= delta"),
                 ],
-            ),
+            },
         ];
 
-        for (path, language, source, mutations, compound_line, conservative) in cases {
+        for case in cases {
+            let MutationCase {
+                path,
+                language,
+                source,
+                mutations,
+                compound_line,
+                conservative,
+            } = case;
             let frontend = crate::languages::create_frontend(language)
                 .unwrap_or_else(|| panic!("missing {language:?} frontend"));
             let facts = crate::extract_file_with_mode(

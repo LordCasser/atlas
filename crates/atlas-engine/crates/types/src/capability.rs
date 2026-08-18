@@ -470,7 +470,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
         ],
         feature_overrides: &[
             (
@@ -487,7 +487,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
                     ],
                 ),
             ),
@@ -550,7 +550,7 @@ mod profiles {
         limitations: &[
             "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
             "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
         ],
         feature_overrides: &[
             (
@@ -567,7 +567,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
                     ],
                 ),
             ),
@@ -1002,7 +1002,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "dataflow via TS grammar; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
+                        "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
                     ],
                 ),
             ),
@@ -2248,7 +2248,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
             ]
         );
 
@@ -2294,7 +2294,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
                 ],
             )
         );
@@ -2358,7 +2358,7 @@ mod tests {
             vec![
                 "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
                 "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
             ]
         );
 
@@ -2404,7 +2404,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "AST-driven local dataflow; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
                 ],
             )
         );
@@ -2848,7 +2848,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "dataflow via TS grammar; direct-identifier augmented/update expressions preserve aggregate read-modify-write provenance (0.90); member/subscript mutation targets, logical-assignment conditional execution, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative"
+                    "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative"
                 ],
             )
         );

@@ -23,7 +23,15 @@
 ;; Direct-variable read-modify-write expressions. The full expression is the
 ;; produced value; the broad identifier capture below supplies its read inputs.
 (augmented_assignment_expression
-  left: (identifier) @df.mutation_target) @df.mutation_value
+  left: (identifier) @df.mutation_target
+  operator: ["+=" "-=" "*=" "/=" "%=" "^=" "&=" "|=" ">>=" ">>>=" "<<=" "**="]) @df.mutation_value
+
+;; Logical assignment produces a path-insensitive merge value: the old target
+;; and conditional RHS are both possible origins, without claiming that the
+;; RHS executes on every path.
+(augmented_assignment_expression
+  left: (identifier) @df.logical_mutation_target
+  operator: ["&&=" "||=" "??="]) @df.logical_mutation_value
 
 (update_expression
   argument: (identifier) @df.mutation_target) @df.mutation_value
