@@ -7,6 +7,11 @@
     pattern: (identifier) @df.parameter))
 (self_parameter
   (self) @df.parameter)
+(closure_parameters
+  (identifier) @df.parameter)
+(closure_parameters
+  (parameter
+    pattern: (identifier) @df.parameter))
 
 ;; --- Let bindings ---
 (let_declaration
@@ -79,11 +84,11 @@
 (let_condition
   value: (_) @df.let_condition_value)
 
-;; Broad captures are classified by the Rust adapter so ordinary let/let-else,
-;; match, and let-condition patterns share the same syntax rules as lexical
-;; binding extraction. The second capture on each binding lets the adapter
-;; materialize an exact syntactic projection when the path is knowable without
-;; type or slice-length inference.
+;; Broad captures are classified by the Rust adapter so parameter, ordinary
+;; let/let-else, match, and let-condition patterns share the same syntax rules
+;; as lexical binding extraction. The second capture on each local binding lets
+;; the adapter materialize an exact syntactic projection when the path is
+;; knowable without type or slice-length inference.
 (match_pattern
   (identifier) @df.pattern_target @df.pattern_projection)
 (_pattern

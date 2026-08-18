@@ -16,12 +16,15 @@
 ;; --- Closure parameters (|x, y| expr) ---
 (closure_parameters
   (identifier) @lexical.parameter)
+(closure_parameters
+  (parameter
+    pattern: (identifier) @lexical.parameter))
 
 ;; --- Let declaration, match arm, and let-condition pattern bindings ---
 ;; Broad grammar captures are filtered by the adapter. This reaches nested
-;; tuple/struct/ref/@ patterns in ordinary let/let-else declarations, match
-;; arms, match guards, and if/while conditions while rejecting constructor
-;; paths and non-canonical alternatives of an or-pattern.
+;; tuple/struct/ref/@ patterns in parameters, ordinary let/let-else
+;; declarations, match arms, match guards, and if/while conditions while
+;; rejecting constructor paths and non-canonical alternatives of an or-pattern.
 (match_pattern
   (identifier) @lexical.pattern)
 (_pattern

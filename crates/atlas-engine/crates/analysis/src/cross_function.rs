@@ -180,9 +180,12 @@ impl CrossFunctionBridge {
 
 /// Find the 0-based index of a Parameter [`DataNode`] within its function.
 ///
-/// Queries all data nodes for `function_id` and returns the position of
-/// `param_node_id` among the `Parameter`-kind nodes.  Returns `None` when
-/// the node is not found or is not a parameter.
+/// Queries all data nodes for `function_id` and prefers an explicitly stored
+/// runtime argument position. Once any parameter in a function has an
+/// explicit position, a missing position means that parameter has no matching
+/// call argument (for example Rust `self` or a closure parameter owned by an
+/// enclosing named function). Legacy language adapters without explicit
+/// positions retain source-order fallback.
 pub(crate) fn find_param_index(
     store: &dyn TraceStore,
     function_id: &SymbolId,
@@ -200,9 +203,13 @@ pub(crate) fn find_param_index(
     else {
         return Ok(None);
     };
-    Ok(Some(
-        parameter.arg_index.map_or(position, |index| index as usize),
-    ))
+    if parameter_nodes
+        .iter()
+        .any(|parameter| parameter.arg_index.is_some())
+    {
+        return Ok(parameter.arg_index.map(|index| index as usize));
+    }
+    Ok(Some(position))
 }
 
 /// Resolve a [`CallsiteId`] to its callee [`SymbolId`].
@@ -265,6 +272,82 @@ mod tests {
         };
         store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
         sym.id
+    }
+
+    #[test]
+    fn test_explicit_parameter_positions_leave_non_runtime_parameters_unmapped()
+    -> anyhow::Result<()> {
+        let store = test_store();
+        let file_id = FileId::generate("explicit_parameter_positions.rs");
+        store.upsert_file(&types::structs::FileInfo {
+            file_id,
+            path: "explicit_parameter_positions.rs".into(),
+            language: types::enums::Language::Rust,
+            content_hash: "abc".into(),
+            status: types::enums::ParseStatus::Success,
+        })?;
+        let function_id = insert_test_function(&store, file_id, "decode");
+        let range = TextRange {
+            start_byte: 0,
+            end_byte: 100,
+            start_line: 1,
+            start_column: 1,
+            end_line: 10,
+            end_column: 1,
+        };
+        let make_parameter = |name: &str, start_byte: u32, arg_index: Option<u32>| {
+            let id = DataNodeId::generate(
+                &file_id,
+                Some(&function_id),
+                "parameter",
+                Some(name),
+                None,
+                start_byte,
+            );
+            types::dataflow::DataNode {
+                id,
+                file_id,
+                function_id: Some(function_id),
+                kind: DataNodeKind::Parameter,
+                binding_id: None,
+                callsite_id: None,
+                name: Some(name.into()),
+                access_path: None,
+                arg_index,
+                range: TextRange {
+                    start_byte,
+                    end_byte: start_byte + 1,
+                    ..range
+                },
+            }
+        };
+        let self_parameter = make_parameter("self", 1, None);
+        let left = make_parameter("left", 2, Some(0));
+        let right = make_parameter("right", 3, Some(0));
+        let plain = make_parameter("plain", 4, Some(1));
+        let closure_parameter = make_parameter("item", 20, None);
+        let nodes = [
+            self_parameter.clone(),
+            left.clone(),
+            right.clone(),
+            plain.clone(),
+            closure_parameter.clone(),
+        ];
+        let unit = types::lazy::AnalysisUnit::from_function(file_id, function_id, range);
+        store.replace_dataflow_for_unit(&unit, &nodes, &[], &[], &[], &[], &[])?;
+
+        assert_eq!(find_param_index(&store, &function_id, &left.id)?, Some(0));
+        assert_eq!(find_param_index(&store, &function_id, &right.id)?, Some(0));
+        assert_eq!(find_param_index(&store, &function_id, &plain.id)?, Some(1));
+        assert_eq!(
+            find_param_index(&store, &function_id, &self_parameter.id)?,
+            None
+        );
+        assert_eq!(
+            find_param_index(&store, &function_id, &closure_parameter.id)?,
+            None
+        );
+        Ok(())
     }
 
     #[test]

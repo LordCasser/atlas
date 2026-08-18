@@ -639,6 +639,58 @@ fn rust_let_declaration_pattern(node: tree_sitter::Node<'_>) -> Option<tree_sitt
         .map(|_| declaration)
 }
 
+/// Return the pattern root and its containing parameter list.
+///
+/// Named function/method parameters wrap their pattern in `parameter`, while
+/// Rust closures may use either that typed form or a bare `_pattern` child.
+fn rust_parameter_pattern_root<'tree>(
+    node: tree_sitter::Node<'tree>,
+) -> Option<(tree_sitter::Node<'tree>, tree_sitter::Node<'tree>)> {
+    if let Some(parameter) = nearest_ancestor_of_kind(node, "parameter")
+        && let Some(parameters) = parameter.parent()
+        && matches!(parameters.kind(), "parameters" | "closure_parameters")
+        && let Some(pattern) = parameter.child_by_field_name("pattern")
+        && node_is_within(node, pattern)
+    {
+        return Some((pattern, parameters));
+    }
+
+    let parameters = nearest_ancestor_of_kind(node, "closure_parameters")?;
+    let mut root = node;
+    while let Some(parent) = root.parent() {
+        if parent.id() == parameters.id() {
+            return (root.kind() != "parameter").then_some((root, parameters));
+        }
+        root = parent;
+    }
+    None
+}
+
+/// Runtime argument position for a named function/method parameter pattern.
+///
+/// Closure parameters deliberately return `None`: Atlas does not yet resolve
+/// closure invocation sites, and mapping them onto the enclosing named
+/// function's call arguments would create a false interprocedural bridge.
+fn rust_runtime_parameter_index(node: tree_sitter::Node<'_>) -> Option<u32> {
+    let (_, parameters) = rust_parameter_pattern_root(node)?;
+    if parameters.kind() != "parameters" {
+        return None;
+    }
+    let parameter = nearest_ancestor_of_kind(node, "parameter")?;
+    let mut index = 0u32;
+    let mut cursor = parameters.walk();
+    for sibling in parameters.named_children(&mut cursor) {
+        if sibling.kind() != "parameter" {
+            continue;
+        }
+        if sibling.id() == parameter.id() {
+            return Some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
 fn is_rust_let_condition_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
     rust_supported_let_condition(node)
         .and_then(|condition| condition.child_by_field_name("pattern"))
@@ -649,6 +701,7 @@ fn is_rust_pattern_declaration_syntax(node: tree_sitter::Node<'_>) -> bool {
     is_rust_match_arm_pattern_syntax(node)
         || is_rust_let_condition_pattern_syntax(node)
         || rust_let_declaration_pattern(node).is_some()
+        || rust_parameter_pattern_root(node).is_some()
 }
 
 fn is_canonical_rust_or_alternative(
@@ -749,6 +802,12 @@ fn is_rust_let_declaration_binding_node(node: tree_sitter::Node<'_>, source: &st
     rust_let_declaration_pattern(node)
         .and_then(|declaration| declaration.child_by_field_name("pattern"))
         .is_some_and(|pattern| is_rust_binding_node_in_pattern(node, source, pattern))
+}
+
+fn is_rust_nested_parameter_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    rust_parameter_pattern_root(node).is_some_and(|(pattern, _)| {
+        pattern.id() != node.id() && is_rust_binding_node_in_pattern(node, source, pattern)
+    })
 }
 
 fn is_rust_pattern_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
@@ -888,10 +947,17 @@ fn normalize_rust_lexical(
     source: &str,
     file_id: FileId,
 ) -> Option<BindingDef> {
-    let kind = rust_binding_kind(capture_name)?;
-    if capture_name == "lexical.pattern" && !is_rust_pattern_binding_node(node, source) {
-        return None;
-    }
+    let kind = if capture_name == "lexical.pattern" {
+        if is_rust_nested_parameter_binding_node(node, source) {
+            BindingKind::Parameter
+        } else if is_rust_pattern_binding_node(node, source) {
+            BindingKind::Local
+        } else {
+            return None;
+        }
+    } else {
+        rust_binding_kind(capture_name)?
+    };
     let name = node_text(node, source)?;
     let range = node_range(node);
     let mut binding = make_binding_def(file_id, kind, name, range);
@@ -918,12 +984,24 @@ fn normalize_rust_dataflow_builder(
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
-        "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.parameter" => {
+            let (mut parameter, edge) = make_df_parameter(file_id, node, source, range);
+            if let Some(parameter) = parameter.as_mut() {
+                parameter.arg_index = rust_runtime_parameter_index(node);
+            }
+            (parameter, edge)
+        }
         "df.assign_target" | "df.mutation_target" => {
             make_df_assign_target(file_id, node, source, range)
         }
         "df.pattern_target" => {
-            if is_rust_pattern_binding_node(node, source) {
+            if is_rust_nested_parameter_binding_node(node, source) {
+                let (mut parameter, edge) = make_df_parameter(file_id, node, source, range);
+                if let Some(parameter) = parameter.as_mut() {
+                    parameter.arg_index = rust_runtime_parameter_index(node);
+                }
+                (parameter, edge)
+            } else if is_rust_pattern_binding_node(node, source) {
                 make_df_assign_target(file_id, node, source, range)
             } else {
                 (None, None)
@@ -1248,6 +1326,85 @@ mod tests {
             nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
             "varuse"
         );
+    }
+
+    #[test]
+    fn test_rust_parameter_patterns_preserve_bindings_scopes_and_runtime_positions() {
+        let source = r#"struct Pair { left: i32, right: i32 }
+fn decode(
+    (first, Pair { left: renamed, right }): (i32, Pair),
+    plain: i32,
+) -> i32 {
+    let folded = [(1, 2)].into_iter().fold(0, |mut acc, (item, _)| acc + item);
+    let borrowed = [3].iter().map(|&value| value).sum::<i32>();
+    first + renamed + right + plain + folded + borrowed
+}
+impl Pair {
+    fn shift(&self, delta: i32) -> i32 {
+        self.left + delta
+    }
+}
+"#;
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            FileId::generate("parameter_patterns.rs"),
+            std::path::Path::new("parameter_patterns.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("Rust parameter-pattern extraction");
+
+        let binding = |name: &str| {
+            facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name && binding.kind == BindingKind::Parameter)
+                .unwrap_or_else(|| panic!("missing parameter binding {name}"))
+        };
+        let parameter = |name: &str| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.name.as_deref() == Some(name) && node.kind == DataNodeKind::Parameter
+                })
+                .unwrap_or_else(|| panic!("missing Parameter node {name}"))
+        };
+
+        for name in ["first", "renamed", "right"] {
+            assert_eq!(parameter(name).binding_id, Some(binding(name).id), "{name}");
+            assert_eq!(parameter(name).arg_index, Some(0), "{name}");
+        }
+        assert_eq!(parameter("plain").arg_index, Some(1));
+        assert_eq!(parameter("delta").arg_index, Some(0));
+        assert_eq!(parameter("self").arg_index, None);
+
+        let closure_scope = binding("acc").scope_id;
+        assert_eq!(binding("item").scope_id, closure_scope);
+        assert_ne!(closure_scope, binding("first").scope_id);
+        assert_ne!(binding("value").scope_id, closure_scope);
+        for name in ["acc", "item", "value"] {
+            assert_eq!(parameter(name).binding_id, Some(binding(name).id), "{name}");
+            assert_eq!(parameter(name).arg_index, None, "{name}");
+        }
+
+        for name in ["Pair", "left"] {
+            assert!(
+                facts.bindings.iter().all(|binding| binding.name != name),
+                "constructor and field keys are not parameter bindings: {name}"
+            );
+        }
+        for parameter_binding in facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.kind == BindingKind::Parameter)
+        {
+            assert!(facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse || node.range != parameter_binding.range
+            }));
+        }
     }
 
     #[test]

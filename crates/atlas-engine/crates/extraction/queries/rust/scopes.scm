@@ -7,6 +7,8 @@
 
 (function_item) @scope.function
 
+(closure_expression) @scope.function
+
 (struct_item) @scope.class
 
 (enum_item) @scope.class
