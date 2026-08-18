@@ -90,6 +90,22 @@ pub(crate) fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<S
         .map(|scope| scope.id)
 }
 
+/// Select the most recently activated same-named binding at a source byte.
+///
+/// Multiple declarations may share one lexical scope. Lookup therefore cannot
+/// stop at the first name match: it must ignore definitions that are not yet
+/// visible and prefer the latest active definition.
+pub(crate) fn latest_visible_binding<'a>(
+    bindings: impl IntoIterator<Item = &'a BindingDef>,
+    name: &str,
+    at_byte: u32,
+) -> Option<&'a BindingDef> {
+    bindings
+        .into_iter()
+        .filter(|binding| binding.name == name && binding.visible_from_byte <= at_byte)
+        .max_by_key(|binding| (binding.visible_from_byte, binding.range.start_byte))
+}
+
 // ── Shared binding helpers ──────────────────────────────────────────────
 
 /// Construct a `BindingDef` with default fields, reducing boilerplate in
@@ -113,6 +129,7 @@ pub fn make_binding_def(
         kind,
         name,
         symbol_id: None,
+        visible_from_byte: range.start_byte,
         range,
     }
 }

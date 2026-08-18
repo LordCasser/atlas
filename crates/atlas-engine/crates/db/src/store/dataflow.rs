@@ -42,7 +42,7 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    visible_from_byte, range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM bindings WHERE function_id = ?1",
         )?;
@@ -55,7 +55,7 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
-                    range_start_byte, range_end_byte, range_start_line, range_start_column,
+                    visible_from_byte, range_start_byte, range_end_byte, range_start_line, range_start_column,
                     range_end_line, range_end_column
              FROM bindings WHERE file_id = ?1",
         )?;

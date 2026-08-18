@@ -271,7 +271,27 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
             None => continue,
         };
 
-        // Find the innermost scope containing this DataNode's range
+        // Definition nodes link directly to the binding declared by their
+        // source range even when lexical visibility starts later.
+        let declared_binding = if matches!(
+            node.kind,
+            DataNodeKind::Parameter | DataNodeKind::Local | DataNodeKind::Global
+        ) {
+            bindings.iter().find(|binding| {
+                binding.name == *name
+                    && binding.range.start_byte <= node.range.start_byte
+                    && binding.range.end_byte >= node.range.end_byte
+            })
+        } else {
+            None
+        };
+
+        if let Some(binding) = declared_binding {
+            node.binding_id = Some(binding.id);
+            continue;
+        }
+
+        // Find the innermost scope containing this DataNode's range.
         let containing_scope = innermost_scope_by_range(scopes, node.range);
 
         let binding_id = match containing_scope {
@@ -282,10 +302,11 @@ fn resolve_bindings_to_nodes(nodes: &mut [DataNode], bindings: &[BindingDef], sc
                 let mut current = Some(scope_id);
                 while let Some(sid) = current {
                     if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
-                        if let Some(b) = bindings_in_scope
-                            .iter()
-                            .find(|b| b.name.as_str() == name.as_str())
-                        {
+                        if let Some(b) = crate::languages::shared::latest_visible_binding(
+                            bindings_in_scope.iter().copied(),
+                            name,
+                            node.range.start_byte,
+                        ) {
                             found = Some(&b.id);
                             break;
                         }
@@ -319,44 +340,16 @@ fn innermost_scope_by_range(scopes: &[ScopeDef], range: TextRange) -> Option<Sco
 
 /// Find the closest binding with the given name to the given DataNode range.
 ///
-/// Prefers a binding whose range contains the node's range (same scope).
-/// Falls back to the closest preceding binding (by byte distance from the
-/// node's start byte to the binding's end byte).
+/// Prefers the most recently activated binding preceding the node. Definition
+/// nodes are handled separately by [`resolve_bindings_to_nodes`], so a future
+/// declaration is never selected here.
 fn closest_binding_by_range<'a>(
     bindings: &'a [BindingDef],
     name: &str,
     node_range: TextRange,
 ) -> Option<&'a BindingId> {
-    let candidates: Vec<&BindingDef> = bindings
-        .iter()
-        .filter(|b| b.name.as_str() == name)
-        .collect();
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // Prefer a binding whose range fully contains the node's range.
-    if let Some(containing) = candidates.iter().find(|b| {
-        b.range.start_byte <= node_range.start_byte && b.range.end_byte >= node_range.end_byte
-    }) {
-        return Some(&containing.id);
-    }
-
-    // Fallback: closest preceding binding by byte distance.
-    candidates
-        .iter()
-        .filter(|b| b.range.end_byte <= node_range.start_byte)
-        .min_by_key(|b| node_range.start_byte.saturating_sub(b.range.end_byte))
-        .map(|b| &b.id)
-        .or_else(|| {
-            // If no preceding binding, closest following binding.
-            candidates
-                .iter()
-                .filter(|b| b.range.start_byte >= node_range.end_byte)
-                .min_by_key(|b| b.range.start_byte.saturating_sub(node_range.end_byte))
-                .map(|b| &b.id)
-        })
+    crate::languages::shared::latest_visible_binding(bindings.iter(), name, node_range.start_byte)
+        .map(|binding| &binding.id)
 }
 
 /// AST‑driven assignment edge creation.
@@ -1434,6 +1427,106 @@ mod tests {
 
         // We should have some data nodes (at minimum, the variable declarations and returns)
         assert!(!result.nodes.is_empty(), "Should have data nodes");
+    }
+
+    #[test]
+    fn test_binding_resolution_respects_source_order_visibility() {
+        use types::enums::{BindingKind, ScopeKind};
+        use types::ids::{BindingId, ScopeId};
+
+        fn range(start: u32, end: u32) -> TextRange {
+            TextRange {
+                start_byte: start,
+                end_byte: end,
+                start_line: 0,
+                start_column: start,
+                end_line: 0,
+                end_column: end,
+            }
+        }
+
+        fn use_node(file_id: FileId, start: u32) -> DataNode {
+            DataNode {
+                id: DataNodeId::generate(&file_id, None, "variable_use", Some("item"), None, start),
+                file_id,
+                function_id: None,
+                kind: DataNodeKind::VariableUse,
+                binding_id: None,
+                callsite_id: None,
+                name: Some("item".into()),
+                access_path: Some("item".into()),
+                arg_index: None,
+                range: range(start, start + 4),
+            }
+        }
+
+        let file_id = FileId::generate("guard.rs");
+        let function_scope = ScopeId::generate(&file_id, None, "function", 0);
+        let arm_scope = ScopeId::generate(&file_id, Some(&function_scope), "conditional", 40);
+        let parameter_id = BindingId::generate(&file_id, &function_scope, "parameter", "item", 10);
+        let guard_id = BindingId::generate(&file_id, &arm_scope, "local", "item", 70);
+        let scopes = vec![
+            ScopeDef {
+                id: function_scope,
+                file_id,
+                kind: ScopeKind::Function,
+                name: "inspect".into(),
+                scope_path: "inspect".into(),
+                range: range(0, 140),
+                parent_id: None,
+            },
+            ScopeDef {
+                id: arm_scope,
+                file_id,
+                kind: ScopeKind::Conditional,
+                name: "match_arm".into(),
+                scope_path: "inspect.match_arm".into(),
+                range: range(40, 130),
+                parent_id: Some(function_scope),
+            },
+        ];
+        let bindings = vec![
+            BindingDef {
+                id: parameter_id,
+                file_id,
+                function_id: None,
+                scope_id: function_scope,
+                kind: BindingKind::Parameter,
+                name: "item".into(),
+                symbol_id: None,
+                visible_from_byte: 10,
+                range: range(10, 14),
+            },
+            BindingDef {
+                id: guard_id,
+                file_id,
+                function_id: None,
+                scope_id: arm_scope,
+                kind: BindingKind::Local,
+                name: "item".into(),
+                symbol_id: None,
+                visible_from_byte: 90,
+                range: range(70, 74),
+            },
+        ];
+        let mut nodes = vec![
+            use_node(file_id, 60),
+            DataNode::local(
+                DataNodeId::generate(&file_id, None, "local", Some("item"), None, 70),
+                file_id,
+                None,
+                None,
+                "item",
+                range(70, 74),
+            ),
+            use_node(file_id, 100),
+        ];
+
+        resolve_bindings_to_nodes(&mut nodes, &bindings, &scopes);
+
+        assert_eq!(nodes[0].binding_id, Some(parameter_id));
+        assert_eq!(nodes[1].binding_id, Some(guard_id));
+        assert_eq!(nodes[2].binding_id, Some(guard_id));
     }
 
     #[test]

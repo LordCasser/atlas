@@ -2233,6 +2233,7 @@ mod tests {
                 kind: types::enums::BindingKind::Parameter,
                 name: "arg".into(),
                 symbol_id: None,
+                visible_from_byte: range.start_byte,
                 range,
             },
             // Invalid: references non-existent function
@@ -2244,6 +2245,7 @@ mod tests {
                 kind: types::enums::BindingKind::Local,
                 name: "stray".into(),
                 symbol_id: None,
+                visible_from_byte: range.start_byte,
                 range,
             },
         ];
@@ -2395,6 +2397,7 @@ mod tests {
             kind: types::enums::BindingKind::Parameter,
             name: "x".into(),
             symbol_id: None,
+            visible_from_byte: range.start_byte,
             range,
         }];
 

@@ -1134,10 +1134,11 @@ fn build_reference_binding_uses(
                 let mut found = None;
                 loop {
                     if let Some(bindings_in_scope) = scope_bindings.get(&sid) {
-                        if let Some(b) = bindings_in_scope
-                            .iter()
-                            .find(|b| b.name.as_str() == name.as_str())
-                        {
+                        if let Some(b) = super::languages::shared::latest_visible_binding(
+                            bindings_in_scope.iter().copied(),
+                            &name,
+                            range.start_byte,
+                        ) {
                             found = Some(b.id);
                             break;
                         }

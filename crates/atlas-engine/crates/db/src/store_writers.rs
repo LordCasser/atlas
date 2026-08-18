@@ -549,12 +549,12 @@ pub(crate) fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyh
     let _span =
         debug_span!(target: "atlas_db", "db.write_bindings", count = bindings.len()).entered();
 
-    const PARAMS_PER_ROW: usize = 13;
-    const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 69
+    const PARAMS_PER_ROW: usize = 14;
+    const CHUNK_SIZE: usize = 900 / PARAMS_PER_ROW; // 64
 
     let base_sql = r#"INSERT OR REPLACE INTO bindings
         (binding_id, file_id, function_id, scope_id, kind, name, symbol_id,
-         range_start_byte, range_end_byte, range_start_line, range_start_column,
+         visible_from_byte, range_start_byte, range_end_byte, range_start_line, range_start_column,
          range_end_line, range_end_column)
      VALUES "#;
 
@@ -571,6 +571,7 @@ pub(crate) fn write_bindings(conn: &Connection, bindings: &[BindingDef]) -> anyh
             params.push(Box::new(b.kind.as_str().to_string()));
             params.push(Box::new(b.name.clone()));
             params.push(Box::new(b.symbol_id));
+            params.push(Box::new(b.visible_from_byte));
             params.push(Box::new(b.range.start_byte));
             params.push(Box::new(b.range.end_byte));
             params.push(Box::new(b.range.start_line));
@@ -1809,6 +1810,7 @@ mod tests {
                 binding_id TEXT PRIMARY KEY, file_id INTEGER,
                 function_id TEXT, scope_id TEXT,
                 kind TEXT, name TEXT, symbol_id TEXT,
+                visible_from_byte INTEGER,
                 range_start_byte INTEGER, range_end_byte INTEGER,
                 range_start_line INTEGER, range_start_column INTEGER,
                 range_end_line INTEGER, range_end_column INTEGER
@@ -1838,6 +1840,7 @@ mod tests {
             kind: BindingKind::Local,
             name: format!("var_{i}"),
             symbol_id: None,
+            visible_from_byte: i * 10,
             range: TextRange {
                 start_byte: i * 10,
                 end_byte: i * 10 + 5,
@@ -1861,7 +1864,7 @@ mod tests {
             assert_eq!(count, 0, "empty input should produce 0 rows");
         }
 
-        const CHUNK_SIZE: usize = 69;
+        const CHUNK_SIZE: usize = 64;
 
         for count in [
             0usize,
@@ -1891,7 +1894,7 @@ mod tests {
 
         let mut stmt = conn
             .prepare(
-                "SELECT binding_id, function_id, scope_id, kind, name, symbol_id, range_start_byte
+                "SELECT binding_id, function_id, scope_id, kind, name, symbol_id, visible_from_byte, range_start_byte
                  FROM bindings WHERE binding_id = ?1",
             )
             .unwrap();
@@ -1906,6 +1909,7 @@ mod tests {
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<Vec<u8>>>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
                     ))
                 })
                 .unwrap();
@@ -1915,7 +1919,8 @@ mod tests {
             assert_eq!(row.3, b.kind.as_str());
             assert_eq!(row.4, b.name);
             assert!(row.5.is_none(), "symbol_id should be NULL");
-            assert_eq!(row.6, b.range.start_byte as i64);
+            assert_eq!(row.6, b.visible_from_byte as i64);
+            assert_eq!(row.7, b.range.start_byte as i64);
         }
     }
 
@@ -2025,6 +2030,7 @@ mod tests {
             kind: BindingKind::Local,
             name: format!("v{idx}"),
             symbol_id,
+            visible_from_byte: idx * 10,
             range: facts_help_range(idx, 5),
         }
     }

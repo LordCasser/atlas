@@ -58,6 +58,14 @@ pub struct BindingDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_id: Option<SymbolId>,
 
+    /// First source byte at which this binding participates in lexical lookup.
+    ///
+    /// The declaration itself still links directly to this binding even when
+    /// its source range precedes the activation point. This models constructs
+    /// such as Rust match-guard `let` conditions, whose names become visible
+    /// only after the condition succeeds.
+    pub visible_from_byte: u32,
+
     /// Source range of the binding definition.
     pub range: TextRange,
 }
@@ -138,12 +146,14 @@ mod tests {
             kind: BindingKind::Parameter,
             name: "req".to_string(),
             symbol_id: None,
+            visible_from_byte: 42,
             range: make_range(42, 45),
         };
         let json = serde_json::to_string(&binding).unwrap();
         let parsed: BindingDef = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "req");
         assert_eq!(parsed.kind, BindingKind::Parameter);
+        assert_eq!(parsed.visible_from_byte, 42);
     }
 
     #[test]

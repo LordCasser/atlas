@@ -230,13 +230,14 @@ pub(crate) fn row_to_binding(row: &Row) -> rusqlite::Result<BindingDef> {
         kind,
         name: row.get(5)?,
         symbol_id: row.get(6)?,
+        visible_from_byte: row.get(7)?,
         range: TextRange {
-            start_byte: row.get(7)?,
-            end_byte: row.get(8)?,
-            start_line: row.get(9)?,
-            start_column: row.get(10)?,
-            end_line: row.get(11)?,
-            end_column: row.get(12)?,
+            start_byte: row.get(8)?,
+            end_byte: row.get(9)?,
+            start_line: row.get(10)?,
+            start_column: row.get(11)?,
+            end_line: row.get(12)?,
+            end_column: row.get(13)?,
         },
     })
 }

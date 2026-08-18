@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL.
 //!
-//! Schema version: 3
+//! Schema version: 4
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -32,7 +32,7 @@
 //! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS bindings (
     kind                 TEXT NOT NULL,
     name                 TEXT NOT NULL,
     symbol_id            BLOB REFERENCES symbols(symbol_id) ON DELETE SET NULL,
+    visible_from_byte    INTEGER NOT NULL,
     range_start_byte     INTEGER NOT NULL,
     range_end_byte       INTEGER NOT NULL,
     range_start_line     INTEGER NOT NULL,
