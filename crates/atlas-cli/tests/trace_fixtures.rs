@@ -2186,6 +2186,246 @@ fn fx_typescript_real_opencode_nullish_assignment_persists_and_traces() {
 }
 
 #[test]
+fn fx_typescript_family_for_in_bindings_persist_and_trace_from_iterables() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "for_in.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "for_in.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "for_in.ets"),
+    ];
+    let source = concat!(
+        "function select(rows, records, values, value) {\n",
+        "  let key = 'outer';\n",
+        "  for (const [key, count] of rows) {\n",
+        "    consume(key, count);\n",
+        "  }\n",
+        "  consume(key);\n",
+        "  for (const { name, meta: { score } } of records) {\n",
+        "    consume(name, score);\n",
+        "  }\n",
+        "  for (value of values) {\n",
+        "    consume(value);\n",
+        "  }\n",
+        "  for (holder.value of values) {\n",
+        "    consume(holder.value);\n",
+        "  }\n",
+        "  return value;\n",
+        "}\n",
+    );
+
+    for (language, path) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted for-in bindings: {error}"));
+        let mut key_bindings: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.name == "key")
+            .collect();
+        key_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(key_bindings.len(), 2, "{language}: outer and loop key");
+        let outer_key = key_bindings[0];
+        let loop_key = key_bindings[1];
+        assert_ne!(outer_key.id, loop_key.id, "{language}");
+        assert_ne!(outer_key.scope_id, loop_key.scope_id, "{language}");
+        assert!(bindings.iter().all(|binding| binding.name != "meta"));
+        let value_binding = bindings
+            .iter()
+            .find(|binding| binding.name == "value")
+            .unwrap_or_else(|| panic!("{language}: value parameter binding"));
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|binding| binding.name == "value")
+                .count(),
+            1,
+            "{language}: assignment loop reuses value"
+        );
+
+        let loop_key_uses = store
+            .find_binding_uses_by_binding(&loop_key.id)
+            .unwrap_or_else(|error| panic!("{language}: loop key uses: {error}"));
+        let outer_key_uses = store
+            .find_binding_uses_by_binding(&outer_key.id)
+            .unwrap_or_else(|error| panic!("{language}: outer key uses: {error}"));
+        assert!(loop_key_uses.iter().any(|use_| use_.range.start_line == 3));
+        assert!(outer_key_uses.iter().any(|use_| use_.range.start_line == 5));
+        assert!(!outer_key_uses.iter().any(|use_| use_.range.start_line == 3));
+
+        let nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted for-in nodes: {error}"));
+        let binding_id = |name: &str| {
+            bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap_or_else(|| panic!("{language}: missing binding {name}"))
+                .id
+        };
+        for (iterable_name, loop_line, target_name, target_binding) in [
+            ("rows", 2, "key", loop_key.id),
+            ("rows", 2, "count", binding_id("count")),
+            ("records", 6, "name", binding_id("name")),
+            ("records", 6, "score", binding_id("score")),
+            ("values", 9, "value", value_binding.id),
+        ] {
+            let iterable = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(iterable_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("{language}: iterable {iterable_name}"));
+            let target = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("{language}: loop target {target_name}"));
+            assert_eq!(target.binding_id, Some(target_binding), "{language}");
+            assert!(
+                store
+                    .find_dataflow_edges_by_source(&iterable.id)
+                    .unwrap_or_else(|error| panic!("{language}: iterable edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.65
+                    }),
+                "{language}: {iterable_name} must reach {target_name}"
+            );
+        }
+        assert!(
+            nodes
+                .iter()
+                .all(|node| { node.kind != DataNodeKind::Local || node.range.start_line != 12 })
+        );
+
+        let score_binding = bindings
+            .iter()
+            .find(|binding| binding.name == "score")
+            .unwrap_or_else(|| panic!("{language}: score binding"));
+        let score_use = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("score")
+                    && node.range.start_line == 7
+            })
+            .unwrap_or_else(|| panic!("{language}: score body use"));
+        assert_eq!(score_use.binding_id, Some(score_binding.id), "{language}");
+        let response = TraceEngine::new(store.clone()).trace_variable(
+            &file_id,
+            score_use.range.start_line + 1,
+            score_use.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, language);
+        let trace = response
+            .result
+            .unwrap_or_else(|| panic!("{language}: nested for-in trace"));
+        assert_has_edge_kind(&trace, DataFlowKind::Assign);
+        assert_source_name(&trace, "records");
+    }
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_typescript_real_opencode_for_of_pattern_persists_and_traces() {
+    let source = example_source_or_skip!(
+        "opencode/packages/sdk/js/src/v2/gen/core/queryKeySerializer.gen.ts"
+    );
+    let path = "packages/sdk/js/src/v2/gen/core/queryKeySerializer.gen.ts";
+    let store = index_files(&[(path, source)]);
+    let file_id = FileId::generate(path);
+    let loop_line = source
+        .lines()
+        .position(|line| line.contains("for (const [key, value] of entries)"))
+        .expect("OpenCode entry iteration") as u32;
+    let return_line = source
+        .lines()
+        .enumerate()
+        .skip(loop_line as usize)
+        .find(|(_, line)| line.trim() == "return result")
+        .map(|(line, _)| line as u32)
+        .expect("OpenCode serializeSearchParams return");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("OpenCode persisted bindings");
+    let nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("OpenCode persisted nodes");
+    let iterable = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("entries")
+                && node.range.start_line == loop_line
+        })
+        .expect("OpenCode entries iterable");
+    for target_name in ["key", "value"] {
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.name == target_name && binding.range.start_line == loop_line)
+            .unwrap_or_else(|| panic!("OpenCode loop binding {target_name}"));
+        let target = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(target_name)
+                    && node.range.start_line == loop_line
+            })
+            .unwrap_or_else(|| panic!("OpenCode loop target {target_name}"));
+        assert_eq!(target.binding_id, Some(binding.id));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&iterable.id)
+                .expect("OpenCode iterable edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.65
+                })
+        );
+    }
+
+    let value_use = nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line > loop_line
+                && node.range.start_line < return_line
+        })
+        .min_by_key(|node| node.range.start_byte)
+        .expect("OpenCode value loop-body use");
+    let loop_value_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "value" && binding.range.start_line == loop_line)
+        .expect("OpenCode loop value binding");
+    assert_eq!(value_use.binding_id, Some(loop_value_binding.id));
+    let trace = TraceEngine::new(store.clone())
+        .trace_variable(
+            &file_id,
+            value_use.range.start_line + 1,
+            value_use.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("OpenCode for-of value trace");
+    assert_has_edge_kind(&trace, DataFlowKind::Assign);
+    assert_step_with_name(&store, &trace, DataFlowKind::Assign, "entries");
+}
+
+#[test]
 fn fx_c_style_variable_mutations_persist_and_trace_read_modify_write_inputs() {
     let cases = vec![
         #[cfg(feature = "c")]

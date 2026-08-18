@@ -2445,6 +2445,158 @@ fn n5_focus_typescript_family_logical_assignments_match_index_full() {
     }
 }
 
+/// TypeScript, JavaScript, and ArkTS for-of/for-in bindings must persist the
+/// same loop-local identity and whole-iterable aggregate provenance under
+/// Focus as full Index, without pulling in an unrelated function unit.
+#[test]
+fn n5_focus_typescript_family_for_in_bindings_match_index_full() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "for_in.ts", "peer.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "for_in.js", "peer.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "for_in.ets", "peer.ets"),
+    ];
+    let source = concat!(
+        "function select(rows, records, value, values) {\n",
+        "  let key = 'outer';\n",
+        "  for (const [key, count] of rows) {\n",
+        "    consume(key, count);\n",
+        "  }\n",
+        "  consume(key);\n",
+        "  for (const { name, meta: { score } } of records) {\n",
+        "    consume(name, score);\n",
+        "  }\n",
+        "  for (value of values) {\n",
+        "    consume(value);\n",
+        "  }\n",
+        "  for (holder.value of values) {\n",
+        "    consume(holder.value);\n",
+        "  }\n",
+        "  return key;\n",
+        "}\n",
+    );
+    let peer_source = "function unrelated() { return 42; }\n";
+
+    for (language, path, peer_path) in cases {
+        let fixture = [(path, source), (peer_path, peer_source)];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_select = symbol_id_by_name(&indexed_store, "select");
+        let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_select);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_select);
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == "key")
+                .count(),
+            2,
+            "{language}: outer and loop key bindings"
+        );
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == "value")
+                .count(),
+            1,
+            "{language}: assignment loop reuses value"
+        );
+        assert!(indexed_bindings.iter().all(|binding| binding.1 != "meta"));
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_select)
+            .unwrap_or_else(|error| panic!("{language}: full Index for-in nodes: {error}"));
+        for (iterable_name, loop_line, target_name) in [
+            ("rows", 2, "key"),
+            ("rows", 2, "count"),
+            ("records", 6, "name"),
+            ("records", 6, "score"),
+            ("values", 9, "value"),
+        ] {
+            let iterable = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(iterable_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index iterable {iterable_name}"));
+            let target = indexed_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some(target_name)
+                        && node.range.start_line == loop_line
+                })
+                .unwrap_or_else(|| panic!("{language}: full Index target {target_name}"));
+            assert!(
+                indexed_store
+                    .find_dataflow_edges_by_source(&iterable.id)
+                    .unwrap_or_else(|error| panic!("{language}: iterable edges: {error}"))
+                    .iter()
+                    .any(|edge| {
+                        edge.target == target.id
+                            && edge.kind == DataFlowKind::Assign
+                            && edge.confidence == 0.65
+                    }),
+                "{language}: {iterable_name} must reach {target_name}"
+            );
+        }
+        assert!(
+            indexed_nodes
+                .iter()
+                .all(|node| { node.kind != DataNodeKind::Local || node.range.start_line != 12 })
+        );
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let select = symbol_id_by_name(&focused_store, "select");
+        let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&select)
+                .unwrap_or_else(|error| panic!("{language}: cold for-in unit: {error}"))
+                .is_empty(),
+            "{language}: for-in unit must be cold before Focus ensure"
+        );
+
+        materialize
+            .dataflow()
+            .ensure_for_function(&select, Some("typescript-family-for-in-parity"))
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure for-in unit: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &select),
+            indexed_slice,
+            "{language}: Focus for-in dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &select),
+            indexed_bindings,
+            "{language}: Focus for-in bindings == full Index"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unrelated)
+                .unwrap_or_else(|error| panic!("{language}: for-in peer state: {error}"))
+                .is_empty(),
+            "{language}: for-in peer unit must stay outside the Focus window"
+        );
+    }
+}
+
 /// C, C++, Java, and C# encode compound/update expressions with different AST
 /// shapes. Each language must nevertheless materialize the same direct-local
 /// read-modify-write contract as full Index while leaving a peer unit cold.
