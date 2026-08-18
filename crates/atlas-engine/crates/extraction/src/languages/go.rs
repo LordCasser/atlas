@@ -3,7 +3,8 @@
 //! Provides query-driven extraction for Go source files.
 //! Supports: function, method, struct, interface, type_alias, variable, constant,
 //! package definitions; function calls, field access, type references; import
-//! resolution; scopes.
+//! resolution; scopes. Type-switch aliases use one binding per clause and
+//! receive the guard value conservatively.
 
 use crate::languages::{node_range, node_text};
 
@@ -131,7 +132,7 @@ fn normalize_go_scope(
         "scope.function" => ScopeKind::Function,
         "scope.method" => ScopeKind::Method,
         "scope.block" => ScopeKind::Block,
-        "scope.conditional" => ScopeKind::Conditional,
+        "scope.conditional" | "scope.type_switch_clause" => ScopeKind::Conditional,
         "scope.loop" => ScopeKind::Loop,
         _ => return None,
     };
@@ -211,12 +212,18 @@ impl LexicalBindingSpec for GoAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.70,
-            vec!["name-based binding (no proper shadowing)"],
+            0.78,
+            vec![
+                "scope-chain-aware binding; type-switch aliases are clause-local, while short declarations with mixed new/existing names remain conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_go_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        !is_go_type_switch_alias_identifier(node)
     }
 }
 
@@ -226,8 +233,10 @@ impl DataflowSpec for GoAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.70,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            0.78,
+            vec![
+                "AST-driven local dataflow; type-switch guard values flow to clause-local aliases, while case-type projection and mixed short-declaration identity remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -259,6 +268,10 @@ fn walk_go_assign_edges(
     edges: &mut Vec<DataFlowEdge>,
 ) {
     let kind = node.kind();
+
+    if kind == "type_switch_statement" {
+        create_go_type_switch_edges(node, pos_map, edges);
+    }
 
     // short_var_declaration: x := expr
     if kind == "short_var_declaration" {
@@ -326,6 +339,59 @@ fn walk_go_assign_edges(
         if let Some(child) = node.child(i as u32) {
             walk_go_assign_edges(child, pos_map, edges);
         }
+    }
+}
+
+fn create_go_type_switch_edges(
+    type_switch: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if go_type_switch_alias_identifier(type_switch).is_none() {
+        return;
+    }
+    let Some(subject) = type_switch.child_by_field_name("value") else {
+        return;
+    };
+    let subject_key = NodePosKey {
+        start_byte: subject.start_byte() as u32,
+        end_byte: subject.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let Some(&source_id) = pos_map.get(&subject_key) else {
+        return;
+    };
+
+    let mut cursor = type_switch.walk();
+    for clause in type_switch
+        .named_children(&mut cursor)
+        .filter(|child| matches!(child.kind(), "type_case" | "default_case"))
+    {
+        let target_key = NodePosKey {
+            start_byte: clause.start_byte() as u32,
+            end_byte: clause.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let Some(&target_id) = pos_map.get(&target_key) else {
+            continue;
+        };
+        if edges.iter().any(|edge| {
+            edge.source == source_id
+                && edge.target == target_id
+                && edge.kind == DataFlowKind::Assign
+        }) {
+            continue;
+        }
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            target_id,
+            DataFlowKind::Assign,
+            node_range(subject),
+            0.90,
+        ));
     }
 }
 
@@ -503,12 +569,76 @@ fn go_binding_kind(capture_name: &str) -> Option<BindingKind> {
     }
 }
 
+fn go_type_switch_alias_identifier(
+    type_switch: tree_sitter::Node<'_>,
+) -> Option<tree_sitter::Node<'_>> {
+    if type_switch.kind() != "type_switch_statement" {
+        return None;
+    }
+    let alias_list = type_switch.child_by_field_name("alias")?;
+    let mut cursor = alias_list.walk();
+    let mut aliases = alias_list.named_children(&mut cursor);
+    let alias = aliases.next()?;
+    (alias.kind() == "identifier" && aliases.next().is_none()).then_some(alias)
+}
+
+fn is_go_type_switch_alias_identifier(node: tree_sitter::Node<'_>) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+    let Some(alias_list) = node
+        .parent()
+        .filter(|parent| parent.kind() == "expression_list")
+    else {
+        return false;
+    };
+    alias_list
+        .parent()
+        .and_then(go_type_switch_alias_identifier)
+        .is_some_and(|alias| alias.id() == node.id())
+}
+
+/// Go's type-switch alias has no repeated identifier at each case boundary,
+/// even though the language declares one distinct variable in every clause's
+/// implicit block. Represent that implicit declaration as a zero-width source
+/// point immediately before the clause body.
+fn go_type_switch_clause_binding_range(clause: tree_sitter::Node<'_>) -> TextRange {
+    let mut cursor = clause.walk();
+    let body = clause
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "statement_list");
+    let (byte, point) = body
+        .map(|body| (body.start_byte(), body.start_position()))
+        .unwrap_or_else(|| (clause.end_byte(), clause.end_position()));
+    TextRange {
+        start_byte: byte as u32,
+        end_byte: byte as u32,
+        start_line: point.row as u32,
+        start_column: point.column as u32,
+        end_line: point.row as u32,
+        end_column: point.column as u32,
+    }
+}
+
 fn normalize_go_lexical(
     capture_name: &str,
     node: tree_sitter::Node,
     source: &str,
     file_id: FileId,
 ) -> Option<BindingDef> {
+    if capture_name == "lexical.type_switch_clause" {
+        let type_switch = node
+            .parent()
+            .filter(|parent| parent.kind() == "type_switch_statement")?;
+        let alias = go_type_switch_alias_identifier(type_switch)?;
+        let name = node_text(alias, source)?;
+        return Some(make_binding_def(
+            file_id,
+            BindingKind::Local,
+            name,
+            go_type_switch_clause_binding_range(node),
+        ));
+    }
     let kind = go_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
     let range = node_range(node);
@@ -530,6 +660,43 @@ fn normalize_go_dataflow_builder(
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
+        "df.type_switch_subject" => {
+            make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
+        "df.type_switch_target" => {
+            let Some(type_switch) = node
+                .parent()
+                .filter(|parent| parent.kind() == "type_switch_statement")
+            else {
+                return (None, None);
+            };
+            let Some(alias) = go_type_switch_alias_identifier(type_switch) else {
+                return (None, None);
+            };
+            let Some(name) = node_text(alias, source) else {
+                return (None, None);
+            };
+            let binding_range = go_type_switch_clause_binding_range(node);
+            let node_id = DataNodeId::generate(
+                &file_id,
+                None::<&SymbolId>,
+                "local",
+                Some(&name),
+                Some(&name),
+                binding_range.start_byte,
+            );
+            (
+                Some(DataNode::local(
+                    node_id,
+                    file_id,
+                    None,
+                    None,
+                    &name,
+                    binding_range,
+                )),
+                None,
+            )
         }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => {
@@ -591,6 +758,9 @@ fn normalize_go_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
+            if is_go_type_switch_alias_identifier(node) {
+                return (None, None);
+            }
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
                 &["type_declaration", "type_spec"],
@@ -754,5 +924,182 @@ func foo(x int) int {
             nodes.iter().any(|n| n.kind == DataNodeKind::VariableUse),
             "varuse"
         );
+    }
+
+    #[test]
+    fn test_type_switch_aliases_are_clause_local_and_receive_the_guard_value() {
+        let source = r#"package p
+func dispatch(value any) any {
+	switch value := value.(type) {
+	case string:
+		return consume(value)
+	case []byte, nil:
+		return consume(value)
+	default:
+		return consume(value)
+	}
+	return value
+}
+"#;
+        let file_id = FileId::generate("type_switch.go");
+        let facts = crate::extract_file_with_mode(
+            &go_frontend(),
+            file_id,
+            std::path::Path::new("type_switch.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        assert_eq!(
+            value_bindings.len(),
+            4,
+            "parameter plus one implicit alias binding per clause"
+        );
+        let outer = value_bindings
+            .iter()
+            .find(|binding| binding.kind == BindingKind::Parameter)
+            .expect("outer parameter binding");
+        let dispatch_id = facts
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "dispatch")
+            .expect("dispatch function")
+            .id;
+        assert!(
+            value_bindings
+                .iter()
+                .all(|binding| binding.function_id == Some(dispatch_id)),
+            "function-scoped extraction and Focus materialization must agree"
+        );
+        let mut clause_bindings: Vec<_> = value_bindings
+            .iter()
+            .filter(|binding| binding.kind == BindingKind::Local)
+            .copied()
+            .collect();
+        clause_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(clause_bindings.len(), 3);
+        assert_eq!(
+            clause_bindings
+                .iter()
+                .map(|binding| binding.range.start_line)
+                .collect::<Vec<_>>(),
+            vec![4, 6, 8],
+            "implicit declaration points start each clause body"
+        );
+        assert!(clause_bindings.iter().all(|binding| {
+            binding.range.start_byte == binding.range.end_byte
+                && binding.visible_from_byte == binding.range.start_byte
+                && facts.scopes.iter().any(|scope| {
+                    scope.id == binding.scope_id && scope.kind == ScopeKind::Conditional
+                })
+        }));
+        assert_eq!(
+            clause_bindings
+                .iter()
+                .map(|binding| binding.scope_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "every case/default clause has a distinct implicit block"
+        );
+
+        let guard_uses: Vec<_> = facts
+            .binding_uses
+            .iter()
+            .filter(|use_| use_.name == "value" && use_.range.start_line == 2)
+            .collect();
+        assert_eq!(
+            guard_uses.len(),
+            1,
+            "the declaration alias itself is not a read"
+        );
+        assert_eq!(guard_uses[0].binding_id, Some(outer.id));
+        for (line, binding) in [
+            (4, clause_bindings[0]),
+            (6, clause_bindings[1]),
+            (8, clause_bindings[2]),
+        ] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "value"
+                    && use_.range.start_line == line
+                    && use_.binding_id == Some(binding.id)
+            }));
+        }
+        assert!(facts.binding_uses.iter().any(|use_| {
+            use_.name == "value" && use_.range.start_line == 10 && use_.binding_id == Some(outer.id)
+        }));
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 2
+            })
+            .expect("type-switch guard value");
+        assert_eq!(subject.binding_id, Some(outer.id));
+        for binding in clause_bindings {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local
+                        && node.name.as_deref() == Some("value")
+                        && node.binding_id == Some(binding.id)
+                })
+                .expect("clause-local alias target");
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+    }
+
+    #[test]
+    fn test_type_switch_without_alias_does_not_invent_bindings_or_targets() {
+        let source = r#"package p
+func observe(value any) {
+	switch value.(type) {
+	case string:
+		consume(value)
+	default:
+		consume(value)
+	}
+}
+"#;
+        let file_id = FileId::generate("type_switch_no_alias.go");
+        let facts = crate::extract_file_with_mode(
+            &go_frontend(),
+            file_id,
+            std::path::Path::new("type_switch_no_alias.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "value")
+                .count(),
+            1,
+            "only the function parameter is a binding"
+        );
+        assert!(!facts.data_nodes.iter().any(|node| {
+            node.kind == DataNodeKind::Local && node.name.as_deref() == Some("value")
+        }));
     }
 }

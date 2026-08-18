@@ -11,19 +11,17 @@
 //!   namespace identity rather than declaration identity.
 //! - Creates one [`BindingUse`] per declaration/write site for dataflow.
 //! - Does NOT scan standalone identifier references; that happens downstream.
-//! - Does NOT resolve `function_id` or `symbol_id` — those are filled by post-extraction
-//!   steps (scope tree, SemanticBinder).
-//!
-//! # Current limitations (not yet implemented)
-//!
-//! - Per-function grouping (function_id always None).
+//! - Resolves `function_id` from the innermost enclosing callable symbol.
+//! - Does NOT resolve `symbol_id`; declaration-to-project-symbol identity is
+//!   handled separately.
 //!
 //! # Invariants
 //!
 //! - Every `BindingDef` has a non-empty `scope_id` (resolved here) and `name`.
 //! - Every `BindingUse` has `file_id`, `scope_id`, `name`, and `range`.
 //! - `BindingUse::binding_id` may be `None` if unresolved (e.g. external reference).
-//! - `function_id` is always `None` at this stage; downstream consumers should fill it.
+//! - Bindings inside callable ranges carry that callable's `function_id`;
+//!   file/type-level bindings retain `None`.
 
 use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{Capture, LexicalBindingSpec};
@@ -66,7 +64,7 @@ impl LexicalBinder {
         lexical_spec: &dyn LexicalBindingSpec,
         ctx: &ExtractionCtx<'_>,
         scopes: &[ScopeDef],
-        _symbols: &[SymbolDef],
+        symbols: &[SymbolDef],
     ) -> anyhow::Result<LexicalBindingResult> {
         let query_src = lexical_spec.lexical_query();
         if query_src.trim().is_empty() {
@@ -121,6 +119,8 @@ impl LexicalBinder {
             binding.scope_id =
                 crate::languages::shared::innermost_scope(&lexical_scopes, binding.range)
                     .unwrap_or(binding.scope_id);
+            binding.function_id =
+                crate::languages::shared::innermost_callable_at(symbols, binding.range.start_byte);
             // Re-generate BindingId now that scope_id is correct
             binding.id = BindingId::generate(
                 &ctx.file_id,

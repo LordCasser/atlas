@@ -90,6 +90,26 @@ pub(crate) fn innermost_scope(scopes: &[ScopeDef], range: TextRange) -> Option<S
         .map(|scope| scope.id)
 }
 
+/// Find the innermost callable symbol containing a source position.
+///
+/// Function ranges are expanded to their defining scopes before lexical and
+/// dataflow extraction, so the same range rule can associate both bindings
+/// and data nodes with their owning function. Point facts (where
+/// `start_byte == end_byte`) are intentionally supported.
+pub(crate) fn innermost_callable_at(symbols: &[SymbolDef], byte: u32) -> Option<SymbolId> {
+    symbols
+        .iter()
+        .filter(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
+            ) && symbol.range.start_byte <= byte
+                && byte <= symbol.range.end_byte
+        })
+        .min_by_key(|symbol| symbol.range.byte_len())
+        .map(|symbol| symbol.id)
+}
+
 /// Select the most recently activated same-named binding at a source byte.
 ///
 /// Multiple declarations may share one lexical scope. Lookup therefore cannot

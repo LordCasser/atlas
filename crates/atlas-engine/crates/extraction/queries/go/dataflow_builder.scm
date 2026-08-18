@@ -64,10 +64,20 @@
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use
 
+;; --- Type-switch alias flow ---
+;; The whole guard value flows to a distinct synthetic Local in every clause.
+(type_switch_statement
+  value: (_) @df.type_switch_subject)
+
+(type_switch_statement
+  (type_case) @df.type_switch_target)
+
+(type_switch_statement
+  (default_case) @df.type_switch_target)
+
 ;; --- Field assignment (obj.field = val) ---
 (assignment_statement
   left: (expression_list
     (selector_expression) @df.assign_field_target)
   right: (expression_list
     (_) @df.assign_value))
-

@@ -17,4 +17,13 @@
 
 (type_switch_statement) @scope.conditional
 
+;; Each type-switch clause is an implicit lexical block in Go. Keep these
+;; scopes inside the enclosing switch scope so an alias has one identity per
+;; clause, as required by the language specification.
+(type_switch_statement
+  (type_case) @scope.type_switch_clause)
+
+(type_switch_statement
+  (default_case) @scope.type_switch_clause)
+
 (select_statement) @scope.conditional

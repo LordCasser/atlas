@@ -4147,6 +4147,99 @@ func process() int {
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
 }
 
+/// Go's type-switch guard declares one alias per clause, not one shared
+/// switch-level variable. This is based on the standard library's
+/// `context.stringify` shape and verifies persistence plus variable tracing.
+#[test]
+#[cfg(feature = "go")]
+fn fx_go_type_switch_aliases_persist_and_trace_from_guard_value() {
+    let source = r#"package context
+
+type stringer interface { String() string }
+
+func stringify(v any) string {
+	switch s := v.(type) {
+	case stringer:
+		return s.String()
+	case string:
+		return s
+	case nil:
+		return "<nil>"
+	}
+	return typeName(v)
+}
+"#;
+    let store = index_files(&[("context_stringify.go", source)]);
+    let file_id = FileId::generate("context_stringify.go");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Go bindings");
+    let aliases: Vec<_> = bindings
+        .iter()
+        .filter(|binding| binding.name == "s")
+        .collect();
+    assert_eq!(aliases.len(), 3, "one alias binding per type-switch clause");
+    assert_eq!(
+        aliases
+            .iter()
+            .map(|binding| binding.scope_id)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3,
+        "type cases must not share alias identity"
+    );
+    assert!(aliases.iter().all(|binding| {
+        binding.range.start_byte == binding.range.end_byte
+            && binding.visible_from_byte == binding.range.start_byte
+    }));
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let subject = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("v")
+                && node.range.start_line == 5
+        })
+        .expect("type-switch guard value");
+    let targets: Vec<_> = nodes
+        .iter()
+        .filter(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("s"))
+        .collect();
+    assert_eq!(targets.len(), 3, "one persisted Local target per clause");
+    let edge_sources = nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let edges = store
+        .find_dataflow_edges_by_sources(&edge_sources)
+        .expect("persisted dataflow edges");
+    assert!(targets.iter().all(|target| {
+        edges.iter().any(|edge| {
+            edge.source == subject.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        })
+    }));
+
+    let sink = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("s")
+                && node.range.start_line == 9
+        })
+        .expect("string case alias use");
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "go");
+    let path = response.result.expect("Go type-switch alias trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "v");
+}
+
 // ── C# ──────────────────────────────────────────────────────────────
 
 #[test]

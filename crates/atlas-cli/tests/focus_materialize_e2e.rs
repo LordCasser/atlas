@@ -1247,6 +1247,96 @@ fn n5_focus_dataflow_unit_matches_index_full() {
     );
 }
 
+/// Go type-switch aliases are clause-local implicit bindings. Full Index and
+/// Focus must persist the same three binding identities and guard-value flow
+/// for the standard-library `context.stringify` shape.
+#[cfg(feature = "go")]
+#[test]
+fn n5_focus_go_type_switch_alias_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "context_stringify.go",
+            "package context\n\
+             \n\
+             type stringer interface { String() string }\n\
+             \n\
+             func stringify(v any) string {\n\
+             \x20 switch s := v.(type) {\n\
+             \x20 case stringer:\n\
+             \x20   return s.String()\n\
+             \x20 case string:\n\
+             \x20   return s\n\
+             \x20 case nil:\n\
+             \x20   return \"<nil>\"\n\
+             \x20 }\n\
+             \x20 return typeName(v)\n\
+             }\n",
+        ),
+        (
+            "peer.go",
+            "package context\nfunc unrelated() int { return 42 }\n",
+        ),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_stringify = symbol_id_by_name(&indexed_store, "stringify");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_stringify);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_stringify);
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "s")
+            .count(),
+        3,
+        "full Index must keep one Local alias event per type case"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.0 == "local" && binding.1 == "s")
+            .count(),
+        3,
+        "full Index must keep one alias BindingDef per implicit case block"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let stringify = symbol_id_by_name(&focused_store, "stringify");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&stringify, Some("go-type-switch-alias-parity"))
+        .expect("Focus ensure Go stringify");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &stringify),
+        indexed_slice,
+        "Go type-switch dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &stringify),
+        indexed_bindings,
+        "Go type-switch clause bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Go unit must stay outside the Focus window"
+    );
+}
+
 /// Ruby modifier-loop CFG must be identical whether the unit comes from a full
 /// Index or Focus on-demand materialization. This protects the pre-test vs
 /// `begin ... end` post-test entry ordering across both product paths.

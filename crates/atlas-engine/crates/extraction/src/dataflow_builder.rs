@@ -44,7 +44,7 @@ use types::CallsiteId;
 use types::ScopeDef;
 use types::bindings::BindingDef;
 use types::dataflow::{DataFlowEdge, DataNode};
-use types::enums::{DataFlowKind, DataNodeKind, SymbolKind};
+use types::enums::{DataFlowKind, DataNodeKind};
 use types::ids::{BindingId, DataFlowEdgeId, DataNodeId, ScopeId, SymbolId};
 use types::structs::{SymbolDef, TextRange};
 
@@ -1206,43 +1206,12 @@ fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
 /// For each DataNode with `function_id: None`, finds the function symbol
 /// whose range contains the node's start position, and sets the id.
 pub(crate) fn resolve_dataflow_function_ids(nodes: &mut [DataNode], symbols: &[SymbolDef]) {
-    // Build (start_byte, end_byte, symbol_id) for all function symbols
-    let function_ranges: Vec<(u32, u32, SymbolId)> = symbols
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.kind,
-                SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor
-            )
-        })
-        .map(|s| (s.range.start_byte, s.range.end_byte, s.id))
-        .collect();
-
-    if function_ranges.is_empty() {
-        return;
-    }
-
     for node in nodes.iter_mut() {
         if node.function_id.is_some() {
             continue;
         }
-        // Find the innermost function that contains this node's start position
-        let pos = node.range.start_byte;
-        let mut best: Option<(u32, u32, SymbolId)> = None;
-        for (start, end, id) in &function_ranges {
-            if pos >= *start && pos <= *end {
-                match best {
-                    Some((bs, be, _)) if (*end - *start) < (be - bs) => {
-                        best = Some((*start, *end, *id));
-                    }
-                    None => best = Some((*start, *end, *id)),
-                    _ => {}
-                }
-            }
-        }
-        if let Some((_, _, id)) = best {
-            node.function_id = Some(id);
-        }
+        node.function_id =
+            crate::languages::shared::innermost_callable_at(symbols, node.range.start_byte);
     }
 }
 
