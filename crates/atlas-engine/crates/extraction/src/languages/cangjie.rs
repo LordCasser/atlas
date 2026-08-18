@@ -228,7 +228,7 @@ impl DataflowSpec for CangjieAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
-                "match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple/tuple/enum-payload loop captures; direct-variable mutation, exact iterator element/structural projection, guard control dependencies, and compiler validation of pattern irrefutability remain conservative",
+                "direct simple assignment and direct-identifier non-conditional compound/postfix update expressions preserve local and aggregate read-modify-write provenance (0.90); field/index mutation targets, &&= and ||= conditional execution, operator dispatch/coercions, and prefix/update-result timing remain conservative; match subjects flow conservatively to arm-scoped bindings and for-in iterables provide aggregate provenance to simple/tuple/enum-payload loop captures; exact iterator element/structural projection, guard control dependencies, and compiler validation of pattern irrefutability remain conservative",
             ],
         )
     }
@@ -681,7 +681,9 @@ fn normalize_cangjie_dataflow(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
         "df.for_target" => {
             if is_cangjie_for_in_binding_pattern(node) {
                 make_df_assign_target(file_id, node, source, range)
@@ -702,7 +704,7 @@ fn normalize_cangjie_dataflow(
         "df.match_subject" => {
             make_df_assign_value(file_id, node, source, range, &["postfixExpression"])
         }
-        "df.assign_value" => {
+        "df.assign_value" | "df.mutation_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = find_call_expression_cangjie(node)
                 .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
@@ -861,6 +863,24 @@ fn normalize_cangjie_dataflow(
         }
         "df.identifier_use" => {
             if is_cangjie_match_pattern_syntax(node) || is_cangjie_for_in_pattern_syntax(node) {
+                return (None, None);
+            }
+            if node
+                .parent()
+                .and_then(|atomic| atomic.parent())
+                .is_some_and(|assignment| {
+                    assignment.kind() == "assignmentExpression"
+                        && assignment
+                            .child_by_field_name("operator")
+                            .is_some_and(|operator| operator.kind() == "=")
+                        && assignment
+                            .child_by_field_name("variable")
+                            .is_some_and(|target| {
+                                target.start_byte() <= node.start_byte()
+                                    && target.end_byte() >= node.end_byte()
+                            })
+                })
+            {
                 return (None, None);
             }
             // Part A: standard declaration/property filter (checks immediate parent)

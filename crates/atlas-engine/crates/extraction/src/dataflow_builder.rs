@@ -363,7 +363,7 @@ fn walk_for_assign_edges(
 ) {
     let kind = node.kind();
     let is_compound_assignment = match kind {
-        "assignment_expression" | "assignment_statement" => node
+        "assignment_expression" | "assignment_statement" | "assignmentExpression" => node
             .child_by_field_name("operator")
             .is_some_and(|operator| operator.kind() != "="),
         "augmented_assignment"
@@ -387,6 +387,7 @@ fn walk_for_assign_edges(
     // remain conservative without language checks here.
     let mutation_target = match kind {
         "assignment_expression" if is_compound_assignment => node.child_by_field_name("left"),
+        "assignmentExpression" if is_compound_assignment => node.child_by_field_name("variable"),
         "augmented_assignment"
         | "augmented_assignment_expression"
         | "compound_assignment_expr"
@@ -406,7 +407,8 @@ fn walk_for_assign_edges(
         | "prefix_expression"
         | "postfix_expression"
         | "prefix_unary_expression"
-        | "postfix_unary_expression" => node.named_child(0),
+        | "postfix_unary_expression"
+        | "postfixExpression" => node.named_child(0),
         _ => None,
     };
     if let Some(target_node) = mutation_target {
@@ -648,11 +650,21 @@ fn walk_for_assign_edges(
     }
 
     // ── assignment_expression / assignment: left ← right ──────────────
-    if (kind == "assignment_expression" || kind == "assignment")
-        && !is_compound_assignment
+    if matches!(
+        kind,
+        "assignment_expression" | "assignment" | "assignmentExpression"
+    ) && !is_compound_assignment
         && let (Some(left_node), Some(right_node)) = (
-            node.child_by_field_name("left"),
-            node.child_by_field_name("right"),
+            node.child_by_field_name(if kind == "assignmentExpression" {
+                "variable"
+            } else {
+                "left"
+            }),
+            node.child_by_field_name(if kind == "assignmentExpression" {
+                "value"
+            } else {
+                "right"
+            }),
         )
     {
         let left_start = left_node.start_byte() as u32;

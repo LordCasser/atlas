@@ -13,6 +13,28 @@
     (varBindingPattern) @df.assign_target)
   initilizer: (_) @df.assign_value)
 
+;; --- Direct simple reassignment: existing local <- RHS ---
+(assignmentExpression
+  variable: (atomicVariable) @df.assign_target
+  operator: "="
+  value: (_) @df.assign_value)
+
+;; --- Direct non-conditional compound assignment ---
+;; `&&=`/`||=` short-circuit execution stays outside this aggregate boundary.
+(assignmentExpression
+  variable: (atomicVariable) @df.mutation_target
+  operator: [
+    "+=" "-=" "*=" "/=" "%=" "**="
+    "&=" "|=" "^=" "<<=" ">>="
+  ]
+  value: (_)) @df.mutation_value
+
+;; --- Direct postfix update ---
+;; Anchors reject field/index bases, whose first named child is postfixExpression.
+(postfixExpression
+  . (atomicVariable) @df.mutation_target
+  . (incOrDec)) @df.mutation_value
+
 ;; --- For-in bindings: iterable aggregate -> pattern variables ---
 (forInExpression
   . (_)

@@ -1238,6 +1238,150 @@ mod tests {
             }
         }
     }
+
+    #[cfg(feature = "cangjie")]
+    #[test]
+    fn test_cangjie_variable_reassignment_and_mutations_preserve_provenance() {
+        let source = concat!(
+            "func mutate(seed: Int64, delta: Int64, guard: Bool): Int64 {\n",
+            "    var total = seed\n",
+            "    total = delta\n",
+            "    total += delta\n",
+            "    total++\n",
+            "    total--\n",
+            "    holder.value += delta\n",
+            "    items[0] += delta\n",
+            "    items[1]++\n",
+            "    var flag = true\n",
+            "    flag &&= guard\n",
+            "    flag ||= guard\n",
+            "    return total\n",
+            "}\n",
+        );
+        let frontend =
+            crate::languages::create_frontend(Language::Cangjie).expect("missing Cangjie frontend");
+        let language = frontend.parser.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "fixture must parse with the pinned Cangjie grammar: {}",
+            tree.root_node().to_sexp()
+        );
+
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("variable_mutations.cj"),
+            std::path::Path::new("variable_mutations.cj"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("Cangjie extraction");
+
+        let total_binding = {
+            let matches: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "total")
+                .collect();
+            assert_eq!(
+                matches.len(),
+                1,
+                "writes must reuse the declaration binding"
+            );
+            matches[0]
+        };
+        let delta_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "delta")
+            .expect("delta parameter binding");
+        let node = |kind: types::DataNodeKind, name: &str, line: u32| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} on line {line}"))
+        };
+
+        let reassignment_target = node(types::DataNodeKind::Local, "total", 2);
+        let reassignment_value = node(types::DataNodeKind::Expr, "delta", 2);
+        assert_eq!(reassignment_target.binding_id, Some(total_binding.id));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == reassignment_value.id
+                && edge.target == reassignment_target.id
+                && edge.kind == types::DataFlowKind::Assign
+                && edge.confidence == 0.90
+        }));
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                !(node.kind == types::DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("total")
+                    && node.range.start_line == 2)
+            }),
+            "simple-assignment target must not become a read"
+        );
+
+        for (line, expression) in [(3, "total += delta"), (4, "total++"), (5, "total--")] {
+            let target = node(types::DataNodeKind::Local, "total", line);
+            let value = node(types::DataNodeKind::Expr, expression, line);
+            let lhs_read = node(types::DataNodeKind::VariableUse, "total", line);
+            assert_eq!(target.binding_id, Some(total_binding.id));
+            assert_eq!(lhs_read.binding_id, Some(total_binding.id));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == value.id
+                    && edge.target == target.id
+                    && edge.kind == types::DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            }));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == lhs_read.id
+                    && edge.target == value.id
+                    && edge.kind == types::DataFlowKind::Read
+                    && edge.confidence == 0.75
+            }));
+        }
+
+        let rhs_read = node(types::DataNodeKind::VariableUse, "delta", 3);
+        let compound_value = node(types::DataNodeKind::Expr, "total += delta", 3);
+        assert_eq!(rhs_read.binding_id, Some(delta_binding.id));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == rhs_read.id
+                && edge.target == compound_value.id
+                && edge.kind == types::DataFlowKind::Read
+                && edge.confidence == 0.75
+        }));
+
+        for (line, expression) in [
+            (6, "holder.value += delta"),
+            (7, "items[0] += delta"),
+            (8, "items[1]++"),
+            (10, "flag &&= guard"),
+            (11, "flag ||= guard"),
+        ] {
+            assert!(
+                facts.data_nodes.iter().all(|node| {
+                    !(node.kind == types::DataNodeKind::Expr
+                        && node.name.as_deref() == Some(expression)
+                        && node.range.start_line == line)
+                }),
+                "unsupported mutation {expression} remains outside the direct boundary"
+            );
+            assert!(facts.data_nodes.iter().all(|node| {
+                !(node.kind == types::DataNodeKind::Local && node.range.start_line == line)
+            }));
+            assert!(facts.dataflow_edges.iter().all(|edge| {
+                !(edge.kind == types::DataFlowKind::FieldStore && edge.location.start_line == line)
+            }));
+        }
+    }
 }
 
 /// Verify that every language with lexical support has a compilable lexical query.
