@@ -1523,12 +1523,13 @@ fn n5_focus_scope_chain_bindings_match_index_full_across_languages() {
     }
 }
 
-/// C# switch pattern variables are scoped to individual arms. Focus must
-/// preserve the same subject-to-capture flow and same-name binding identities
-/// as full Index without materializing a peer method.
+/// C# switch pattern variables, including parenthesized nested designations,
+/// are scoped to individual arms. Focus must preserve the same aggregate
+/// subject-to-capture flow and binding identities as full Index without
+/// materializing a peer method.
 #[cfg(feature = "csharp")]
 #[test]
-fn n5_focus_csharp_switch_pattern_dataflow_matches_index_full() {
+fn n5_focus_csharp_pattern_bindings_match_index_full() {
     const FIXTURE: &[(&str, &str)] = &[(
         "PatternDispatch.cs",
         "class PatternDispatch {\n\
@@ -1536,6 +1537,7 @@ fn n5_focus_csharp_switch_pattern_dataflow_matches_index_full() {
              \x20   return input switch {\n\
              \x20     string value when value.Length > 0 => Consume(value),\n\
              \x20     int value => Consume(value),\n\
+             \x20     var (first, (second, third)) when second != null => Consume(first, second, third),\n\
              \x20     _ => 0,\n\
              \x20   };\n\
              \x20 }\n\
@@ -1568,6 +1570,43 @@ fn n5_focus_csharp_switch_pattern_dataflow_matches_index_full() {
         2,
         "full Index must retain both pattern capture events"
     );
+    for name in ["first", "second", "third"] {
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.0 == "local" && binding.1 == name)
+                .count(),
+            1,
+            "full Index must retain nested designation {name}"
+        );
+        assert_eq!(
+            indexed_slice
+                .nodes
+                .iter()
+                .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == name)
+                .count(),
+            1,
+            "full Index must retain nested designation target {name}"
+        );
+    }
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_dispatch)
+        .unwrap();
+    let indexed_subject = indexed_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("input"))
+        .expect("full Index switch subject");
+    let indexed_third = indexed_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("third"))
+        .expect("full Index third target");
+    let indexed_third_edge = indexed_store
+        .find_dataflow_edges_by_source(&indexed_subject.id)
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.target == indexed_third.id && edge.kind == DataFlowKind::Assign)
+        .expect("full Index aggregate subject flow to third");
+    assert_eq!(indexed_third_edge.confidence, 0.72);
 
     let focused = setup_project(FIXTURE);
     let focused_project = focused.path().to_string_lossy().to_string();
@@ -1600,6 +1639,24 @@ fn n5_focus_csharp_switch_pattern_dataflow_matches_index_full() {
         indexed_bindings,
         "C# pattern bindings: Focus ensure == Index full"
     );
+    let focused_nodes = focused_store
+        .find_data_nodes_by_function(&dispatch)
+        .unwrap();
+    let focused_subject = focused_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Expr && node.name.as_deref() == Some("input"))
+        .expect("Focus switch subject");
+    let focused_third = focused_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("third"))
+        .expect("Focus third target");
+    let focused_third_edge = focused_store
+        .find_dataflow_edges_by_source(&focused_subject.id)
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.target == focused_third.id && edge.kind == DataFlowKind::Assign)
+        .expect("Focus aggregate subject flow to third");
+    assert_eq!(focused_third_edge.confidence, 0.72);
     assert!(
         focused_store
             .find_data_nodes_by_function(&peer)

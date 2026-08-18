@@ -7657,6 +7657,7 @@ fn fx_csharp_switch_pattern_bindings_persist_and_trace_from_subject() {
         return input switch {
             string value when value.Length > 0 => Consume(value),
             int value => Consume(value),
+            var (first, (second, third)) when second != null => Consume(first, second, third),
             _ => 0,
         };
     }
@@ -7731,6 +7732,65 @@ fn fx_csharp_switch_pattern_bindings_persist_and_trace_from_subject() {
     );
     assert_envelope_ok(&response, "csharp");
     let path = response.result.expect("C# pattern trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "input");
+
+    for name in ["first", "second", "third"] {
+        let binding = store
+            .find_bindings_by_file(&file_id)
+            .expect("persisted C# nested designation bindings")
+            .into_iter()
+            .find(|binding| binding.name == name)
+            .unwrap_or_else(|| panic!("missing persisted {name} binding"));
+        assert_eq!(binding.function_id, value_bindings[0].function_id);
+        let uses = store
+            .find_binding_uses_by_binding(&binding.id)
+            .expect("persisted nested designation uses");
+        assert!(
+            uses.len() >= 2,
+            "declaration and arm use for {name}: {uses:?}"
+        );
+        assert!(uses.iter().all(|use_| use_.binding_id == Some(binding.id)));
+    }
+
+    let third_binding = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted C# bindings")
+        .into_iter()
+        .find(|binding| binding.name == "third")
+        .expect("third designation binding");
+    let third_target = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("third")
+                && node.binding_id == Some(third_binding.id)
+        })
+        .expect("persisted third designation target");
+    let third_edge = subject_edges
+        .iter()
+        .find(|edge| edge.target == third_target.id && edge.kind == DataFlowKind::Assign)
+        .expect("persisted aggregate subject flow to third");
+    assert_eq!(third_edge.confidence, 0.72);
+
+    let third_sink = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("third")
+                && node.range.start_line == 5
+        })
+        .max_by_key(|node| node.range.start_column)
+        .expect("nested designation arm body use");
+    assert_eq!(third_sink.binding_id, Some(third_binding.id));
+    let response = engine.trace_variable(
+        &file_id,
+        third_sink.range.start_line + 1,
+        third_sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "csharp");
+    let path = response.result.expect("C# nested designation trace path");
     assert_has_edge_kind(&path, DataFlowKind::Assign);
     assert_source_name(&path, "input");
 }
