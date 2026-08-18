@@ -6,6 +6,16 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### Cangjie dataflow
+
+- Bind simple, tuple, enum-payload, and type-pattern captures in an isolated
+  `matchCase` scope. The match selector flows conservatively to each capture,
+  while guard and arm-body uses resolve the same binding identity.
+- Cover extraction, SQLite trace, nested-match selector ownership, and
+  Focus-vs-full-Index parity. Structural projection, guard control
+  dependencies, guarded/composite exhaustiveness, and general scope-aware
+  binding remain explicit precision boundaries.
+
 ### Kotlin dataflow
 
 - Model `when (val V = E)` as initializer-to-subject assignment dataflow and

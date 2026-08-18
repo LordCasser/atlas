@@ -33,7 +33,7 @@ Atlas 的核心用户是：
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` | tree-sitter-cpp |
 | ArkTS | `.ets`, `.sts` | 复用 TypeScript grammar，但 language 存为 `arkts` |
 
-Cangjie 已实现 **DataflowInterproc** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图、跨函数 summary，以及 branch/loop/`match` sibling CFG 均已实现。Direct unguarded wildcard 会抑制 synthetic no-match；guarded/复杂 pattern exhaustiveness、pattern binding dataflow 与 scope-aware binding 仍是显式边界。现为默认编译语言之一。
+Cangjie 已实现 **DataflowInterproc** 级别：基础定义/引用/导入、词法绑定、局部数据流、调用图、跨函数 summary，以及 branch/loop/`match` sibling CFG 均已实现。Direct unguarded wildcard 会抑制 synthetic no-match；match selector 保守流向 arm-scoped binding，guard/body 复用同一 identity。结构投影、guard control dependency、guarded/复杂 pattern exhaustiveness 与通用 scope-aware binding 仍是显式边界。现为默认编译语言之一。
 
 当前代码已接入 Go、Rust、C#、PHP、Ruby、Kotlin 的 **DataflowInterproc** frontends。所有 14 种语言均为 DataflowInterproc 级别，具备完整 dataflow 抽取能力（参数、赋值、调用、字段访问、返回）、跨函数 summary 桥接（ArgToParam/ReturnToCall）和 e2e 测试。部分语言的 CFG 和特定跨函数路径仍有个别 gap（见各语言 capability profile limitations）。
 
@@ -58,7 +58,7 @@ Atlas 不做：
 
 - C/C++ include-aware direct call graph。
 - ArkTS via TypeScript grammar。
-- Cangjie DataflowInterproc 抽取、调用图和 branch/loop/`match` CFG；direct unguarded wildcard exhaustiveness 已建模，复杂 pattern/guard/binding 与 scope-aware binding 暂未建模。
+- Cangjie DataflowInterproc 抽取、调用图和 branch/loop/`match` CFG；direct unguarded wildcard exhaustiveness 与 selector→arm-scoped binding、guard/body identity 已建模，结构投影、guard control dependency、复杂 exhaustiveness 与通用 scope-aware binding 暂未建模。
 - Go/Rust/C#/PHP/Ruby/Kotlin 的 DataflowInterproc 抽取和调用图；具体 path-level 变量来源追踪、CFG 和跨函数 summary gap 以 capability limitations 和测试覆盖为准。
 - 低置信度 name-based resolution。
 
@@ -237,7 +237,7 @@ Level 5: lightweight interprocedural summaries
 | PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG WithLimitations(0.60)，覆盖 function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（退出时按内到外执行 finally）、try/catch/finally isolated continuations、return/throw→Exit 与 direct `throw new T` 有序语法精确匹配截断 | goto 跳入 loop/switch 或跨 finally-clause 边界被拒绝；unknown label、name-based binding、动态调用、implicit exception 与继承/alias/变量抛出的 catch selection limitation |
 | Ruby | DataflowInterproc: ArgToParam+ReturnToCall；classic `case`/`when` 与 `case ... in` sibling CFG，refutable case/in 无 `else` 时保留 implicit Throw，unguarded capture/wildcard 抑制不可能的 no-match；case/in subject 保守流向 bare、key-only、`=>`、array/hash-rest capture，guard/body 复用 enclosing local identity，pin 保持读取；method-body/nested `rescue/else/ensure` 与 block-resource isolated continuations；lexical-loop/resource-block `redo` 和 rescue-owned `retry` 分别持久化为 `Redo`/`Retry` edge；modifier while/until 区分 plain pre-test 与 `begin...end` post-test，`next`/`redo`/`break` 分别进入 condition/body/join；confidence 0.65 | ordinary iterator/callback block、block/yield implicit calls、pattern structural projection、post-match path-definedness 与更深 pattern exhaustiveness 保持保守 |
 | Kotlin | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`when` sibling CFG；`when (val V = E)` 建模 initializer→subject binding，condition/guard/body 复用同一 scoped identity；try/catch/finally 与 `.use` isolated continuations，confidence 0.67 | cleanup 为确定性 LIFO；pinned grammar 不提取 extension receiver binding；smart-cast、type/range projection、guard control dependency 与精确清理异常保持 limitation |
-| Cangjie | DataflowInterproc: ArgToParam+ReturnToCall 已验证；branch/loop/`match` sibling CFG、direct unguarded wildcard exhaustiveness 与 try/catch/finally isolated continuations，confidence 0.65 | guarded/复杂 pattern exhaustiveness、pattern/guard/binding 与 scope-aware binding limitation |
+| Cangjie | DataflowInterproc: ArgToParam+ReturnToCall 已验证；branch/loop/`match` sibling CFG；direct unguarded wildcard exhaustiveness；selector 保守流向 simple/tuple/enum-payload/type capture，guard/body 复用 arm-scoped identity；try/catch/finally isolated continuations，confidence 0.65 | 结构投影、guard control dependency、guarded/复杂 pattern exhaustiveness 与通用 scope-aware binding limitation |
 
 承载语言能力的输出（`atlas doctor`、trace envelope、相关 MCP 分析响应）必须从 `LanguageCapabilityProfile` 读取事实，不得在展示层重建能力表。Trace 内层冻结契约包含：
 
