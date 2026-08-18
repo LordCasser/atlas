@@ -1578,7 +1578,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
-            "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
+            "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
         ],
         feature_overrides: &[
             (
@@ -1595,7 +1595,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
+                        "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1604,7 +1604,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "binding_id-grouped use-def preserves nested control-scope shadowing; Kotlin smart-cast and definite-assignment semantics remain conservative",
+                        "binding_id-grouped use-def preserves nested control-scope shadowing and every concrete late-assignment origin across branch joins; Kotlin smart-cast and compiler-grade variable-initialization proof remain conservative",
                     ],
                 ),
             ),
@@ -1613,7 +1613,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow is modeled, while smart-cast, type/range projection, and guard control dependencies remain conservative",
+                        "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow and late-assignment branch provenance are modeled, while smart-cast, compiler-grade variable-initialization proof, type/range projection, and guard control dependencies remain conservative",
                         "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
@@ -3457,7 +3457,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
-                "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
+                "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
             ]
         );
 
@@ -3503,7 +3503,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative"
+                    "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3512,7 +3512,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "binding_id-grouped use-def preserves nested control-scope shadowing; Kotlin smart-cast and definite-assignment semantics remain conservative"
+                    "binding_id-grouped use-def preserves nested control-scope shadowing and every concrete late-assignment origin across branch joins; Kotlin smart-cast and compiler-grade variable-initialization proof remain conservative"
                 ],
             )
         );
@@ -3521,7 +3521,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow is modeled, while smart-cast, type/range projection, and guard control dependencies remain conservative",
+                    "Control-flow graph with branch/loop body traversal and when sibling traversal implemented; when subject binding flow and late-assignment branch provenance are modeled, while smart-cast, compiler-grade variable-initialization proof, type/range projection, and guard control dependencies remain conservative",
                     "try/catch/finally continuations and .use normal/abrupt completions use path-isolated clones; managed exits are owner-matched with deterministic LIFO cleanup, and cleanup exceptions conservatively retain ordered Throw continuations into enclosing handlers/finally; suppressed-exception identity/precedence, catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                 ],
             )

@@ -224,7 +224,7 @@ impl DataflowSpec for KotlinAdapter {
         FeatureSupport::supported_with_limitations(
             0.67,
             vec![
-                "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
+                "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -300,46 +300,6 @@ fn walk_kotlin_assign_edges(
         }
     }
 
-    // variable_declaration: val x = expr
-    if kind == "variable_declaration" {
-        let mut name_node: Option<tree_sitter::Node> = None;
-        let mut value_node: Option<tree_sitter::Node> = None;
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32)
-                && child.is_named()
-            {
-                if child.kind() == "simple_identifier" && name_node.is_none() {
-                    name_node = Some(child);
-                } else if value_node.is_none() {
-                    value_node = Some(child);
-                }
-            }
-        }
-        if let (Some(name), Some(value)) = (name_node, value_node) {
-            let name_key = NodePosKey {
-                start_byte: name.start_byte() as u32,
-                end_byte: name.end_byte() as u32,
-                kind: DataNodeKind::Local,
-            };
-            let value_key = NodePosKey {
-                start_byte: value.start_byte() as u32,
-                end_byte: value.end_byte() as u32,
-                kind: DataNodeKind::Expr,
-            };
-            if let (Some(&tid), Some(&sid)) = (pos_map.get(&name_key), pos_map.get(&value_key)) {
-                let eid = DataFlowEdgeId::generate(&sid, &tid, DataFlowKind::Assign.as_str());
-                edges.push(DataFlowEdge::new(
-                    eid,
-                    sid,
-                    tid,
-                    DataFlowKind::Assign,
-                    node_range(name),
-                    0.85,
-                ));
-            }
-        }
-    }
-
     // assignment: x = expr (children.multiple, no named fields)
     if kind == "assignment" {
         let mut target: Option<tree_sitter::Node> = None;
@@ -350,8 +310,8 @@ fn walk_kotlin_assign_edges(
                 continue;
             };
             if child.is_named() {
-                if target.is_none() {
-                    target = Some(child);
+                if child.kind() == "directly_assignable_expression" && target.is_none() {
+                    target = child.named_child(0);
                 } else if found_eq && value.is_none() {
                     value = Some(child);
                 }
@@ -536,6 +496,20 @@ fn kotlin_binding_kind(capture_name: &str) -> Option<BindingKind> {
 }
 
 fn is_kotlin_declaration_or_property_identifier(node: tree_sitter::Node<'_>) -> bool {
+    if node.parent().is_some_and(|parent| {
+        parent.kind() == "directly_assignable_expression"
+            && parent.named_child_count() == 1
+            && parent.parent().is_some_and(|assignment| {
+                assignment.kind() == "assignment"
+                    && (0..assignment.child_count()).any(|index| {
+                        assignment
+                            .child(index as u32)
+                            .is_some_and(|child| child.kind() == "=")
+                    })
+            })
+    }) {
+        return true;
+    }
     let Some(parent) = node.parent() else {
         return false;
     };
@@ -696,6 +670,124 @@ mod tests {
         let ts_lang = spec.tree_sitter_language();
         assert!(!spec.definition_query().is_empty());
         tree_sitter::Parser::new().set_language(&ts_lang).unwrap();
+    }
+
+    #[test]
+    fn test_branch_complete_late_assignment_preserves_both_write_origins() {
+        let source = concat!(
+            "fun select(primary: Int, fallback: Int, choose: Boolean): Int {\n",
+            "  var result: Int\n",
+            "  if (choose) {\n",
+            "    result = primary\n",
+            "  } else {\n",
+            "    result = fallback\n",
+            "  }\n",
+            "  return consume(result)\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("late_assignment.kt");
+        let facts = crate::extract_file_with_mode(
+            &kotlin_frontend(),
+            file_id,
+            std::path::Path::new("late_assignment.kt"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let result_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "result")
+            .expect("late-declared result binding");
+        let mut result_locals: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Local && node.name.as_deref() == Some("result")
+            })
+            .collect();
+        result_locals.sort_by_key(|node| node.range.start_byte);
+        assert_eq!(
+            result_locals.len(),
+            2,
+            "only the two concrete writes must be Local definitions"
+        );
+        assert!(
+            result_locals
+                .iter()
+                .all(|node| node.binding_id == Some(result_binding.id))
+        );
+
+        let primary_write = result_locals[0];
+        let fallback_write = result_locals[1];
+        assert_eq!(primary_write.range.start_line, 3);
+        assert_eq!(fallback_write.range.start_line, 5);
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::Local
+                    || node.name.as_deref() != Some("result")
+                    || node.range.start_line != 1
+            }),
+            "a typed declaration without an initializer belongs to BindingGraph, not DataFlow"
+        );
+
+        let primary = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("primary")
+                    && node.range.start_line == 3
+            })
+            .expect("primary assignment source");
+        let fallback = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("fallback")
+                    && node.range.start_line == 5
+            })
+            .expect("fallback assignment source");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == primary.id
+                && edge.target == primary_write.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == fallback.id
+                && edge.target == fallback_write.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+
+        let joined_use = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("result")
+                    && node.range.start_line == 7
+            })
+            .expect("post-branch result use");
+        assert_eq!(joined_use.binding_id, Some(result_binding.id));
+        for write in [primary_write, fallback_write] {
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == write.id
+                    && edge.target == joined_use.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse
+                    || node.name.as_deref() != Some("result")
+                    || !matches!(node.range.start_line, 3 | 5)
+            }),
+            "assignment targets must be writes, not duplicate VariableUse nodes"
+        );
     }
 
     #[test]

@@ -23,23 +23,21 @@
     (simple_identifier) @df.assign_target)
   (_) @df.assign_value)
 
-(property_declaration
-  (variable_declaration
-    (simple_identifier) @df.assign_target))
-
 ;; --- when subject declaration: when (val x = expr) ---
 (when_subject
   (variable_declaration
     (simple_identifier) @df.assign_target)
   (_) @df.assign_value)
 
-;; --- Assignment: x = expr ---
-;; tree-sitter-kotlin `assignment` has children.multiple (no named fields),
-;; so `(_) @df.assign_value` does not compile inside this node.
-;; The target is captured here; the value expression is found by the
-;; AST walker fallback in `walk_for_assign_edges`.
+;; --- Simple assignment: x = expr ---
+;; tree-sitter-kotlin exposes no left/right fields and wraps the target in
+;; directly_assignable_expression. Capture both leaves; the Kotlin AST walker
+;; supplies their Assign edge.
 (assignment
-  (simple_identifier) @df.assign_target)
+  (directly_assignable_expression
+    (simple_identifier) @df.assign_target)
+  "="
+  (_) @df.assign_value)
 
 ;; --- Return value ---
 (jump_expression
