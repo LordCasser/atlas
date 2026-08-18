@@ -1403,8 +1403,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
-            "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
+            "scope-chain-aware file/function/method binding for parameters, assignment-created locals, []/list() nested/keyed/by-reference destructuring targets, foreach/catch/static declarations, and explicit anonymous-function captures; destructuring key expressions remain reads; global aliases, variable variables, non-variable destructuring targets, reference-alias semantics, and arrow-function ownership remain conservative",
+            "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
             "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
             "namespace aliases resolved at reference resolution layer",
             "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
@@ -1415,7 +1415,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.62,
                     &[
-                        "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
+                        "scope-chain-aware file/function/method binding for parameters, assignment-created locals, []/list() nested/keyed/by-reference destructuring targets, foreach/catch/static declarations, and explicit anonymous-function captures; destructuring key expressions remain reads; global aliases, variable variables, non-variable destructuring targets, reference-alias semantics, and arrow-function ownership remain conservative",
                     ],
                 ),
             ),
@@ -1424,7 +1424,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.62,
                     &[
-                        "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
+                        "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
                     ],
                 ),
             ),
@@ -1433,7 +1433,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.62,
                     &[
-                        "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
+                        "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures and []/list() nested/keyed/by-reference destructuring targets; destructuring key expressions remain reads; global aliases, variable variables, reference-alias semantics, non-variable destructuring targets, and arrow-function ownership remain conservative",
                     ],
                 ),
             ),
@@ -3231,8 +3231,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
-                "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
+                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, []/list() nested/keyed/by-reference destructuring targets, foreach/catch/static declarations, and explicit anonymous-function captures; destructuring key expressions remain reads; global aliases, variable variables, non-variable destructuring targets, reference-alias semantics, and arrow-function ownership remain conservative",
+                "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
                 "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
                 "namespace aliases resolved at reference resolution layer",
                 "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
@@ -3272,7 +3272,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.62,
                 vec![
-                    "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative"
+                    "scope-chain-aware file/function/method binding for parameters, assignment-created locals, []/list() nested/keyed/by-reference destructuring targets, foreach/catch/static declarations, and explicit anonymous-function captures; destructuring key expressions remain reads; global aliases, variable variables, non-variable destructuring targets, reference-alias semantics, and arrow-function ownership remain conservative"
                 ],
             )
         );
@@ -3281,7 +3281,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.62,
                 vec![
-                    "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative"
+                    "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative"
                 ],
             )
         );
@@ -3290,7 +3290,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.62,
                 vec![
-                    "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative"
+                    "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures and []/list() nested/keyed/by-reference destructuring targets; destructuring key expressions remain reads; global aliases, variable variables, reference-alias semantics, non-variable destructuring targets, and arrow-function ownership remain conservative"
                 ],
             )
         );

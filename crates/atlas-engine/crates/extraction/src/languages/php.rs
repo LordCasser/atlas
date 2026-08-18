@@ -221,7 +221,7 @@ impl LexicalBindingSpec for PhpAdapter {
         FeatureSupport::supported_with_limitations(
             0.62,
             vec![
-                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
+                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, []/list() nested/keyed/by-reference destructuring targets, foreach/catch/static declarations, and explicit anonymous-function captures; destructuring key expressions remain reads; global aliases, variable variables, non-variable destructuring targets, reference-alias semantics, and arrow-function ownership remain conservative",
             ],
         )
     }
@@ -263,10 +263,9 @@ impl DataflowSpec for PhpAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.6,
+            0.62,
             vec![
-                "AST-driven local dataflow with language-specific gaps",
-                "dynamic calls / variable-variables not resolved",
+                "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
             ],
         )
     }
