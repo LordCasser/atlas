@@ -4362,6 +4362,83 @@ func process() int {
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
 }
 
+/// A mixed short declaration persists the original parameter identity while
+/// introducing only the new name, and Trace follows that new local normally.
+#[test]
+#[cfg(feature = "go")]
+fn fx_go_mixed_short_declaration_persists_binding_identity() {
+    let source = r#"package p
+
+func source() int {
+	return 42
+}
+
+func mixed(input int) int {
+	input, extra := input + 1, source()
+	consume(input, extra)
+	return extra
+}
+"#;
+    let store = index_files(&[("mixed_short.go", source)]);
+    let file_id = FileId::generate("mixed_short.go");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Go bindings");
+    let input = bindings
+        .iter()
+        .find(|binding| binding.name == "input")
+        .expect("persisted parameter binding");
+    assert_eq!(input.kind.as_str(), "parameter");
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|binding| binding.name == "input")
+            .count(),
+        1,
+        "the mixed declaration must not persist a second input binding"
+    );
+    let extra = bindings
+        .iter()
+        .find(|binding| binding.name == "extra")
+        .expect("persisted new local binding");
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    assert!(nodes.iter().any(|node| {
+        node.kind == DataNodeKind::Local
+            && node.name.as_deref() == Some("input")
+            && node.range.start_line == 7
+            && node.binding_id == Some(input.id)
+    }));
+    assert!(nodes.iter().any(|node| {
+        node.kind == DataNodeKind::Local
+            && node.name.as_deref() == Some("extra")
+            && node.range.start_line == 7
+            && node.binding_id == Some(extra.id)
+    }));
+
+    let sink = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("extra")
+                && node.range.start_line == 9
+        })
+        .expect("return extra use");
+    assert_eq!(sink.binding_id, Some(extra.id));
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "go");
+    let path = response.result.expect("mixed short declaration trace path");
+    assert_source_name(&path, "42");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
+}
+
 /// Go's type-switch guard declares one alias per clause, not one shared
 /// switch-level variable. This is based on the standard library's
 /// `context.stringify` shape and verifies persistence plus variable tracing.

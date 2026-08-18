@@ -1776,6 +1776,104 @@ fn n5_focus_go_type_switch_alias_dataflow_matches_index_full() {
     );
 }
 
+/// Go mixed short declarations must preserve the same canonical bindings on
+/// the cold Focus path as on a full Index, including the function-body
+/// parameter exception and nested-block shadowing.
+#[cfg(feature = "go")]
+#[test]
+fn n5_focus_go_mixed_short_declaration_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "mixed_short.go",
+            "package p\n\
+             \n\
+             func mixed(input int) int {\n\
+             \x20 input, extra := input + 1, 2\n\
+             \x20 extra, value := extra + 1, input\n\
+             \x20 if input > 0 {\n\
+             \x20   value, nested := value + 1, input\n\
+             \x20   consume(value, nested)\n\
+             \x20 }\n\
+             \x20 consume(input, extra, value)\n\
+             \x20 return value\n\
+             }\n",
+        ),
+        ("peer.go", "package p\nfunc unrelated() int { return 42 }\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_mixed = symbol_id_by_name(&indexed_store, "mixed");
+    let indexed_dataflow = unit_dataflow_slice(&indexed_store, &indexed_mixed);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_mixed);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "input")
+            .count(),
+        1,
+        "parameter redeclaration must retain one canonical binding"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "extra")
+            .count(),
+        1,
+        "same-block local redeclaration must retain one canonical binding"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "value")
+            .count(),
+        2,
+        "nested block must still introduce a shadow binding"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let mixed = symbol_id_by_name(&focused_store, "mixed");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&mixed)
+            .unwrap()
+            .is_empty(),
+        "mixed unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&mixed, Some("go-mixed-short-declaration-parity"))
+        .expect("Focus ensure Go mixed declaration");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &mixed),
+        indexed_dataflow,
+        "Go mixed declaration dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &mixed),
+        indexed_bindings,
+        "Go mixed declaration bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Go unit must stay outside the Focus window"
+    );
+}
+
 /// Ruby modifier-loop CFG must be identical whether the unit comes from a full
 /// Index or Focus on-demand materialization. This protects the pre-test vs
 /// `begin ... end` post-test entry ordering across both product paths.
