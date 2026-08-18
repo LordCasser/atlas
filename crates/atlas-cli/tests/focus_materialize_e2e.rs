@@ -1666,6 +1666,146 @@ fn n5_focus_csharp_pattern_bindings_match_index_full() {
     );
 }
 
+/// Java if-condition instanceof and arrow-switch pattern captures reuse the
+/// same scoped Binding/DataFlow model in Full Index and cold Focus. Sibling
+/// switch rules must not merge same-named captures, and aggregate record flow
+/// retains its exact confidence without warming a peer method.
+#[cfg(feature = "java")]
+#[test]
+fn n5_focus_java_pattern_bindings_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[(
+        "PatternDispatch.java",
+        "class PatternDispatch {\n\
+             \x20 static int dispatch(Object input) {\n\
+             \x20   if (input instanceof String text && !text.isEmpty()) {\n\
+             \x20     return consume(text);\n\
+             \x20   }\n\
+             \x20   return switch (input) {\n\
+             \x20     case String value when !value.isEmpty() -> consume(value);\n\
+             \x20     case Integer value -> consume(value);\n\
+             \x20     case Box(String name, Pair(Integer count, _)) -> consume(name, count);\n\
+             \x20     default -> 0;\n\
+             \x20   };\n\
+             \x20 }\n\
+             \x20 static int peer() { return 42; }\n\
+             }\n",
+    )];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_dispatch = symbol_id_by_name(&indexed_store, "dispatch");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_dispatch);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_dispatch);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.0 == "local" && binding.1 == "value")
+            .count(),
+        2,
+        "full Index must retain one value binding per Java switch rule"
+    );
+    for name in ["text", "name", "count"] {
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.0 == "local" && binding.1 == name)
+                .count(),
+            1,
+            "full Index Java pattern binding {name}"
+        );
+    }
+
+    let indexed_raw_bindings = indexed_store
+        .find_bindings_by_function(&indexed_dispatch)
+        .expect("full Index Java bindings");
+    let indexed_values: Vec<_> = indexed_raw_bindings
+        .iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    assert_eq!(indexed_values.len(), 2);
+    assert_ne!(indexed_values[0].id, indexed_values[1].id);
+    assert_ne!(indexed_values[0].scope_id, indexed_values[1].scope_id);
+
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_dispatch)
+        .expect("full Index Java data nodes");
+    for (target_name, subject_line) in [("text", 2), ("count", 5)] {
+        let subject = indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == subject_line
+            })
+            .unwrap_or_else(|| panic!("full Index Java subject line {subject_line}"));
+        let target = indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local && node.name.as_deref() == Some(target_name)
+            })
+            .unwrap_or_else(|| panic!("full Index Java target {target_name}"));
+        let edge = indexed_store
+            .find_dataflow_edges_by_source(&subject.id)
+            .expect("full Index Java edges")
+            .into_iter()
+            .find(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+            .unwrap_or_else(|| panic!("full Index Java flow to {target_name}"));
+        assert_eq!(edge.confidence, 0.75);
+    }
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let dispatch = symbol_id_by_name(&focused_store, "dispatch");
+    let peer = symbol_id_by_name(&focused_store, "peer");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&dispatch)
+            .unwrap()
+            .is_empty(),
+        "Java pattern unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&dispatch, Some("java-pattern-parity"))
+        .expect("Focus ensure Java dispatch");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &dispatch),
+        indexed_slice,
+        "Java pattern dataflow/CFG/confidence: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &dispatch),
+        indexed_bindings,
+        "Java pattern bindings: Focus ensure == Index full"
+    );
+    let focused_bindings = focused_store
+        .find_bindings_by_function(&dispatch)
+        .expect("Focus Java bindings");
+    let focused_values: Vec<_> = focused_bindings
+        .iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    assert_eq!(focused_values.len(), 2);
+    assert_ne!(focused_values[0].id, focused_values[1].id);
+    assert_ne!(focused_values[0].scope_id, focused_values[1].scope_id);
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&peer)
+            .unwrap()
+            .is_empty(),
+        "peer Java method must stay outside the Focus window"
+    );
+}
+
 /// PHP foreach key/value declarations use the callable variable namespace,
 /// not the structural loop/block scopes. Focus and full Index must retain the
 /// same post-loop binding/dataflow facts without warming an unrelated unit.

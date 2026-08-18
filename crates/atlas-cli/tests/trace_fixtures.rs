@@ -4387,6 +4387,132 @@ fn fx_semantic_java() {
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
 }
 
+#[test]
+#[cfg(feature = "java")]
+fn fx_java_pattern_bindings_persist_and_trace_from_tested_values() {
+    let source = r#"class PatternDispatch {
+    static int dispatch(Object input) {
+        if (input instanceof String text && !text.isEmpty()) {
+            return consume(text);
+        }
+        return switch (input) {
+            case String value when !value.isEmpty() -> consume(value);
+            case Integer value -> consume(value);
+            case Box(String name, Pair(Integer count, _)) -> consume(name, count);
+            default -> 0;
+        };
+    }
+}
+"#;
+    let store = index_files(&[("PatternDispatch.java", source)]);
+    let file_id = FileId::generate("PatternDispatch.java");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Java bindings");
+    let mut value_bindings: Vec<_> = bindings
+        .iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    value_bindings.sort_by_key(|binding| binding.range.start_byte);
+    assert_eq!(value_bindings.len(), 2);
+    assert_ne!(value_bindings[0].id, value_bindings[1].id);
+    assert_ne!(value_bindings[0].scope_id, value_bindings[1].scope_id);
+
+    let pattern_bindings: Vec<_> = bindings
+        .iter()
+        .filter(|binding| ["text", "value", "name", "count"].contains(&binding.name.as_str()))
+        .collect();
+    assert_eq!(pattern_bindings.len(), 5);
+    assert!(
+        pattern_bindings
+            .iter()
+            .all(|binding| binding.function_id.is_some())
+    );
+    assert!(
+        bindings
+            .iter()
+            .all(|binding| !["Box", "Pair", "_"].contains(&binding.name.as_str()))
+    );
+    for binding in &pattern_bindings {
+        let uses = store
+            .find_binding_uses_by_binding(&binding.id)
+            .expect("persisted Java pattern uses");
+        assert!(
+            uses.len() >= 2,
+            "declaration and guard/body use for {}: {uses:?}",
+            binding.name
+        );
+        assert!(uses.iter().all(|use_| use_.binding_id == Some(binding.id)));
+    }
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let if_subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("input")
+                && node.range.start_line == 2
+        })
+        .expect("persisted instanceof tested value");
+    let switch_subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("input")
+                && node.range.start_line == 5
+        })
+        .expect("persisted switch selector");
+    for binding in &pattern_bindings {
+        let target = data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(binding.id))
+            .unwrap_or_else(|| panic!("persisted target for {}", binding.name));
+        let source = if binding.name == "text" {
+            if_subject
+        } else {
+            switch_subject
+        };
+        let edge = store
+            .find_dataflow_edges_by_source(&source.id)
+            .expect("persisted Java pattern edges")
+            .into_iter()
+            .find(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+            .unwrap_or_else(|| panic!("persisted subject flow to {}", binding.name));
+        assert_eq!(edge.confidence, 0.75);
+    }
+
+    let engine = TraceEngine::new(store.clone());
+    for (name, line) in [("text", 3), ("count", 8)] {
+        let binding = pattern_bindings
+            .iter()
+            .copied()
+            .find(|binding| binding.name == name)
+            .expect("trace binding");
+        let sink = data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .max_by_key(|node| node.range.start_column)
+            .unwrap_or_else(|| panic!("persisted {name} body use"));
+        assert_eq!(sink.binding_id, Some(binding.id));
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, "java");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("Java pattern trace for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        assert_source_name(&path, "input");
+    }
+}
+
 // ── C ───────────────────────────────────────────────────────────────
 
 #[test]
