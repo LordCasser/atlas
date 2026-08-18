@@ -37,7 +37,8 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、mixed short declaration、match binding、PHP nested/keyed
-  destructuring、Ruby multiple assignment、modifier loop、nested lexical shadowing 等精确断言。
+  destructuring、Ruby multiple assignment、C# parenthesized nested designation、modifier
+  loop、nested lexical shadowing 等精确断言。
 - 声明 `scope_aware_binding` 前必须同时具备三层证据：直接 extraction 断言 distinct
   `BindingId`/`scope_id` 以及 `BindingUse`/`DataNode.binding_id`，SQLite Trace 断言持久化后
   sink identity 与 Assign path，Focus cold unit 对 full Index 的 bindings/dataflow/CFG 对拍。
@@ -241,6 +242,10 @@ rg 'read_to_string' crates/atlas-engine crates/atlas-mcp --glob '*.rs'
   - Index：`--analysis full`。  
   - Focus：structural 底库 → `ensure_for_function(seed)`。  
   - 断言：seed unit dataflow/CFG 切片 == Index full 同 unit；peer 无 dataflow。
+- **Language-specific unit semantics**
+  - C# `n5_focus_csharp_pattern_bindings_match_index_full` 覆盖 parenthesized nested
+    designation 的 binding/dataflow/CFG 切片、0.72 aggregate subject flow，以及 peer
+    method 保持冷态；不能由普通函数基线替代。
 - **Dataflow expanded window**（`n5_focus_dataflow_expanded_window_matches_index_full`）  
   - seed 调用 math；ensure(seed) 展开 callee unit。  
   - 断言：seed 与 callee 两 unit 切片均 == Index full；peer 无 dataflow。

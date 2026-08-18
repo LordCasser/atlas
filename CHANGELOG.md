@@ -201,9 +201,16 @@ All notable changes to Atlas will be documented in this file.
   statement, and switch-expression syntax. Switch sections and expression arms
   own distinct lexical scopes, so same-name captures do not cross sibling arms;
   the matched subject flows conservatively to every direct capture.
-- Cover extraction, SQLite Trace, and Focus-vs-full-Index parity. Nested
-  designation projection, compiler definite-assignment, and guard control
-  dependency remain explicit precision boundaries.
+- Recursively bind parenthesized nested designations such as
+  `var (first, (second, third))` in their owning switch arm. Direct captures
+  retain whole-subject `Assign` flow at confidence 0.80; nested designation,
+  property, and list captures use aggregate subject flow at 0.72 because Atlas
+  does not claim the extracted component equals the whole matched value.
+- Cover direct extraction, SQLite Trace, and Focus-vs-full-Index parity,
+  including persisted confidence and a cold unit that leaves its peer method
+  unmaterialized. Exact property/index/positional projection, compiler
+  definite-assignment, and guard control dependency remain explicit precision
+  boundaries.
 
 - Route direct `goto` exits through every intervening `using` `BlockExit` and
   path-isolated `finally` clone from inner to outer before emitting the final

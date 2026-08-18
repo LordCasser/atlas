@@ -488,6 +488,14 @@ CFG + DataFlow
   identity and product-path parity. Structural element projection, `to_ary`
   coercion, implicit `nil` fill, parallel evaluation order, and numbered
   parameters remain explicit precision boundaries.
+- **C# parenthesized nested designation — scoped phase implemented:** switch
+  arms recursively bind `var (first, (second, third))` designations with one
+  arm-local identity per name. Direct captures retain 0.80 whole-subject flow;
+  nested designation/property/list captures use 0.72 aggregate subject flow
+  through existing `Assign` edges. Direct extraction、SQLite Trace and
+  Focus-vs-full-Index fixtures cover persisted identity、confidence and cold
+  unit isolation. Exact property/index/positional projection、compiler
+  definite-assignment and guard control dependency remain explicit boundaries.
 - **Switch/match/select sibling detection** — *Phase 1 implemented*: `CfgBuilder::walk_switch` emits a `Branch` dispatch node with one `CfgEdgeKind::CaseBranch` edge per executable sibling into a shared `Join`. Languages wired up: C/C++、Java、JS/TS/ArkTS、Go switch、C#、PHP、Python、Rust、Kotlin、Cangjie，以及 Ruby classic `case` 和 `case ... in`。Go `select_statement` maps communication/default siblings while preserving blocking no-default semantics。Python unguarded syntax-irrefutable wildcard/capture/`as`/group/OR arms, Ruby unguarded capture/wildcard, plus Rust/Cangjie direct unguarded wildcards suppress impossible synthetic no-match paths；Ruby refutable case/in without `else` instead emits the required implicit Throw；Python match subject conservatively flows to capture/`as`/star bindings，Ruby case/in subject conservatively flows to bare/key-only/`=>`/rest bindings；两者的 guard/body uses 均复用 enclosing namespace identity，Ruby pin 保持读取。Kotlin nested control scope 的同名 local 经 scope chain 保留独立 identity，`when (val V = E)` 将 initializer 流向 subject binding，condition/guard/body 复用同一 scoped identity；Rust scrutinee 保守流向 arm-scoped nested capture，guard/body 复用该 identity；guard-let chain 的每个 RHS 保守流向 capture，binding 仅在当前 let condition 后对后续 guard/body 生效；Cangjie selector 保守流向 arm-scoped simple/tuple/enum-payload/type binding，guard/body 复用该 identity；Go type-switch guard value 保守流向每个 case/default implicit block 的 clause-local alias，guard alias 本身不作为读取；same-block mixed `:=` 复用 source-earlier local/函数体参数，新名字在声明后激活，switch/select clause 保持 sibling identity；C# `is`/switch direct declaration/recursive/var pattern capture 采用 scope-chain identity，switch sibling arm 的同名 capture 不串线，subject 保守流向 capture。真实 `gin.Context.Stream`、Go `context.stringify`、Rust `parse_less_version_busybox` 与 Cangjie `handleCommand`，以及 synthetic Python/Ruby/Kotlin/Rust/Cangjie/C# fixtures 覆盖 extraction→SQLite persistence/trace。Remaining structural/type-driven pattern exhaustiveness、Python/Ruby structural projection/post-match path-definedness、remaining other-language guard/binding dataflow、Go case-type projection/function-literal ownership/select receive-clause flow/parallel-assignment evaluation order、C# nested designation projection/definite-assignment/guard control dependency、Kotlin smart-cast/definite-assignment/type/range condition projection/guard control dependency、Rust structural projection/borrow/move/guard control dependency、Cangjie structural projection/guard control dependency 与 communication readiness probabilities remain outside CFG.
   - **Fall-through and control transfers — Phase 2 implemented:** C/C++/JS/TS/ArkTS/PHP and Java colon groups connect a reachable case tail to the next executable case; Java arrow rules and non-C sibling constructs terminate their arms; Go connects only an explicit `fallthrough`. Empty arms preserve the same per-language routing without synthetic executable nodes: implicit-fall-through labels target the next executable body, while Go switch/select、Java arrow、Rust/Kotlin/Cangjie/Ruby-style arms target the Join. Identical direct paths collapse to one `(source, target, kind)` edge. Exact `default`/`else` clauses suppress impossible synthetic no-match edges. Only C/C++/JS/TS/ArkTS/Java/Go/C#/PHP switch-like constructs consume unlabeled `break`；Python/Rust/Kotlin/Cangjie/Ruby sibling constructs propagate it to an enclosing loop or labeled block. `break`/`continue` use persisted `Break`/`Continue` edge kinds；PHP `break N`/`continue N` decrements through nested switch/loop levels. The real curl `convert_char` example and persisted JS/PHP/Ruby fixtures cover fall-through、break ownership and SQLite edge-ID integrity.
     - Both branch-diff engines now walk downstream case effects, so `case 1: log(); case 2: free(x); break;` attributes the free to both runtime entry paths. The conservative all-but-one rule remains: effect-less paths are ignored, a finding requires at least three effectful paths, and a resource unique to one case is treated as intentional.
@@ -577,10 +585,13 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 特殊能力：`scope_aware_binding` 已由产品路径证据覆盖 Python、TypeScript、
 JavaScript、ArkTS、Java、C、C++、C#、Go、Rust、Kotlin、Cangjie、PHP 与 Ruby；
 其中 Java 使用合法 sibling-block identity，ArkTS 仍受 TS grammar/ArkUI callback
-边界约束，C# direct pattern capture 已覆盖 switch arm identity 与 subject flow。
+边界约束，C# direct pattern capture 与 parenthesized nested designation 已覆盖 switch
+arm identity；direct capture 使用 0.80 whole-subject flow，nested designation/property/list
+capture 使用 0.72 aggregate subject flow。
 C `include_resolution` / `function_pointer_tracking`、call_graph 0.65，C/C++/Go CFG
 覆盖 direct same-function `Goto`；C# 另覆盖跨 finally/using cleanup 的有序 goto
-退出，nested designation/definite-assignment/guard dependency 仍保守；C++
+退出，exact property/index/positional projection、definite-assignment 与 guard dependency
+仍保守；C++
 `include_resolution`。PHP `cfg` WithLimitations(0.60) 覆盖
 branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function
 `Goto`（含 finally continuation）与 terminal→Exit；parameter、assignment-created
