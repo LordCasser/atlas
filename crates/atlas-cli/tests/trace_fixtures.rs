@@ -7807,6 +7807,196 @@ fn inspect(value: Message, fallback: Option<(i32, i32)>) -> i32 {
 
 #[test]
 #[cfg(feature = "rust")]
+fn fx_rust_control_let_bindings_persist_scope_order_and_trace_exact_inputs() {
+    let source = r#"fn inspect(
+    input: Option<(i32, Option<i32>)>,
+    outer: i32,
+    mut queue: Vec<Option<(i32, i32)>>,
+) -> i32 {
+    let first = outer;
+    if let Some((first, nested)) = input
+        && let Some(second) = nested
+        && first < second
+    {
+        consume(first, second);
+    } else {
+        consume(first, outer);
+    }
+    consume(first, outer);
+    while let Some((left, right)) = queue.pop() {
+        consume(left, right);
+    }
+    consume(first, outer)
+}
+"#;
+    let store = index_files(&[("control_let_bindings.rs", source)]);
+    let file_id = FileId::generate("control_let_bindings.rs");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Rust control-let bindings");
+    let binding = |name: &str, line| {
+        bindings
+            .iter()
+            .find(|binding| binding.name == name && binding.range.start_line == line)
+            .unwrap_or_else(|| panic!("persisted {name} binding on line {line}"))
+    };
+    let outer_first = binding("first", 5);
+    let control_first = binding("first", 6);
+    let nested = binding("nested", 6);
+    let second = binding("second", 7);
+    let left = binding("left", 15);
+    let right = binding("right", 15);
+
+    assert_ne!(outer_first.id, control_first.id);
+    assert_eq!(control_first.scope_id, nested.scope_id);
+    assert_eq!(nested.scope_id, second.scope_id);
+    assert_eq!(left.scope_id, right.scope_id);
+    assert!(control_first.visible_from_byte > control_first.range.end_byte);
+    assert_eq!(control_first.visible_from_byte, nested.visible_from_byte);
+    assert!(second.visible_from_byte > control_first.visible_from_byte);
+
+    let scopes = store.find_scopes_by_file(&file_id).expect("Rust scopes");
+    let if_scope = scopes
+        .iter()
+        .find(|scope| scope.id == control_first.scope_id)
+        .expect("persisted if-let scope");
+    assert_eq!(if_scope.kind, atlas_engine::enums::ScopeKind::Conditional);
+    assert_eq!(
+        scopes
+            .iter()
+            .find(|scope| scope.id == left.scope_id)
+            .expect("persisted while-let scope")
+            .kind,
+        atlas_engine::enums::ScopeKind::Loop
+    );
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let assert_use = |name: &str, line, expected: &atlas_engine::BindingDef| {
+        let uses: Vec<_> = data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .collect();
+        assert_eq!(uses.len(), 1, "one persisted {name} use on line {line}");
+        assert_eq!(uses[0].binding_id, Some(expected.id));
+    };
+    assert_use("first", 8, control_first);
+    assert_use("first", 10, control_first);
+    for line in [12, 14, 18] {
+        assert_use("first", line, outer_first);
+    }
+    assert_use("left", 16, left);
+    assert_use("right", 16, right);
+    let else_first = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("first")
+                && node.range.start_line == 12
+        })
+        .expect("persisted else first use");
+    assert!(if_scope.range.end_byte < else_first.range.start_byte);
+    assert_eq!(
+        data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("nested")
+                    && node.range.start_line == 7
+            })
+            .expect("persisted second let-condition RHS")
+            .binding_id,
+        Some(nested.id)
+    );
+
+    for (target_binding, access_path, source_name, source_line) in [
+        (control_first, "input[0][0]", "input", 6),
+        (nested, "input[0][1]", "input", 6),
+        (second, "nested[0]", "nested", 7),
+        (left, "(queue.pop())[0][0]", "queue.pop()", 15),
+        (right, "(queue.pop())[0][1]", "queue.pop()", 15),
+    ] {
+        let target = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local && node.binding_id == Some(target_binding.id)
+            })
+            .unwrap_or_else(|| panic!("persisted control-let target {}", target_binding.name));
+        let source_node = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some(source_name)
+                    && node.range.start_line == source_line
+            })
+            .unwrap_or_else(|| panic!("persisted control-let source {source_name}"));
+        let projection = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == target.range
+                    && node.access_path.as_deref() == Some(access_path)
+            })
+            .unwrap_or_else(|| panic!("persisted projection {access_path}"));
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&source_node.id)
+                .expect("control-let projection input edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == projection.id
+                        && edge.kind == DataFlowKind::FieldLoad
+                        && edge.confidence == 0.80
+                })
+        );
+        assert!(
+            store
+                .find_dataflow_edges_by_source(&projection.id)
+                .expect("control-let projection output edges")
+                .iter()
+                .any(|edge| {
+                    edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && edge.confidence == 0.90
+                })
+        );
+    }
+
+    let engine = TraceEngine::new(store.clone());
+    for (name, line, source_name) in [
+        ("first", 10, "input"),
+        ("second", 10, "input"),
+        ("left", 16, "queue"),
+    ] {
+        let sink = data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .unwrap_or_else(|| panic!("persisted {name} trace sink"));
+        let response = engine.trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, "rust");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("Rust control-let trace path for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+        assert_has_edge_kind(&path, DataFlowKind::Assign);
+        assert_source_name(&path, source_name);
+    }
+}
+
+#[test]
+#[cfg(feature = "rust")]
 fn fx_rust_real_closure_planner_nested_result_projection_persists_and_traces() {
     let source = include_str!("../../atlas-engine/src/closure_planner.rs");
     let store = index_files(&[("closure_planner.rs", source)]);
@@ -7884,6 +8074,110 @@ fn fx_rust_real_closure_planner_nested_result_projection_persists_and_traces() {
     let path = response.result.expect("real ClosurePlanner trace path");
     assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
     assert_has_edge_kind(&path, DataFlowKind::Assign);
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_real_focus_engine_if_let_projection_persists_and_traces() {
+    let source = include_str!("../../atlas-engine/src/focus/engine.rs");
+    let store = index_files(&[("focus_engine.rs", source)]);
+    let file_id = FileId::generate("focus_engine.rs");
+    let pattern = "if let Ok(symbols) = self.store.find_symbols_by_file(file_id) {";
+    let pattern_start = source
+        .find(pattern)
+        .expect("real FocusEngine if-let pattern");
+    let target_start = pattern_start + "if let Ok(".len();
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("real FocusEngine bindings");
+    let symbols = bindings
+        .iter()
+        .find(|binding| {
+            binding.name == "symbols" && binding.range.start_byte as usize == target_start
+        })
+        .expect("real FocusEngine if-let capture");
+    assert!(symbols.visible_from_byte > symbols.range.end_byte);
+
+    let scopes = store
+        .find_scopes_by_file(&file_id)
+        .expect("real FocusEngine scopes");
+    let scope = scopes
+        .iter()
+        .find(|scope| scope.id == symbols.scope_id)
+        .expect("real FocusEngine if-let scope");
+    assert_eq!(scope.kind, atlas_engine::enums::ScopeKind::Conditional);
+    let coverage_comment = source[pattern_start..]
+        .find("// Record coverage for the seed file")
+        .map(|offset| pattern_start + offset)
+        .expect("real FocusEngine statement after if-let");
+    assert!(scope.range.end_byte as usize <= coverage_comment);
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let target = data_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Local && node.binding_id == Some(symbols.id))
+        .expect("real FocusEngine if-let Local");
+    let projection = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.range == target.range
+                && node.access_path.as_deref()
+                    == Some("(self.store.find_symbols_by_file(file_id))[0]")
+        })
+        .expect("real FocusEngine Result projection");
+    let incoming = store
+        .find_dataflow_edges_by_target(&projection.id)
+        .expect("real FocusEngine projection input");
+    let field_load = incoming
+        .iter()
+        .find(|edge| edge.kind == DataFlowKind::FieldLoad && edge.confidence == 0.80)
+        .expect("real FocusEngine projection FieldLoad");
+    let value = store
+        .get_data_node(&field_load.source)
+        .expect("read real FocusEngine let-condition value")
+        .expect("real FocusEngine let-condition value");
+    assert_eq!(
+        value.name.as_deref(),
+        Some("self.store.find_symbols_by_file(file_id)")
+    );
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&projection.id)
+            .expect("real FocusEngine projection output")
+            .iter()
+            .any(|edge| {
+                edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            })
+    );
+
+    let sink_start = source[pattern_start..]
+        .find("&symbols")
+        .map(|offset| pattern_start + offset + 1)
+        .expect("real FocusEngine symbols use");
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("symbols")
+                && node.range.start_byte as usize == sink_start
+        })
+        .expect("real FocusEngine persisted symbols use");
+    assert_eq!(sink.binding_id, Some(symbols.id));
+    let engine = TraceEngine::new(store);
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "rust");
+    let path = response.result.expect("real FocusEngine if-let trace path");
+    assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "file_id");
 }
 
 /// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary
