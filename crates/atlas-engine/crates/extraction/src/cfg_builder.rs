@@ -1889,11 +1889,37 @@ impl CfgContext<'_> {
         // 3. Walk every case from the dispatch and remember its entry/tail.
         //    Tail routing is deferred until all following case entries are known.
         let mut case_paths = Vec::with_capacity(case_clauses.len());
+        let mut guard_false_paths = Vec::new();
+        let mut empty_guard_true_paths = Vec::new();
         for clause in &case_clauses {
             // Statement nodes belonging to this case clause (skip the case
             // label / pattern nodes, which are not executable statements).
             let body_stmts = self.case_body_statements(clause);
             let falls_through = self.case_falls_through(clause, &body_stmts);
+            if let Some(guard) = self.rust_match_guard(clause) {
+                let guard_id =
+                    self.add_node(CfgNodeKind::Branch, guard.start_byte() as u32, Some(&guard));
+                self.add_edge(&branch_id, &guard_id, CfgEdgeKind::CaseBranch);
+                guard_false_paths.push(guard_id);
+
+                if body_stmts.is_empty() {
+                    empty_guard_true_paths.push(guard_id);
+                    case_paths.push((Some(guard_id), None, falls_through));
+                    continue;
+                }
+
+                let saved_edge_count = self.edges.len();
+                self.prev_node_id = Some(guard_id);
+                self.walk_stmt_list(&body_stmts);
+                if self.edges.len() > saved_edge_count {
+                    self.retag_edge(saved_edge_count, CfgEdgeKind::TrueBranch);
+                } else {
+                    empty_guard_true_paths.push(guard_id);
+                }
+                let tail = self.prev_node_id.take();
+                case_paths.push((Some(guard_id), tail, falls_through));
+                continue;
+            }
             if body_stmts.is_empty() {
                 case_paths.push((None, None, falls_through));
                 continue;
@@ -1921,6 +1947,12 @@ impl CfgContext<'_> {
         //    executable case or out to the Join. Return/throw/break clear
         //    `prev_node_id`, so they do not also gain a fall-through edge here.
         let join_id = self.add_node(CfgNodeKind::Join, start_byte + 1, None);
+        for guard_id in guard_false_paths {
+            self.add_edge(&guard_id, &join_id, CfgEdgeKind::FalseBranch);
+        }
+        for guard_id in empty_guard_true_paths {
+            self.add_edge(&guard_id, &join_id, CfgEdgeKind::TrueBranch);
+        }
         let mut direct_case_targets = Vec::new();
         for (idx, (entry, tail, falls_through)) in case_paths.iter().enumerate() {
             if let Some(tail) = tail {
@@ -2627,6 +2659,18 @@ impl CfgContext<'_> {
             }
             _ => false,
         }
+    }
+
+    /// Rust stores an arm guard on the `match_pattern` nested below the
+    /// `match_arm`. Other case-like grammars keep their existing sibling-path
+    /// abstraction until their guard semantics are promoted independently.
+    fn rust_match_guard<'a>(&self, clause: &Node<'a>) -> Option<Node<'a>> {
+        if self.language != Language::Rust || clause.kind() != "match_arm" {
+            return None;
+        }
+        clause
+            .child_by_field_name("pattern")?
+            .child_by_field_name("condition")
     }
 
     fn switch_owns_break(&self) -> bool {
@@ -6366,6 +6410,63 @@ function dispatch($x) {
             3,
             "A wildcard with a guard is not exhaustive"
         );
+    }
+
+    #[test]
+    fn test_match_cfg_rust_guard_is_explicit_control_branch() {
+        let source = r#"fn dispatch(command: Option<i32>, enabled: bool) -> i32 {
+    match command {
+        Some(n) if enabled && n > 0 => positive(n),
+        Some(_) => zero(),
+        None => fallback(),
+    }
+}"#;
+        let result = build_cfg_for_first_fn(Language::Rust, source);
+        let guard = cfg_node_id_for_text(&result, source, CfgNodeKind::Branch, "enabled && n > 0");
+        let body = cfg_node_id_for_text(&result, source, CfgNodeKind::Statement, "positive(n)");
+        let dispatch = result
+            .edges
+            .iter()
+            .find(|edge| edge.target == guard && edge.kind == CfgEdgeKind::CaseBranch)
+            .expect("match dispatch must select the guarded arm")
+            .source;
+
+        assert!(has_cfg_edge(&result, guard, body, CfgEdgeKind::TrueBranch));
+        assert!(result.edges.iter().any(|edge| {
+            edge.source == guard
+                && edge.kind == CfgEdgeKind::FalseBranch
+                && result
+                    .nodes
+                    .iter()
+                    .any(|node| node.id == edge.target && node.kind == CfgNodeKind::Join)
+        }));
+        assert!(!has_cfg_edge(
+            &result,
+            dispatch,
+            body,
+            CfgEdgeKind::CaseBranch
+        ));
+    }
+
+    #[test]
+    fn test_match_cfg_rust_empty_guarded_arm_preserves_both_guard_outcomes() {
+        let source = r#"fn dispatch(command: i32, enabled: bool) {
+    match command {
+        _ if enabled => {},
+        _ => fallback(),
+    };
+}"#;
+        let result = build_cfg_for_first_fn(Language::Rust, source);
+        let guard = cfg_node_id_for_text(&result, source, CfgNodeKind::Branch, "enabled");
+        let join = result
+            .nodes
+            .iter()
+            .find(|node| node.kind == CfgNodeKind::Join)
+            .expect("Rust match Join")
+            .id;
+
+        assert!(has_cfg_edge(&result, guard, join, CfgEdgeKind::TrueBranch));
+        assert!(has_cfg_edge(&result, guard, join, CfgEdgeKind::FalseBranch));
     }
 
     #[test]
