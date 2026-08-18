@@ -9712,6 +9712,53 @@ fn fx_cfg_match_python_capture_pattern_suppresses_persisted_no_match_path() {
 
 #[test]
 #[cfg(feature = "rust")]
+fn fx_cfg_real_rust_match_guard_persists_as_control_branch() {
+    let source = include_str!("../../atlas-engine/src/focus/runtime.rs");
+    let store = index_files(&[("runtime.rs", source)]);
+    let file_id = FileId::generate("runtime.rs");
+    let symbol = store
+        .find_symbols_by_file(&file_id)
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.name == "strategies_for" && symbol.kind == SymbolKind::Function)
+        .expect("checked-in Rust strategies_for function");
+    let nodes = store
+        .find_cfg_nodes_by_function(&symbol.id)
+        .expect("cfg_nodes");
+    let edges = persisted_cfg_edges(&store, &nodes);
+    let guard = persisted_cfg_node_id_for_text(
+        &nodes,
+        source,
+        CfgNodeKind::Branch,
+        "language == Language::ArkTS",
+    );
+    let incoming = edges
+        .iter()
+        .find(|edge| edge.target == guard && edge.kind == CfgEdgeKind::CaseBranch)
+        .expect("match dispatch must enter the real guarded arm");
+    assert!(
+        nodes
+            .iter()
+            .any(|node| { node.id == incoming.source && node.kind == CfgNodeKind::Branch })
+    );
+    assert!(edges.iter().any(|edge| {
+        edge.source == guard
+            && edge.kind == CfgEdgeKind::TrueBranch
+            && nodes
+                .iter()
+                .any(|node| node.id == edge.target && node.kind == CfgNodeKind::Statement)
+    }));
+    assert!(edges.iter().any(|edge| {
+        edge.source == guard
+            && edge.kind == CfgEdgeKind::FalseBranch
+            && nodes
+                .iter()
+                .any(|node| node.id == edge.target && node.kind == CfgNodeKind::Join)
+    }));
+}
+
+#[test]
+#[cfg(feature = "rust")]
 fn fx_cfg_real_rust_unguarded_wildcard_suppresses_persisted_no_match_path() {
     let source = example_source_or_skip!("rust_example/src/less.rs");
     let store = index_files(&[("less.rs", source)]);

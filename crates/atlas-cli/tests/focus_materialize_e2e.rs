@@ -9,7 +9,7 @@
 
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
-use atlas_engine::enums::{DataFlowKind, DataNodeKind};
+use atlas_engine::enums::{CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind};
 use atlas_engine::trace::TraceEngine;
 use atlas_engine::{
     AccessStrategy, FileId, FocusMaterialize, FocusRuntime, QueryIntent, Store, layer, status,
@@ -4813,6 +4813,36 @@ fn n5_focus_rust_match_binding_dataflow_matches_index_full() {
             && edge.1 == extra_target
             && edge.2 == DataFlowKind::Assign.as_str()
             && edge.3 == 0.90f64.to_bits()
+    }));
+    let source = FIXTURE[0].1;
+    let guard_text = "let Some(extra) = fallback && extra > payload";
+    let guard_start = source.find(guard_text).expect("guard in fixture") as u32;
+    let guard = (
+        CfgNodeKind::Branch.as_str().to_string(),
+        guard_start,
+        guard_start + guard_text.len() as u32,
+    );
+    let body_text = "consume(payload) + extra";
+    let body_start = source.find(body_text).expect("guarded body in fixture") as u32;
+    let body = (
+        CfgNodeKind::Statement.as_str().to_string(),
+        body_start,
+        body_start + body_text.len() as u32,
+    );
+    assert!(indexed_slice.cfg_nodes.contains(&guard));
+    assert!(
+        indexed_slice
+            .cfg_edges
+            .iter()
+            .any(|edge| { edge.1 == guard && edge.2 == CfgEdgeKind::CaseBranch.as_str() })
+    );
+    assert!(indexed_slice.cfg_edges.iter().any(|edge| {
+        edge.0 == guard && edge.1 == body && edge.2 == CfgEdgeKind::TrueBranch.as_str()
+    }));
+    assert!(indexed_slice.cfg_edges.iter().any(|edge| {
+        edge.0 == guard
+            && edge.1.0 == CfgNodeKind::Join.as_str()
+            && edge.2 == CfgEdgeKind::FalseBranch.as_str()
     }));
 
     let focused = setup_project(FIXTURE);
