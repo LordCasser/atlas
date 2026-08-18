@@ -216,7 +216,7 @@ impl LexicalBindingSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
+                "scope-chain-aware binding with clause-local switch/select namespaces, identifier-only select receive declarations, and same-block mixed short-declaration identity; function-literal ownership remains conservative",
             ],
         )
     }
@@ -254,7 +254,7 @@ impl DataflowSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative",
+                "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
             ],
         )
     }
@@ -290,6 +290,10 @@ fn walk_go_assign_edges(
 
     if kind == "type_switch_statement" {
         create_go_type_switch_edges(node, pos_map, edges);
+    }
+
+    if kind == "receive_statement" {
+        create_go_receive_edges(node, pos_map, edges);
     }
 
     // short_var_declaration: x := expr
@@ -358,6 +362,62 @@ fn walk_go_assign_edges(
         if let Some(child) = node.child(i as u32) {
             walk_go_assign_edges(child, pos_map, edges);
         }
+    }
+}
+
+fn create_go_receive_edges(
+    receive: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let (Some(left), Some(right)) = (
+        receive.child_by_field_name("left"),
+        receive.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    if !is_go_receive_expression(right) {
+        return;
+    }
+    let source_key = NodePosKey {
+        start_byte: right.start_byte() as u32,
+        end_byte: right.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let Some(&source_id) = pos_map.get(&source_key) else {
+        return;
+    };
+
+    let mut cursor = left.walk();
+    for target in left
+        .named_children(&mut cursor)
+        .filter(|target| target.kind() == "identifier")
+    {
+        let target_key = NodePosKey {
+            start_byte: target.start_byte() as u32,
+            end_byte: target.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let Some(&target_id) = pos_map.get(&target_key) else {
+            continue;
+        };
+        if edges.iter().any(|edge| {
+            edge.source == source_id
+                && edge.target == target_id
+                && edge.kind == DataFlowKind::Assign
+        }) {
+            continue;
+        }
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            target_id,
+            DataFlowKind::Assign,
+            node_range(target),
+            0.78,
+        ));
     }
 }
 
@@ -582,9 +642,32 @@ fn go_extract_signature(
 fn go_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
-        "lexical.local" => Some(BindingKind::Local),
+        "lexical.local" | "lexical.receive_local" => Some(BindingKind::Local),
         _ => None,
     }
+}
+
+fn is_go_receive_expression(node: tree_sitter::Node<'_>) -> bool {
+    node.kind() == "unary_expression"
+        && node
+            .child(0)
+            .is_some_and(|operator| operator.kind() == "<-")
+}
+
+fn is_go_receive_target_identifier(node: tree_sitter::Node<'_>) -> bool {
+    if node.kind() != "identifier" {
+        return false;
+    }
+    let Some(left) = node
+        .parent()
+        .filter(|parent| parent.kind() == "expression_list")
+    else {
+        return false;
+    };
+    left.parent()
+        .filter(|parent| parent.kind() == "receive_statement")
+        .and_then(|receive| receive.child_by_field_name("left"))
+        .is_some_and(|receive_left| receive_left.id() == left.id())
 }
 
 fn go_type_switch_alias_identifier(
@@ -719,7 +802,7 @@ fn go_enclosing_local_declaration(node: tree_sitter::Node<'_>) -> Option<tree_si
     while let Some(parent) = current {
         if matches!(
             parent.kind(),
-            "short_var_declaration" | "var_spec" | "range_clause"
+            "short_var_declaration" | "var_spec" | "range_clause" | "receive_statement"
         ) {
             return Some(parent);
         }
@@ -744,9 +827,18 @@ fn normalize_go_dataflow_builder(
     match capture_name {
         "df.parameter" if node_text(node, source).as_deref() == Some("_") => (None, None),
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" if node_text(node, source).as_deref() == Some("_") => (None, None),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.assign_target" | "df.receive_target"
+            if node_text(node, source).as_deref() == Some("_") =>
+        {
+            (None, None)
+        }
+        "df.assign_target" | "df.receive_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
         "df.assign_value" => {
+            make_df_assign_value(file_id, node, source, range, &["call_expression"])
+        }
+        "df.receive_value" if is_go_receive_expression(node) => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.type_switch_subject" => {
@@ -851,6 +943,7 @@ fn normalize_go_dataflow_builder(
         "df.identifier_use" => {
             if node_text(node, source).as_deref() == Some("_")
                 || is_go_type_switch_alias_identifier(node)
+                || is_go_receive_target_identifier(node)
             {
                 return (None, None);
             }
@@ -1441,6 +1534,157 @@ func observe(value any) {
         );
         assert!(!facts.data_nodes.iter().any(|node| {
             node.kind == DataNodeKind::Local && node.name.as_deref() == Some("value")
+        }));
+    }
+
+    #[test]
+    fn test_select_receive_declarations_are_clause_local_and_receive_the_channel_value() {
+        let source = r#"package p
+func choose(events <-chan int, existing int) int {
+	select {
+	case value, ok := <-events:
+		consume(value, ok)
+	case existing = <-events:
+		consume(existing)
+	case existing, open := <-events:
+		consume(existing, open)
+	case _, received := <-events:
+		consume(received)
+	default:
+		consume(existing)
+	}
+	return existing
+}
+"#;
+        let frontend = go_frontend();
+        let language = frontend.parser.tree_sitter_language();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "fixture must be valid for the pinned Go grammar: {}",
+            tree.root_node().to_sexp()
+        );
+        let file_id = FileId::generate("select_receive.go");
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            file_id,
+            std::path::Path::new("select_receive.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let outer_existing = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "existing" && binding.kind == BindingKind::Parameter)
+            .expect("outer existing parameter");
+        let local_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.kind == BindingKind::Local)
+            .collect();
+        assert_eq!(
+            local_bindings
+                .iter()
+                .map(|binding| binding.name.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            std::collections::HashSet::from(["value", "ok", "existing", "open", "received"]),
+            "only := receive targets declare clause-local bindings"
+        );
+        assert!(!facts.bindings.iter().any(|binding| binding.name == "_"));
+        assert_eq!(
+            local_bindings
+                .iter()
+                .map(|binding| binding.scope_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3,
+            "each declaring communication clause owns one implicit namespace"
+        );
+        assert!(local_bindings.iter().all(|binding| {
+            binding.visible_from_byte > binding.range.end_byte
+                && facts.scopes.iter().any(|scope| {
+                    scope.id == binding.scope_id && scope.kind == ScopeKind::Conditional
+                })
+        }));
+
+        let shadow_existing = local_bindings
+            .iter()
+            .find(|binding| binding.name == "existing")
+            .expect("short receive declaration shadows the parameter");
+        for (line, expected_binding) in [
+            (6, outer_existing.id),
+            (8, shadow_existing.id),
+            (12, outer_existing.id),
+            (14, outer_existing.id),
+        ] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "existing"
+                    && use_.range.start_line == line
+                    && use_.binding_id == Some(expected_binding)
+            }));
+        }
+
+        let receive_sources: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("<-events")
+                    && matches!(node.range.start_line, 3 | 5 | 7 | 9)
+            })
+            .collect();
+        assert_eq!(
+            receive_sources.len(),
+            4,
+            "one source event per receive case"
+        );
+
+        for (line, names) in [
+            (3, &["value", "ok"][..]),
+            (5, &["existing"][..]),
+            (7, &["existing", "open"][..]),
+            (9, &["received"][..]),
+        ] {
+            let source_node = receive_sources
+                .iter()
+                .find(|node| node.range.start_line == line)
+                .expect("receive source on case line");
+            for name in names {
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == DataNodeKind::Local
+                            && node.name.as_deref() == Some(*name)
+                            && node.range.start_line == line
+                    })
+                    .expect("receive target");
+                assert!(
+                    target.binding_id.is_some(),
+                    "{name} on line {line} must keep lexical identity"
+                );
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == source_node.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                        && (edge.confidence - 0.78).abs() < f64::EPSILON
+                }));
+            }
+        }
+        assert!(!facts.data_nodes.iter().any(|node| {
+            node.name.as_deref() == Some("_")
+                || (node.kind == DataNodeKind::VariableUse
+                    && matches!(
+                        node.name.as_deref(),
+                        Some("value" | "ok" | "open" | "received")
+                    )
+                    && matches!(node.range.start_line, 3 | 7 | 9))
         }));
     }
 }

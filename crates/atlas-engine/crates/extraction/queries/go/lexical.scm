@@ -22,6 +22,17 @@
       (identifier) @lexical.local)
     ":="))
 
+;; --- Select receive declarations (case value, ok := <-ch) ---
+;; A communication clause is an implicit lexical block. `=` receive targets
+;; are writes to existing bindings and therefore intentionally do not match.
+(select_statement
+  (communication_case
+    communication: (receive_statement
+      left: (expression_list
+        (identifier) @lexical.receive_local)
+      ":="
+      right: (unary_expression "<-"))))
+
 ;; A type-switch alias is declared separately in the implicit block of every
 ;; clause. The adapter turns each captured clause into one synthetic binding
 ;; declaration at the start of its statement list.

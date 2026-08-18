@@ -21,6 +21,14 @@
   right: (expression_list
     (_) @df.assign_value))
 
+;; --- Select receive clauses (case value, ok := <-ch / case value = <-ch) ---
+;; The receive operation is one aggregate source event. Identifier targets are
+;; linked precisely to their clause-local (`:=`) or existing (`=`) bindings.
+(receive_statement
+  left: (expression_list
+    (identifier) @df.receive_target)
+  right: (unary_expression "<-") @df.receive_value)
+
 ;; --- Var declarations with initializer ---
 (var_declaration
   (var_spec
