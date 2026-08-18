@@ -1158,8 +1158,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
-            "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
+            "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
+            "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative",
             "generic type parameters not captured in dataflow layer",
             "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
         ],
@@ -1169,7 +1169,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
+                        "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
                     ],
                 ),
             ),
@@ -1178,7 +1178,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
+                        "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative",
                     ],
                 ),
             ),
@@ -1187,7 +1187,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
+                        "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
                     ],
                 ),
             ),
@@ -2007,8 +2007,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
-                "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
+                "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
+                "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative",
                 "generic type parameters not captured in dataflow layer",
                 "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
             ]
@@ -2047,7 +2047,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative"
+                    "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative"
                 ],
             )
         );
@@ -2056,7 +2056,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative"
+                    "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative"
                 ],
             )
         );
@@ -2065,7 +2065,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative"
+                    "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative"
                 ],
             )
         );

@@ -216,7 +216,7 @@ impl LexicalBindingSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity",
+                "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity; function-literal ownership and select receive-clause declarations remain conservative",
             ],
         )
     }
@@ -254,7 +254,7 @@ impl DataflowSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "AST-driven local dataflow with clause-local type-switch aliases and same-block mixed short-declaration identity; case-type projection remains conservative",
+                "AST-driven local dataflow with type-switch guard-value flow and mixed short-declaration identity; case-type projection, select receive-clause flow, and parallel-assignment evaluation order remain conservative",
             ],
         )
     }

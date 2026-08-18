@@ -65,10 +65,14 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   allowed. Unresolved or non-direct targets terminate the local best-effort
   path. Computed goto, C# `goto case/default`, cross-scope C++ destruction, and
   grammar-hidden labels remain explicit boundaries.
-- Go type-switch aliases are distinct bindings in each case/default clause's
-  implicit block. The guard value flows conservatively to every alias and the
-  guard alias token is not a read. Case-type projection and mixed short
-  declarations that combine existing and new names remain conservative.
+- Go mixed short declarations reuse source-earlier bindings in the same block,
+  including the function-body parameter exception, while new names activate
+  after the declaration and nested switch/select clauses remain isolated.
+  Blank identifiers do not create binding/dataflow facts. Type-switch aliases
+  are distinct bindings in each case/default clause's implicit block; the guard
+  value flows conservatively to every alias and the guard alias token is not a
+  read. Case-type projection, function-literal ownership, select receive-clause
+  flow, and parallel-assignment evaluation order remain conservative.
 - Python unguarded syntax-irrefutable wildcard, capture, `as`, grouping, and OR
   match arms suppress the impossible synthetic no-match path. Capture, `as`,
   and star/rest identifiers share the enclosing Python namespace and receive

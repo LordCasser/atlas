@@ -31,9 +31,10 @@ All notable changes to Atlas will be documented in this file.
   C++, Go, Rust, Kotlin, Cangjie, PHP, and Ruby after direct extraction, SQLite Trace, and Focus-vs-full-Index
   fixtures proved that same-name locals retain distinct `BindingId` and scope
   ownership. Java uses legal sibling-block redeclarations because overlapping
-  local redeclaration is rejected by the language. Go mixed short declarations,
-  Rust pattern projection, and Kotlin smart-cast/definite-assignment remain
-  explicit language-specific limitations.
+  local redeclaration is rejected by the language. Go additionally covers
+  same-block mixed short declarations and the function-body parameter
+  exception. Rust pattern projection and Kotlin smart-cast/definite-assignment
+  remain explicit language-specific limitations.
 - Align frontend lexical/dataflow slot confidence and limitation text with the
   authoritative language profiles. ArkTS remains a TypeScript-grammar boundary:
   ordinary nested blocks are verified, while ArkUI callback ownership and
@@ -52,8 +53,15 @@ All notable changes to Atlas will be documented in this file.
   standard library's `context.stringify` shape. Shared lexical post-processing
   now assigns every function-local `BindingDef` to its innermost callable, so
   function-unit materialization cannot silently drop bindings.
-- Case-type projection and mixed short declarations that combine existing and
-  new names remain explicit precision boundaries.
+- Resolve mixed short declarations to one canonical binding for source-earlier
+  names in the same block, including parameters redeclared in a function body.
+  Newly introduced names activate after the declaration, so nested initializers
+  still read the outer binding; switch/select clauses retain sibling identities,
+  and blank identifiers create no binding/dataflow facts.
+- Cover the mixed-declaration boundary through direct extraction, SQLite Trace,
+  and Focus-vs-full-Index parity. Case-type projection, function-literal
+  ownership, select receive-clause flow, and parallel-assignment evaluation
+  order remain conservative.
 
 ### Rust dataflow
 
