@@ -1992,6 +1992,98 @@ fn n5_focus_ruby_case_in_cfg_matches_index_full() {
     );
 }
 
+/// Ruby multiple assignment must materialize identical binding identities and
+/// positional/aggregate dataflow through Focus and a full Index. In particular,
+/// a block write reuses an earlier method local while new block names stay local.
+#[cfg(feature = "ruby")]
+#[test]
+fn n5_focus_ruby_multiple_assignment_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "multiple_assignment.rb",
+            "def unpack(pair, tail)\n\
+             \x20 first, second = pair\n\
+             \x20 1.times do\n\
+             \x20   first, block_only = second, tail\n\
+             \x20   inner, *rest = pair\n\
+             \x20   consume(first, block_only, inner, rest)\n\
+             \x20 end\n\
+             \x20 consume(first, second)\n\
+             \x20 first\n\
+             end\n",
+        ),
+        ("peer.rb", "def unrelated\n  42\nend\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_unpack = symbol_id_by_name(&indexed_store, "unpack");
+    let indexed_dataflow = unit_dataflow_slice(&indexed_store, &indexed_unpack);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_unpack);
+    for name in [
+        "pair",
+        "tail",
+        "first",
+        "second",
+        "block_only",
+        "inner",
+        "rest",
+    ] {
+        assert_eq!(
+            indexed_store
+                .find_bindings_by_function(&indexed_unpack)
+                .unwrap()
+                .iter()
+                .filter(|binding| binding.name == name)
+                .count(),
+            1,
+            "{name} must have one binding identity in the full Index"
+        );
+    }
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let unpack = symbol_id_by_name(&focused_store, "unpack");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unpack)
+            .unwrap()
+            .is_empty(),
+        "unpack unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&unpack, Some("ruby-multiple-assignment-parity"))
+        .expect("Focus ensure Ruby multiple assignment");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &unpack),
+        indexed_dataflow,
+        "Ruby multiple-assignment dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &unpack),
+        indexed_bindings,
+        "Ruby multiple-assignment bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Ruby unit must stay outside the Focus window"
+    );
+}
+
 /// Kotlin `when (val subject = initializer)` must materialize the same
 /// initializer→subject binding flow and guarded sibling CFG through Focus as
 /// through a full Index, without touching unrelated units.

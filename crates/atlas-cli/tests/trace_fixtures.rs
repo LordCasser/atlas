@@ -2284,6 +2284,70 @@ end
     assert_source_name(&path, "input");
 }
 
+#[test]
+#[cfg(feature = "ruby")]
+fn fx_ruby_multiple_assignment_persists_positional_trace() {
+    let source = r#"def unpack(first_source, second_source)
+  first, second = first_source, second_source
+  consume(first)
+  second
+end
+"#;
+    let store = index_files(&[("multiple_assignment.rb", source)]);
+    let file_id = FileId::generate("multiple_assignment.rb");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Ruby multiple-assignment bindings");
+
+    for name in ["first_source", "second_source", "first", "second"] {
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .count(),
+            1,
+            "{name} must retain one persisted binding identity"
+        );
+    }
+    let second_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "second")
+        .expect("second binding");
+    let data_nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("persisted Ruby multiple-assignment data nodes");
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("second")
+                && node.range.start_line == 3
+        })
+        .expect("final second use");
+    assert_eq!(sink.binding_id, Some(second_binding.id));
+
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "ruby");
+    let path = response
+        .result
+        .expect("Ruby multiple-assignment trace path");
+    assert_eq!(
+        path.sink
+            .binding_use
+            .as_ref()
+            .and_then(|use_| use_.binding_id),
+        Some(second_binding.id)
+    );
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "second_source");
+}
+
 // ────────────────────────────────────────────────────────────────
 // Python: Destructuring / tuple unpacking dataflow
 // ────────────────────────────────────────────────────────────────
