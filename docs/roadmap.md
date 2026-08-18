@@ -215,8 +215,9 @@ Pre-release TUI/MCP/Focus alignment review:
   remains a separate boundary.
 - Focus-vs-full-Index dataflow/CFG parity now has a shared baseline matrix for
   TypeScript, JavaScript, Python, Java, C, C++, ArkTS, C#, and PHP. Go, Rust,
-  Ruby, Kotlin, and Cangjie retain stronger feature-specific parity fixtures
-  for their type-switch, match, modifier-loop, and subject-binding boundaries.
+  Ruby, Kotlin, Cangjie, and PHP retain stronger feature-specific parity
+  fixtures for their type-switch, match, modifier-loop, subject-binding, and
+  callable-variable-namespace boundaries.
 
 ### 1.6 Completed baseline release gates
 
@@ -548,7 +549,7 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 全部默认语言的 `LanguageCapabilityProfile` 经 `ProfileSpec` + `build_profile()` 声明构造。  
 身份与一致性由 `test_<lang>_profile_identity` 及四项全局 profile 测试约束。
 
-特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65，C/C++/Go CFG 覆盖 direct same-function `Goto`，C# 进一步覆盖跨 finally/using cleanup 的有序 goto 退出；C++ `include_resolution`；PHP `cfg` WithLimitations(0.60)，覆盖 branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 finally continuation）与 terminal→Exit；ArkTS `cfg` WithLimitations(0.55)、其余 TS-fallback dataflow 能力 WithLimitations(0.60)；Go 已覆盖 type-switch clause-local alias 与 guard-value flow，case-type projection/mixed short-declaration identity 仍保守；Rust 已覆盖 arm-scoped match capture、guard/body identity、scrutinee flow 与 source-ordered guard-let chain，borrow-mode/guard control dependency 仍保守；Kotlin 已覆盖 parameter/local/catch 的 scope-chain binding 与 nested control-scope shadowing，extension receiver、smart-cast 和 definite-assignment 仍保守；Cangjie `scope_aware_binding` 仍为 Unsupported，但已覆盖 arm-scoped match binding、guard/body identity 与 branch/loop/`match` sibling CFG。当前 `FeatureOverride` 只保留有实际使用的 `WithLimitations` 变体。
+特殊能力：C `include_resolution` / `function_pointer_tracking`、call_graph 0.65，C/C++/Go CFG 覆盖 direct same-function `Goto`，C# 进一步覆盖跨 finally/using cleanup 的有序 goto 退出；C++ `include_resolution`；PHP `cfg` WithLimitations(0.60)，覆盖 branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 finally continuation）与 terminal→Exit，parameter 与 foreach/catch/static declaration 采用 file/function namespace identity，assignment-created local/global/closure capture 仍保守；ArkTS `cfg` WithLimitations(0.55)、其余 TS-fallback dataflow 能力 WithLimitations(0.60)；Go 已覆盖 type-switch clause-local alias 与 guard-value flow，case-type projection/mixed short-declaration identity 仍保守；Rust 已覆盖 arm-scoped match capture、guard/body identity、scrutinee flow 与 source-ordered guard-let chain，borrow-mode/guard control dependency 仍保守；Kotlin 已覆盖 parameter/local/catch 的 scope-chain binding 与 nested control-scope shadowing，extension receiver、smart-cast 和 definite-assignment 仍保守；Cangjie `scope_aware_binding` 仍为 Unsupported，但已覆盖 arm-scoped match binding、guard/body identity 与 branch/loop/`match` sibling CFG。当前 `FeatureOverride` 只保留有实际使用的 `WithLimitations` 变体。
 
 **`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
 

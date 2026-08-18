@@ -21,8 +21,8 @@ All notable changes to Atlas will be documented in this file.
   JavaScript, Python, Java, C, C++, ArkTS, C#, and PHP. Each fixture verifies
   that on-demand function materialization persists the same bindings, local
   dataflow, and CFG as full Index while the unit is cold beforehand.
-- Keep feature-specific parity fixtures for Go, Rust, Ruby, Kotlin, and
-  Cangjie, where the language boundary needs stronger assertions than the
+- Keep feature-specific parity fixtures for Go, Rust, Ruby, Kotlin, Cangjie,
+  and PHP, where the language boundary needs stronger assertions than the
   common baseline.
 
 ### Go dataflow
@@ -118,6 +118,14 @@ All notable changes to Atlas will be documented in this file.
 
 ### PHP control flow
 
+- Model extracted PHP variables in file/function namespaces instead of
+  structural `if`/loop/block scopes. Foreach collection expressions are no
+  longer declarations; direct key/value bindings retain one identity inside
+  and after the loop, and `$` normalization is shared by BindingDef,
+  BindingUse, and DataNode facts. Extraction, SQLite Trace, and Focus-vs-full-
+  Index fixtures cover the boundary; assignment-created locals, globals,
+  variable variables, nested destructuring, and closure capture remain
+  conservative.
 - Resolve direct same-function PHP `goto` to standalone label `Join` targets
   through deterministic persisted `Goto` edges.
 - Execute every intervening path-isolated `finally` clone from inner to outer;
