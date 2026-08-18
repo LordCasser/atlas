@@ -16,9 +16,11 @@
 
 ;; --- Local variable declarations (let/const/var) ---
 (lexical_declaration
-  (variable_declarator (identifier) @lexical.local))
+  (variable_declarator
+    name: (identifier) @lexical.local))
 (variable_declaration
-  (variable_declarator (identifier) @lexical.local))
+  (variable_declarator
+    name: (identifier) @lexical.local))
 
 ;; --- Import aliases ---
 (import_specifier (identifier) @lexical.import_alias)
