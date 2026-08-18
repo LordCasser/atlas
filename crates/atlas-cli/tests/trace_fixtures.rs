@@ -15,7 +15,8 @@ use atlas_engine::GraphBuilder;
 use atlas_engine::ReferenceResolver;
 use atlas_engine::Store;
 use atlas_engine::enums::{
-    CallContext, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language, SymbolKind,
+    BindingKind, CallContext, CfgEdgeKind, CfgNodeKind, DataFlowKind, DataNodeKind, Language,
+    SymbolKind,
 };
 use atlas_engine::ids::FileId;
 use atlas_engine::trace::{Locator, Slicer, TraceEngine};
@@ -1419,6 +1420,78 @@ fn inner(p: i32) -> i32 {
         "cross-function trace must have steps"
     );
     assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+}
+
+/// Rust function-pattern leaves share their top-level runtime argument
+/// position. Both tuple leaves must receive the whole first call argument,
+/// while the following plain parameter remains at position 1.
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_parameter_patterns_persist_and_trace_aggregate_call_arguments() {
+    let source = r#"fn caller() -> i32 {
+    let pair = (3, 4);
+    let extra = 5;
+    decode(pair, extra)
+}
+
+fn decode((left, right): (i32, i32), plain: i32) -> i32 {
+    left + right + plain
+}
+"#;
+    let store = index_files(&[("parameter_patterns.rs", source)]);
+    let file_id = FileId::generate("parameter_patterns.rs");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Rust parameter-pattern bindings");
+    let nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("persisted Rust parameter-pattern nodes");
+
+    for (name, argument_index) in [("left", 0), ("right", 0), ("plain", 1)] {
+        let binding = bindings
+            .iter()
+            .find(|binding| binding.name == name && binding.kind == BindingKind::Parameter)
+            .unwrap_or_else(|| panic!("persisted parameter binding {name}"));
+        let parameter = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Parameter && node.binding_id == Some(binding.id)
+            })
+            .unwrap_or_else(|| panic!("persisted Parameter node {name}"));
+        assert_eq!(parameter.arg_index, Some(argument_index), "{name}");
+        let body_marker = "left + right + plain";
+        let sink_start = source.find(body_marker).expect("decode body")
+            + body_marker
+                .find(name)
+                .unwrap_or_else(|| panic!("body use {name}"));
+        let sink = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.binding_id == Some(binding.id)
+                    && node.range.start_byte as usize == sink_start
+            })
+            .unwrap_or_else(|| panic!("persisted body use {name}"));
+        let response = TraceEngine::new(store.clone()).trace_variable(
+            &file_id,
+            sink.range.start_line + 1,
+            sink.range.start_column + 1,
+            20,
+        );
+        assert_envelope_ok(&response, "rust");
+        let path = response
+            .result
+            .unwrap_or_else(|| panic!("parameter-pattern trace for {name}"));
+        assert_has_edge_kind(&path, DataFlowKind::ArgToParam);
+        if name != "plain" {
+            assert!(
+                path.steps
+                    .iter()
+                    .all(|step| step.edge_kind != DataFlowKind::FieldLoad),
+                "function destructuring keeps whole-argument provenance"
+            );
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -8509,6 +8582,88 @@ fn fx_rust_real_focus_engine_if_let_projection_persists_and_traces() {
     assert_has_edge_kind(&path, DataFlowKind::FieldLoad);
     assert_has_edge_kind(&path, DataFlowKind::Assign);
     assert_source_name(&path, "file_id");
+}
+
+#[test]
+#[cfg(feature = "rust")]
+fn fx_rust_real_focus_engine_closure_parameter_pattern_persists_and_traces() {
+    let source = include_str!("../../atlas-engine/src/focus/engine.rs");
+    let store = index_files(&[("focus_engine.rs", source)]);
+    let file_id = FileId::generate("focus_engine.rs");
+    let marker = ".find(|(failed_id, _)| *failed_id == file_id)";
+    let marker_start = source
+        .find(marker)
+        .expect("real FocusEngine closure parameter pattern");
+    let binding_start = marker_start + ".find(|(".len();
+    let use_start = marker_start
+        + marker
+            .find("*failed_id")
+            .expect("real FocusEngine closure parameter use")
+        + 1;
+
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("real FocusEngine closure bindings");
+    let binding = bindings
+        .iter()
+        .find(|binding| {
+            binding.name == "failed_id"
+                && binding.kind == BindingKind::Parameter
+                && binding.range.start_byte as usize == binding_start
+        })
+        .expect("real FocusEngine tuple-closure binding");
+    let scopes = store
+        .find_scopes_by_file(&file_id)
+        .expect("real FocusEngine scopes");
+    assert_eq!(
+        scopes
+            .iter()
+            .find(|scope| scope.id == binding.scope_id)
+            .expect("real tuple-closure scope")
+            .kind,
+        atlas_engine::enums::ScopeKind::Function
+    );
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let parameter = nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.binding_id == Some(binding.id))
+        .expect("real FocusEngine closure Parameter");
+    assert_eq!(
+        parameter.arg_index, None,
+        "closure parameters must not map to the enclosing method call"
+    );
+    let use_node = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.binding_id == Some(binding.id)
+                && node.range.start_byte as usize == use_start
+        })
+        .expect("real FocusEngine closure parameter use");
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&parameter.id)
+            .expect("real closure parameter outgoing edges")
+            .iter()
+            .any(|edge| edge.target == use_node.id && edge.kind == DataFlowKind::Assign),
+        "closure parameter must reach its body use"
+    );
+    let mut point = Locator::locate(
+        store.as_ref(),
+        &file_id,
+        use_node.range.start_line + 1,
+        use_node.range.start_column + 1,
+    )
+    .expect("locate real closure parameter use");
+    // The whole closure is also a CallArg for `.find`, so the public locator
+    // intentionally selects that higher-priority aggregate at this position.
+    // Seed the source-level slicer with the exact persisted body-use node.
+    point.data_node = Some(use_node.clone());
+    let path = Slicer::slice(store.as_ref(), &point, 20, None)
+        .expect("slice real closure parameter use")
+        .expect("real FocusEngine closure parameter trace");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
 }
 
 /// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary

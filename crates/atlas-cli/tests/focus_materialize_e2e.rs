@@ -2966,6 +2966,170 @@ fn n5_focus_typescript_family_parameter_destructuring_matches_index_full() {
     }
 }
 
+/// Rust named-function pattern leaves share runtime argument positions, while
+/// closure pattern parameters remain locally traceable but intentionally have
+/// no position in the enclosing named call. Cold Focus must reproduce the same
+/// bindings, nodes, edges, positions, and ArgToParam trace as full Index.
+#[cfg(feature = "rust")]
+#[test]
+fn n5_focus_rust_parameter_patterns_match_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "parameter_patterns.rs",
+            "fn decode((left, right): (i32, i32), plain: i32) -> i32 {\n\
+             \x20   let folded = [(1, 2)].into_iter().fold(0, |mut acc, (item, _)| acc + item);\n\
+             \x20   let borrowed = [3].iter().map(|&value| value).sum::<i32>();\n\
+             \x20   left + right + plain + folded + borrowed\n\
+             }\n\
+             fn run(pair: (i32, i32), extra: i32) -> i32 {\n\
+             \x20   decode(pair, extra)\n\
+             }\n",
+        ),
+        ("peer.rs", "fn unrelated() -> i32 {\n    42\n}\n"),
+    ];
+    let expected_positions = vec![
+        ("acc".to_string(), None),
+        ("item".to_string(), None),
+        ("left".to_string(), Some(0)),
+        ("plain".to_string(), Some(1)),
+        ("right".to_string(), Some(0)),
+        ("value".to_string(), None),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("full Index");
+    let indexed_store = open_store(&indexed);
+    let indexed_decode = symbol_id_by_name(&indexed_store, "decode");
+    let indexed_run = symbol_id_by_name(&indexed_store, "run");
+    let indexed_decode_slice = unit_dataflow_slice(&indexed_store, &indexed_decode);
+    let indexed_run_slice = unit_dataflow_slice(&indexed_store, &indexed_run);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_decode);
+    assert_eq!(
+        unit_parameter_positions(&indexed_store, &indexed_decode),
+        expected_positions,
+        "Rust full Index parameter positions"
+    );
+    for name in ["left", "right", "plain", "acc", "item", "value"] {
+        assert!(
+            indexed_bindings
+                .iter()
+                .any(|binding| binding.0 == "parameter" && binding.1 == name),
+            "Rust full Index parameter binding {name}"
+        );
+    }
+    let indexed_nodes = indexed_store
+        .find_data_nodes_by_function(&indexed_decode)
+        .expect("full Index Rust parameter nodes");
+    let indexed_left = indexed_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("left"))
+        .expect("full Index Rust left parameter");
+    let indexed_trace = TraceEngine::new(indexed_store.clone())
+        .trace_variable(
+            &FileId::generate("parameter_patterns.rs"),
+            indexed_left.range.start_line + 1,
+            indexed_left.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("full Index Rust parameter trace");
+    assert!(
+        indexed_trace
+            .steps
+            .iter()
+            .any(|step| step.edge_kind == DataFlowKind::ArgToParam),
+        "Rust full Index summary bridge must expose ArgToParam"
+    );
+    assert!(
+        indexed_trace
+            .steps
+            .iter()
+            .all(|step| step.edge_kind != DataFlowKind::FieldLoad),
+        "Rust function pattern keeps whole-argument provenance"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let decode = symbol_id_by_name(&focused_store, "decode");
+    let run = symbol_id_by_name(&focused_store, "run");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    for (symbol, name) in [(decode, "decode"), (run, "run"), (unrelated, "unrelated")] {
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&symbol)
+                .unwrap_or_else(|error| panic!("cold Rust {name} unit: {error}"))
+                .is_empty(),
+            "Rust {name} must be cold before Focus ensure"
+        );
+    }
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&decode, Some("rust-parameter-pattern-callee"))
+        .expect("Focus ensure Rust decode");
+    materialize
+        .dataflow()
+        .ensure_for_function(&run, Some("rust-parameter-pattern-caller"))
+        .expect("Focus ensure Rust run");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &decode),
+        indexed_decode_slice,
+        "Rust Focus decode dataflow/CFG/confidence == full Index"
+    );
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &run),
+        indexed_run_slice,
+        "Rust Focus caller dataflow/CFG/confidence == full Index"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &decode),
+        indexed_bindings,
+        "Rust Focus parameter bindings == full Index"
+    );
+    assert_eq!(
+        unit_parameter_positions(&focused_store, &decode),
+        expected_positions,
+        "Rust Focus parameter positions == full Index"
+    );
+    let focused_nodes = focused_store
+        .find_data_nodes_by_function(&decode)
+        .expect("Focus Rust parameter nodes");
+    let focused_left = focused_nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("left"))
+        .expect("Focus Rust left parameter");
+    let focused_trace = TraceEngine::new(focused_store.clone())
+        .trace_variable(
+            &FileId::generate("parameter_patterns.rs"),
+            focused_left.range.start_line + 1,
+            focused_left.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("Focus Rust parameter trace");
+    assert!(
+        focused_trace
+            .steps
+            .iter()
+            .any(|step| step.edge_kind == DataFlowKind::ArgToParam),
+        "Rust Focus runtime bridge must expose ArgToParam"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .expect("Rust peer unit state")
+            .is_empty(),
+        "unrelated Rust unit must stay outside the Focus window"
+    );
+}
+
 /// C, C++, Java, and C# encode compound/update expressions with different AST
 /// shapes. Each language must nevertheless materialize the same direct-local
 /// read-modify-write contract as full Index while leaving a peer unit cold.
