@@ -1442,6 +1442,12 @@ fn scope_chain_language_parity_cases() -> Vec<(&'static str, &'static str, &'sta
             "<?php\nfunction shadowPhp($input) {\n  $value = $input;\n  $callback = function () use ($input) {\n    $value = $input + 1;\n    consume($value);\n  };\n  return $value;\n}\n",
             "shadowPhp",
         ),
+        #[cfg(feature = "ruby")]
+        (
+            "scope.rb",
+            "def shadow_ruby(input)\n  1.times do\n    value = input\n    consume(value)\n  end\n  1.times do\n    value = input + 1\n    consume(value)\n  end\n  input\nend\n",
+            "shadow_ruby",
+        ),
     ]
 }
 

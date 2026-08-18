@@ -181,6 +181,12 @@ fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
             "<?php\nfunction shadowPhp($input) {\n  $value = $input;\n  $callback = function () use ($input) {\n    $value = $input + 1;\n    consume($value);\n  };\n  return $value;\n}\n",
             [(2, 7), (4, 5)],
         ),
+        #[cfg(feature = "ruby")]
+        (
+            "scope.rb",
+            "def shadow_ruby(input)\n  1.times do\n    value = input\n    consume(value)\n  end\n  1.times do\n    value = input + 1\n    consume(value)\n  end\n  input\nend\n",
+            [(2, 3), (6, 7)],
+        ),
     ];
     assert!(
         !cases.is_empty(),
