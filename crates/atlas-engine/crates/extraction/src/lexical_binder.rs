@@ -113,15 +113,23 @@ impl LexicalBinder {
             .cloned()
             .collect();
 
-        // Resolve scope containment for each binding:
-        // Replace placeholder scope_id with the actual innermost scope.
+        // Resolve initial scope containment for each binding.
         for binding in &mut bindings {
             binding.scope_id =
                 crate::languages::shared::innermost_scope(&lexical_scopes, binding.range)
                     .unwrap_or(binding.scope_id);
             binding.function_id =
                 crate::languages::shared::innermost_callable_at(symbols, binding.range.start_byte);
-            // Re-generate BindingId now that scope_id is correct
+        }
+
+        // Finalize namespace ownership in source order. Most adapters retain
+        // the innermost scope; languages such as Ruby may reuse a source-earlier
+        // ancestor binding from inside a block.
+        bindings.sort_by_key(|binding| binding.range.start_byte);
+        for index in 0..bindings.len() {
+            let (preceding, current) = bindings.split_at_mut(index);
+            let binding = &mut current[0];
+            binding.scope_id = lexical_spec.binding_scope(binding, &lexical_scopes, preceding);
             binding.id = BindingId::generate(
                 &ctx.file_id,
                 &binding.scope_id,
@@ -134,7 +142,6 @@ impl LexicalBinder {
         // Some languages have namespace identity rather than declaration
         // identity. Preserve every declaration as a use/write event, but keep
         // one canonical BindingDef for each (scope, name).
-        bindings.sort_by_key(|binding| binding.range.start_byte);
         let mut canonical_ids = HashMap::new();
         if lexical_spec.coalesce_same_scope_bindings() {
             for binding in &bindings {

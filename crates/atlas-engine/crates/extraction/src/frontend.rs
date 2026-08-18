@@ -26,7 +26,7 @@ use types::bindings::BindingDef;
 use types::capability::{FeatureMatrix, FeatureSupport, LanguageCapabilityProfile};
 use types::dataflow::{DataFlowEdge, DataNode};
 use types::enums::{Language, ScopeKind};
-use types::ids::{DataNodeId, FileId};
+use types::ids::{DataNodeId, FileId, ScopeId};
 use types::structs::{ImportDef, ReferenceUse, ScopeDef, SymbolDef};
 
 use std::borrow::Cow;
@@ -204,6 +204,20 @@ pub trait LexicalBindingSpec: Send + Sync {
     /// and represent allowed captures as bindings inside that scope.
     fn inherits_bindings_from_parent(&self, _scope: &ScopeDef) -> bool {
         true
+    }
+
+    /// Select the namespace that owns a binding after initial containment.
+    ///
+    /// `preceding_bindings` contains only source-earlier bindings whose scopes
+    /// have already been finalized. Most languages retain the innermost scope;
+    /// source-ordered namespace languages may reuse an existing ancestor.
+    fn binding_scope(
+        &self,
+        binding: &BindingDef,
+        _lexical_scopes: &[ScopeDef],
+        _preceding_bindings: &[BindingDef],
+    ) -> ScopeId {
+        binding.scope_id
     }
 }
 

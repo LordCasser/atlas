@@ -228,6 +228,15 @@ impl LexicalBindingSpec for RubyAdapter {
                 | ScopeKind::Block
         )
     }
+
+    fn binding_scope(
+        &self,
+        binding: &BindingDef,
+        lexical_scopes: &[ScopeDef],
+        preceding_bindings: &[BindingDef],
+    ) -> ScopeId {
+        ruby_binding_scope(binding, lexical_scopes, preceding_bindings)
+    }
 }
 
 impl DataflowSpec for RubyAdapter {
@@ -558,6 +567,61 @@ fn normalize_ruby_lexical(
     };
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
+}
+
+/// Apply Ruby's source-ordered block-local namespace rule.
+///
+/// A block assignment reuses a same-named binding already established in an
+/// ancestor lexical scope. Otherwise it introduces a block-local name. Block
+/// parameters remain block-local even when they shadow an ancestor.
+fn ruby_binding_scope(
+    binding: &BindingDef,
+    lexical_scopes: &[ScopeDef],
+    preceding_bindings: &[BindingDef],
+) -> ScopeId {
+    if binding.kind != BindingKind::Local {
+        return binding.scope_id;
+    }
+    let Some(current_scope) = lexical_scopes
+        .iter()
+        .find(|scope| scope.id == binding.scope_id)
+    else {
+        return binding.scope_id;
+    };
+    if current_scope.kind != ScopeKind::Block {
+        return binding.scope_id;
+    }
+
+    if preceding_bindings
+        .iter()
+        .any(|prior| prior.scope_id == binding.scope_id && prior.name == binding.name)
+    {
+        return binding.scope_id;
+    }
+
+    let mut ancestors: Vec<_> = lexical_scopes
+        .iter()
+        .filter(|scope| {
+            scope.id != current_scope.id
+                && scope.range.start_byte <= current_scope.range.start_byte
+                && scope.range.end_byte >= current_scope.range.end_byte
+        })
+        .collect();
+    ancestors.sort_by_key(|scope| scope.range.byte_len());
+
+    for ancestor in ancestors {
+        if preceding_bindings
+            .iter()
+            .any(|prior| prior.scope_id == ancestor.id && prior.name == binding.name)
+        {
+            return ancestor.id;
+        }
+        if !matches!(ancestor.kind, ScopeKind::Block) {
+            break;
+        }
+    }
+
+    binding.scope_id
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -1137,5 +1201,162 @@ mod tests {
                 .iter()
                 .any(|scope| scope.kind == ScopeKind::Loop)
         );
+    }
+
+    #[test]
+    fn test_block_assignments_reuse_existing_ancestors_and_keep_new_locals() {
+        let source = concat!(
+            "def transform(input)\n",
+            "  value = input\n",
+            "  1.times do\n",
+            "    value = value + 1\n",
+            "    local = value\n",
+            "    consume(value, local)\n",
+            "  end\n",
+            "  consume(value, local)\n",
+            "end\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &ruby_frontend(),
+            FileId::generate("block_namespace.rb"),
+            std::path::Path::new("block_namespace.rb"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        assert_eq!(value_bindings.len(), 1, "block write reuses method local");
+        let value_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == value_bindings[0].scope_id)
+            .expect("value scope");
+        assert_eq!(value_scope.kind, ScopeKind::Method);
+        assert!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.name == "value")
+                .all(|use_| use_.binding_id == Some(value_bindings[0].id))
+        );
+
+        let local_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "local")
+            .expect("new block local");
+        let local_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == local_binding.scope_id)
+            .expect("local scope");
+        assert_eq!(local_scope.kind, ScopeKind::Block);
+        let inner_local_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "local" && use_.range.start_line == 5)
+            .expect("inner local use");
+        assert_eq!(inner_local_use.binding_id, Some(local_binding.id));
+        let outer_local_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "local" && use_.range.start_line == 7)
+            .expect("post-block local use");
+        assert_eq!(outer_local_use.binding_id, None);
+
+        for (line, expected) in [
+            (3, Some(value_bindings[0].id)),
+            (5, Some(value_bindings[0].id)),
+        ] {
+            let node = facts
+                .data_nodes
+                .iter()
+                .find(|node| node.name.as_deref() == Some("value") && node.range.start_line == line)
+                .unwrap_or_else(|| panic!("value data node on line {line}"));
+            assert_eq!(node.binding_id, expected);
+        }
+    }
+
+    #[test]
+    fn test_block_namespace_is_source_ordered_and_parameters_shadow() {
+        let source = concat!(
+            "def scopes(input)\n",
+            "  shadow = input\n",
+            "  1.times do |shadow|\n",
+            "    shadow = shadow + 1\n",
+            "    consume(shadow)\n",
+            "  end\n",
+            "  1.times do\n",
+            "    late = input\n",
+            "    2.times do\n",
+            "      late = late + 1\n",
+            "      consume(late)\n",
+            "    end\n",
+            "  end\n",
+            "  late = input\n",
+            "  consume(late)\n",
+            "end\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &ruby_frontend(),
+            FileId::generate("ordered_blocks.rb"),
+            std::path::Path::new("ordered_blocks.rb"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut shadow_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "shadow")
+            .collect();
+        shadow_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(
+            shadow_bindings.len(),
+            2,
+            "block parameter shadows method local"
+        );
+        assert_ne!(shadow_bindings[0].scope_id, shadow_bindings[1].scope_id);
+        let shadow_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "shadow" && use_.range.start_line == 4)
+            .expect("block shadow use");
+        assert_eq!(shadow_use.binding_id, Some(shadow_bindings[1].id));
+
+        let mut late_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "late")
+            .collect();
+        late_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(
+            late_bindings.len(),
+            2,
+            "later method assignment must not retroactively capture an earlier block local"
+        );
+        assert_ne!(late_bindings[0].scope_id, late_bindings[1].scope_id);
+        let nested_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "late" && use_.range.start_line == 10)
+            .expect("nested block use");
+        assert_eq!(nested_use.binding_id, Some(late_bindings[0].id));
+        let method_use = facts
+            .binding_uses
+            .iter()
+            .find(|use_| use_.name == "late" && use_.range.start_line == 14)
+            .expect("method-local use");
+        assert_eq!(method_use.binding_id, Some(late_bindings[1].id));
     }
 }
