@@ -202,7 +202,9 @@ impl LexicalBindingSpec for CangjieAdapter {
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
             0.65,
-            vec!["parameter/local and arm-scoped match binding extraction"],
+            vec![
+                "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+            ],
         )
     }
     fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {

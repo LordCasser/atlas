@@ -1055,12 +1055,13 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
             "method call targets now captured (simple + obj.method() patterns)",
-            "match bindings are arm-scoped and shared by guard/body uses; general scope-chain-aware binding remains incomplete",
+            "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
         ],
         feature_overrides: &[
             (
@@ -1074,7 +1075,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["parameter/local and arm-scoped match binding extraction"],
+                    &[
+                        "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1091,7 +1094,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
-                        "basic use-def via lexical bindings + dataflow; match guard/body uses share arm binding identity",
+                        "scope-chain-aware use-def for parameters/simple locals; match guard/body uses share arm binding identity",
                     ],
                 ),
             ),
@@ -2876,15 +2879,16 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
                 "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
                 "method call targets now captured (simple + obj.method() patterns)",
-                "match bindings are arm-scoped and shared by guard/body uses; general scope-chain-aware binding remains incomplete",
+                "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative",
             ]
         );
 
@@ -2911,7 +2915,9 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["parameter/local and arm-scoped match binding extraction"],
+                vec![
+                    "scope-chain-aware parameter/simple-local binding with nested block shadowing and arm-scoped match captures; tuple/destructuring, for-in, and resource bindings remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -2928,7 +2934,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
-                    "basic use-def via lexical bindings + dataflow; match guard/body uses share arm binding identity"
+                    "scope-chain-aware use-def for parameters/simple locals; match guard/body uses share arm binding identity"
                 ],
             )
         );
