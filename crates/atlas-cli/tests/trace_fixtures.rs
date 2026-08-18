@@ -175,6 +175,12 @@ fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
             "func shadowCangjie(input: Int64): Int64 {\n  let value = input\n  if (input > 0) {\n    let value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
             [(1, 6), (3, 4)],
         ),
+        #[cfg(feature = "php")]
+        (
+            "scope.php",
+            "<?php\nfunction shadowPhp($input) {\n  $value = $input;\n  $callback = function () use ($input) {\n    $value = $input + 1;\n    consume($value);\n  };\n  return $value;\n}\n",
+            [(2, 7), (4, 5)],
+        ),
     ];
     assert!(
         !cases.is_empty(),
