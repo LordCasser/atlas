@@ -265,7 +265,7 @@ impl DataflowSpec for PhpAdapter {
         FeatureSupport::supported_with_limitations(
             0.62,
             vec![
-                "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), and foreach collection flow reaches direct or nested key/value targets (0.65); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable targets, compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
+                "AST-driven local dataflow; assignment destructuring conservatively flows the whole RHS to each supported nested target (0.75), foreach collection flow reaches direct or nested key/value targets (0.65), and direct file/function/method variable augmented/update expressions preserve aggregate read-modify-write provenance (0.90); anonymous-function nodes remain in the enclosing named-function materialization unit; exact key/index projection, missing-key/null behavior, reference aliases, dynamic/non-variable mutation targets, conditional-write and prefix/postfix result timing, global aliases, variable variables, and arrow-function bodies remain conservative",
             ],
         )
     }
@@ -286,7 +286,7 @@ impl DataflowSpec for PhpAdapter {
         _scopes: &[ScopeDef],
         edges: &mut Vec<DataFlowEdge>,
     ) -> anyhow::Result<()> {
-        walk_php_destructure_edges(ctx.root, pos_map, edges);
+        walk_php_assignment_edges(ctx.root, pos_map, edges);
         Ok(())
     }
 }
@@ -609,7 +609,43 @@ fn php_foreach_parts(
     Some((children.next()?, children.next()?))
 }
 
-fn walk_php_destructure_edges(
+fn connect_php_mutation_target(
+    value: tree_sitter::Node<'_>,
+    target: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let value_key = NodePosKey {
+        start_byte: value.start_byte() as u32,
+        end_byte: value.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let target_key = NodePosKey {
+        start_byte: target.start_byte() as u32,
+        end_byte: target.end_byte() as u32,
+        kind: DataNodeKind::Local,
+    };
+    let (Some(&source_id), Some(&target_id)) = (pos_map.get(&value_key), pos_map.get(&target_key))
+    else {
+        return;
+    };
+    if edges.iter().any(|edge| {
+        edge.source == source_id && edge.target == target_id && edge.kind == DataFlowKind::Assign
+    }) {
+        return;
+    }
+    let edge_id = DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+    edges.push(DataFlowEdge::new(
+        edge_id,
+        source_id,
+        target_id,
+        DataFlowKind::Assign,
+        node_range(target),
+        0.90,
+    ));
+}
+
+fn walk_php_assignment_edges(
     node: tree_sitter::Node<'_>,
     pos_map: &HashMap<NodePosKey, DataNodeId>,
     edges: &mut Vec<DataFlowEdge>,
@@ -628,9 +664,18 @@ fn walk_php_destructure_edges(
         connect_php_destructure_targets(collection, value, 0.65, pos_map, edges);
     }
 
+    let mutation_target = match node.kind() {
+        "augmented_assignment_expression" => node.child_by_field_name("left"),
+        "update_expression" => node.child_by_field_name("argument"),
+        _ => None,
+    };
+    if let Some(target) = mutation_target.filter(|target| target.kind() == "variable_name") {
+        connect_php_mutation_target(node, target, pos_map, edges);
+    }
+
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        walk_php_destructure_edges(child, pos_map, edges);
+        walk_php_assignment_edges(child, pos_map, edges);
     }
 }
 
@@ -665,7 +710,10 @@ fn normalize_php_dataflow_builder(
                 )
             })
             .unwrap_or((None, None)),
-        "df.assign_target" | "df.foreach_target" | "df.destructure_target" => {
+        "df.assign_target"
+        | "df.foreach_target"
+        | "df.destructure_target"
+        | "df.mutation_target" => {
             if capture_name == "df.destructure_target" && !is_php_list_destructure_target(node) {
                 return (None, None);
             }
@@ -687,17 +735,19 @@ fn normalize_php_dataflow_builder(
                 })
                 .unwrap_or((None, None))
         }
-        "df.assign_value" | "df.destructure_value" | "df.foreach_value" => make_df_assign_value(
-            file_id,
-            node,
-            source,
-            range,
-            &[
-                "function_call_expression",
-                "member_call_expression",
-                "object_creation_expression",
-            ],
-        ),
+        "df.assign_value" | "df.destructure_value" | "df.foreach_value" | "df.mutation_value" => {
+            make_df_assign_value(
+                file_id,
+                node,
+                source,
+                range,
+                &[
+                    "function_call_expression",
+                    "member_call_expression",
+                    "object_creation_expression",
+                ],
+            )
+        }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => node_text(node, source)
             .map(|raw_name| {
@@ -868,27 +918,29 @@ fn normalize_php_dataflow_builder(
                 })
                 .unwrap_or((None, None))
         }
-        "df.identifier_use" => {
-            // Filter out declaration contexts and superglobals
-            if !is_php_list_destructure_key_read(node)
-                && crate::languages::shared::is_identifier_decl_or_property(
-                    node,
-                    &["namespace_use_clause", "use_declaration"],
-                )
-            {
-                return (None, None);
-            }
-            // Skip left-hand side of assignment (already captured as df.assign_target)
-            if let Some(parent) = node.parent()
-                && parent.kind() == "assignment_expression"
-                && parent
-                    .child_by_field_name("left")
-                    .is_some_and(|n| n.id() == node.id())
-            {
-                return (None, None);
-            }
-            if is_php_list_destructure_target(node) || is_php_foreach_binding_target(node) {
-                return (None, None);
+        "df.identifier_use" | "df.mutation_read" => {
+            if capture_name == "df.identifier_use" {
+                // Filter out declaration contexts and superglobals
+                if !is_php_list_destructure_key_read(node)
+                    && crate::languages::shared::is_identifier_decl_or_property(
+                        node,
+                        &["namespace_use_clause", "use_declaration"],
+                    )
+                {
+                    return (None, None);
+                }
+                // Skip left-hand side of assignment (already captured as df.assign_target)
+                if let Some(parent) = node.parent()
+                    && parent.kind() == "assignment_expression"
+                    && parent
+                        .child_by_field_name("left")
+                        .is_some_and(|n| n.id() == node.id())
+                {
+                    return (None, None);
+                }
+                if is_php_list_destructure_target(node) || is_php_foreach_binding_target(node) {
+                    return (None, None);
+                }
             }
             // Skip superglobals (already captured as df.superglobal)
             let text = node_text(node, source).unwrap_or_default();
@@ -1270,6 +1322,96 @@ function f($req) {
         for target in ["direct_key", "direct_value"] {
             assert_flow("$rows", 12, target, 0.65);
         }
+    }
+
+    #[test]
+    fn test_variable_mutations_preserve_read_modify_write_provenance() {
+        let source = concat!(
+            "<?php\n",
+            "function mutate($seed, $delta) {\n",
+            "    $total = $seed;\n",
+            "    $total += $delta;\n",
+            "    $total++;\n",
+            "    --$total;\n",
+            "    $items[0] += $delta;\n",
+            "    $items[1]++;\n",
+            "    return $total;\n",
+            "}\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &php_frontend(),
+            FileId::generate("variable_mutations.php"),
+            std::path::Path::new("variable_mutations.php"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let total_binding = {
+            let matches: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "total")
+                .collect();
+            assert_eq!(matches.len(), 1, "same-namespace writes must coalesce");
+            matches[0]
+        };
+        let delta_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "delta")
+            .expect("delta parameter binding");
+
+        let node = |kind: DataNodeKind, name: &str, line: u32| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} on line {line}"))
+        };
+        for (line, expression) in [(3, "$total += $delta"), (4, "$total++"), (5, "--$total")] {
+            let target = node(DataNodeKind::Local, "total", line);
+            let value = node(DataNodeKind::Expr, expression, line);
+            let lhs_read = node(DataNodeKind::VariableUse, "total", line);
+            assert_eq!(target.binding_id, Some(total_binding.id));
+            assert_eq!(lhs_read.binding_id, Some(total_binding.id));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == value.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.90
+            }));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == lhs_read.id
+                    && edge.target == value.id
+                    && edge.kind == DataFlowKind::Read
+                    && edge.confidence == 0.75
+            }));
+        }
+
+        let rhs_read = node(DataNodeKind::VariableUse, "delta", 3);
+        let compound_value = node(DataNodeKind::Expr, "$total += $delta", 3);
+        assert_eq!(rhs_read.binding_id, Some(delta_binding.id));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == rhs_read.id
+                && edge.target == compound_value.id
+                && edge.kind == DataFlowKind::Read
+                && edge.confidence == 0.75
+        }));
+
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                !(matches!(node.kind, DataNodeKind::Local | DataNodeKind::Expr)
+                    && matches!(node.range.start_line, 6 | 7))
+            }),
+            "subscript mutations remain outside the variable-only boundary"
+        );
     }
 
     #[test]

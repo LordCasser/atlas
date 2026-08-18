@@ -10,6 +10,21 @@
   left: (variable_name) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+;; Capture the whole expression as the produced value so containment edges
+;; retain both the previous target value and an augmented-assignment RHS.
+(augmented_assignment_expression
+  left: (variable_name) @df.mutation_target) @df.mutation_value
+
+(augmented_assignment_expression
+  left: (variable_name) @df.mutation_read)
+
+(update_expression
+  argument: (variable_name) @df.mutation_target) @df.mutation_value
+
+(update_expression
+  argument: (variable_name) @df.mutation_read)
+
 ;; --- Array destructuring ([] and list()) ---
 (list_literal
   (variable_name) @df.destructure_target)
