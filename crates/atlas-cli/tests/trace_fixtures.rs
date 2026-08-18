@@ -151,6 +151,24 @@ fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
             "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
             [(3, 4), (6, 7)],
         ),
+        #[cfg(feature = "go")]
+        (
+            "scope.go",
+            "package scope\n\nfunc shadowGo(input int) int {\n  value := input\n  if input > 0 {\n    value := input + 1\n    consume(value)\n  }\n  return value\n}\n",
+            [(3, 8), (5, 6)],
+        ),
+        #[cfg(feature = "rust")]
+        (
+            "scope.rs",
+            "fn shadow_rust(input: i32) -> i32 {\n  let value = input;\n  if input > 0 {\n    let value = input + 1;\n    consume(value);\n  }\n  value\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "kotlin")]
+        (
+            "ScopeKotlin.kt",
+            "fun shadowKotlin(input: Int): Int {\n  val value = input\n  if (input > 0) {\n    val value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
+            [(1, 6), (3, 4)],
+        ),
     ];
     assert!(
         !cases.is_empty(),

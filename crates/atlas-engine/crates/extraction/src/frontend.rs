@@ -655,6 +655,30 @@ mod tests {
                 "value",
                 [(3, 4), (6, 7)],
             ),
+            #[cfg(feature = "go")]
+            (
+                "scope.go",
+                Language::Go,
+                "package scope\n\nfunc shadowGo(input int) int {\n  value := input\n  if input > 0 {\n    value := input + 1\n    consume(value)\n  }\n  return value\n}\n",
+                "value",
+                [(3, 8), (5, 6)],
+            ),
+            #[cfg(feature = "rust")]
+            (
+                "scope.rs",
+                Language::Rust,
+                "fn shadow_rust(input: i32) -> i32 {\n  let value = input;\n  if input > 0 {\n    let value = input + 1;\n    consume(value);\n  }\n  value\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "kotlin")]
+            (
+                "ScopeKotlin.kt",
+                Language::Kotlin,
+                "fun shadowKotlin(input: Int): Int {\n  val value = input\n  if (input > 0) {\n    val value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
         ];
 
         for (path, language, source, name, declaration_and_use_lines) in cases {

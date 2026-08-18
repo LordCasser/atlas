@@ -1412,6 +1412,24 @@ fn scope_chain_language_parity_cases() -> Vec<(&'static str, &'static str, &'sta
             "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
             "shadowJava",
         ),
+        #[cfg(feature = "go")]
+        (
+            "scope.go",
+            "package scope\n\nfunc shadowGo(input int) int {\n  value := input\n  if input > 0 {\n    value := input + 1\n    consume(value)\n  }\n  return value\n}\n",
+            "shadowGo",
+        ),
+        #[cfg(feature = "rust")]
+        (
+            "scope.rs",
+            "fn shadow_rust(input: i32) -> i32 {\n  let value = input;\n  if input > 0 {\n    let value = input + 1;\n    consume(value);\n  }\n  value\n}\n",
+            "shadow_rust",
+        ),
+        #[cfg(feature = "kotlin")]
+        (
+            "ScopeKotlin.kt",
+            "fun shadowKotlin(input: Int): Int {\n  val value = input\n  if (input > 0) {\n    val value = input + 1\n    consume(value)\n  }\n  return value\n}\n",
+            "shadowKotlin",
+        ),
     ]
 }
 
