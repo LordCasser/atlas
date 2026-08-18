@@ -945,7 +945,7 @@ type CfgEdgeKey = (CfgNodeKey, CfgNodeKey, String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UnitDataflowSlice {
     nodes: Vec<(String, String, u32, u32)>, // kind, name, start, end
-    edges: Vec<(usize, usize, String)>,     // indices into sorted nodes + kind
+    edges: Vec<(usize, usize, String, u64)>, // node indices + kind + confidence bits
     cfg_nodes: Vec<CfgNodeKey>,             // kind, start, end
     cfg_edges: Vec<CfgEdgeKey>,
 }
@@ -989,7 +989,7 @@ fn unit_dataflow_slice(store: &Store, fn_id: &atlas_engine::SymbolId) -> UnitDat
             let Some(tgt) = tgt else { continue };
             let tgt_key = key_of(tgt);
             if let (Some(&si), Some(&ti)) = (key_to_idx.get(&src_key), key_to_idx.get(&tgt_key)) {
-                edges.push((si, ti, e.kind.as_str().to_string()));
+                edges.push((si, ti, e.kind.as_str().to_string(), e.confidence.to_bits()));
             }
         }
     }
@@ -2006,6 +2006,147 @@ fn n5_focus_go_mixed_short_declaration_matches_index_full() {
         unit_binding_slice(&focused_store, &mixed),
         indexed_bindings,
         "Go mixed declaration bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Go unit must stay outside the Focus window"
+    );
+}
+
+/// Go select receive declarations live in the communication clause's implicit
+/// block. Full Index and Focus must agree on `:=` shadowing, `=` reuse, blank
+/// filtering, receive provenance confidence, and CFG/dataflow identity.
+#[cfg(feature = "go")]
+#[test]
+fn n5_focus_go_select_receive_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "select_receive.go",
+            "package p\n\
+             \n\
+             func choose(events <-chan int, existing int) int {\n\
+             \x20 select {\n\
+             \x20 case value, ok := <-events:\n\
+             \x20   consume(value, ok)\n\
+             \x20 case existing = <-events:\n\
+             \x20   consume(existing)\n\
+             \x20 case existing, open := <-events:\n\
+             \x20   consume(existing, open)\n\
+             \x20 case _, received := <-events:\n\
+             \x20   consume(received)\n\
+             \x20 default:\n\
+             \x20   consume(existing)\n\
+             \x20 }\n\
+             \x20 return existing\n\
+             }\n",
+        ),
+        ("peer.go", "package p\nfunc unrelated() int { return 42 }\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_choose = symbol_id_by_name(&indexed_store, "choose");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_choose);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_choose);
+
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "existing")
+            .count(),
+        2,
+        "parameter plus one clause-local shadow; the `=` case must not declare"
+    );
+    for name in ["value", "ok", "open", "received"] {
+        assert_eq!(
+            indexed_bindings
+                .iter()
+                .filter(|binding| binding.1 == name)
+                .count(),
+            1,
+            "full Index binding for {name}"
+        );
+    }
+    assert!(indexed_bindings.iter().all(|binding| binding.1 != "_"));
+
+    let receive_offsets: Vec<u32> = FIXTURE[0]
+        .1
+        .match_indices("<-events")
+        .map(|(offset, _)| offset as u32)
+        .collect();
+    assert_eq!(receive_offsets.len(), 4);
+    for (source_start, targets) in receive_offsets.into_iter().zip([
+        &["value", "ok"][..],
+        &["existing"][..],
+        &["existing", "open"][..],
+        &["received"][..],
+    ]) {
+        let source = indexed_slice
+            .nodes
+            .iter()
+            .position(|node| {
+                node.0 == DataNodeKind::Expr.as_str()
+                    && node.1 == "<-events"
+                    && node.2 == source_start
+            })
+            .unwrap_or_else(|| panic!("full Index receive source at byte {source_start}"));
+        for target_name in targets {
+            let target = indexed_slice
+                .nodes
+                .iter()
+                .position(|node| {
+                    node.0 == DataNodeKind::Local.as_str()
+                        && node.1 == *target_name
+                        && node.2 < source_start
+                        && source_start - node.2 < 32
+                })
+                .unwrap_or_else(|| panic!("full Index receive target {target_name}"));
+            assert!(indexed_slice.edges.iter().any(|edge| {
+                edge.0 == source
+                    && edge.1 == target
+                    && edge.2 == DataFlowKind::Assign.as_str()
+                    && edge.3 == 0.78f64.to_bits()
+            }));
+        }
+    }
+    assert!(indexed_slice.nodes.iter().all(|node| node.1 != "_"));
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let choose = symbol_id_by_name(&focused_store, "choose");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&choose)
+            .unwrap()
+            .is_empty(),
+        "select receive unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&choose, Some("go-select-receive-parity"))
+        .expect("Focus ensure Go select receive");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &choose),
+        indexed_slice,
+        "Go select receive dataflow/CFG/confidence: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &choose),
+        indexed_bindings,
+        "Go select receive bindings: Focus ensure == Index full"
     );
     assert!(
         focused_store

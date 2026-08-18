@@ -4677,6 +4677,118 @@ func stringify(v any) string {
     assert_source_name(&path, "v");
 }
 
+/// A select receive clause persists identifier declarations in its implicit
+/// block and connects the receive operation to both `:=` and `=` targets.
+#[test]
+#[cfg(feature = "go")]
+fn fx_go_select_receive_bindings_persist_and_trace_from_channel() {
+    let source = r#"package p
+
+func choose(events <-chan int, existing int) int {
+	select {
+	case value, ok := <-events:
+		consume(value, ok)
+	case existing = <-events:
+		consume(existing)
+	default:
+		consume(existing)
+	}
+	return existing
+}
+"#;
+    let store = index_files(&[("select_receive.go", source)]);
+    let file_id = FileId::generate("select_receive.go");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Go select receive bindings");
+    let existing = bindings
+        .iter()
+        .find(|binding| binding.name == "existing")
+        .expect("existing parameter binding");
+    assert_eq!(existing.kind.as_str(), "parameter");
+    assert_eq!(
+        bindings
+            .iter()
+            .filter(|binding| binding.name == "existing")
+            .count(),
+        1,
+        "the `=` receive target must reuse the parameter binding"
+    );
+    let value = bindings
+        .iter()
+        .find(|binding| binding.name == "value")
+        .expect("value receive binding");
+    let ok = bindings
+        .iter()
+        .find(|binding| binding.name == "ok")
+        .expect("ok receive binding");
+    assert_eq!(value.scope_id, ok.scope_id);
+    assert!(bindings.iter().all(|binding| binding.name != "_"));
+
+    let nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let ids = nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+    let edges = store
+        .find_dataflow_edges_by_sources(&ids)
+        .expect("persisted receive edges");
+    let expected_targets = [
+        (4, "value", value.id),
+        (4, "ok", ok.id),
+        (6, "existing", existing.id),
+    ];
+    for (line, name, binding_id) in expected_targets {
+        let receive = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("<-events")
+                    && node.range.start_line == line
+            })
+            .expect("persisted receive source");
+        let target = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some(name)
+                    && node.range.start_line == line
+            })
+            .expect("persisted receive target");
+        assert_eq!(target.binding_id, Some(binding_id));
+        assert!(edges.iter().any(|edge| {
+            edge.source == receive.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+                && (edge.confidence - 0.78).abs() < f64::EPSILON
+        }));
+
+        if name != "existing" {
+            let engine = TraceEngine::new(store.clone());
+            let response = engine.trace_variable(
+                &file_id,
+                target.range.start_line + 1,
+                target.range.start_column + 1,
+                20,
+            );
+            assert_envelope_ok(&response, "go");
+            let path = response.result.expect("select receive trace path");
+            assert_has_edge_kind(&path, DataFlowKind::Assign);
+            assert_source_name(&path, "events");
+        }
+    }
+
+    for (line, name, binding_id) in [
+        (5, "value", value.id),
+        (5, "ok", ok.id),
+        (7, "existing", existing.id),
+    ] {
+        assert!(nodes.iter().any(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some(name)
+                && node.range.start_line == line
+                && node.binding_id == Some(binding_id)
+        }));
+    }
+}
+
 // ── C# ──────────────────────────────────────────────────────────────
 
 #[test]
