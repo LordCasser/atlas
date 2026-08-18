@@ -163,7 +163,16 @@ All notable changes to Atlas will be documented in this file.
   their own identity. A later outer assignment does not retroactively capture
   an earlier block local; numbered parameters remain an explicit boundary.
 
-### PHP control flow
+### PHP dataflow and control flow
+
+- Extract `[]` and `list()` nested, keyed, and by-reference destructuring
+  targets into the callable namespace for assignment and `foreach`. Key
+  expressions remain reads. Assignment conservatively flows the whole RHS to
+  every supported target at confidence 0.75; `foreach` flows the collection to
+  direct and nested key/value targets at 0.65. SQLite Trace and Focus-vs-full-
+  Index fixtures cover persisted identity and flow. Exact key/index projection,
+  missing-key/null behavior, reference-alias semantics, and dynamic or
+  non-variable targets remain explicit boundaries.
 
 - Model extracted PHP variables in file/function namespaces instead of
   structural `if`/loop/block scopes. Foreach collection expressions are no
@@ -174,8 +183,8 @@ All notable changes to Atlas will be documented in this file.
   anonymous-function captures now use scope-chain identity; unresolved names
   stop at function/method boundaries. Anonymous-function dataflow remains in
   the enclosing named-function materialization unit. Global aliases, variable
-  variables, nested destructuring, compound/update assignment edges, and
-  arrow-function ownership remain conservative.
+  variables, compound/update assignment edges, and arrow-function ownership
+  remain conservative.
 - Resolve direct same-function PHP `goto` to standalone label `Join` targets
   through deterministic persisted `Goto` edges.
 - Execute every intervening path-isolated `finally` clone from inner to outer;

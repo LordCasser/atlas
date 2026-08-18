@@ -73,6 +73,12 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   value flows conservatively to every alias and the guard alias token is not a
   read. Case-type projection, function-literal ownership, select receive-clause
   flow, and parallel-assignment evaluation order remain conservative.
+- PHP `[]` and `list()` assignment/`foreach` destructuring produces callable-
+  scoped bindings for nested, keyed, and by-reference variable targets. Key
+  expressions remain reads. The whole RHS or collection flows conservatively
+  to each supported target; exact key/index projection, missing-key/null
+  behavior, reference-alias semantics, and dynamic/non-variable targets remain
+  explicit boundaries.
 - Ruby local targets in flat, nested, and rest multiple assignment participate
   in the same source-ordered method/module/class/block namespace as simple
   assignments. Explicit RHS lists map by top-level position; a single aggregate
