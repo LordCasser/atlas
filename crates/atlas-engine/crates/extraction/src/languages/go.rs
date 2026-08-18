@@ -703,15 +703,15 @@ fn go_binding_scope(
         return binding.scope_id;
     };
 
-    preceding_bindings
-        .iter()
-        .any(|prior| {
-            prior.kind == BindingKind::Parameter
-                && prior.scope_id == callable_scope.id
-                && prior.name == binding.name
-        })
-        .then_some(callable_scope.id)
-        .unwrap_or(binding.scope_id)
+    if preceding_bindings.iter().any(|prior| {
+        prior.kind == BindingKind::Parameter
+            && prior.scope_id == callable_scope.id
+            && prior.name == binding.name
+    }) {
+        callable_scope.id
+    } else {
+        binding.scope_id
+    }
 }
 
 fn go_enclosing_local_declaration(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
