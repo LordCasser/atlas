@@ -2547,6 +2547,97 @@ fn n5_focus_cangjie_match_binding_dataflow_matches_index_full() {
     );
 }
 
+/// Cangjie simple for-in targets must retain one loop-scoped binding, aggregate
+/// iterable provenance, and post-loop restoration of an outer same-name value.
+/// Focus must materialize the same unit as a full Index without warming peers.
+#[cfg(feature = "cangjie")]
+#[test]
+fn n5_focus_cangjie_simple_for_in_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "for_in.cj",
+            "func select(values: Array<Int64>, value: Int64): Int64 {\n\
+             \x20 for (value in values where value > 0) {\n\
+             \x20   consume(value)\n\
+             \x20 }\n\
+             \x20 return value\n\
+             }\n",
+        ),
+        ("peer.cj", "func unrelated(): Int64 {\n    return 42\n}\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_select = symbol_id_by_name(&indexed_store, "select");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_select);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_select);
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "value")
+            .count(),
+        1,
+        "full Index must retain the simple for-in Local target"
+    );
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.1 == "value")
+            .count(),
+        2,
+        "full Index must retain outer and loop-scoped value bindings"
+    );
+    assert!(
+        indexed_slice
+            .edges
+            .iter()
+            .any(|edge| edge.2 == DataFlowKind::Assign.as_str())
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let select = symbol_id_by_name(&focused_store, "select");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&select)
+            .unwrap()
+            .is_empty(),
+        "Cangjie for-in unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&select, Some("cangjie-for-in-parity"))
+        .expect("Focus ensure Cangjie for-in");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &select),
+        indexed_slice,
+        "Cangjie for-in dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &select),
+        indexed_bindings,
+        "Cangjie for-in bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated Cangjie unit must stay outside the Focus window"
+    );
+}
+
 /// Rust match captures and guard/body identity must produce the same
 /// dataflow/CFG facts through Focus as through a full Index.
 #[cfg(feature = "rust")]

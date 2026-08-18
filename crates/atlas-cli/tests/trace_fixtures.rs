@@ -5322,6 +5322,139 @@ func dispatch(value: Result): Int64 {
 }
 
 #[test]
+#[cfg(feature = "cangjie")]
+fn fx_cangjie_simple_for_in_binding_persists_and_traces_from_iterable() {
+    let source = r#"func select(values: Array<Int64>, value: Int64): Int64 {
+    for (value in values where value > 0) {
+        consume(value)
+    }
+    return value
+}
+"#;
+    let store = index_files(&[("for_in.cj", source)]);
+    let file_id = FileId::generate("for_in.cj");
+    let mut value_bindings: Vec<_> = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Cangjie bindings")
+        .into_iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    value_bindings.sort_by_key(|binding| binding.range.start_byte);
+    assert_eq!(value_bindings.len(), 2);
+    let outer = &value_bindings[0];
+    let iteration = &value_bindings[1];
+    assert_eq!(outer.kind, atlas_engine::BindingKind::Parameter);
+    assert_eq!(iteration.kind, atlas_engine::BindingKind::Local);
+    assert_ne!(outer.id, iteration.id);
+    assert_ne!(outer.scope_id, iteration.scope_id);
+    assert_eq!(outer.function_id, iteration.function_id);
+
+    let outer_uses = store
+        .find_binding_uses_by_binding(&outer.id)
+        .expect("outer value uses");
+    let iteration_uses = store
+        .find_binding_uses_by_binding(&iteration.id)
+        .expect("iteration value uses");
+    assert!(outer_uses.iter().any(|use_| use_.range.start_line == 4));
+    assert!(!outer_uses.iter().any(|use_| use_.range.start_line == 2));
+    assert!(iteration_uses.iter().any(|use_| use_.range.start_line == 1));
+    assert!(iteration_uses.iter().any(|use_| use_.range.start_line == 2));
+    assert!(!iteration_uses.iter().any(|use_| use_.range.start_line == 4));
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let target = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 1
+        })
+        .expect("persisted for-in Local target");
+    let iterable = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("values")
+                && node.range.start_line == 1
+        })
+        .expect("persisted for-in iterable");
+    assert_eq!(target.binding_id, Some(iteration.id));
+    assert!(
+        store
+            .find_dataflow_edges_by_source(&iterable.id)
+            .expect("persisted iterable edges")
+            .iter()
+            .any(|edge| {
+                edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && edge.confidence == 0.65
+            })
+    );
+
+    let body_sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 2
+        })
+        .expect("for-in body value use");
+    let post_loop_sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 4
+        })
+        .expect("post-loop outer value use");
+    assert_eq!(body_sink.binding_id, Some(iteration.id));
+    assert_eq!(post_loop_sink.binding_id, Some(outer.id));
+
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        body_sink.range.start_line + 1,
+        body_sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "cangjie");
+    let path = response.result.expect("Cangjie for-in body trace path");
+    assert_eq!(
+        path.sink
+            .binding_use
+            .as_ref()
+            .and_then(|use_| use_.binding_id),
+        Some(iteration.id)
+    );
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "values");
+
+    let response = engine.trace_variable(
+        &file_id,
+        post_loop_sink.range.start_line + 1,
+        post_loop_sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "cangjie");
+    let path = response.result.expect("Cangjie post-loop outer trace path");
+    assert_eq!(
+        path.sink
+            .binding_use
+            .as_ref()
+            .and_then(|use_| use_.binding_id),
+        Some(outer.id)
+    );
+    assert_eq!(
+        path.source
+            .data_node
+            .as_ref()
+            .map(|node| node.kind.as_str()),
+        Some(DataNodeKind::Parameter.as_str())
+    );
+    assert_source_name(&path, "value");
+}
+
+#[test]
 #[cfg(feature = "rust")]
 fn fx_rust_match_bindings_persist_and_trace_from_scrutinee() {
     let source = r#"enum Result {
