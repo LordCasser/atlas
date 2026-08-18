@@ -73,11 +73,16 @@ All notable changes to Atlas will be documented in this file.
 
 ### Kotlin dataflow
 
+- Preserve distinct `BindingId` values for same-name Kotlin locals in nested
+  control scopes. Extraction, SQLite Trace, and Focus-vs-full-Index fixtures
+  prove that an inner read resolves the inner declaration while a later read
+  resolves the outer declaration; smart-cast and definite-assignment semantics
+  remain conservative.
 - Model `when (val V = E)` as initializer-to-subject assignment dataflow and
   resolve condition, guard, and body uses to the same scoped binding identity.
   Extraction, SQLite trace, and Focus-vs-full-Index parity fixtures cover the
-  boundary; smart-cast, type/range condition projection, and guard control
-  dependencies remain conservative.
+  boundary; smart-cast, definite-assignment, type/range condition projection,
+  and guard control dependencies remain conservative.
 - Treat unresolved callsites as absent from resolved-callsite lookups instead
   of decoding nullable symbol IDs as query errors. Trace consumers therefore
   retain the same success envelope when a Kotlin initializer calls an external
