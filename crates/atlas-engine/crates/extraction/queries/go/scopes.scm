@@ -26,4 +26,18 @@
 (type_switch_statement
   (default_case) @scope.type_switch_clause)
 
+;; Every switch/select clause is an implicit lexical block in Go, including
+;; ordinary expression cases and communication cases.
+(expression_switch_statement
+  (expression_case) @scope.switch_clause)
+
+(expression_switch_statement
+  (default_case) @scope.switch_clause)
+
 (select_statement) @scope.conditional
+
+(select_statement
+  (communication_case) @scope.switch_clause)
+
+(select_statement
+  (default_case) @scope.switch_clause)

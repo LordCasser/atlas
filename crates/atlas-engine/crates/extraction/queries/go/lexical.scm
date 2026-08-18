@@ -19,7 +19,8 @@
 (for_statement
   (range_clause
     left: (expression_list
-      (identifier) @lexical.local)))
+      (identifier) @lexical.local)
+    ":="))
 
 ;; A type-switch alias is declared separately in the implicit block of every
 ;; clause. The adapter turns each captured clause into one synthetic binding

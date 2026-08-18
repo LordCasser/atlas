@@ -132,7 +132,9 @@ fn normalize_go_scope(
         "scope.function" => ScopeKind::Function,
         "scope.method" => ScopeKind::Method,
         "scope.block" => ScopeKind::Block,
-        "scope.conditional" | "scope.type_switch_clause" => ScopeKind::Conditional,
+        "scope.conditional" | "scope.switch_clause" | "scope.type_switch_clause" => {
+            ScopeKind::Conditional
+        }
         "scope.loop" => ScopeKind::Loop,
         _ => return None,
     };
@@ -214,7 +216,7 @@ impl LexicalBindingSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "scope-chain-aware binding; type-switch aliases are clause-local, while short declarations with mixed new/existing names remain conservative",
+                "scope-chain-aware binding with clause-local switch/select namespaces and same-block mixed short-declaration identity",
             ],
         )
     }
@@ -222,8 +224,25 @@ impl LexicalBindingSpec for GoAdapter {
         normalize_go_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
 
+    fn binding_use_query(&self) -> &str {
+        "((identifier) @binding.use (#not-eq? @binding.use \"_\"))"
+    }
+
     fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
         !is_go_type_switch_alias_identifier(node)
+    }
+
+    fn coalesce_same_scope_bindings(&self) -> bool {
+        true
+    }
+
+    fn binding_scope(
+        &self,
+        binding: &BindingDef,
+        lexical_scopes: &[ScopeDef],
+        preceding_bindings: &[BindingDef],
+    ) -> ScopeId {
+        go_binding_scope(binding, lexical_scopes, preceding_bindings)
     }
 }
 
@@ -235,7 +254,7 @@ impl DataflowSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "AST-driven local dataflow; type-switch guard values flow to clause-local aliases, while case-type projection and mixed short-declaration identity remain conservative",
+                "AST-driven local dataflow with clause-local type-switch aliases and same-block mixed short-declaration identity; case-type projection remains conservative",
             ],
         )
     }
@@ -631,6 +650,9 @@ fn normalize_go_lexical(
             .filter(|parent| parent.kind() == "type_switch_statement")?;
         let alias = go_type_switch_alias_identifier(type_switch)?;
         let name = node_text(alias, source)?;
+        if name == "_" {
+            return None;
+        }
         return Some(make_binding_def(
             file_id,
             BindingKind::Local,
@@ -640,8 +662,73 @@ fn normalize_go_lexical(
     }
     let kind = go_binding_kind(capture_name)?;
     let name = node_text(node, source)?;
+    if name == "_" {
+        return None;
+    }
     let range = node_range(node);
-    Some(make_binding_def(file_id, kind, name, range))
+    let mut binding = make_binding_def(file_id, kind, name, range);
+    if let Some(declaration) = go_enclosing_local_declaration(node) {
+        binding.visible_from_byte = declaration.end_byte() as u32;
+    }
+    Some(binding)
+}
+
+/// Go short declarations reuse an earlier binding only in the same block.
+/// Parameters are the one language-level exception: the function body may
+/// redeclare them through a mixed short declaration. Atlas keeps the explicit
+/// body block as a structural scope, so remap that valid redeclaration to the
+/// enclosing callable namespace before same-scope bindings are coalesced.
+fn go_binding_scope(
+    binding: &BindingDef,
+    lexical_scopes: &[ScopeDef],
+    preceding_bindings: &[BindingDef],
+) -> ScopeId {
+    if binding.kind != BindingKind::Local {
+        return binding.scope_id;
+    }
+    let Some(current_scope) = lexical_scopes
+        .iter()
+        .find(|scope| scope.id == binding.scope_id)
+    else {
+        return binding.scope_id;
+    };
+    if current_scope.kind != ScopeKind::Block {
+        return binding.scope_id;
+    }
+    let Some(callable_scope) = current_scope.parent_id.and_then(|parent_id| {
+        lexical_scopes.iter().find(|scope| {
+            scope.id == parent_id && matches!(scope.kind, ScopeKind::Function | ScopeKind::Method)
+        })
+    }) else {
+        return binding.scope_id;
+    };
+
+    preceding_bindings
+        .iter()
+        .any(|prior| {
+            prior.kind == BindingKind::Parameter
+                && prior.scope_id == callable_scope.id
+                && prior.name == binding.name
+        })
+        .then_some(callable_scope.id)
+        .unwrap_or(binding.scope_id)
+}
+
+fn go_enclosing_local_declaration(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if matches!(
+            parent.kind(),
+            "short_var_declaration" | "var_spec" | "range_clause"
+        ) {
+            return Some(parent);
+        }
+        if parent.kind() != "expression_list" {
+            return None;
+        }
+        current = parent.parent();
+    }
+    None
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -655,7 +742,9 @@ fn normalize_go_dataflow_builder(
     use types::ids::DataNodeId;
     let range = node_range(node);
     match capture_name {
+        "df.parameter" if node_text(node, source).as_deref() == Some("_") => (None, None),
         "df.parameter" => make_df_parameter(file_id, node, source, range),
+        "df.assign_target" if node_text(node, source).as_deref() == Some("_") => (None, None),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
@@ -676,6 +765,9 @@ fn normalize_go_dataflow_builder(
             let Some(name) = node_text(alias, source) else {
                 return (None, None);
             };
+            if name == "_" {
+                return (None, None);
+            }
             let binding_range = go_type_switch_clause_binding_range(node);
             let node_id = DataNodeId::generate(
                 &file_id,
@@ -757,7 +849,9 @@ fn normalize_go_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
-            if is_go_type_switch_alias_identifier(node) {
+            if node_text(node, source).as_deref() == Some("_")
+                || is_go_type_switch_alias_identifier(node)
+            {
                 return (None, None);
             }
             if crate::languages::shared::is_identifier_decl_or_property(
@@ -1062,6 +1156,254 @@ func dispatch(value any) any {
                     && edge.kind == DataFlowKind::Assign
             }));
         }
+    }
+
+    #[test]
+    fn test_mixed_short_declarations_reuse_only_same_block_bindings() {
+        let source = r#"package p
+func mixed(input int) int {
+	input, extra := input + 1, 2
+	extra, value := extra + 1, input
+	if input > 0 {
+		value, nested := value + 1, input
+		consume(value, nested)
+	}
+	switch input {
+	case 0:
+		value, zero, _ := value + 2, input, input
+		consume(value, zero)
+	default:
+		value, fallback := value + 3, input
+		consume(value, fallback)
+	}
+	consume(input, extra, value)
+	return value
+}
+"#;
+        let file_id = FileId::generate("mixed_short.go");
+        let facts = crate::extract_file_with_mode(
+            &go_frontend(),
+            file_id,
+            std::path::Path::new("mixed_short.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let input = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "input")
+            .expect("parameter binding");
+        assert_eq!(input.kind, BindingKind::Parameter);
+        assert_eq!(
+            facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "input")
+                .count(),
+            1,
+            "function-body mixed declaration must reuse the parameter"
+        );
+
+        let extra = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "extra")
+            .expect("same-block local binding");
+        assert_eq!(extra.range.start_line, 2);
+        assert_eq!(
+            facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "extra")
+                .count(),
+            1,
+            "later mixed declaration must reuse the earlier same-block local"
+        );
+
+        let mut values: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        values.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(
+            values
+                .iter()
+                .map(|binding| binding.range.start_line)
+                .collect::<Vec<_>>(),
+            vec![3, 5, 10, 13],
+            "body, nested block, and sibling switch clauses need distinct identities"
+        );
+        assert_eq!(
+            values
+                .iter()
+                .map(|binding| binding.scope_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+
+        for (use_line, binding) in [
+            (6, values[1]),
+            (11, values[2]),
+            (14, values[3]),
+            (16, values[0]),
+        ] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "value"
+                    && use_.range.start_line == use_line
+                    && use_.binding_id == Some(binding.id)
+            }));
+        }
+
+        for declaration_line in [5, 10, 13] {
+            assert!(
+                facts.data_nodes.iter().any(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some("value")
+                        && node.range.start_line == declaration_line
+                        && node.range.start_column > 15
+                        && node.binding_id == Some(values[0].id)
+                }),
+                "line {declaration_line}: initializer must still read the outer value"
+            );
+        }
+
+        assert!(facts.data_nodes.iter().any(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("input")
+                && node.range.start_line == 2
+                && node.binding_id == Some(input.id)
+        }));
+        assert!(facts.data_nodes.iter().any(|node| {
+            node.kind == DataNodeKind::Local
+                && node.name.as_deref() == Some("extra")
+                && node.range.start_line == 3
+                && node.binding_id == Some(extra.id)
+        }));
+        assert!(!facts.bindings.iter().any(|binding| binding.name == "_"));
+        assert!(!facts.binding_uses.iter().any(|use_| use_.name == "_"));
+        assert!(
+            !facts
+                .data_nodes
+                .iter()
+                .any(|node| node.name.as_deref() == Some("_"))
+        );
+    }
+
+    #[test]
+    fn test_select_clauses_keep_sibling_short_declarations_isolated() {
+        let source = r#"package p
+func choose(ch <-chan int, value int) int {
+	select {
+	case <-ch:
+		value, selected := value + 1, true
+		consume(value, selected)
+	default:
+		value, fallback := value + 2, false
+		consume(value, fallback)
+	}
+	return value
+}
+"#;
+        let file_id = FileId::generate("select_clauses.go");
+        let facts = crate::extract_file_with_mode(
+            &go_frontend(),
+            file_id,
+            std::path::Path::new("select_clauses.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut values: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        values.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(
+            values
+                .iter()
+                .map(|binding| binding.range.start_line)
+                .collect::<Vec<_>>(),
+            vec![1, 4, 7]
+        );
+        assert_eq!(
+            values
+                .iter()
+                .map(|binding| binding.scope_id)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+        for (line, binding) in [(5, values[1]), (8, values[2]), (10, values[0])] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "value"
+                    && use_.range.start_line == line
+                    && use_.binding_id == Some(binding.id)
+            }));
+        }
+        for declaration_line in [4, 7] {
+            assert!(facts.data_nodes.iter().any(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == declaration_line
+                    && node.range.start_column > 15
+                    && node.binding_id == Some(values[0].id)
+            }));
+        }
+    }
+
+    #[test]
+    fn test_range_assignment_does_not_invent_declarations() {
+        let source = r#"package p
+func last(values []int) int {
+	var current int
+	for _, current = range values {
+		consume(current)
+	}
+	return current
+}
+"#;
+        let file_id = FileId::generate("range_assignment.go");
+        let facts = crate::extract_file_with_mode(
+            &go_frontend(),
+            file_id,
+            std::path::Path::new("range_assignment.go"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let current: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "current")
+            .collect();
+        assert_eq!(
+            current.len(),
+            1,
+            "`=` range targets are uses, not declarations"
+        );
+        assert_eq!(current[0].range.start_line, 2);
+        for line in [3, 4, 6] {
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "current"
+                    && use_.range.start_line == line
+                    && use_.binding_id == Some(current[0].id)
+            }));
+        }
+        assert!(!facts.bindings.iter().any(|binding| binding.name == "_"));
+        assert!(!facts.binding_uses.iter().any(|use_| use_.name == "_"));
     }
 
     #[test]
