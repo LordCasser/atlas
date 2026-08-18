@@ -463,7 +463,7 @@ pub fn extract_file_with_mode(
 
             // 7c. Build use-def edges (only if dataflow succeeded)
             // function_ids already resolved inside DataFlowBuilder::extract
-            let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes);
+            let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes, &edges);
             let mut all_edges = edges;
             all_edges.extend(use_def_edges);
 

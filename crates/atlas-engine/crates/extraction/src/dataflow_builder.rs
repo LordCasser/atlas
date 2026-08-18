@@ -215,17 +215,19 @@ impl DataFlowBuilder {
     /// target↔value, FieldLoad for base↔field), this second pass creates
     /// edges from variable definitions to later uses of the same name.
     ///
-    /// Key heuristic: nodes with the same `function_id` and name (case-
-    /// insensitive) are grouped.  The first Local/Parameter in byte order
-    /// is treated as a definition; all later Expr/CallArg/Field nodes are
-    /// treated as uses. This enables basic cross-statement dataflow tracking
-    /// propagation (e.g. `const x = source; sink(x)`).
+    /// Key heuristic: nodes with the same function/binding identity are
+    /// grouped, and each read is connected to the latest source-ordered write
+    /// that has finished evaluating its value. This enables basic
+    /// cross-statement propagation (e.g. `const x = source; sink(x)`) without
+    /// making an assignment visible inside its own RHS.
     ///
-    /// This is a conservative heuristic — it may connect unrelated
-    /// occurrences in nested scopes.  Shadowing and SSA-style precision
-    /// require BindingGraph (P3-deferred).
-    pub fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
-        resolve_use_def(data_nodes)
+    /// This is a conservative source-order approximation. Binding identities
+    /// prevent lexical-shadow crossings; CFG-aware joins still require SSA.
+    pub fn resolve_use_def(
+        data_nodes: &[DataNode],
+        existing_edges: &[DataFlowEdge],
+    ) -> Vec<DataFlowEdge> {
+        resolve_use_def(data_nodes, existing_edges)
     }
 }
 
@@ -1138,30 +1140,50 @@ fn build_dataflow_edges(
 /// When `binding_id` is not set, falls back to grouping by
 /// `(function_id, name)` as a conservative heuristic.
 ///
-/// Standalone use-def resolution: creates edges from variable definitions
-/// to later uses of the same name within each function scope.
-///
-/// Grouping strategy: when a DataNode has a `binding_id`, it groups by
-/// `(function_id, binding_id)` — different lexical bindings (even with
-/// the same name in nested scopes) produce distinct groups, preventing
-/// false def-use connections across shadow boundaries.
-///
-/// When `binding_id` is not set, falls back to grouping by
-/// `(function_id, name)` as a conservative heuristic.
-///
 /// **Field nodes are excluded** from use-def resolution: field dataflow
 /// is expressed through access_path / FieldLoad edges rather than
 /// name-based grouping.  This prevents false edges when a property name
 /// (e.g. "name" in `req.body.name`) accidentally matches a same‑named
 /// local variable or parameter.
 ///
-/// Edge creation: for backward‑slice provenance tracing, each definition
-/// connects to ALL subsequent uses within its group.  This preserves the
-/// full assignment chain (x = a; x = b; x = c; return x) that a backward
-/// slice must traverse.  The binding_id grouping prevents cross‑scope
-/// false connections for languages with a lexical binder.
-fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
+/// Edge creation uses a source-ordered reaching-definition approximation:
+/// each read connects only to the most recently activated definition in its
+/// group. A write activates after its explicit value source has been
+/// evaluated, so `x = x + 1` reads the previous `x` rather than the write
+/// currently being evaluated. CFG-aware branch merges remain conservative.
+fn resolve_use_def(data_nodes: &[DataNode], existing_edges: &[DataFlowEdge]) -> Vec<DataFlowEdge> {
     let mut edges = Vec::new();
+
+    let nodes_by_id: HashMap<DataNodeId, &DataNode> =
+        data_nodes.iter().map(|node| (node.id, node)).collect();
+    let mut activation_byte: HashMap<DataNodeId, u32> = data_nodes
+        .iter()
+        .filter(|node| matches!(node.kind, DataNodeKind::Local | DataNodeKind::Parameter))
+        .map(|node| (node.id, node.range.end_byte))
+        .collect();
+
+    // Assignment targets precede their RHS textually in several grammars.
+    // Making the target visible at its own range creates a self-cycle for
+    // `x = x + 1`; activate it after every explicit value source instead.
+    for edge in existing_edges
+        .iter()
+        .filter(|edge| edge.kind == DataFlowKind::Assign)
+    {
+        let Some(target) = nodes_by_id.get(&edge.target) else {
+            continue;
+        };
+        if !matches!(target.kind, DataNodeKind::Local | DataNodeKind::Parameter) {
+            continue;
+        }
+        let source_end = nodes_by_id
+            .get(&edge.source)
+            .map(|source| source.range.end_byte)
+            .unwrap_or(edge.location.end_byte);
+        activation_byte
+            .entry(target.id)
+            .and_modify(|current| *current = (*current).max(source_end))
+            .or_insert(source_end);
+    }
 
     // Group nodes by (function_id, binding_id?, name)
     // - binding_id takes priority (scope-aware: same-named vars in
@@ -1183,51 +1205,56 @@ fn resolve_use_def(data_nodes: &[DataNode]) -> Vec<DataFlowEdge> {
         // Sort by byte position
         group.sort_by_key(|n| n.range.start_byte);
 
-        // Find definition nodes (first Local/Parameter in byte order)
-        let def_indices: Vec<usize> = group
+        let definitions: Vec<&DataNode> = group
             .iter()
-            .enumerate()
-            .filter(|(_, n)| n.kind == DataNodeKind::Local || n.kind == DataNodeKind::Parameter)
-            .map(|(i, _)| i)
+            .copied()
+            .filter(|node| matches!(node.kind, DataNodeKind::Local | DataNodeKind::Parameter))
             .collect();
 
-        for &def_idx in &def_indices {
-            let def_node = group[def_idx];
-            // Create edges from def to all later uses within the same group.
-            // For backward‑slice trace this gives the full provenance chain;
-            // binding_id grouping prevents cross‑scope false connections.
-            for use_node in group.iter().skip(def_idx + 1) {
-                if use_node.id == def_node.id {
-                    continue;
-                }
-                // Connect to nodes that are Expr, CallArg, Return, or
-                // Local uses (Local for multi-assignment chains like
-                // x = a; x = b; return x).
-                // Field nodes intentionally excluded — field dataflow uses
-                // access_path / FieldLoad edges, not name-based use-def.
-                if matches!(
-                    use_node.kind,
-                    DataNodeKind::VariableUse
-                        | DataNodeKind::Expr
-                        | DataNodeKind::CallArg
-                        | DataNodeKind::Return
-                        | DataNodeKind::Local
-                ) {
-                    let edge_id = DataFlowEdgeId::generate(
-                        &def_node.id,
-                        &use_node.id,
-                        DataFlowKind::Assign.as_str(),
-                    );
-                    edges.push(DataFlowEdge::new(
-                        edge_id,
-                        def_node.id,
-                        use_node.id,
-                        DataFlowKind::Assign,
-                        use_node.range,
-                        0.85,
-                    ));
-                }
-            }
+        for use_node in group.iter().copied().filter(|node| {
+            matches!(
+                node.kind,
+                DataNodeKind::VariableUse
+                    | DataNodeKind::Expr
+                    | DataNodeKind::CallArg
+                    | DataNodeKind::Return
+            )
+        }) {
+            let reaching_definition = definitions
+                .iter()
+                .copied()
+                .filter(|definition| {
+                    activation_byte
+                        .get(&definition.id)
+                        .copied()
+                        .unwrap_or(definition.range.end_byte)
+                        <= use_node.range.start_byte
+                })
+                .max_by_key(|definition| {
+                    (
+                        activation_byte
+                            .get(&definition.id)
+                            .copied()
+                            .unwrap_or(definition.range.end_byte),
+                        definition.range.start_byte,
+                    )
+                });
+            let Some(definition) = reaching_definition else {
+                continue;
+            };
+            let edge_id = DataFlowEdgeId::generate(
+                &definition.id,
+                &use_node.id,
+                DataFlowKind::Assign.as_str(),
+            );
+            edges.push(DataFlowEdge::new(
+                edge_id,
+                definition.id,
+                use_node.id,
+                DataFlowKind::Assign,
+                use_node.range,
+                0.85,
+            ));
         }
     }
 
@@ -1625,7 +1652,7 @@ mod tests {
         };
 
         let nodes = vec![def, use1];
-        let edges = resolve_use_def(&nodes);
+        let edges = resolve_use_def(&nodes, &[]);
 
         assert!(!edges.is_empty(), "Should create use-def edge");
         assert_eq!(edges.len(), 1);
@@ -1731,7 +1758,7 @@ mod tests {
         let inner_use_id = inner_use.id;
 
         let nodes = vec![outer_def, inner_def, outer_use, inner_use];
-        let edges = resolve_use_def(&nodes);
+        let edges = resolve_use_def(&nodes, &[]);
 
         // We expect edges: outer_def→outer_use (1 edge) and inner_def→inner_use (1 edge)
         // but NOT outer_def→inner_use or inner_def→outer_use.
@@ -1774,6 +1801,82 @@ mod tests {
             cross2.is_none(),
             "Should NOT connect inner def to outer use (different scopes)"
         );
+    }
+
+    #[test]
+    fn test_resolve_use_def_activates_assignment_after_rhs() {
+        use types::ids::SymbolId;
+        use types::structs::TextRange;
+
+        let file_id = FileId::generate("activation.ts");
+        let function_id = SymbolId::generate(&file_id, "typescript", "f", "function", None);
+        let node = |kind: DataNodeKind, name: &str, start: u32, end: u32| DataNode {
+            id: DataNodeId::generate(
+                &file_id,
+                Some(&function_id),
+                "test",
+                Some(name),
+                None,
+                start,
+            ),
+            file_id,
+            function_id: Some(function_id),
+            kind,
+            binding_id: None,
+            callsite_id: None,
+            name: Some(name.into()),
+            access_path: None,
+            arg_index: None,
+            range: TextRange {
+                start_byte: start,
+                end_byte: end,
+                start_line: 0,
+                start_column: start,
+                end_line: 0,
+                end_column: end,
+            },
+        };
+        let initial = node(DataNodeKind::Local, "x", 10, 11);
+        let write = node(DataNodeKind::Local, "x", 30, 31);
+        let rhs_read = node(DataNodeKind::VariableUse, "x", 40, 41);
+        let rhs = node(DataNodeKind::Expr, "x + 1", 35, 50);
+        let later_read = node(DataNodeKind::VariableUse, "x", 60, 61);
+        let value_edge = DataFlowEdge::new(
+            DataFlowEdgeId::generate(&rhs.id, &write.id, DataFlowKind::Assign.as_str()),
+            rhs.id,
+            write.id,
+            DataFlowKind::Assign,
+            write.range,
+            0.90,
+        );
+
+        let edges = resolve_use_def(
+            &[
+                initial.clone(),
+                write.clone(),
+                rhs_read.clone(),
+                rhs,
+                later_read.clone(),
+            ],
+            &[value_edge],
+        );
+
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.source == initial.id && edge.target == rhs_read.id)
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.source == write.id && edge.target == later_read.id)
+        );
+        assert!(
+            edges
+                .iter()
+                .all(|edge| !(edge.source == write.id && edge.target == rhs_read.id))
+        );
+        assert!(edges.iter().all(|edge| edge.target != write.id));
     }
 
     // ── access path helper tests ──────────────────────────────────────

@@ -92,10 +92,10 @@ impl Slicer {
                 )
                 .collect();
 
-            // Sort candidates so edges whose source is likely a use-def chain
-            // node (Local/Parameter) are processed LAST.  This lets them
-            // overwrite shortcuts in the predecessors map, producing longer
-            // evidence chains for multi‑assignment traces.
+            // Reads prefer the latest Local/Parameter reaching definition.
+            // Writes prefer their explicit value source instead: otherwise a
+            // prior Local→Local approximation can hide the RHS that actually
+            // produced the new value.
             //
             // Secondary sort (when both sources are Local/Param): prefer the
             // CLOSEST preceding definition (largest start_byte) so the BFS
@@ -114,6 +114,14 @@ impl Slicer {
                         .map(|dn| (e.source, dn))
                 })
                 .collect();
+            let current_is_definition = store.get_data_node(&current_id)?.is_some_and(|node| {
+                matches!(
+                    node.kind,
+                    types::enums::DataNodeKind::Local
+                        | types::enums::DataNodeKind::Parameter
+                        | types::enums::DataNodeKind::Global
+                )
+            });
 
             candidates.sort_by(|a, b| {
                 use std::cmp::Ordering;
@@ -125,6 +133,7 @@ impl Slicer {
                             dn.kind,
                             types::enums::DataNodeKind::Local
                                 | types::enums::DataNodeKind::Parameter
+                                | types::enums::DataNodeKind::Global
                         )
                     })
                     .unwrap_or(false);
@@ -134,12 +143,25 @@ impl Slicer {
                             dn.kind,
                             types::enums::DataNodeKind::Local
                                 | types::enums::DataNodeKind::Parameter
+                                | types::enums::DataNodeKind::Global
                         )
                     })
                     .unwrap_or(false);
                 match (a_local, b_local) {
-                    (true, false) => Ordering::Greater, // Local/Param come last
-                    (false, true) => Ordering::Less,
+                    (true, false) => {
+                        if current_is_definition {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    }
+                    (false, true) => {
+                        if current_is_definition {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    }
                     (true, true) => {
                         // Both are Local/Param: sort by source start_byte ASC.
                         // The closest preceding definition (largest start_byte)
@@ -148,14 +170,42 @@ impl Slicer {
                         let b_byte = b_dn.map(|dn| dn.range.start_byte).unwrap_or(0);
                         a_byte.cmp(&b_byte)
                     }
-                    _ => Ordering::Equal,
+                    _ => {
+                        // A linear trace cannot display every operand of an
+                        // expression. Prefer state-bearing inputs over
+                        // literals so read-modify-write chains follow the
+                        // previous value instead of terminating at a constant.
+                        let source_priority = |node: Option<&DataNode>| match node.map(|n| n.kind) {
+                            Some(
+                                types::enums::DataNodeKind::VariableUse
+                                | types::enums::DataNodeKind::CallArg
+                                | types::enums::DataNodeKind::Field
+                                | types::enums::DataNodeKind::Receiver,
+                            ) => 3,
+                            Some(
+                                types::enums::DataNodeKind::Expr
+                                | types::enums::DataNodeKind::Return
+                                | types::enums::DataNodeKind::CallTarget,
+                            ) => 2,
+                            Some(types::enums::DataNodeKind::Literal) => 0,
+                            Some(_) => 1,
+                            None => 0,
+                        };
+                        source_priority(a_dn)
+                            .cmp(&source_priority(b_dn))
+                            .then_with(|| {
+                                a_dn.map(|dn| dn.range.start_byte)
+                                    .unwrap_or(0)
+                                    .cmp(&b_dn.map(|dn| dn.range.start_byte).unwrap_or(0))
+                            })
+                    }
                 }
             });
 
             // ── Phase 1: set predecessors for all viable candidates ────
             // Walking all candidates lets the sort-directed "last wins"
-            // strategy work correctly: edges from closer definitions
-            // (Local/Param sorted last) overwrite earlier entries.
+            // strategy select either the closest reaching definition for a
+            // read or the explicit value source for a write.
             if !candidates.is_empty() {
                 let current_key = hex::encode(current_id.as_bytes());
                 for edge in &candidates {
