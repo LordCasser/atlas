@@ -2648,6 +2648,169 @@ fn fx_typescript_real_opencode_declaration_destructuring_persists_and_traces() {
 }
 
 #[test]
+fn fx_typescript_family_parameter_destructuring_persists_and_traces_call_arguments() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "parameter_destructuring.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "parameter_destructuring.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "parameter_destructuring.ets"),
+    ];
+    let source = concat!(
+        "function decode({ id: token = fallbackValue, nested: { count }, [computedKey]: computed, ...rest }, [first, ...tail], plain) {\n",
+        "  consume(token, computed, rest, first, tail, plain);\n",
+        "  return count;\n",
+        "}\n",
+        "function run(objectArg, arrayArg, plainArg) {\n",
+        "  return decode(objectArg, arrayArg, plainArg);\n",
+        "}\n",
+    );
+
+    for (language, path) in cases {
+        let store = index_files(&[(path, source)]);
+        let file_id = FileId::generate(path);
+        let bindings = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted parameter bindings: {error}"));
+        let nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{language}: persisted parameter nodes: {error}"));
+
+        for (name, argument_index) in [
+            ("token", 0),
+            ("count", 0),
+            ("computed", 0),
+            ("rest", 0),
+            ("first", 1),
+            ("tail", 1),
+            ("plain", 2),
+        ] {
+            let binding = bindings
+                .iter()
+                .find(|binding| {
+                    binding.name == name && binding.kind == atlas_engine::BindingKind::Parameter
+                })
+                .unwrap_or_else(|| panic!("{language}: parameter binding {name}"));
+            let parameter = nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some(name)
+                })
+                .unwrap_or_else(|| panic!("{language}: parameter node {name}"));
+            assert_eq!(parameter.binding_id, Some(binding.id), "{language}: {name}");
+            assert_eq!(
+                parameter.arg_index,
+                Some(argument_index),
+                "{language}: {name} top-level argument position"
+            );
+        }
+        for read_name in ["fallbackValue", "computedKey"] {
+            assert!(nodes.iter().any(|node| {
+                node.kind == DataNodeKind::VariableUse && node.name.as_deref() == Some(read_name)
+            }));
+        }
+
+        let count_use = nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("count")
+                    && node.range.start_line == 2
+            })
+            .unwrap_or_else(|| panic!("{language}: returned count use"));
+        let trace = TraceEngine::new(store.clone())
+            .trace_variable(
+                &file_id,
+                count_use.range.start_line + 1,
+                count_use.range.start_column + 1,
+                20,
+            )
+            .result
+            .unwrap_or_else(|| panic!("{language}: destructured parameter trace"));
+        assert_has_edge_kind(&trace, DataFlowKind::ArgToParam);
+        assert_step_with_name(&store, &trace, DataFlowKind::ArgToParam, "objectArg");
+    }
+}
+
+#[test]
+#[cfg(feature = "typescript")]
+fn fx_typescript_real_opencode_parameter_destructuring_persists_and_traces() {
+    let source = example_source_or_skip!(
+        "opencode/packages/core/src/github-copilot/responses/map-openai-responses-finish-reason.ts"
+    );
+    let caller_source = example_source_or_skip!(
+        "opencode/packages/core/src/github-copilot/responses/openai-responses-language-model.ts"
+    );
+    let path = "packages/core/src/github-copilot/responses/map-openai-responses-finish-reason.ts";
+    let caller_path =
+        "packages/core/src/github-copilot/responses/openai-responses-language-model.ts";
+    let store = index_files(&[(path, source), (caller_path, caller_source)]);
+    let file_id = FileId::generate(path);
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("OpenCode persisted parameter bindings");
+    let nodes = store
+        .find_data_nodes_by_file(&file_id)
+        .expect("OpenCode persisted parameter nodes");
+
+    for name in ["finishReason", "hasFunctionCall"] {
+        let binding = bindings
+            .iter()
+            .find(|binding| {
+                binding.name == name && binding.kind == atlas_engine::BindingKind::Parameter
+            })
+            .unwrap_or_else(|| panic!("OpenCode parameter binding {name}"));
+        let parameter = nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("OpenCode parameter node {name}"));
+        assert_eq!(parameter.binding_id, Some(binding.id));
+        assert_eq!(parameter.arg_index, Some(0));
+    }
+
+    let use_line = source
+        .lines()
+        .position(|line| line.contains("return hasFunctionCall ?"))
+        .expect("OpenCode hasFunctionCall use") as u32;
+    let use_node = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("hasFunctionCall")
+                && node.range.start_line == use_line
+        })
+        .expect("OpenCode hasFunctionCall data node");
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.name == "hasFunctionCall")
+        .expect("OpenCode hasFunctionCall binding");
+    assert_eq!(use_node.binding_id, Some(binding.id));
+    let parameter = nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("hasFunctionCall")
+        })
+        .expect("OpenCode hasFunctionCall parameter node");
+    let trace = TraceEngine::new(store.clone())
+        .trace_variable(
+            &file_id,
+            parameter.range.start_line + 1,
+            parameter.range.start_column + 1,
+            20,
+        )
+        .result
+        .expect("OpenCode parameter destructuring trace");
+    assert_eq!(
+        trace.sink.data_node.as_ref().map(|node| node.id),
+        Some(parameter.id),
+        "OpenCode trace must stay anchored to the parameter leaf"
+    );
+    assert_has_edge_kind(&trace, DataFlowKind::ArgToParam);
+    assert_step_with_name(&store, &trace, DataFlowKind::ArgToParam, "hasFunctionCall");
+}
+
+#[test]
 fn fx_c_style_variable_mutations_persist_and_trace_read_modify_write_inputs() {
     let cases = vec![
         #[cfg(feature = "c")]

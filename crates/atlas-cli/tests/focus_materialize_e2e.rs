@@ -10,8 +10,9 @@
 use atlas_cli::commands::index;
 use atlas_cli::runtime::{CommandContext, DbMode};
 use atlas_engine::enums::{DataFlowKind, DataNodeKind};
+use atlas_engine::trace::TraceEngine;
 use atlas_engine::{
-    AccessStrategy, FocusMaterialize, FocusRuntime, QueryIntent, Store, layer, status,
+    AccessStrategy, FileId, FocusMaterialize, FocusRuntime, QueryIntent, Store, layer, status,
 };
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -1062,6 +1063,21 @@ fn unit_binding_slice(
         .collect();
     bindings.sort();
     bindings
+}
+
+fn unit_parameter_positions(
+    store: &Store,
+    fn_id: &atlas_engine::SymbolId,
+) -> Vec<(String, Option<u32>)> {
+    let mut parameters: Vec<_> = store
+        .find_data_nodes_by_function(fn_id)
+        .unwrap()
+        .into_iter()
+        .filter(|node| node.kind == DataNodeKind::Parameter)
+        .map(|node| (node.name.unwrap_or_default(), node.arg_index))
+        .collect();
+    parameters.sort();
+    parameters
 }
 
 fn symbol_id_by_name(store: &Store, name: &str) -> atlas_engine::SymbolId {
@@ -2755,6 +2771,197 @@ fn n5_focus_typescript_family_declaration_destructuring_matches_index_full() {
                 .unwrap_or_else(|error| panic!("{language}: destructuring peer state: {error}"))
                 .is_empty(),
             "{language}: destructuring peer unit must stay outside the Focus window"
+        );
+    }
+}
+
+/// TypeScript-family parameter destructuring must preserve one function-scoped
+/// binding per leaf and a shared top-level argument position under both full
+/// Index and Focus. Full summary bridging and Focus runtime bridging must each
+/// expose ArgToParam from the caller's object argument, while an unrelated unit
+/// remains cold.
+#[test]
+fn n5_focus_typescript_family_parameter_destructuring_matches_index_full() {
+    let cases = vec![
+        #[cfg(feature = "typescript")]
+        ("typescript", "decode.ts", "caller.ts", "peer.ts"),
+        #[cfg(feature = "javascript")]
+        ("javascript", "decode.js", "caller.js", "peer.js"),
+        #[cfg(feature = "arkts")]
+        ("arkts", "decode.ets", "caller.ets", "peer.ets"),
+    ];
+    let callee_source = concat!(
+        "export function decode({ id: token, nested: { count }, ...rest }, [first, ...tail], plain) {\n",
+        "  consume(token, rest, first, tail, plain);\n",
+        "  return count;\n",
+        "}\n",
+    );
+    let caller_source = concat!(
+        "import { decode } from './decode';\n",
+        "export function run(objectArg, arrayArg, plainArg) {\n",
+        "  return decode(objectArg, arrayArg, plainArg);\n",
+        "}\n",
+    );
+    let peer_source = "export function unrelated() { return 42; }\n";
+    let expected_positions = vec![
+        ("count".to_string(), Some(0)),
+        ("first".to_string(), Some(1)),
+        ("plain".to_string(), Some(2)),
+        ("rest".to_string(), Some(0)),
+        ("tail".to_string(), Some(1)),
+        ("token".to_string(), Some(0)),
+    ];
+
+    for (language, callee_path, caller_path, peer_path) in cases {
+        let fixture = [
+            (callee_path, callee_source),
+            (caller_path, caller_source),
+            (peer_path, peer_source),
+        ];
+        let indexed = setup_project(&fixture);
+        let indexed_project = indexed.path().to_string_lossy().to_string();
+        CommandContext::open(&indexed_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init index db: {error}"));
+        index::run(&indexed_project, &[], &[], &[], "full")
+            .unwrap_or_else(|error| panic!("{language}: full Index: {error}"));
+        let indexed_store = open_store(&indexed);
+        let indexed_decode = symbol_id_by_name(&indexed_store, "decode");
+        let indexed_run = symbol_id_by_name(&indexed_store, "run");
+        let indexed_decode_slice = unit_dataflow_slice(&indexed_store, &indexed_decode);
+        let indexed_run_slice = unit_dataflow_slice(&indexed_store, &indexed_run);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_decode);
+        assert_eq!(
+            unit_parameter_positions(&indexed_store, &indexed_decode),
+            expected_positions,
+            "{language}: full Index parameter positions"
+        );
+        for name in ["token", "count", "rest", "first", "tail", "plain"] {
+            assert!(
+                indexed_bindings
+                    .iter()
+                    .any(|binding| binding.0 == "parameter" && binding.1 == name),
+                "{language}: full Index parameter binding {name}"
+            );
+        }
+
+        let indexed_nodes = indexed_store
+            .find_data_nodes_by_function(&indexed_decode)
+            .unwrap_or_else(|error| panic!("{language}: full Index parameter nodes: {error}"));
+        let indexed_count_use = indexed_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("count")
+                    && node.range.start_line == 2
+            })
+            .unwrap_or_else(|| panic!("{language}: full Index count use"));
+        let indexed_trace = TraceEngine::new(indexed_store.clone())
+            .trace_variable(
+                &FileId::generate(callee_path),
+                indexed_count_use.range.start_line + 1,
+                indexed_count_use.range.start_column + 1,
+                20,
+            )
+            .result
+            .unwrap_or_else(|| panic!("{language}: full Index parameter trace"));
+        assert!(
+            indexed_trace
+                .steps
+                .iter()
+                .any(|step| step.edge_kind == DataFlowKind::ArgToParam),
+            "{language}: full Index summary bridge must expose ArgToParam"
+        );
+
+        let focused = setup_project(&fixture);
+        let focused_project = focused.path().to_string_lossy().to_string();
+        CommandContext::open(&focused_project, DbMode::InitOrCreate)
+            .unwrap_or_else(|error| panic!("{language}: init Focus db: {error}"));
+        index::run(&focused_project, &[], &[], &[], "structural")
+            .unwrap_or_else(|error| panic!("{language}: structural base: {error}"));
+        let focused_store = open_store(&focused);
+        let materialize =
+            FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+        let decode = symbol_id_by_name(&focused_store, "decode");
+        let run = symbol_id_by_name(&focused_store, "run");
+        let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+        for (symbol, name) in [(decode, "decode"), (run, "run"), (unrelated, "unrelated")] {
+            assert!(
+                focused_store
+                    .find_data_nodes_by_function(&symbol)
+                    .unwrap_or_else(|error| panic!("{language}: cold {name} unit: {error}"))
+                    .is_empty(),
+                "{language}: {name} must be cold before Focus ensure"
+            );
+        }
+
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &decode,
+                Some("typescript-family-parameter-destructuring-callee"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure decode: {error}"));
+        materialize
+            .dataflow()
+            .ensure_for_function(
+                &run,
+                Some("typescript-family-parameter-destructuring-caller"),
+            )
+            .unwrap_or_else(|error| panic!("{language}: Focus ensure run: {error}"));
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &decode),
+            indexed_decode_slice,
+            "{language}: Focus decode dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &run),
+            indexed_run_slice,
+            "{language}: Focus caller dataflow/CFG/confidence == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &decode),
+            indexed_bindings,
+            "{language}: Focus parameter bindings == full Index"
+        );
+        assert_eq!(
+            unit_parameter_positions(&focused_store, &decode),
+            expected_positions,
+            "{language}: Focus parameter positions == full Index"
+        );
+
+        let focused_nodes = focused_store
+            .find_data_nodes_by_function(&decode)
+            .unwrap_or_else(|error| panic!("{language}: Focus parameter nodes: {error}"));
+        let focused_count_use = focused_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("count")
+                    && node.range.start_line == 2
+            })
+            .unwrap_or_else(|| panic!("{language}: Focus count use"));
+        let focused_trace = TraceEngine::new(focused_store.clone())
+            .trace_variable(
+                &FileId::generate(callee_path),
+                focused_count_use.range.start_line + 1,
+                focused_count_use.range.start_column + 1,
+                20,
+            )
+            .result
+            .unwrap_or_else(|| panic!("{language}: Focus parameter trace"));
+        assert!(
+            focused_trace
+                .steps
+                .iter()
+                .any(|step| step.edge_kind == DataFlowKind::ArgToParam),
+            "{language}: Focus runtime bridge must expose ArgToParam"
+        );
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&unrelated)
+                .unwrap_or_else(|error| panic!("{language}: parameter peer state: {error}"))
+                .is_empty(),
+            "{language}: unrelated peer must stay outside the Focus window"
         );
     }
 }
