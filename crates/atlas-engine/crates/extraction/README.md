@@ -73,11 +73,13 @@ Each language implements a `LanguageFrontend` via slot-based composition:
   value flows conservatively to every alias and the guard alias token is not a
   read. Case-type projection, function-literal ownership, select receive-clause
   flow, and parallel-assignment evaluation order remain conservative.
-- Cangjie simple `for-in` targets are loop-scoped bindings. The iterable
-  provides conservative aggregate provenance to the target, guard/body uses
-  share that identity, and an outer same-name binding becomes visible again
-  after the loop. Tuple/destructuring `for-in` patterns, resource bindings,
-  and exact iterator element/structural projection remain explicit boundaries.
+- Cangjie simple, nested-tuple, and enum-payload `for-in` captures are
+  loop-scoped bindings; enum constructor syntax is excluded. The iterable
+  provides conservative aggregate provenance to every capture, guard/body uses
+  share those identities, and outer same-name bindings become visible again
+  after the loop. Exact iterator element/structural projection, compiler
+  validation of pattern irrefutability, other tuple/destructuring, and resource
+  bindings remain explicit boundaries.
 - PHP `[]` and `list()` assignment/`foreach` destructuring produces callable-
   scoped bindings for nested, keyed, and by-reference variable targets. Key
   expressions remain reads. The whole RHS or collection flows conservatively

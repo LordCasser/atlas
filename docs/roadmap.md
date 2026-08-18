@@ -335,10 +335,12 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   回归，`scope_aware_binding` 与 adapter slot confidence 已对齐。Java 不伪造非法的
   overlapping local shadowing；PHP destructuring key expression 保持读取，assignment whole RHS 与 foreach collection 保守流向各 target，exact key/index projection、missing-key/null、reference-alias semantics 与 dynamic/non-variable target 保持 limitation；未显式捕获的匿名函数外层 local 保持 unresolved，arrow-function ownership 暂不伪造；Ruby block write 仅复用源码更早的祖先 binding，flat/nested/rest multiple-assignment local target 复用同一 namespace，显式 RHS list 具备顶层位置流；Go same-block mixed `:=` 已覆盖 local/函数体参数复用、声明后激活与 clause 隔离；其余语言特有的 pattern、projection、mixed declaration、smart-cast 与
   definite-assignment 边界仍以 capability limitation 为准。
-- ✅ Cangjie 简单 `for-in` target 已建模为 loop-scoped binding，iterable 以 0.65
-  aggregate Assign 提供来源；guard/body 复用循环变量 identity，循环后同名 use 恢复外层
-  binding。Direct extraction、SQLite Trace、Focus-vs-full-Index 已对拍；tuple/destructuring
-  `for-in` pattern、resource binding 与 iterator element/结构投影仍为显式边界。
+- ✅ Cangjie simple/nested-tuple/enum-payload `for-in` capture 已建模为
+  loop-scoped binding，enum constructor syntax 不建 binding，iterable 向每个 capture 以
+  0.65 aggregate Assign 提供来源；guard/body 复用循环变量 identity，循环后同名 use
+  恢复外层 binding。Direct extraction、SQLite Trace、Focus-vs-full-Index 已对拍；其他
+  tuple/destructuring、resource binding、exact iterator element/结构投影与 pattern
+  irrefutability 的编译器验证仍为显式边界。
 - ✅ 删除 frontend slot 反向派生第二份 capability profile 的死路径；运行时能力门控只读
   `LanguageCapabilityProfile.features`，slot capability 仅作为实现契约与一致性守卫。
 
@@ -632,9 +634,10 @@ control dependency 仍保守；Kotlin 已覆盖 parameter/local/catch 的 scope-
 nested control-scope shadowing 与 typed late-declared local 的 concrete simple-assignment
 origins；extension receiver、smart-cast 与编译器级 variable-initialization proof 仍保守；
 Cangjie 已覆盖 parameter/simple-local nested block identity、arm-scoped match binding、
-guard/body identity、branch/loop/`match` sibling CFG，以及简单 `for-in` 的 loop-scoped
-target 与 iterable aggregate provenance；tuple/destructuring（包括 `for-in` pattern）、
-resource binding 与 iterator element/结构投影仍保守。当前 `FeatureOverride`
+guard/body identity、branch/loop/`match` sibling CFG，以及 simple/nested-tuple/
+enum-payload `for-in` 的 loop-scoped capture 与 iterable aggregate provenance；其他
+tuple/destructuring、resource binding、exact iterator element/结构投影与 pattern
+irrefutability 的编译器验证仍保守。当前 `FeatureOverride`
 只保留有实际使用的 `WithLimitations` 变体。
 
 **`atlas status` vs `doctor`**：status 只列**项目中有源文件**的语言；doctor 列全部编译语言（含无文件的 Cangjie 等）。
