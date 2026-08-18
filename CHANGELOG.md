@@ -28,10 +28,12 @@ All notable changes to Atlas will be documented in this file.
 ### Cross-language binding identity
 
 - Promote `scope_aware_binding` for TypeScript, JavaScript, ArkTS, Java, C,
-  and C++ after direct extraction, SQLite Trace, and Focus-vs-full-Index
+  C++, Go, Rust, and Kotlin after direct extraction, SQLite Trace, and Focus-vs-full-Index
   fixtures proved that same-name locals retain distinct `BindingId` and scope
   ownership. Java uses legal sibling-block redeclarations because overlapping
-  local redeclaration is rejected by the language.
+  local redeclaration is rejected by the language. Go mixed short declarations,
+  Rust pattern projection, and Kotlin smart-cast/definite-assignment remain
+  explicit language-specific limitations.
 - Align frontend lexical/dataflow slot confidence and limitation text with the
   authoritative language profiles. ArkTS remains a TypeScript-grammar boundary:
   ordinary nested blocks are verified, while ArkUI callback ownership and
