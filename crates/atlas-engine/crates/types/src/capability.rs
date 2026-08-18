@@ -1151,8 +1151,9 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with clause-local type-switch aliases; mixed short declarations with existing and new names remain conservative",
             "AST-driven local dataflow with type-switch guard-value flow; case-type projection and mixed short-declaration identity remain conservative",
@@ -1314,8 +1315,9 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
             "AST-driven local dataflow with conservative match scrutinee-to-capture and guard-let value-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
@@ -1562,8 +1564,9 @@ mod profiles {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
             "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
             "when subject initializers flow to scoped subject-variable bindings; smart-cast, definite-assignment, type/range projection, and guard control dependencies remain conservative",
@@ -1986,11 +1989,12 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
 
         // unsupported_features
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
 
         // limitations
         assert_eq!(
@@ -3097,9 +3101,10 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
@@ -3426,9 +3431,10 @@ mod tests {
             "return_flow",
             "cfg",
             "interprocedural_dataflow",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
