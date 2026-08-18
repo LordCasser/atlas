@@ -206,7 +206,8 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
 - shared use-def 以 binding identity 分组，写入在显式 RHS 完成后激活，读取只连接
   source-order 上最近的已激活定义；`trace(variable)` 在写节点优先追显式值源，在
-  多操作数表达式中优先延续 state-bearing source。该行为是 source-order
+  多操作数表达式中先保留 CallTarget→ArgToCall 桥，再延续 state-bearing source。
+  该行为是 source-order
   approximation，不得表述为 CFG-aware SSA 或精确 branch merge。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
 - `FunctionSummary`：已实现持久化摘要层（当前 Schema V4）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接；CFG 节点同时持久化托管资源作用域归属。当前开发线不兼容旧 schema；schema 变化后必须重建索引。

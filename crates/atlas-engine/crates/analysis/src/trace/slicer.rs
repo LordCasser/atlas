@@ -172,10 +172,12 @@ impl Slicer {
                     }
                     _ => {
                         // A linear trace cannot display every operand of an
-                        // expression. Prefer state-bearing inputs over
-                        // literals so read-modify-write chains follow the
-                        // previous value instead of terminating at a constant.
+                        // expression. Prefer a call target first so its
+                        // ArgToCall bridge remains visible, then state-bearing
+                        // inputs over literals so read-modify-write chains
+                        // follow the previous value instead of a constant.
                         let source_priority = |node: Option<&DataNode>| match node.map(|n| n.kind) {
+                            Some(types::enums::DataNodeKind::CallTarget) => 4,
                             Some(
                                 types::enums::DataNodeKind::VariableUse
                                 | types::enums::DataNodeKind::CallArg
@@ -184,8 +186,7 @@ impl Slicer {
                             ) => 3,
                             Some(
                                 types::enums::DataNodeKind::Expr
-                                | types::enums::DataNodeKind::Return
-                                | types::enums::DataNodeKind::CallTarget,
+                                | types::enums::DataNodeKind::Return,
                             ) => 2,
                             Some(types::enums::DataNodeKind::Literal) => 0,
                             Some(_) => 1,
