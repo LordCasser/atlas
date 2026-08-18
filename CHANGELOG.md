@@ -28,7 +28,7 @@ All notable changes to Atlas will be documented in this file.
 ### Cross-language binding identity
 
 - Promote `scope_aware_binding` for TypeScript, JavaScript, ArkTS, Java, C,
-  C++, Go, Rust, and Kotlin after direct extraction, SQLite Trace, and Focus-vs-full-Index
+  C++, Go, Rust, Kotlin, and Cangjie after direct extraction, SQLite Trace, and Focus-vs-full-Index
   fixtures proved that same-name locals retain distinct `BindingId` and scope
   ownership. Java uses legal sibling-block redeclarations because overlapping
   local redeclaration is rejected by the language. Go mixed short declarations,
@@ -86,8 +86,11 @@ All notable changes to Atlas will be documented in this file.
   while guard and arm-body uses resolve the same binding identity.
 - Cover extraction, SQLite trace, nested-match selector ownership, and
   Focus-vs-full-Index parity. Structural projection, guard control
-  dependencies, guarded/composite exhaustiveness, and general scope-aware
-  binding remain explicit precision boundaries.
+  dependencies, guarded/composite exhaustiveness, tuple/destructuring,
+  for-in, and resource bindings remain explicit precision boundaries.
+- Verify ordinary nested-block shadowing against the Cangjie language scope
+  rules through direct extraction, SQLite Trace, and Focus-vs-full-Index parity,
+  then publish `scope_aware_binding` for parameters and simple locals.
 
 ### Kotlin dataflow
 
