@@ -73,8 +73,9 @@ pub struct DataNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_path: Option<String>,
 
-    /// Position index within the enclosing call expression's argument list
-    /// (0-based). Only populated for `CallArg` nodes.
+    /// Position within an invocation's argument list (0-based). Populated for
+    /// `CallArg` nodes and, when syntax requires explicit mapping such as
+    /// destructuring, for every `Parameter` leaf consuming that argument.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arg_index: Option<u32>,
 

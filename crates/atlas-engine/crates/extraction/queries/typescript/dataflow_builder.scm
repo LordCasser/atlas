@@ -14,6 +14,15 @@
 (optional_parameter
   (identifier) @df.parameter)
 
+;; Destructured function/method/arrow parameters. The adapter filters these
+;; broad leaves to the `pattern` field of a required/optional parameter and
+;; records the enclosing top-level argument position on every leaf.
+(array_pattern (identifier) @df.parameter)
+(pair_pattern value: (identifier) @df.parameter)
+(rest_pattern (identifier) @df.parameter)
+(assignment_pattern left: (identifier) @df.parameter)
+(shorthand_property_identifier_pattern) @df.parameter
+
 ;; --- Assignments: target = value ---
 ;; Captures both left-hand side and right-hand side of assignments
 (assignment_expression

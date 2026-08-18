@@ -1321,6 +1321,215 @@ mod tests {
     }
 
     #[test]
+    fn test_typescript_family_parameter_destructuring_preserves_bindings_and_argument_positions() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            ("parameter_destructuring.ts", Language::TypeScript),
+            #[cfg(feature = "javascript")]
+            ("parameter_destructuring.js", Language::JavaScript),
+            #[cfg(feature = "arkts")]
+            ("parameter_destructuring.ets", Language::ArkTS),
+        ];
+        let source = concat!(
+            "function decode({ id: local = fallbackValue, nested: { value }, [computedKey]: computed, ...rest }, [first, , { score }, ...tail], plain) {\n",
+            "  consume(local, value, computed, rest, first, score, tail);\n",
+            "  return plain;\n",
+            "}\n",
+            "const choose = ({ enabled, mode: renamed, ...remaining } = fallbackObject) => {\n",
+            "  consume(enabled, renamed);\n",
+            "  return remaining;\n",
+            "};\n",
+        );
+
+        for (path, language) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let expected = [
+                ("local", 0, 0),
+                ("value", 0, 0),
+                ("computed", 0, 0),
+                ("rest", 0, 0),
+                ("first", 0, 1),
+                ("score", 0, 1),
+                ("tail", 0, 1),
+                ("plain", 0, 2),
+                ("enabled", 4, 0),
+                ("renamed", 4, 0),
+                ("remaining", 4, 0),
+            ];
+            for (name, declaration_line, argument_index) in expected {
+                let binding = facts
+                    .bindings
+                    .iter()
+                    .find(|binding| {
+                        binding.name == name
+                            && binding.kind == types::BindingKind::Parameter
+                            && binding.range.start_line == declaration_line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing destructured parameter binding {name}")
+                    });
+                let parameter = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Parameter
+                            && node.name.as_deref() == Some(name)
+                            && node.range.start_line == declaration_line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing destructured parameter node {name}")
+                    });
+                assert_eq!(
+                    parameter.binding_id,
+                    Some(binding.id),
+                    "{language:?}: {name}"
+                );
+                assert_eq!(
+                    parameter.arg_index,
+                    Some(argument_index),
+                    "{language:?}: {name} must retain its top-level argument position"
+                );
+
+                let body_line = if declaration_line == 0 {
+                    if name == "plain" { 2 } else { 1 }
+                } else if name == "remaining" {
+                    6
+                } else {
+                    5
+                };
+                assert!(
+                    facts.binding_uses.iter().any(|use_| {
+                        use_.name == name
+                            && use_.range.start_line == body_line
+                            && use_.binding_id == Some(binding.id)
+                    }),
+                    "{language:?}: body use must resolve to parameter {name}"
+                );
+            }
+
+            let decode_scope = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == "plain" && binding.range.start_line == 0)
+                .expect("plain parameter")
+                .scope_id;
+            for name in [
+                "local", "value", "computed", "rest", "first", "score", "tail",
+            ] {
+                assert_eq!(
+                    facts
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.name == name && binding.range.start_line == 0)
+                        .unwrap_or_else(|| panic!("{language:?}: parameter {name}"))
+                        .scope_id,
+                    decode_scope,
+                    "{language:?}: {name} must join decode's function scope"
+                );
+            }
+            let choose_scope = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == "enabled" && binding.range.start_line == 4)
+                .expect("enabled parameter")
+                .scope_id;
+            assert_ne!(
+                decode_scope, choose_scope,
+                "{language:?}: arrow scope isolation"
+            );
+
+            for read_name in ["fallbackValue", "computedKey", "fallbackObject"] {
+                assert!(facts.data_nodes.iter().any(|node| {
+                    node.kind == types::DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(read_name)
+                }));
+                assert!(
+                    facts
+                        .bindings
+                        .iter()
+                        .all(|binding| binding.name != read_name)
+                );
+            }
+            for property_name in ["id", "nested", "mode"] {
+                assert!(
+                    facts
+                        .bindings
+                        .iter()
+                        .all(|binding| binding.name != property_name)
+                );
+            }
+            for target_name in [
+                "local",
+                "value",
+                "computed",
+                "rest",
+                "first",
+                "score",
+                "tail",
+                "enabled",
+                "renamed",
+                "remaining",
+            ] {
+                assert!(facts.data_nodes.iter().all(|node| {
+                    node.kind != types::DataNodeKind::VariableUse
+                        || node.name.as_deref() != Some(target_name)
+                        || !matches!(node.range.start_line, 0 | 4)
+                }));
+            }
+        }
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn test_typescript_parameter_positions_exclude_the_erased_this_parameter() {
+        let source = concat!(
+            "function decode(this: Handler, { payload }: Message, count: number) {\n",
+            "  return [payload, count];\n",
+            "}\n",
+        );
+        let frontend =
+            crate::languages::create_frontend(Language::TypeScript).expect("typescript frontend");
+        let facts = crate::extract_file_with_mode(
+            &frontend,
+            FileId::generate("this_parameter.ts"),
+            std::path::Path::new("this_parameter.ts"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("typescript extraction");
+
+        for (name, argument_index) in [("payload", 0), ("count", 1)] {
+            let parameter = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == types::DataNodeKind::Parameter
+                        && node.name.as_deref() == Some(name)
+                })
+                .unwrap_or_else(|| panic!("missing parameter node {name}"));
+            assert_eq!(parameter.arg_index, Some(argument_index), "{name}");
+        }
+        assert!(facts.bindings.iter().all(|binding| binding.name != "this"));
+        assert!(facts.data_nodes.iter().all(|node| {
+            node.kind != types::DataNodeKind::Parameter || node.name.as_deref() != Some("this")
+        }));
+    }
+
+    #[test]
     fn test_c_style_variable_mutations_preserve_read_modify_write_provenance() {
         let cases = vec![
             #[cfg(feature = "c")]

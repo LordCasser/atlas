@@ -14,6 +14,15 @@
 ;; Optional parameters
 (optional_parameter (identifier) @lexical.parameter)
 
+;; Destructured function/method/arrow parameters. Captures stay broad so nested
+;; patterns are covered; the adapter keeps only binding leaves under the
+;; `pattern` field of a required/optional parameter.
+(array_pattern (identifier) @lexical.parameter)
+(pair_pattern value: (identifier) @lexical.parameter)
+(rest_pattern (identifier) @lexical.parameter)
+(assignment_pattern left: (identifier) @lexical.parameter)
+(shorthand_property_identifier_pattern) @lexical.parameter
+
 ;; --- Local variable declarations (let/const/var) ---
 (lexical_declaration
   (variable_declarator

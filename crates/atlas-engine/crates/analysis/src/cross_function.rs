@@ -189,10 +189,20 @@ pub(crate) fn find_param_index(
     param_node_id: &DataNodeId,
 ) -> anyhow::Result<Option<usize>> {
     let params = store.find_data_nodes_by_function(function_id)?;
-    Ok(params
+    let parameter_nodes: Vec<_> = params
         .iter()
         .filter(|dn| dn.kind == DataNodeKind::Parameter)
-        .position(|dn| &dn.id == param_node_id))
+        .collect();
+    let Some((position, parameter)) = parameter_nodes
+        .iter()
+        .enumerate()
+        .find(|(_, parameter)| &parameter.id == param_node_id)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        parameter.arg_index.map_or(position, |index| index as usize),
+    ))
 }
 
 /// Resolve a [`CallsiteId`] to its callee [`SymbolId`].

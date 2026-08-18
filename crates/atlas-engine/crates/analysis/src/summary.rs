@@ -138,7 +138,8 @@ impl SummaryBuilder {
         // Collect call-arg flows: (callsite_id, arg_index, arg_node, source_node)
         let mut call_arg_entries: Vec<(CallsiteId, usize, DataNodeId, DataNodeId)> = Vec::new();
 
-        for (param_index, param) in param_nodes.iter().enumerate() {
+        for (position, param) in param_nodes.iter().enumerate() {
+            let param_index = param.arg_index.map_or(position, |index| index as usize);
             let mut visited: HashSet<DataNodeId> = HashSet::new();
             let mut queue: VecDeque<DataNodeId> = VecDeque::new();
 
