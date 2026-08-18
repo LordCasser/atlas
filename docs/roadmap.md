@@ -240,11 +240,11 @@ The original baseline implementation blockers are closed and covered by the rele
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
 
 > **Cross-language direct-variable mutation status (updated 2026-08)**:
-> TypeScript、JavaScript、ArkTS、Python、Java、C、C++、Go、C#、Rust、PHP、Ruby 与
-> Kotlin now preserve their supported direct-identifier compound/update forms
-> without losing persisted language identities. Cangjie is the only compiled
-> language that does not yet claim this boundary: its pinned grammar/query shape
-> still needs direct evidence before promotion.
+> All 14 persisted language identities now preserve their supported
+> direct-variable mutation forms without collapsing language identity. Cangjie
+> additionally preserves direct simple reassignment and its direct-identifier
+> non-conditional compound/postfix update forms; its pinned grammar/query shape is
+> covered independently rather than inferred from another frontend.
 > The whole expression is an aggregate read-modify-write value; previous target
 > value and explicit RHS flow into it at 0.75, then it flows to the coalesced local
 > at 0.90. Direct extraction、SQLite/Trace 与 cold Focus vs full Index cover every
@@ -531,8 +531,15 @@ CFG + DataFlow
   coalesced Local through `Assign` at 0.90. Direct extraction、SQLite/Trace operator
   selection and cold Focus-vs-full-Index fixtures cover all five persisted language
   identities, including RHS-only-write suppression and unsupported-target negative
-  boundaries. Cangjie remains unclaimed until its pinned grammar/query shape has the
-  same evidence.
+  boundaries.
+- **Cangjie assignment mutation — scoped phase implemented:** direct simple
+  reassignment preserves RHS→Local provenance at 0.90 without treating its LHS as a
+  read；direct-identifier non-conditional compound/postfix update preserves previous
+  value/explicit RHS→aggregate Expr at 0.75 and Expr→Local at 0.90. Direct extraction、
+  SQLite/Trace operator selection and cold Focus-vs-full-Index fixtures cover the
+  persisted Cangjie identity. Field/index targets、`&&=`/`||=` conditional execution、
+  operator dispatch/coercion and prefix/update-result timing remain explicit
+  precision boundaries.
 - **Ruby multiple assignment — scoped phase implemented:** flat/nested/rest local
   targets join the existing source-ordered method/module/class/block binding
   namespace. Explicit RHS lists map to top-level target groups by position；a
@@ -659,11 +666,11 @@ Focus 是 Lazy Index 的下一个控制平面。Lazy 负责按需构建 facts；
 特殊能力：`scope_aware_binding` 已由产品路径证据覆盖 Python、TypeScript、
 JavaScript、ArkTS、Java、C、C++、C#、Go、Rust、Kotlin、Cangjie、PHP 与 Ruby；
 其中 Java 使用合法 sibling-block identity，ArkTS 仍受 TS grammar/ArkUI callback
-边界约束。除 Cangjie 外，其余 13 种语言身份的 direct-variable mutation 已覆盖
-direct extraction、SQLite/Trace 与 cold Focus-vs-full-Index；previous value/explicit
+边界约束。全部 14 种语言身份的 supported direct-variable mutation 已覆盖 direct
+extraction、SQLite/Trace 与 cold Focus-vs-full-Index；previous value/explicit
 RHS→aggregate Expr 为 0.75、Expr→coalesced Local 为 0.90，unsupported target 不得退化
-为 RHS-only write、synthetic local 或 field store。Cangjie 在 pinned grammar/query
-形状取得同等证据前不声明该能力。Java supported `if`-condition `instanceof` 与 arrow switch type/record
+为 RHS-only write、synthetic local 或 field store。Cangjie 还覆盖 direct simple
+reassignment 的 RHS→Local 0.90 provenance 与 LHS read suppression。Java supported `if`-condition `instanceof` 与 arrow switch type/record
 capture 已覆盖 scoped identity、0.75 aggregate provenance 和产品对拍，colon group、
 其他 flow-sensitive boolean context、exact record projection 与 definite-assignment
 仍保守；C# direct pattern capture 与 parenthesized nested designation 已覆盖 switch

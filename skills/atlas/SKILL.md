@@ -75,13 +75,13 @@ equivalence. Read the profile limitations for destructuring, pattern,
 callback, definite-assignment, and dynamic-namespace boundaries before relying
 on an apparently resolved same-name use.
 
-TypeScript、JavaScript、ArkTS、Python、Java、C、C++、Go、C#、Rust、PHP、Ruby and
-Kotlin preserve aggregate read-modify-write provenance for their supported
-direct-identifier compound/update forms; each response still reports its own
-language identity. Cangjie does not yet claim direct-variable mutation support.
+All 14 persisted language identities preserve aggregate read-modify-write provenance
+for their supported direct-variable mutation forms; each response still reports its
+own language identity. Cangjie additionally preserves direct simple reassignment and
+direct-identifier non-conditional compound/postfix update forms.
 Attribute/member/field/navigation、subscript/element/array/index、receiver and
 pointer/dereference mutation targets remain conservative, as do logical or
-conditional assignment execution（including Ruby `||=`/`&&=`）、overloaded/dynamic
+conditional assignment execution（including Ruby and Cangjie `||=`/`&&=`）、overloaded/dynamic
 operator semantics、numeric promotion/boxing and prefix/postfix result timing where
 the language supports them.
 
