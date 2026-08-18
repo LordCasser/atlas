@@ -726,7 +726,6 @@ mod tests {
                     "{lang:?}: derived under-reports scopes"
                 );
             }
-
             // Derived profile must produce valid string lists.
             // supported_features must never be empty for a working language.
             assert!(
@@ -735,6 +734,118 @@ mod tests {
             );
             // unsupported_features may be empty if all FeatureMatrix
             // capabilities report `is_supported()` — that is valid.
+        }
+    }
+
+    #[test]
+    fn test_scope_chain_identity_across_static_language_adapters() {
+        let cases: Vec<(&str, Language, &str, &str, [(u32, u32); 2])> = vec![
+            #[cfg(feature = "typescript")]
+            (
+                "scope.ts",
+                Language::TypeScript,
+                "function shadowTypescript(input: number): number {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "javascript")]
+            (
+                "scope.js",
+                Language::JavaScript,
+                "function shadowJavascript(input) {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "arkts")]
+            (
+                "scope.ets",
+                Language::ArkTS,
+                "function shadowArkts(input: number): number {\n  let value: number = input;\n  if (input > 0) {\n    let value: number = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "c")]
+            (
+                "scope.c",
+                Language::C,
+                "int shadow_c(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "cpp")]
+            (
+                "scope.cpp",
+                Language::Cpp,
+                "int shadow_cpp(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+                "value",
+                [(1, 6), (3, 4)],
+            ),
+            #[cfg(feature = "java")]
+            (
+                "ScopeJava.java",
+                Language::Java,
+                "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
+                "value",
+                [(3, 4), (6, 7)],
+            ),
+        ];
+
+        for (path, language, source, name, declaration_and_use_lines) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let file_id = FileId::generate(path);
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                file_id,
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let mut bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .collect();
+            bindings.sort_by_key(|binding| binding.range.start_byte);
+            assert_eq!(
+                bindings.len(),
+                2,
+                "{language:?}: expected two {name} bindings"
+            );
+            assert_ne!(bindings[0].id, bindings[1].id, "{language:?}");
+            assert_ne!(bindings[0].scope_id, bindings[1].scope_id, "{language:?}");
+            assert_eq!(
+                bindings[0].function_id, bindings[1].function_id,
+                "{language:?}"
+            );
+            assert!(bindings[0].function_id.is_some(), "{language:?}");
+
+            for ((declaration_line, use_line), binding) in
+                declaration_and_use_lines.into_iter().zip(bindings)
+            {
+                assert_eq!(binding.range.start_line, declaration_line, "{language:?}");
+                assert!(
+                    facts.binding_uses.iter().any(|use_| {
+                        use_.name == name
+                            && use_.range.start_line == use_line
+                            && use_.binding_id == Some(binding.id)
+                    }),
+                    "{language:?}: line {use_line} must resolve binding declared on line {declaration_line}"
+                );
+                assert!(
+                    facts.data_nodes.iter().any(|node| {
+                        node.kind == types::DataNodeKind::VariableUse
+                            && node.name.as_deref() == Some(name)
+                            && node.range.start_line == use_line
+                            && node.binding_id == Some(binding.id)
+                    }),
+                    "{language:?}: data node on line {use_line} must keep binding identity"
+                );
+            }
         }
     }
 }

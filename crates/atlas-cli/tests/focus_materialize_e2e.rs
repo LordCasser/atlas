@@ -1374,6 +1374,116 @@ fn n5_focus_baseline_language_units_match_index_full() {
     }
 }
 
+fn scope_chain_language_parity_cases() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        #[cfg(feature = "typescript")]
+        (
+            "scope.ts",
+            "function shadowTypescript(input: number): number {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            "shadowTypescript",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "scope.js",
+            "function shadowJavascript(input) {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            "shadowJavascript",
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "scope.ets",
+            "function shadowArkts(input: number): number {\n  let value: number = input;\n  if (input > 0) {\n    let value: number = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            "shadowArkts",
+        ),
+        #[cfg(feature = "c")]
+        (
+            "scope.c",
+            "int shadow_c(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            "shadow_c",
+        ),
+        #[cfg(feature = "cpp")]
+        (
+            "scope.cpp",
+            "int shadow_cpp(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            "shadow_cpp",
+        ),
+        #[cfg(feature = "java")]
+        (
+            "ScopeJava.java",
+            "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
+            "shadowJava",
+        ),
+    ]
+}
+
+/// Scope-chain identity must survive both product paths. This checks the
+/// persisted binding slice as well as dataflow/CFG so Focus cannot silently
+/// collapse same-name locals while still matching node counts.
+#[test]
+fn n5_focus_scope_chain_bindings_match_index_full_across_languages() {
+    let cases = scope_chain_language_parity_cases();
+    assert!(!cases.is_empty(), "at least one language feature is required");
+    let fixtures: Vec<_> = cases
+        .iter()
+        .map(|(path, source, _)| (*path, *source))
+        .collect();
+
+    let indexed = setup_project(&fixtures);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+
+    let focused = setup_project(&fixtures);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+
+    for (path, _, symbol_name) in cases {
+        let indexed_symbol = symbol_id_by_name(&indexed_store, symbol_name);
+        let indexed_dataflow = unit_dataflow_slice(&indexed_store, &indexed_symbol);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_symbol);
+        let indexed_values: Vec<_> = indexed_store
+            .find_bindings_by_function(&indexed_symbol)
+            .unwrap()
+            .into_iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        assert_eq!(indexed_values.len(), 2, "{path}: two value bindings");
+        assert_ne!(indexed_values[0].id, indexed_values[1].id, "{path}");
+        assert_ne!(
+            indexed_values[0].scope_id, indexed_values[1].scope_id,
+            "{path}"
+        );
+
+        let focused_symbol = symbol_id_by_name(&focused_store, symbol_name);
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&focused_symbol)
+                .unwrap()
+                .is_empty(),
+            "{path}: unit must be cold before Focus ensure"
+        );
+        materialize
+            .dataflow()
+            .ensure_for_function(&focused_symbol, Some("scope-chain-language-parity"))
+            .unwrap_or_else(|error| panic!("{path}: Focus ensure failed: {error:#}"));
+
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &focused_symbol),
+            indexed_dataflow,
+            "{path}: Focus dataflow/CFG == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &focused_symbol),
+            indexed_bindings,
+            "{path}: Focus bindings == full Index"
+        );
+    }
+}
+
 /// C# switch pattern variables are scoped to individual arms. Focus must
 /// preserve the same subject-to-capture flow and same-name binding identities
 /// as full Index without materializing a peer method.

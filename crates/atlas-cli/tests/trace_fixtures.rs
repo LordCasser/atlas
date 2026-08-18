@@ -112,6 +112,116 @@ fn index_files(files: &[(&str, &str)]) -> Arc<Store> {
     store
 }
 
+fn scope_chain_persistence_cases() -> Vec<(&'static str, &'static str, [(u32, u32); 2])> {
+    vec![
+        #[cfg(feature = "typescript")]
+        (
+            "scope.ts",
+            "function shadowTypescript(input: number): number {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "scope.js",
+            "function shadowJavascript(input) {\n  let value = input;\n  if (input > 0) {\n    let value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "scope.ets",
+            "function shadowArkts(input: number): number {\n  let value: number = input;\n  if (input > 0) {\n    let value: number = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "c")]
+        (
+            "scope.c",
+            "int shadow_c(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "cpp")]
+        (
+            "scope.cpp",
+            "int shadow_cpp(int input) {\n  int value = input;\n  if (input > 0) {\n    int value = input + 1;\n    consume(value);\n  }\n  return value;\n}\n",
+            [(1, 6), (3, 4)],
+        ),
+        #[cfg(feature = "java")]
+        (
+            "ScopeJava.java",
+            "class ScopeJava {\n  static int shadowJava(int input, boolean first) {\n    if (first) {\n      int value = input;\n      consume(value);\n    } else {\n      int value = input + 1;\n      consume(value);\n    }\n    return input;\n  }\n}\n",
+            [(3, 4), (6, 7)],
+        ),
+    ]
+}
+
+#[test]
+fn fx_scope_chain_bindings_persist_and_trace_separately_across_languages() {
+    let cases = scope_chain_persistence_cases();
+    assert!(!cases.is_empty(), "at least one language feature is required");
+    let files: Vec<_> = cases
+        .iter()
+        .map(|(path, source, _)| (*path, *source))
+        .collect();
+    let store = index_files(&files);
+    let engine = TraceEngine::new(store.clone());
+
+    for (path, _, declaration_and_use_lines) in cases {
+        let file_id = FileId::generate(path);
+        let language = Language::from_path(Path::new(path)).expect("fixture language");
+        let mut bindings: Vec<_> = store
+            .find_bindings_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{path}: bindings: {error}"))
+            .into_iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(bindings.len(), 2, "{path}: two value bindings");
+        assert_ne!(bindings[0].id, bindings[1].id, "{path}");
+        assert_ne!(bindings[0].scope_id, bindings[1].scope_id, "{path}");
+        assert_eq!(bindings[0].function_id, bindings[1].function_id, "{path}");
+        assert!(bindings[0].function_id.is_some(), "{path}");
+
+        let data_nodes = store
+            .find_data_nodes_by_file(&file_id)
+            .unwrap_or_else(|error| panic!("{path}: data nodes: {error}"));
+        for ((declaration_line, use_line), binding) in
+            declaration_and_use_lines.into_iter().zip(bindings)
+        {
+            assert_eq!(binding.range.start_line, declaration_line, "{path}");
+            let sink = data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some("value")
+                        && node.range.start_line == use_line
+                })
+                .unwrap_or_else(|| panic!("{path}: value use on line {use_line}"));
+            assert_eq!(sink.binding_id, Some(binding.id), "{path}");
+
+            let response = engine.trace_variable(
+                &file_id,
+                sink.range.start_line + 1,
+                sink.range.start_column + 1,
+                20,
+            );
+            assert!(response.ok, "{path}: scope trace failed: {response:?}");
+            assert_envelope_ok(&response, language.as_str());
+            let trace = response
+                .result
+                .unwrap_or_else(|| panic!("{path}: scope trace path"));
+            assert_eq!(
+                trace
+                    .sink
+                    .binding_use
+                    .as_ref()
+                    .and_then(|use_| use_.binding_id),
+                Some(binding.id),
+                "{path}: trace sink binding"
+            );
+            assert_has_edge_kind(&trace, DataFlowKind::Assign);
+        }
+    }
+}
+
 fn assert_persisted_exception_cfg(
     store: &Store,
     function_id: &atlas_engine::SymbolId,
