@@ -6,4 +6,5 @@
 (interfaceDefinition) @scope.interface
 (functionDefinition) @scope.function
 (mainDefinition) @scope.function
+(matchCase) @scope.conditional
 (block) @scope.block

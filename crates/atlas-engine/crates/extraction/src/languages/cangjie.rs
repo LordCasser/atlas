@@ -4,6 +4,8 @@
 
 use crate::languages::{node_range, node_text};
 
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
@@ -11,13 +13,14 @@ use crate::frontend::{
 };
 use crate::languages::shared::{
     SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_target,
-    make_df_parameter, make_reference_use, make_scope_def,
+    make_df_assign_value, make_df_parameter, make_reference_use, make_scope_def,
 };
+use std::collections::HashMap;
 use types::bindings::BindingDef;
 use types::capability::FeatureSupport;
 use types::dataflow::{DataFlowEdge, DataNode};
-use types::enums::{BindingKind, DataNodeKind};
-use types::ids::{CallsiteId, DataNodeId};
+use types::enums::{BindingKind, DataFlowKind, DataNodeKind};
+use types::ids::{CallsiteId, DataFlowEdgeId, DataNodeId};
 use types::*;
 
 /// Cangjie frontend spec.
@@ -198,12 +201,20 @@ impl LexicalBindingSpec for CangjieAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.60,
-            vec!["basic parameter/local binding extraction"],
+            0.65,
+            vec!["parameter/local and arm-scoped match binding extraction"],
         )
     }
     fn normalize(&self, _ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_cangjie_lexical(&capture.name, capture.node, _ctx.source, _ctx.file_id)
+    }
+
+    fn binding_use_query(&self) -> &str {
+        "(varBindingPattern) @binding.use"
+    }
+
+    fn is_binding_use(&self, node: tree_sitter::Node<'_>) -> bool {
+        !is_cangjie_match_pattern_syntax(node)
     }
 }
 
@@ -212,7 +223,12 @@ impl DataflowSpec for CangjieAdapter {
         include_str!("../../queries/cangjie/dataflow_builder.scm")
     }
     fn capability(&self) -> FeatureSupport {
-        FeatureSupport::supported_with_limitations(0.60, vec!["AST-driven local dataflow"])
+        FeatureSupport::supported_with_limitations(
+            0.65,
+            vec![
+                "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative",
+            ],
+        )
     }
     fn normalize(
         &self,
@@ -220,6 +236,19 @@ impl DataflowSpec for CangjieAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_cangjie_dataflow(&capture.name, capture.node, _ctx.source, _ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_cangjie_match_edges(ctx.root, pos_map, edges);
+        Ok(())
     }
 }
 
@@ -358,6 +387,7 @@ fn cj_scope_kind(capture: &str) -> Option<ScopeKind> {
         "scope.class" => Some(ScopeKind::Class),
         "scope.interface" => Some(ScopeKind::Class),
         "scope.function" => Some(ScopeKind::Function),
+        "scope.conditional" => Some(ScopeKind::Conditional),
         "scope.block" => Some(ScopeKind::Block),
         _ => None,
     }
@@ -369,6 +399,7 @@ fn cj_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
+        "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
     }
 }
@@ -380,9 +411,140 @@ fn normalize_cangjie_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = cj_binding_kind(capture_name)?;
+    if capture_name == "lexical.pattern" && !is_cangjie_match_binding_pattern(node) {
+        return None;
+    }
     let name = node_text(node, source)?;
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
+}
+
+/// Whether a node belongs to the pattern portion before `=>` in a match arm.
+/// Guards and bodies share the `matchCase` node but are ordinary use sites.
+fn cangjie_match_pattern_end(case: tree_sitter::Node<'_>) -> Option<usize> {
+    let guard_start = {
+        let mut cursor = case.walk();
+        case.named_children(&mut cursor)
+            .find(|child| child.kind() == "patternGuard")
+            .map(|guard| guard.start_byte())
+    };
+    let arrow_start = {
+        let mut cursor = case.walk();
+        case.children(&mut cursor)
+            .find(|child| child.kind() == "=>")
+            .map(|arrow| arrow.start_byte())
+    };
+    guard_start.or(arrow_start)
+}
+
+fn is_cangjie_match_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    std::iter::successors(node.parent(), |current| current.parent())
+        .find(|ancestor| ancestor.kind() == "matchCase")
+        .and_then(cangjie_match_pattern_end)
+        .is_some_and(|pattern_end| node.end_byte() <= pattern_end)
+}
+
+/// Select immutable variables introduced by Cangjie match patterns. The
+/// direct `varBindingPattern` child of an enum pattern is its constructor name;
+/// bindings nested in the enum's tuple payload remain valid targets.
+fn is_cangjie_match_binding_pattern(node: tree_sitter::Node<'_>) -> bool {
+    node.kind() == "varBindingPattern"
+        && is_cangjie_match_pattern_syntax(node)
+        && node
+            .parent()
+            .is_none_or(|parent| parent.kind() != "enumPattern")
+}
+
+fn collect_cangjie_match_bindings<'tree>(
+    node: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_cangjie_match_binding_pattern(node) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_cangjie_match_bindings(child, bindings);
+    }
+}
+
+fn collect_cangjie_match_case_bindings<'tree>(
+    case: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    let Some(pattern_end) = cangjie_match_pattern_end(case) else {
+        return;
+    };
+    let mut cursor = case.walk();
+    for child in case
+        .named_children(&mut cursor)
+        .filter(|child| child.end_byte() <= pattern_end)
+    {
+        collect_cangjie_match_bindings(child, bindings);
+    }
+}
+
+fn walk_cangjie_match_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "matchExpression"
+        && let Some(subject) = node.named_child(0)
+        && subject.kind() != "matchCaseBody"
+    {
+        let subject_key = NodePosKey {
+            start_byte: subject.start_byte() as u32,
+            end_byte: subject.end_byte() as u32,
+            kind: DataNodeKind::Expr,
+        };
+        if let Some(&source_id) = pos_map.get(&subject_key) {
+            let mut cursor = node.walk();
+            for case in node
+                .named_children(&mut cursor)
+                .filter(|child| child.kind() == "matchCase")
+            {
+                let mut targets = Vec::new();
+                collect_cangjie_match_case_bindings(case, &mut targets);
+                for target in targets {
+                    let target_key = NodePosKey {
+                        start_byte: target.start_byte() as u32,
+                        end_byte: target.end_byte() as u32,
+                        kind: DataNodeKind::Local,
+                    };
+                    let Some(&target_id) = pos_map.get(&target_key) else {
+                        continue;
+                    };
+                    if edges.iter().any(|edge| {
+                        edge.source == source_id
+                            && edge.target == target_id
+                            && edge.kind == DataFlowKind::Assign
+                    }) {
+                        continue;
+                    }
+                    let edge_id = DataFlowEdgeId::generate(
+                        &source_id,
+                        &target_id,
+                        DataFlowKind::Assign.as_str(),
+                    );
+                    edges.push(DataFlowEdge::new(
+                        edge_id,
+                        source_id,
+                        target_id,
+                        DataFlowKind::Assign,
+                        node_range(target),
+                        0.75,
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_cangjie_match_edges(child, pos_map, edges);
+    }
 }
 
 // ── Dataflow normalize ─────────────────────────────────────────────────
@@ -439,6 +601,16 @@ fn normalize_cangjie_dataflow(
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
         "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.pattern_target" => {
+            if is_cangjie_match_binding_pattern(node) {
+                make_df_assign_target(file_id, node, source, range)
+            } else {
+                (None, None)
+            }
+        }
+        "df.match_subject" => {
+            make_df_assign_value(file_id, node, source, range, &["postfixExpression"])
+        }
         "df.assign_value" => {
             let text = node_text(node, source).unwrap_or_default();
             let callsite_id = find_call_expression_cangjie(node)
@@ -597,6 +769,9 @@ fn normalize_cangjie_dataflow(
             (Some(dn), None)
         }
         "df.identifier_use" => {
+            if is_cangjie_match_pattern_syntax(node) {
+                return (None, None);
+            }
             // Part A: standard declaration/property filter (checks immediate parent)
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
@@ -703,6 +878,224 @@ mod tests {
 
         let df_q = tree_sitter::Query::new(&lang, spec.dataflow_builder_query());
         assert!(df_q.is_ok(), "dataflow query: {:?}", df_q.err());
+    }
+
+    #[test]
+    fn test_cj_match_pattern_bindings_and_subject_flow() {
+        let source = concat!(
+            "enum Result {\n",
+            "    | Success(Int64)\n",
+            "    | Failure(Int64)\n",
+            "}\n",
+            "func dispatch(value: Result): Int64 {\n",
+            "    return match (value) {\n",
+            "        case Success(payload) where payload > 0 => consume(payload)\n",
+            "        case Failure(payload) => consume(payload)\n",
+            "        case fallback => match (fallback) {\n",
+            "            case inner => consume(inner)\n",
+            "        }\n",
+            "    }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("match_bindings.cj");
+        let facts = crate::extract_file_with_mode(
+            &cangjie_frontend(),
+            file_id,
+            std::path::Path::new("match_bindings.cj"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let payload_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "payload")
+            .collect();
+        assert_eq!(
+            payload_bindings.len(),
+            2,
+            "same-named captures in different cases need distinct bindings: {:?}",
+            payload_bindings
+        );
+        let fallback_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "fallback")
+            .expect("simple binding pattern");
+        let inner_binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "inner")
+            .expect("nested match binding");
+        assert_ne!(fallback_binding.scope_id, inner_binding.scope_id);
+        for binding in payload_bindings
+            .iter()
+            .copied()
+            .chain(std::iter::once(fallback_binding))
+        {
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding.scope_id)
+                .expect("match-case binding scope");
+            assert_eq!(scope.kind, ScopeKind::Conditional);
+            assert!(
+                facts
+                    .binding_uses
+                    .iter()
+                    .filter(|use_| use_.scope_id == binding.scope_id && use_.name == binding.name)
+                    .all(|use_| use_.binding_id == Some(binding.id)),
+                "guard/body uses must resolve the arm-local match binding {}",
+                binding.name
+            );
+        }
+        for rejected in ["Success", "Failure", "consume"] {
+            assert!(
+                facts
+                    .bindings
+                    .iter()
+                    .all(|binding| binding.name != rejected),
+                "pattern constructor/call syntax must not bind {rejected}"
+            );
+        }
+
+        let guarded_payload = payload_bindings
+            .iter()
+            .find(|binding| binding.range.start_line == 6)
+            .unwrap();
+        assert_eq!(
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(guarded_payload.id))
+                .count(),
+            3,
+            "declaration, guard, and body must share the guarded payload binding: {:?}",
+            facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.name == "payload")
+                .collect::<Vec<_>>()
+        );
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 5
+            })
+            .expect("match selector expression");
+        let targets: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Local
+                    && matches!(node.name.as_deref(), Some("payload" | "fallback"))
+            })
+            .collect();
+        assert_eq!(targets.len(), 3);
+        for target in targets {
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+        }
+
+        let inner_subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("fallback")
+                    && node.range.start_line == 8
+            })
+            .expect("nested match selector");
+        let inner_target = facts
+            .data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("inner"))
+            .expect("nested match target");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == inner_subject.id
+                && edge.target == inner_target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts
+                .dataflow_edges
+                .iter()
+                .all(|edge| edge.source != subject.id || edge.target != inner_target.id),
+            "outer selector must not flow into a nested match binding"
+        );
+    }
+
+    #[test]
+    fn test_cj_tuple_and_type_pattern_bindings_receive_their_selectors() {
+        let source = concat!(
+            "func tupleMatch(pair: (Int64, Int64)): Int64 {\n",
+            "    return match (pair) {\n",
+            "        case (left, right) where left > 0 => right\n",
+            "        case (_, _) => 0\n",
+            "    }\n",
+            "}\n",
+            "func typeMatch(value: Object): Int64 {\n",
+            "    return match (value) {\n",
+            "        case typed: Int64 => typed\n",
+            "        case _ => 0\n",
+            "    }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("structural_patterns.cj");
+        let facts = crate::extract_file_with_mode(
+            &cangjie_frontend(),
+            file_id,
+            std::path::Path::new("structural_patterns.cj"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        for (subject_name, subject_line, target_names) in [
+            ("pair", 1, &["left", "right"][..]),
+            ("value", 7, &["typed"][..]),
+        ] {
+            let subject = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(subject_name)
+                        && node.range.start_line == subject_line
+                })
+                .unwrap_or_else(|| panic!("missing selector {subject_name}"));
+            for target_name in target_names {
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == DataNodeKind::Local
+                            && node.name.as_deref() == Some(*target_name)
+                    })
+                    .unwrap_or_else(|| panic!("missing pattern binding {target_name}"));
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == subject.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                }));
+            }
+        }
+        assert!(
+            facts.bindings.iter().all(|binding| binding.name != "Int64"),
+            "type syntax must not become a binding"
+        );
     }
 
     #[test]

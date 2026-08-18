@@ -4700,6 +4700,97 @@ func process(): String {
     assert_step_with_name(&store, &path, DataFlowKind::Assign, "x");
 }
 
+#[test]
+#[cfg(feature = "cangjie")]
+fn fx_cangjie_match_bindings_persist_and_trace_from_subject() {
+    let source = r#"enum Result {
+    | Success(Int64)
+    | Failure(Int64)
+}
+func dispatch(value: Result): Int64 {
+    return match (value) {
+        case Success(payload) where payload > 0 => consume(payload)
+        case Failure(payload) => consume(payload)
+        case fallback => consume(fallback)
+    }
+}
+"#;
+    let store = index_files(&[("match_bindings.cj", source)]);
+    let file_id = FileId::generate("match_bindings.cj");
+    let bindings = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted Cangjie bindings");
+    let payload_bindings: Vec<_> = bindings
+        .iter()
+        .filter(|binding| binding.name == "payload")
+        .collect();
+    assert_eq!(
+        payload_bindings.len(),
+        2,
+        "same name in separate match arms must retain separate identities"
+    );
+    let guarded_payload = payload_bindings
+        .iter()
+        .find(|binding| binding.range.start_line == 6)
+        .expect("guarded payload binding");
+    let guarded_uses = store
+        .find_binding_uses_by_binding(&guarded_payload.id)
+        .expect("guarded payload uses");
+    assert_eq!(
+        guarded_uses.len(),
+        3,
+        "declaration, guard, and body must persist one binding identity"
+    );
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 5
+        })
+        .expect("persisted match selector");
+    let target_ids: Vec<_> = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::Local
+                && matches!(node.name.as_deref(), Some("payload" | "fallback"))
+        })
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(target_ids.len(), 3);
+    let subject_edges = store
+        .find_dataflow_edges_by_source(&subject.id)
+        .expect("persisted subject edges");
+    assert!(target_ids.iter().all(|target| {
+        subject_edges
+            .iter()
+            .any(|edge| edge.target == *target && edge.kind == DataFlowKind::Assign)
+    }));
+
+    let sink = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("payload")
+                && node.range.start_line == 6
+        })
+        .max_by_key(|node| node.range.start_column)
+        .expect("guarded-arm body use");
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "cangjie");
+    let path = response.result.expect("Cangjie match binding trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "value");
+}
+
 /// Real `cjvs`-shaped entrypoint: both `mainDefinition` and ordinary
 /// `functionDefinition` nodes must receive persisted CFG facts, and Cangjie
 /// `match` arms must be represented as sibling case paths.

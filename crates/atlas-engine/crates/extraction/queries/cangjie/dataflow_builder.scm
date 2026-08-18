@@ -13,6 +13,16 @@
     (varBindingPattern) @df.assign_target)
   initilizer: (_) @df.assign_value)
 
+;; --- Match selector and pattern binding targets ---
+;; The anchors select only `match (selector)`, not conditionless match bodies.
+(matchExpression
+  . (_) @df.match_subject
+  . (matchCase))
+
+;; Broad grammar capture filtered by the adapter, including bindings nested in
+;; tuple, enum, and type patterns while excluding enum constructor syntax.
+(varBindingPattern) @df.pattern_target
+
 ;; --- Return statements ---
 (jumpExpression) @df.return_value
 

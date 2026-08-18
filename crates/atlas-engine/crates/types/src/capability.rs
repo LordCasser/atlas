@@ -1052,9 +1052,9 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "AST-driven local dataflow with verified initializer value-to-local direction and basic parameter/local/return/call capture",
+            "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
             "method call targets now captured (simple + obj.method() patterns)",
-            "scope-chain-aware binding not implemented",
+            "match bindings are arm-scoped and shared by guard/body uses; general scope-chain-aware binding remains incomplete",
         ],
         feature_overrides: &[
             (
@@ -1068,18 +1068,25 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["basic parameter/local binding extraction"],
+                    &["parameter/local and arm-scoped match binding extraction"],
                 ),
             ),
             (
                 FeatureField::LocalDataflow,
-                FeatureOverride::WithLimitations(0.65, &["AST-driven local dataflow"]),
+                FeatureOverride::WithLimitations(
+                    0.65,
+                    &[
+                        "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative",
+                    ],
+                ),
             ),
             (
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.65,
-                    &["basic use-def via lexical bindings + dataflow"],
+                    &[
+                        "basic use-def via lexical bindings + dataflow; match guard/body uses share arm binding identity",
+                    ],
                 ),
             ),
             (
@@ -1099,7 +1106,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; guarded wildcards and composite exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; match subjects flow to arm-scoped bindings used by guards/bodies, while structural projection, guard control dependencies, guarded wildcards, and composite exhaustiveness remain conservative",
                         "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                     ],
                 ),
@@ -2839,9 +2846,9 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "AST-driven local dataflow with verified initializer value-to-local direction and basic parameter/local/return/call capture",
+                "AST-driven local dataflow with verified initializer value-to-local direction, basic parameter/local/return/call capture, and conservative match subject-to-binding flow",
                 "method call targets now captured (simple + obj.method() patterns)",
-                "scope-chain-aware binding not implemented",
+                "match bindings are arm-scoped and shared by guard/body uses; general scope-chain-aware binding remains incomplete",
             ]
         );
 
@@ -2868,18 +2875,25 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["basic parameter/local binding extraction"],
+                vec!["parameter/local and arm-scoped match binding extraction"],
             )
         );
         assert_eq!(
             fm.local_dataflow,
-            FeatureSupport::supported_with_limitations(0.65, vec!["AST-driven local dataflow"])
+            FeatureSupport::supported_with_limitations(
+                0.65,
+                vec![
+                    "match subjects flow conservatively to arm-scoped bindings; structural projection and guard control dependencies remain conservative"
+                ]
+            )
         );
         assert_eq!(
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.65,
-                vec!["basic use-def via lexical bindings + dataflow"],
+                vec![
+                    "basic use-def via lexical bindings + dataflow; match guard/body uses share arm binding identity"
+                ],
             )
         );
         // field_access has confidence override (0.55, not 0.65)
@@ -2901,7 +2915,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; guarded wildcards and composite exhaustiveness are not inferred, and match patterns, guards, and bindings are not dataflow-aware",
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; a direct unguarded wildcard arm in subject or conditionless match suppresses the synthetic no-match path; match subjects flow to arm-scoped bindings used by guards/bodies, while structural projection, guard control dependencies, guarded wildcards, and composite exhaustiveness remain conservative",
                     "try/catch/finally continuation routing for normal and abrupt paths is implemented with path-isolated clones; catch-type selection, implicit exceptions, labeled jumps, and over-budget atomic fallback remain precision boundaries",
                 ],
             )
