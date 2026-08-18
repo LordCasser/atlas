@@ -8,14 +8,27 @@ All notable changes to Atlas will be documented in this file.
 
 ### Rust dataflow
 
+- Model `match` guard `let` chains with source-ordered binding activation:
+  each RHS resolves before its new pattern binding becomes visible, later
+  guard operands and the arm body reuse that binding, and every guard value
+  flows to its capture. SQLite Trace and Focus-vs-full-Index fixtures cover
+  same-name shadowing and persisted activation boundaries.
 - Bind bare, tuple/tuple-struct, struct shorthand/renamed, `ref`/`mut`, `@`,
   slice, and canonical or-pattern captures in an isolated `match_arm` scope.
   The match scrutinee flows conservatively to each capture, while guard and
   arm-body uses resolve the same binding identity.
 - Cover nested-match ownership, constructor/type rejection, SQLite trace, and
   Focus-vs-full-Index parity. Structural projection, borrow/move modes,
-  guard-let bindings, guard control dependencies, and syntactically ambiguous
-  single-segment constants remain explicit precision boundaries.
+  guard control dependencies, and syntactically ambiguous single-segment
+  constants remain explicit precision boundaries.
+
+### Storage
+
+- Upgrade SQLite to Schema V4. `BindingDef.visible_from_byte` persists the
+  source position where a lexical definition becomes eligible for lookup,
+  allowing ordered shadowing and Rust guard-let chains to share one resolver.
+  Atlas intentionally has no development-schema migration chain; remove the
+  old `.atlas/atlas.db` and rebuild the index.
 
 ### Cangjie dataflow
 

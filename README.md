@@ -259,7 +259,7 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V3: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store. CFG nodes persist managed-resource lexical ownership so path-isolated scope exits survive indexing.
+Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. The current storage contract is Schema V4: one persistent SQLite database plus bounded focus extraction, not a second application-level cache store. Bindings persist their source-order activation point, and CFG nodes persist managed-resource lexical ownership so ordered shadowing and path-isolated scope exits survive indexing.
 
 For a cold scoped query, Focus keeps two distinct boundaries: relevant files receive
 structural extraction, while import/include dependencies normally receive only

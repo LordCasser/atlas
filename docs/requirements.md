@@ -200,12 +200,12 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
 
 解析侧需要提供的基础 facts 分为“当前 trace 主路径事实”和“后续恢复/增强事实”：
 
-- `BindingDef` / `BindingUse`：区分定义和使用，记录作用域、range、shadowing 关系。
+- `BindingDef` / `BindingUse`：区分定义和使用，记录作用域、range、shadowing 关系；`BindingDef.visible_from_byte` 记录定义开始参与 lexical lookup 的源码位置，声明节点本身仍直接归属该 binding。
 - `Callsite`：记录 callee、receiver、callee range、call range，并保存当前实现使用的 inline argument facts。
 - `DataNode`：覆盖参数、局部变量、字面量、字段访问、调用结果、返回值、表达式和 import alias。
 - `DataFlowEdge`：覆盖简单赋值、字段读取/写入、实参到形参、返回值到调用结果、变量到返回值等关系。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
-- `FunctionSummary`：已实现持久化摘要层（Schema V3）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接；CFG 节点同时持久化托管资源作用域归属。当前开发线不兼容旧 schema；schema 变化后必须重建索引。
+- `FunctionSummary`：已实现持久化摘要层（当前 Schema V4）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接；CFG 节点同时持久化托管资源作用域归属。当前开发线不兼容旧 schema；schema 变化后必须重建索引。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -233,7 +233,7 @@ Level 5: lightweight interprocedural summaries
 | ArkTS | DataflowInterproc via TS grammar，confidence 0.60；CFG WithLimitations(0.55)；named function/method branch-loop-switch 与 try/catch/finally isolated continuations 已验证，ArkUI trailing-block/callback CFG 仍未建模 | 显示 `arkts via TypeScript grammar` provenance 与具体 limitation |
 | Go | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/switch、`select` sibling、direct same-function `Goto` 与 bounded path-sensitive defer-stack CFG；normal exit 通过 `Defer`/owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 在注册时执行，confidence 0.78 | computed/unresolved goto 终止本地路径；cyclic/over-budget defer 原子回退；panic/recover/Goexit、复杂 anonymous deferred body 与泛型 dataflow 显示 limitation |
 | C# | DataflowInterproc: ArgToParam+ReturnToCall，CFG，try/catch/finally 与 `using_statement` isolated continuations，direct same-function `Goto` 退出按内到外执行 using/finally cleanup，direct `throw new T` 有序语法精确匹配截断，confidence 0.72 | 跳入更深 lexical/cleanup region 或跳出 finally 被拒绝；filter/继承/alias/变量抛出保持保守；`goto case/default`、清理异常和 partial classes limitation |
-| Rust | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`match` sibling、`let-else` success 与 explicit/unconditional-loop/builtin panic-like macro abrupt alternative、`?` success/residual-return CFG；match scrutinee 保守流向 arm-local bare/tuple/tuple-struct/struct/ref/mut/`@`/slice/or-pattern capture，guard/body 复用 identity，confidence 0.70 | macro shadowing/re-export、custom never-return macro、panic unwind/catch_unwind、guarded/复杂 pattern exhaustiveness、结构投影、borrow/move mode、guard-let binding、guard control dependency 与单段常量语法歧义保持保守；Drop 仍是 function-exit effect heuristic，不等同于 path-sensitive lexical RAII |
+| Rust | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`match` sibling、`let-else` success 与 explicit/unconditional-loop/builtin panic-like macro abrupt alternative、`?` success/residual-return CFG；match scrutinee 保守流向 arm-local bare/tuple/tuple-struct/struct/ref/mut/`@`/slice/or-pattern capture，guard/body 复用 identity；guard-let chain 按源码顺序激活 binding 并连接 RHS→capture，confidence 0.70 | macro shadowing/re-export、custom never-return macro、panic unwind/catch_unwind、guarded/复杂 pattern exhaustiveness、结构投影、borrow/move mode、guard control dependency 与单段常量语法歧义保持保守；Drop 仍是 function-exit effect heuristic，不等同于 path-sensitive lexical RAII |
 | PHP | DataflowInterproc: ArgToParam+ReturnToCall，confidence 0.62；CFG WithLimitations(0.60)，覆盖 function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（退出时按内到外执行 finally）、try/catch/finally isolated continuations、return/throw→Exit 与 direct `throw new T` 有序语法精确匹配截断 | goto 跳入 loop/switch 或跨 finally-clause 边界被拒绝；unknown label、name-based binding、动态调用、implicit exception 与继承/alias/变量抛出的 catch selection limitation |
 | Ruby | DataflowInterproc: ArgToParam+ReturnToCall；classic `case`/`when` 与 `case ... in` sibling CFG，refutable case/in 无 `else` 时保留 implicit Throw，unguarded capture/wildcard 抑制不可能的 no-match；case/in subject 保守流向 bare、key-only、`=>`、array/hash-rest capture，guard/body 复用 enclosing local identity，pin 保持读取；method-body/nested `rescue/else/ensure` 与 block-resource isolated continuations；lexical-loop/resource-block `redo` 和 rescue-owned `retry` 分别持久化为 `Redo`/`Retry` edge；modifier while/until 区分 plain pre-test 与 `begin...end` post-test，`next`/`redo`/`break` 分别进入 condition/body/join；confidence 0.65 | ordinary iterator/callback block、block/yield implicit calls、pattern structural projection、post-match path-definedness 与更深 pattern exhaustiveness 保持保守 |
 | Kotlin | DataflowInterproc: ArgToParam+ReturnToCall；branch/loop/`when` sibling CFG；`when (val V = E)` 建模 initializer→subject binding，condition/guard/body 复用同一 scoped identity；try/catch/finally 与 `.use` isolated continuations，confidence 0.67 | cleanup 为确定性 LIFO；pinned grammar 不提取 extension receiver binding；smart-cast、type/range projection、guard control dependency 与精确清理异常保持 limitation |
@@ -347,7 +347,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 当前基线验收标准：
 
 1. 全部 14 种语言能进入解析路径，均达到 DataflowInterproc 级别；Cangjie 已提升至 DataflowInterproc。
-2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V3）。
+2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V4）。
 3. TUI / MCP `search` 工具能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
 5. 所有语言 import/include resolution 可用。
@@ -356,7 +356,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 8. MCP 输出可被 Agent 消费，并控制预算。
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
-11. 持久化跨函数摘要层与托管资源 CFG owner（Schema V3）已实现。
+11. 持久化跨函数摘要层、source-ordered binding activation 与托管资源 CFG owner（Schema V4）已实现。
 12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
 13. 部分索引的大型项目中，首次 cold symbol/explore 能按符号级 bounded closure 收敛；
     dependency-only 文件不被误算 structural，后台成功/失败都能到达可解释终态。

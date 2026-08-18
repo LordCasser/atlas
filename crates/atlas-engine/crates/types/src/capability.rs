@@ -1306,8 +1306,8 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
-            "AST-driven local dataflow with conservative match scrutinee-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+            "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
+            "AST-driven local dataflow with conservative match scrutinee-to-capture and guard-let value-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
             "macro_rules! body patterns not analyzed",
             "borrow checker semantics not modeled",
         ],
@@ -1317,7 +1317,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
+                        "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
                     ],
                 ),
             ),
@@ -1326,7 +1326,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
+                        "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1335,7 +1335,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "scope-chain-aware use-def; match guard/body uses share arm-local identity while guard-let bindings remain conservative",
+                        "scope-chain-aware use-def; match guard/body and source-ordered guard-let chain uses share arm-local identities",
                     ],
                 ),
             ),
@@ -1344,7 +1344,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees flow to arm-local captures used by guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/binding/range exhaustiveness, structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative",
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and guard-let RHS values flow to arm-local captures used by later guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, structural projection, borrow/move modes, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -3074,8 +3074,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative",
-                "AST-driven local dataflow with conservative match scrutinee-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+                "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
+                "AST-driven local dataflow with conservative match scrutinee-to-capture and guard-let value-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
                 "macro_rules! body patterns not analyzed",
                 "borrow checker semantics not modeled",
             ]
@@ -3114,7 +3114,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "scope-chain-aware binding with arm-local match captures; guard-let bindings and syntactically ambiguous single-segment constants remain conservative"
+                    "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative"
                 ],
             )
         );
@@ -3123,7 +3123,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "match scrutinees flow conservatively to arm-local captures; structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative"
+                    "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3132,7 +3132,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "scope-chain-aware use-def; match guard/body uses share arm-local identity while guard-let bindings remain conservative"
+                    "scope-chain-aware use-def; match guard/body and source-ordered guard-let chain uses share arm-local identities"
                 ],
             )
         );
@@ -3141,7 +3141,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees flow to arm-local captures used by guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/binding/range exhaustiveness, structural projection, borrow/move modes, guard-let bindings, and guard control dependencies remain conservative"
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and guard-let RHS values flow to arm-local captures used by later guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, structural projection, borrow/move modes, and guard control dependencies remain conservative"
                 ],
             )
         );

@@ -3,7 +3,7 @@
 本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
 版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前基线：Atlas `1.6.1`、SQLite Schema V3、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前基线：Atlas `1.6.1`、SQLite Schema V4、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -64,7 +64,7 @@ crates/
   atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/focus_materialize, dossier
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
-    crates/db/         SQLite schema v3、Store API、readers、schema 初始化基础设施
+    crates/db/         SQLite schema v4、Store API、readers、schema 初始化基础设施
     crates/extraction/ tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG、worker pool
     crates/resolution/ builtin filter、scope/container/import/include/name matching、PathAliasResolver
     crates/graph/      GraphBuilder、GraphSnapshot、GraphEngine
@@ -369,9 +369,9 @@ MCP Tool
 - `fragmentation_ratio` = `freelist_count / page_count`：表示空闲页面占比；高值意味着 `VACUUM` 可压缩文件。
 - `cache_coverage_ratio` = `cache_size_kib / total_db_kib`：表示页面缓存是否能在内存中覆盖整个 DB。>1.0 时所有页面理论可常驻内存。
 
-### 6.1 Schema（当前版本：V3）
+### 6.1 Schema（当前版本：V4）
 
-当前 schema 版本为 V3。软件处于快速原型期，新库以主 DDL 为准，不保留
+当前 schema 版本为 V4。软件处于快速原型期，新库以主 DDL 为准，不保留
 旧 schema 运行时补丁路径。schema contract 改变时直接更新主
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
 中累积旧版本补丁路径。当 `user_version` 与 `CURRENT_SCHEMA_VERSION`
@@ -389,7 +389,7 @@ DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::i
 | `imports` | import/include 语句 |
 | `symbol_edges` | 符号间语义边 |
 | `callsites` | 调用表达式 |
-| `bindings` / `binding_uses` | 词法绑定 |
+| `bindings` / `binding_uses` | 词法绑定；`visible_from_byte` 区分声明位置与开始参与 lookup 的位置 |
 | `data_nodes` / `dataflow_edges` | 数据流节点与边 |
 | `cfg_nodes` / `cfg_edges` | 控制流图 |
 | `function_summaries` | 函数摘要元数据 |
@@ -558,7 +558,7 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 
 ### 7.2 跨函数桥接（DataflowInterproc）
 
-Schema V3 包含持久化摘要层，并在 CFG 节点上持久化托管资源作用域归属：
+Schema V4 包含持久化摘要层，并在 CFG 节点上持久化托管资源作用域归属：
 
 ```
 dataflow_edges    = intra-procedural, fine-grained, direct edges
@@ -666,7 +666,7 @@ LanguageCapabilityProfile
 | ArkTS | DataflowInterproc | ✓ (0.55) | 0.60 | ✓ (ArgToParam + ReturnToCall + AppStorage StateFlow) | TS grammar + 等长 struct 归一化；named function/method branch-loop-switch 与 try/catch/finally continuation CFG 已验证；ArkUI trailing-block、嵌套 arrow callback 仍是显式边界 |
 | Go | DataflowInterproc | ✓ | 0.78 | ✓ (ArgToParam + ReturnToCall) | branch/loop/switch、`select` sibling 与 direct same-function `Goto` CFG；bounded path-sensitive defer stack 在 normal exit 通过 `Defer`→owner-matched `BlockExit` 做 LIFO cleanup，nested call argument effect 保持注册时执行；cyclic/over-budget defer 原子回退，panic/recover/Goexit 与复杂 anonymous deferred body 未建模 |
 | C# | DataflowInterproc | ✓ | 0.72 | ✓ (ArgToParam + ReturnToCall) | try/catch/finally 与 `using_statement` normal/abrupt continuation CFG；direct same-function `Goto` 退出按内到外执行 using/finally cleanup，非法 region crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，filter/继承/alias/变量抛出保持保守；cleanup 为确定性 LIFO |
-| Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与 abrupt alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` 抑制 synthetic no-match；scrutinee 保守流向 arm-local nested capture，guard/body 复用 identity；结构投影、borrow/move mode、guard-let、guard dependency、单段常量歧义与 macro resolution/unwind 保守；Drop 仅为 function-exit heuristic |
+| Rust | DataflowInterproc | ✓ (branch/loop/`match`/`let-else`/`?`) | 0.70 | ✓ (ArgToParam + ReturnToCall) | `let-else` 分离 success 与 abrupt alternative；`?` 保留 success 与 residual return-to-Exit，且不穿透 closure/async boundary；direct unguarded `_` 抑制 synthetic no-match；scrutinee 保守流向 arm-local nested capture，guard/body 复用 identity；guard-let chain 按源码顺序激活 binding，RHS→capture 建立保守 Assign；结构投影、borrow/move mode、guard dependency、单段常量歧义与 macro resolution/unwind 保守；Drop 仅为 function-exit heuristic |
 | PHP | DataflowInterproc | ✓ (0.60) | 0.62 | ✓ (ArgToParam + ReturnToCall) | function/method branch/loop/switch/elseif、fall-through、numeric break/continue、direct same-function `Goto`（含 inner-to-outer finally continuation）、try/catch/finally isolated continuations 与 return/throw→Exit 已验证；loop/switch entry 与 finally-clause crossing 被拒绝；direct `throw new T` 支持有序语法精确匹配截断，继承/alias/变量抛出仍保守 |
 | Ruby | DataflowInterproc | ✓ (classic `case`/`when` + `case ... in` + modifier/lexical loops + `rescue/else/ensure` + block resource + `retry/redo`) | 0.65 | ✓ (ArgToParam + ReturnToCall) | case/in sibling CFG 保留 implicit no-match Throw，unguarded capture/wildcard 可证明 exhaustive，且不消费 enclosing-loop break；subject 保守流向 bare/key-only/`=>`/rest capture，guard/body 复用 enclosing local identity，pin 保持读取；modifier while/until 区分 plain pre-test 与 `begin...end` post-test；lexical loop 与 modeled resource-block `redo` 回到 body entry；rescue-owned `retry` 经 nested cleanup 回到 begin dispatch；ordinary iterator/callback block、pattern structural projection、post-match path-definedness 与 yield 仍为 best-effort |
 | Kotlin | DataflowInterproc | ✓ (branch/loop/`when`) | 0.67 | ✓ (ArgToParam + ReturnToCall) | `when (val V = E)` 建模 initializer→subject binding，condition/guard/body 复用 scoped identity；try/catch/finally 与 `.use` normal/abrupt continuation CFG，cleanup 为确定性 LIFO；pinned grammar 不提取 extension receiver，smart-cast、type/range projection 与 guard control dependency 保守 |
@@ -748,7 +748,7 @@ type range 若对应源码已经打开但未闭合定义，则不是完整 struc
 
 已知限制：
 - CFG 是 tree-sitter 驱动的 best-effort 控制流，不等同于编译器 CFG；复杂异常、异步、computed goto、C# `goto case/default`、C++ cross-scope destruction、grammar-hidden label 和语言特有控制结构的精度以 capability limitations 与 golden fixtures 为准。
-- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue、direct same-function goto（含 finally continuation）与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go/C#/PHP 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 与 PHP 各自执行语言规定的 cleanup 并拒绝非法 region crossing，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；Python capture/`as`/star、Ruby bare/key-only/`=>`/rest、Rust nested capture 与 Cangjie simple/tuple/enum-payload/type binding 从 match subject/scrutinee 接收保守 Assign 边，guard/body use 复用各自 namespace/arm identity，Ruby pin 保持读取；结构投影、post-match definedness、Rust borrow/move mode/guard-let 与 guard control dependency 仍保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Ruby modifier while/until 区分 plain pre-test 与 `begin...end` post-test，lexical/modifier-loop/resource-block `redo` 与 rescue-owned `retry` 分别持久化为 `Redo`/`Retry` edge，并与 nested cleanup 组合。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；更早 handler 因继承未知而保留。更深的 structural/type-driven pattern exhaustiveness、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby ordinary iterator/callback block、computed goto、C# `goto case/default`、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
+- 全部 14 种语言已覆盖各自声明的函数/方法 CFG 边界；PHP 覆盖 branch/loop/switch/elseif、numeric break/continue、direct same-function goto（含 finally continuation）与 return/throw terminal，Cangjie 额外覆盖 `match` sibling paths。Java、JS/TS/ArkTS、Go、Rust 与 Kotlin 的 grammar-visible lexical label 可解析 `break`/`continue`，包括穿过 finally/managed cleanup 的路径；C/C++/Go/C#/PHP 的 direct same-function goto/label 解析为专用 `Goto` edge，C# 与 PHP 各自执行语言规定的 cleanup 并拒绝非法 region crossing，未知或非直接目标终止本地路径。Python 的 unguarded syntax-irrefutable wildcard/capture/`as`/group/OR pattern，以及 Rust/Cangjie 的 direct unguarded wildcard，会抑制不可能的 synthetic no-match；Python capture/`as`/star、Ruby bare/key-only/`=>`/rest、Rust nested capture 与 Cangjie simple/tuple/enum-payload/type binding 从 match subject/scrutinee 接收保守 Assign 边，guard/body use 复用各自 namespace/arm identity，Rust guard-let chain 进一步按源码顺序激活 binding 并连接 RHS→capture，Ruby pin 保持读取；结构投影、post-match definedness、Rust borrow/move mode 与 guard control dependency 仍保守。C++ 以 `Exception` edge 表达 try/catch 与 explicit throw；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated clone 表达 try/catch/except/finally-style continuation。Ruby modifier while/until 区分 plain pre-test 与 `begin...end` post-test，lexical/modifier-loop/resource-block `redo` 与 rescue-owned `retry` 分别持久化为 `Redo`/`Retry` edge，并与 nested cleanup 组合。Java/C#/PHP 的 direct object-created explicit throw 会按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；更早 handler 因继承未知而保留。更深的 structural/type-driven pattern exhaustiveness、继承/alias catch selection、implicit exception、cleanup exception identity、Ruby ordinary iterator/callback block、computed goto、C# `goto case/default`、C++ cross-scope destruction 与 grammar-hidden label 仍以 capability limitations 为准。
 - 全量抽取 worker 仍没有线程隔离式硬 timeout；查询时 Focus lazy structural 通过
   `CancelCheck` 检查点受 `FocusWindow` 总预算约束。
 
