@@ -88,6 +88,14 @@ operator-specific truthiness/nullish control dependency. Ruby and Cangjie
 semantics、numeric promotion/boxing and prefix/postfix result timing remain
 conservative where the language supports them.
 
+TypeScript、JavaScript and ArkTS `let`/`const` `for...of`/`for...in` simple or
+nested pattern captures are loop-scoped；direct existing-local assignment forms
+reuse the prior binding. The whole iterable/object reaches each supported target
+through aggregate Assign 0.65, including value provenance for `for await`. Treat
+that edge as a possible aggregate origin, not exact element/key projection or
+proof of async scheduling. `var` function-scoped loop binding semantics and
+member/subscript iteration targets remain conservative.
+
 Rust `match` scrutinees and source-ordered guard-let RHS values preserve exact
 syntactic access paths for fixed tuple、tuple-struct、struct and slice-prefix
 captures. Variable Trace can therefore traverse `FieldLoad` 0.80 into an

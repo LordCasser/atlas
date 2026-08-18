@@ -251,9 +251,10 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 > identity independently. Attribute/member/field/navigation、subscript/element/array/
 > index、receiver 与 pointer/dereference targets、
 > overloaded/dynamic operator semantics、
-> numeric promotion/boxing、prefix/postfix result timing、nested destructuring、async
-> paths and ArkUI callback/trailing-block internals remain conservative according to
-> each language profile. TypeScript、JavaScript 与 ArkTS 的 direct-identifier
+> numeric promotion/boxing、prefix/postfix result timing、remaining declaration
+> destructuring edge cases, async scheduling and ArkUI callback/trailing-block
+> internals remain conservative according to each language profile.
+> TypeScript、JavaScript 与 ArkTS 的 direct-identifier
 > `&&=`/`||=`/`??=` additionally preserve path-insensitive old-value/RHS
 > may-provenance through Read 0.75 and Assign 0.90 without proving RHS execution or
 > operator-specific truthiness/nullish control dependency. Ruby and Cangjie
@@ -371,6 +372,14 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   Direct extraction、SQLite/Trace、cold Focus==full Index 与真实 OpenCode
   `defaultPreferred ??= select(process.env.SHELL)` 覆盖该边界；member/subscript
   target 与 operator-specific truthiness/nullish control dependency 保持保守。
+- ✅ TypeScript、JavaScript 与 ArkTS 的 `let/const` `for-of`/`for-in`
+  simple/nested pattern capture 已使用 loop-scoped binding；无 declaration 的
+  direct existing-local assignment form 复用原 binding。Whole iterable/object
+  以 Assign 0.65 向各 target 提供 aggregate provenance，`for-await` 只保留相同
+  值来源契约，不声明异步调度。Direct extraction、SQLite/Trace、cold Focus==full
+  Index 与真实 OpenCode `serializeSearchParams` 的 `[key, value] of entries`
+  覆盖三种 identity。Exact element/key projection、`var` function-scoped binding
+  与 member/subscript iteration target 保持保守。
 - ✅ Cangjie simple/nested-tuple/enum-payload `for-in` capture 已建模为
   loop-scoped binding，enum constructor syntax 不建 binding，iterable 向每个 capture 以
   0.65 aggregate Assign 提供来源；guard/body 复用循环变量 identity，循环后同名 use
@@ -545,6 +554,16 @@ CFG + DataFlow
   `defaultPreferred ??= select(process.env.SHELL)` fixture cover TypeScript、
   JavaScript and ArkTS identities independently. Member/subscript targets and
   exact truthiness/nullish control dependency remain explicit boundaries.
+- **TypeScript-family iteration binding — scoped phase implemented:** pinned
+  `for_in_statement` fields drive one shared TS-family path. `let/const`
+  simple/nested pattern leaves join the loop scope；direct existing-local
+  assignment forms reuse their prior binding. The whole iterable/object reaches
+  each supported target through aggregate `Assign` at 0.65, including the value
+  provenance portion of `for-await`. Direct extraction、SQLite/Trace、cold
+  Focus-vs-full-Index and the real OpenCode `[key, value] of entries` fixture cover
+  TypeScript、JavaScript and ArkTS identities independently. Exact element/key
+  projection、`var` function-scoped binding、member/subscript iteration target and
+  async scheduling remain explicit precision boundaries.
 - **Python/Go/Rust/Kotlin/Ruby direct-variable mutation — scoped phase implemented:**
   each pinned grammar now emits one direct-identifier aggregate read-modify-write
   shape for its supported augmented/compound/operator/update syntax. Previous value
