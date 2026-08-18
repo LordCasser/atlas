@@ -1247,6 +1247,133 @@ fn n5_focus_dataflow_unit_matches_index_full() {
     );
 }
 
+fn baseline_language_parity_cases() -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut cases = Vec::new();
+    #[cfg(feature = "typescript")]
+    cases.push((
+        "typescript.ts",
+        "export function parityTypescript(input: number): number {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+        "parityTypescript",
+    ));
+    #[cfg(feature = "javascript")]
+    cases.push((
+        "javascript.js",
+        "export function parityJavascript(input) {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+        "parityJavascript",
+    ));
+    #[cfg(feature = "python")]
+    cases.push((
+        "python.py",
+        "def parity_python(input):\n    local = input\n    if local > 0:\n        local = local + 1\n    return local\n",
+        "parity_python",
+    ));
+    #[cfg(feature = "java")]
+    cases.push((
+        "ParityJava.java",
+        "class ParityJava {\n  static int parityJava(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
+        "parityJava",
+    ));
+    #[cfg(feature = "c")]
+    cases.push((
+        "parity_c.c",
+        "int parity_c(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+        "parity_c",
+    ));
+    #[cfg(feature = "cpp")]
+    cases.push((
+        "parity_cpp.cpp",
+        "int parity_cpp(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+        "parity_cpp",
+    ));
+    #[cfg(feature = "arkts")]
+    cases.push((
+        "parity_arkts.ets",
+        "function parityArkts(input: number): number {\n  let local: number = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+        "parityArkts",
+    ));
+    #[cfg(feature = "csharp")]
+    cases.push((
+        "ParityCsharp.cs",
+        "class ParityCsharp {\n  static int parityCsharp(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
+        "parityCsharp",
+    ));
+    #[cfg(feature = "php")]
+    cases.push((
+        "parity_php.php",
+        "<?php\nfunction parity_php($input) {\n  $local = $input;\n  if ($local > 0) { $local = $local + 1; }\n  return $local;\n}\n",
+        "parity_php",
+    ));
+    cases
+}
+
+/// Every language that does not already have a feature-specific N5 fixture
+/// still needs a baseline product-path guard: a function materialized through
+/// Focus must persist the same bindings, local dataflow, and CFG as full Index.
+#[test]
+fn n5_focus_baseline_language_units_match_index_full() {
+    let cases = baseline_language_parity_cases();
+    assert!(
+        !cases.is_empty(),
+        "at least one language feature is required"
+    );
+    let fixtures: Vec<_> = cases
+        .iter()
+        .map(|(path, source, _)| (*path, *source))
+        .collect();
+
+    let indexed = setup_project(&fixtures);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+
+    let focused = setup_project(&fixtures);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+
+    for (path, _, symbol_name) in cases {
+        let indexed_symbol = symbol_id_by_name(&indexed_store, symbol_name);
+        let indexed_dataflow = unit_dataflow_slice(&indexed_store, &indexed_symbol);
+        let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_symbol);
+        assert!(
+            !indexed_dataflow.nodes.is_empty() && !indexed_dataflow.cfg_nodes.is_empty(),
+            "{path}: full Index must persist dataflow and CFG"
+        );
+        assert!(
+            !indexed_bindings.is_empty(),
+            "{path}: full Index must persist function bindings"
+        );
+
+        let focused_symbol = symbol_id_by_name(&focused_store, symbol_name);
+        assert!(
+            focused_store
+                .find_data_nodes_by_function(&focused_symbol)
+                .unwrap()
+                .is_empty(),
+            "{path}: unit must be cold before Focus ensure"
+        );
+        materialize
+            .dataflow()
+            .ensure_for_function(&focused_symbol, Some("baseline-language-parity"))
+            .unwrap_or_else(|error| panic!("{path}: Focus ensure failed: {error:#}"));
+
+        assert_eq!(
+            unit_dataflow_slice(&focused_store, &focused_symbol),
+            indexed_dataflow,
+            "{path}: Focus dataflow/CFG == full Index"
+        );
+        assert_eq!(
+            unit_binding_slice(&focused_store, &focused_symbol),
+            indexed_bindings,
+            "{path}: Focus bindings == full Index"
+        );
+    }
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.
