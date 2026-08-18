@@ -1248,62 +1248,62 @@ fn n5_focus_dataflow_unit_matches_index_full() {
 }
 
 fn baseline_language_parity_cases() -> Vec<(&'static str, &'static str, &'static str)> {
-    let mut cases = Vec::new();
-    #[cfg(feature = "typescript")]
-    cases.push((
-        "typescript.ts",
-        "export function parityTypescript(input: number): number {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
-        "parityTypescript",
-    ));
-    #[cfg(feature = "javascript")]
-    cases.push((
-        "javascript.js",
-        "export function parityJavascript(input) {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
-        "parityJavascript",
-    ));
-    #[cfg(feature = "python")]
-    cases.push((
-        "python.py",
-        "def parity_python(input):\n    local = input\n    if local > 0:\n        local = local + 1\n    return local\n",
-        "parity_python",
-    ));
-    #[cfg(feature = "java")]
-    cases.push((
-        "ParityJava.java",
-        "class ParityJava {\n  static int parityJava(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
-        "parityJava",
-    ));
-    #[cfg(feature = "c")]
-    cases.push((
-        "parity_c.c",
-        "int parity_c(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
-        "parity_c",
-    ));
-    #[cfg(feature = "cpp")]
-    cases.push((
-        "parity_cpp.cpp",
-        "int parity_cpp(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
-        "parity_cpp",
-    ));
-    #[cfg(feature = "arkts")]
-    cases.push((
-        "parity_arkts.ets",
-        "function parityArkts(input: number): number {\n  let local: number = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
-        "parityArkts",
-    ));
-    #[cfg(feature = "csharp")]
-    cases.push((
-        "ParityCsharp.cs",
-        "class ParityCsharp {\n  static int parityCsharp(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
-        "parityCsharp",
-    ));
-    #[cfg(feature = "php")]
-    cases.push((
-        "parity_php.php",
-        "<?php\nfunction parity_php($input) {\n  $local = $input;\n  if ($local > 0) { $local = $local + 1; }\n  return $local;\n}\n",
-        "parity_php",
-    ));
-    cases
+    vec![
+        #[cfg(feature = "typescript")]
+        (
+            "typescript.ts",
+            "export function parityTypescript(input: number): number {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+            "parityTypescript",
+        ),
+        #[cfg(feature = "javascript")]
+        (
+            "javascript.js",
+            "export function parityJavascript(input) {\n  let local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+            "parityJavascript",
+        ),
+        #[cfg(feature = "python")]
+        (
+            "python.py",
+            "def parity_python(input):\n    local = input\n    if local > 0:\n        local = local + 1\n    return local\n",
+            "parity_python",
+        ),
+        #[cfg(feature = "java")]
+        (
+            "ParityJava.java",
+            "class ParityJava {\n  static int parityJava(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
+            "parityJava",
+        ),
+        #[cfg(feature = "c")]
+        (
+            "parity_c.c",
+            "int parity_c(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+            "parity_c",
+        ),
+        #[cfg(feature = "cpp")]
+        (
+            "parity_cpp.cpp",
+            "int parity_cpp(int input) {\n  int local = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+            "parity_cpp",
+        ),
+        #[cfg(feature = "arkts")]
+        (
+            "parity_arkts.ets",
+            "function parityArkts(input: number): number {\n  let local: number = input;\n  if (local > 0) { local = local + 1; }\n  return local;\n}\n",
+            "parityArkts",
+        ),
+        #[cfg(feature = "csharp")]
+        (
+            "ParityCsharp.cs",
+            "class ParityCsharp {\n  static int parityCsharp(int input) {\n    int local = input;\n    if (local > 0) { local = local + 1; }\n    return local;\n  }\n}\n",
+            "parityCsharp",
+        ),
+        #[cfg(feature = "php")]
+        (
+            "parity_php.php",
+            "<?php\nfunction parity_php($input) {\n  $local = $input;\n  if ($local > 0) { $local = $local + 1; }\n  return $local;\n}\n",
+            "parity_php",
+        ),
+    ]
 }
 
 /// Every language that does not already have a feature-specific N5 fixture
