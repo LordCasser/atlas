@@ -219,7 +219,7 @@ impl DataflowSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative",
+                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -343,34 +343,7 @@ fn walk_rust_language_edges(
                 let mut targets = Vec::new();
                 collect_rust_match_binding_nodes(pattern, source, &mut targets);
                 for target in targets {
-                    let target_key = NodePosKey {
-                        start_byte: target.start_byte() as u32,
-                        end_byte: target.end_byte() as u32,
-                        kind: DataNodeKind::Local,
-                    };
-                    let Some(&target_id) = pos_map.get(&target_key) else {
-                        continue;
-                    };
-                    if edges.iter().any(|edge| {
-                        edge.source == source_id
-                            && edge.target == target_id
-                            && edge.kind == DataFlowKind::Assign
-                    }) {
-                        continue;
-                    }
-                    let edge_id = DataFlowEdgeId::generate(
-                        &source_id,
-                        &target_id,
-                        DataFlowKind::Assign.as_str(),
-                    );
-                    edges.push(DataFlowEdge::new(
-                        edge_id,
-                        source_id,
-                        target_id,
-                        DataFlowKind::Assign,
-                        node_range(target),
-                        0.75,
-                    ));
+                    connect_rust_pattern_flow(source_id, target, pos_map, edges);
                 }
             }
         }
@@ -392,24 +365,7 @@ fn walk_rust_language_edges(
             let mut targets = Vec::new();
             collect_rust_guard_let_binding_nodes(pattern, source, &mut targets);
             for target in targets {
-                let target_key = NodePosKey {
-                    start_byte: target.start_byte() as u32,
-                    end_byte: target.end_byte() as u32,
-                    kind: DataNodeKind::Local,
-                };
-                let Some(&target_id) = pos_map.get(&target_key) else {
-                    continue;
-                };
-                let edge_id =
-                    DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
-                edges.push(DataFlowEdge::new(
-                    edge_id,
-                    source_id,
-                    target_id,
-                    DataFlowKind::Assign,
-                    node_range(target),
-                    0.75,
-                ));
+                connect_rust_pattern_flow(source_id, target, pos_map, edges);
             }
         }
     }
@@ -419,6 +375,57 @@ fn walk_rust_language_edges(
             walk_rust_language_edges(child, source, pos_map, edges);
         }
     }
+}
+
+fn connect_rust_pattern_flow(
+    source_id: DataNodeId,
+    target: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let target_key = NodePosKey {
+        start_byte: target.start_byte() as u32,
+        end_byte: target.end_byte() as u32,
+        kind: DataNodeKind::Local,
+    };
+    let Some(&target_id) = pos_map.get(&target_key) else {
+        return;
+    };
+    let projection_key = NodePosKey {
+        kind: DataNodeKind::Expr,
+        ..target_key
+    };
+    let (flow_source, flow_kind, confidence) = if let Some(&projection_id) =
+        pos_map.get(&projection_key)
+    {
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &projection_id, DataFlowKind::FieldLoad.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            projection_id,
+            DataFlowKind::FieldLoad,
+            node_range(target),
+            0.80,
+        ));
+        (projection_id, DataFlowKind::Assign, 0.90)
+    } else {
+        (source_id, DataFlowKind::Assign, 0.75)
+    };
+    if edges.iter().any(|edge| {
+        edge.source == flow_source && edge.target == target_id && edge.kind == flow_kind
+    }) {
+        return;
+    }
+    let edge_id = DataFlowEdgeId::generate(&flow_source, &target_id, flow_kind.as_str());
+    edges.push(DataFlowEdge::new(
+        edge_id,
+        flow_source,
+        target_id,
+        flow_kind,
+        node_range(target),
+        confidence,
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +755,109 @@ fn is_rust_pattern_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bo
     is_rust_match_binding_node(node, source) || is_rust_guard_let_binding_node(node, source)
 }
 
+fn rust_pattern_root_and_value<'tree>(
+    node: tree_sitter::Node<'tree>,
+) -> Option<(tree_sitter::Node<'tree>, tree_sitter::Node<'tree>)> {
+    if let Some(condition) = rust_match_guard_let_condition(node) {
+        return Some((
+            condition.child_by_field_name("pattern")?,
+            condition.child_by_field_name("value")?,
+        ));
+    }
+    let match_pattern = nearest_ancestor_of_kind(node, "match_pattern")?;
+    let root_pattern = rust_match_root_pattern(match_pattern)?;
+    if !node_is_within(node, root_pattern) {
+        return None;
+    }
+    let match_expression = nearest_ancestor_of_kind(match_pattern, "match_expression")?;
+    Some((root_pattern, match_expression.child_by_field_name("value")?))
+}
+
+fn rust_positional_pattern_index(
+    pattern: tree_sitter::Node<'_>,
+    descendant: tree_sitter::Node<'_>,
+) -> Option<usize> {
+    let type_node = pattern.child_by_field_name("type");
+    let mut index = 0usize;
+    let mut rest_seen = false;
+    let mut cursor = pattern.walk();
+    for child in pattern.children(&mut cursor) {
+        if matches!(child.kind(), "(" | ")" | "[" | "]" | ",")
+            || type_node.is_some_and(|type_node| child.id() == type_node.id())
+        {
+            continue;
+        }
+        if child.kind() == "remaining_field_pattern" {
+            rest_seen = true;
+            continue;
+        }
+        if node_is_within(descendant, child) {
+            return (!rest_seen).then_some(index);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn rust_pattern_projection_suffix(
+    target: tree_sitter::Node<'_>,
+    root_pattern: tree_sitter::Node<'_>,
+    source: &str,
+) -> Option<String> {
+    if target.id() == root_pattern.id() {
+        return Some(String::new());
+    }
+    let mut components = Vec::new();
+    let mut descendant = target;
+    loop {
+        let parent = descendant.parent()?;
+        match parent.kind() {
+            "tuple_pattern" | "tuple_struct_pattern" | "slice_pattern" => {
+                let index = rust_positional_pattern_index(parent, descendant)?;
+                components.push(format!("[{index}]"));
+            }
+            "field_pattern" => {
+                let name = parent.child_by_field_name("name")?;
+                components.push(format!(".{}", node_text(name, source)?));
+            }
+            _ => {}
+        }
+        descendant = parent;
+        if parent.id() == root_pattern.id() {
+            break;
+        }
+        if !node_is_within(parent, root_pattern) {
+            return None;
+        }
+    }
+    components.reverse();
+    Some(components.concat())
+}
+
+fn rust_pattern_projection_access_path(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+) -> Option<String> {
+    if !is_rust_pattern_binding_node(node, source) {
+        return None;
+    }
+    let (root_pattern, value) = rust_pattern_root_and_value(node)?;
+    let suffix = rust_pattern_projection_suffix(node, root_pattern, source)?;
+    if suffix.is_empty() {
+        return None;
+    }
+    let value_text = node_text(value, source)?;
+    let base = if matches!(value.kind(), "identifier" | "field_expression") {
+        value_text
+    } else {
+        format!(
+            "({})",
+            value_text.split_whitespace().collect::<Vec<_>>().join(" ")
+        )
+    };
+    Some(format!("{base}{suffix}"))
+}
+
 fn collect_rust_match_binding_nodes<'tree>(
     node: tree_sitter::Node<'tree>,
     source: &str,
@@ -823,6 +933,33 @@ fn normalize_rust_dataflow_builder(
                 (None, None)
             }
         }
+        "df.pattern_projection" => rust_pattern_projection_access_path(node, source)
+            .map(|access_path| {
+                let node_id = DataNodeId::generate(
+                    &file_id,
+                    None::<&SymbolId>,
+                    "expr",
+                    None,
+                    Some(&access_path),
+                    range.start_byte,
+                );
+                (
+                    Some(DataNode {
+                        id: node_id,
+                        file_id,
+                        function_id: None,
+                        kind: DataNodeKind::Expr,
+                        binding_id: None,
+                        callsite_id: None,
+                        name: None,
+                        access_path: Some(access_path),
+                        arg_index: None,
+                        range,
+                    }),
+                    None,
+                )
+            })
+            .unwrap_or((None, None)),
         "df.assign_value" | "df.mutation_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
@@ -1199,8 +1336,22 @@ fn dispatch(value: Result) -> i32 {
         for target in facts.data_nodes.iter().filter(|node| {
             node.kind == DataNodeKind::Local && node.name.as_deref() == Some("payload")
         }) {
+            let projection = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.range == target.range
+                        && node.access_path.as_deref() == Some("value[0]")
+                })
+                .expect("tuple-struct payload projection");
             assert!(facts.dataflow_edges.iter().any(|edge| {
                 edge.source == outer_subject.id
+                    && edge.target == projection.id
+                    && edge.kind == DataFlowKind::FieldLoad
+            }));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == projection.id
                     && edge.target == target.id
                     && edge.kind == DataFlowKind::Assign
             }));
@@ -1298,19 +1449,50 @@ fn inspect(value: Message) -> i32 {
                     && node.range.start_line == 7
             })
             .expect("match scrutinee");
-        for name in [
-            "left", "right", "x", "renamed", "whole", "inner", "a", "b", "first", "second",
+        for (name, access_path) in [
+            ("left", Some("value[0]")),
+            ("right", Some("value[1]")),
+            ("x", Some("value.x")),
+            ("renamed", Some("value.y")),
+            ("whole", None),
+            ("inner", Some("value[1]")),
+            ("a", Some("value[0]")),
+            ("b", Some("value[1]")),
+            ("first", Some("value[0][0]")),
+            ("second", Some("value[0][1]")),
         ] {
             let target = facts
                 .data_nodes
                 .iter()
                 .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
                 .unwrap_or_else(|| panic!("missing target {name}"));
-            assert!(facts.dataflow_edges.iter().any(|edge| {
-                edge.source == subject.id
-                    && edge.target == target.id
-                    && edge.kind == DataFlowKind::Assign
-            }));
+            if let Some(access_path) = access_path {
+                let projection = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == DataNodeKind::Expr
+                            && node.range == target.range
+                            && node.access_path.as_deref() == Some(access_path)
+                    })
+                    .unwrap_or_else(|| panic!("missing projection {access_path} for {name}"));
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == subject.id
+                        && edge.target == projection.id
+                        && edge.kind == DataFlowKind::FieldLoad
+                }));
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == projection.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                }));
+            } else {
+                assert!(facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == subject.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                }));
+            }
         }
 
         for name in ["a", "b"] {
@@ -1329,6 +1511,116 @@ fn inspect(value: Message) -> i32 {
                 "one canonical declaration plus guard/body uses for {name}"
             );
         }
+    }
+
+    #[test]
+    fn test_rust_match_and_guard_let_bindings_use_structural_projection_paths() {
+        let source = r#"struct Point { x: i32, coords: (i32, i32) }
+enum Message { Pair(i32, Point), Values([i32; 3]) }
+fn inspect(value: Message, fallback: Option<(i32, i32)>) -> i32 {
+    match value {
+        Message::Pair(first, Point { x, coords: (left, ref right) })
+            if let Some((guard_left, guard_right)) = fallback
+            => first + x + left + *right + guard_left + guard_right,
+        Message::Values([head, .., tail]) => head + tail,
+    }
+}
+"#;
+        let file_id = FileId::generate("structural_match_projection.rs");
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            file_id,
+            std::path::Path::new("structural_match_projection.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let match_subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("value")
+                    && node.range.start_line == 3
+            })
+            .expect("match subject");
+        let guard_value = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("fallback")
+                    && node.range.start_line == 5
+            })
+            .expect("guard-let value");
+
+        for (name, access_path, source_id) in [
+            ("first", "value[0]", match_subject.id),
+            ("x", "value[1].x", match_subject.id),
+            ("left", "value[1].coords[0]", match_subject.id),
+            ("right", "value[1].coords[1]", match_subject.id),
+            ("guard_left", "fallback[0][0]", guard_value.id),
+            ("guard_right", "fallback[0][1]", guard_value.id),
+            ("head", "value[0][0]", match_subject.id),
+        ] {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("missing Local target {name}"));
+            let projection = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.access_path.as_deref() == Some(access_path)
+                        && node.range == target.range
+                })
+                .unwrap_or_else(|| panic!("missing projection {access_path} for {name}"));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == source_id
+                    && edge.target == projection.id
+                    && edge.kind == DataFlowKind::FieldLoad
+                    && (edge.confidence - 0.80).abs() < f64::EPSILON
+            }));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == projection.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && (edge.confidence - 0.90).abs() < f64::EPSILON
+            }));
+            assert!(
+                facts.dataflow_edges.iter().all(|edge| {
+                    edge.source != source_id
+                        || edge.target != target.id
+                        || edge.kind != DataFlowKind::Assign
+                }),
+                "an exact projection must replace whole-subject flow for {name}"
+            );
+        }
+
+        let tail = facts
+            .data_nodes
+            .iter()
+            .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("tail"))
+            .expect("post-rest tail target");
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.range != tail.range
+                    || node.kind != DataNodeKind::Expr
+                    || node.access_path.as_deref() == Some("tail")
+            }),
+            "a target after `..` must not claim an exact positional projection"
+        );
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == match_subject.id
+                && edge.target == tail.id
+                && edge.kind == DataFlowKind::Assign
+                && (edge.confidence - 0.75).abs() < f64::EPSILON
+        }));
     }
 
     #[test]
@@ -1430,8 +1722,22 @@ fn inspect(value: Message) -> i32 {
             })
             .expect("guard-let RHS value");
         assert_eq!(guard_rhs.binding_id, Some(outer_extra.id));
+        let guard_projection = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.range == guard_target.range
+                    && node.access_path.as_deref() == Some("extra[0]")
+            })
+            .expect("guard-let tuple-struct projection");
         assert!(facts.dataflow_edges.iter().any(|edge| {
             edge.source == guard_rhs.id
+                && edge.target == guard_projection.id
+                && edge.kind == DataFlowKind::FieldLoad
+        }));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == guard_projection.id
                 && edge.target == guard_target.id
                 && edge.kind == DataFlowKind::Assign
         }));

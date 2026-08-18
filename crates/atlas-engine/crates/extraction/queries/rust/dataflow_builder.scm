@@ -92,11 +92,13 @@
   value: (_) @df.guard_value)
 
 ;; Broad captures are classified by the Rust adapter so nested patterns share
-;; the same syntax rules as lexical binding extraction.
+;; the same syntax rules as lexical binding extraction. The second capture on
+;; each binding lets the adapter materialize an exact syntactic projection when
+;; the path is knowable without type or slice-length inference.
 (match_pattern
-  (identifier) @df.pattern_target)
+  (identifier) @df.pattern_target @df.pattern_projection)
 (_pattern
-  (identifier) @df.pattern_target)
+  (identifier) @df.pattern_target @df.pattern_projection)
 (field_pattern
-  pattern: (identifier) @df.pattern_target)
-(shorthand_field_identifier) @df.pattern_target
+  pattern: (identifier) @df.pattern_target @df.pattern_projection)
+(shorthand_field_identifier) @df.pattern_target @df.pattern_projection
