@@ -224,7 +224,7 @@ impl DataflowSpec for KotlinAdapter {
         FeatureSupport::supported_with_limitations(
             0.67,
             vec![
-                "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
+                "direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90); navigation/index mutation targets, overloaded assignment/inc dispatch, and prefix/postfix result timing remain conservative; when subject initializers and simple local writes flow to scoped bindings, and late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -555,8 +555,10 @@ fn normalize_kotlin_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => {
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
+        "df.assign_value" | "df.mutation_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
@@ -622,8 +624,10 @@ fn normalize_kotlin_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
-            if is_kotlin_declaration_or_property_identifier(node) {
+        "df.identifier_use" | "df.mutation_read" => {
+            if capture_name == "df.identifier_use"
+                && is_kotlin_declaration_or_property_identifier(node)
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

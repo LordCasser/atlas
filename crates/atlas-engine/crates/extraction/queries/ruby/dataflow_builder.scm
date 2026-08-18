@@ -13,6 +13,16 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable non-conditional read-modify-write expressions ---
+(operator_assignment
+  left: (identifier) @df.mutation_target
+  operator: ["+=" "-=" "*=" "**=" "/=" "|=" "&=" "%=" ">>=" "<<=" "^="]
+  right: (_) @df.assign_value) @df.mutation_value
+
+(operator_assignment
+  left: (identifier) @df.mutation_read
+  operator: ["+=" "-=" "*=" "**=" "/=" "|=" "&=" "%=" ">>=" "<<=" "^="])
+
 ;; --- Multiple/destructured assignment targets ---
 (left_assignment_list
   [(identifier)

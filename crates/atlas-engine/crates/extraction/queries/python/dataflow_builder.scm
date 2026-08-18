@@ -26,6 +26,14 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+(augmented_assignment
+  left: (identifier) @df.mutation_target
+  right: (_) @df.assign_value) @df.mutation_value
+
+(augmented_assignment
+  left: (identifier) @df.mutation_read)
+
 ;; --- Destructuring assignment: a, b = expr ---
 ;; Targets (each identifier in the pattern_list / tuple)
 (pattern_list

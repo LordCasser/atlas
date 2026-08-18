@@ -29,6 +29,14 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+(compound_assignment_expr
+  left: (identifier) @df.mutation_target
+  right: (_) @df.assign_value) @df.mutation_value
+
+(compound_assignment_expr
+  left: (identifier) @df.mutation_read)
+
 ;; --- Return expressions ---
 (return_expression
   (_) @df.return_value)

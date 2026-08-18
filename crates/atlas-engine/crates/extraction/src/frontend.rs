@@ -1055,6 +1055,189 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_remaining_language_variable_mutations_preserve_read_modify_write_provenance() {
+        let cases: Vec<(&str, Language, &str, &[(u32, &str)], u32, &[(u32, &str)])> = vec![
+            #[cfg(feature = "python")]
+            (
+                "variable_mutations.py",
+                Language::Python,
+                "def mutate(seed, delta):\n    total = seed\n    total += delta\n    holder.value += delta\n    items[0] += delta\n    return total\n",
+                &[(2, "total += delta")],
+                2,
+                &[(3, "holder.value += delta"), (4, "items[0] += delta")],
+            ),
+            #[cfg(feature = "go")]
+            (
+                "variable_mutations.go",
+                Language::Go,
+                "package mutations\n\nfunc mutate(seed int, delta int) int {\n  total := seed\n  total += delta\n  total++\n  total--\n  holder.value += delta\n  items[0] += delta\n  items[1]++\n  return total\n}\n",
+                &[(4, "total += delta"), (5, "total++"), (6, "total--")],
+                4,
+                &[
+                    (7, "holder.value += delta"),
+                    (8, "items[0] += delta"),
+                    (9, "items[1]++"),
+                ],
+            ),
+            #[cfg(feature = "rust")]
+            (
+                "variable_mutations.rs",
+                Language::Rust,
+                "fn mutate(seed: i32, delta: i32) -> i32 {\n    let mut total = seed;\n    total += delta;\n    holder.value += delta;\n    items[0] += delta;\n    total\n}\n",
+                &[(2, "total += delta")],
+                2,
+                &[(3, "holder.value += delta"), (4, "items[0] += delta")],
+            ),
+            #[cfg(feature = "kotlin")]
+            (
+                "VariableMutations.kt",
+                Language::Kotlin,
+                "fun mutate(seed: Int, delta: Int): Int {\n    var total = seed\n    total += delta\n    total++\n    --total\n    holder.value += delta\n    items[0] += delta\n    items[1]++\n    return total\n}\n",
+                &[(2, "total += delta"), (3, "total++"), (4, "--total")],
+                2,
+                &[
+                    (5, "holder.value += delta"),
+                    (6, "items[0] += delta"),
+                    (7, "items[1]++"),
+                ],
+            ),
+            #[cfg(feature = "ruby")]
+            (
+                "variable_mutations.rb",
+                Language::Ruby,
+                "def mutate(seed, delta)\n  total = seed\n  total += delta\n  holder.value += delta\n  items[0] += delta\n  total ||= delta\n  total\nend\n",
+                &[(2, "total += delta")],
+                2,
+                &[
+                    (3, "holder.value += delta"),
+                    (4, "items[0] += delta"),
+                    (5, "total ||= delta"),
+                ],
+            ),
+        ];
+
+        for (path, language, source, mutations, compound_line, conservative) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let total_binding = {
+                let matches: Vec<_> = facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == "total")
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "{language:?}: mutation writes must reuse the declaration binding"
+                );
+                matches[0]
+            };
+            let delta_binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == "delta")
+                .unwrap_or_else(|| panic!("{language:?}: delta parameter binding"));
+            let node = |kind: types::DataNodeKind, name: &str, line: u32| {
+                facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == kind
+                            && node.name.as_deref() == Some(name)
+                            && node.range.start_line == line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing {kind:?} {name} on line {line}")
+                    })
+            };
+
+            for &(line, expression) in mutations {
+                let target = node(types::DataNodeKind::Local, "total", line);
+                let value = node(types::DataNodeKind::Expr, expression, line);
+                let lhs_read = node(types::DataNodeKind::VariableUse, "total", line);
+                assert_eq!(target.binding_id, Some(total_binding.id), "{language:?}");
+                assert_eq!(lhs_read.binding_id, Some(total_binding.id), "{language:?}");
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == value.id
+                            && edge.target == target.id
+                            && edge.kind == types::DataFlowKind::Assign
+                            && edge.confidence == 0.90
+                    }),
+                    "{language:?}: mutation aggregate {expression} on line {line} must flow to its target"
+                );
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == lhs_read.id
+                            && edge.target == value.id
+                            && edge.kind == types::DataFlowKind::Read
+                            && edge.confidence == 0.75
+                    }),
+                    "{language:?}: previous target value must flow into {expression} on line {line}"
+                );
+            }
+
+            let compound_value = node(types::DataNodeKind::Expr, "total += delta", compound_line);
+            let compound_target = node(types::DataNodeKind::Local, "total", compound_line);
+            let rhs_read = node(types::DataNodeKind::VariableUse, "delta", compound_line);
+            let rhs_value = node(types::DataNodeKind::Expr, "delta", compound_line);
+            assert_eq!(rhs_read.binding_id, Some(delta_binding.id), "{language:?}");
+            assert!(
+                facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == rhs_read.id
+                        && edge.target == compound_value.id
+                        && edge.kind == types::DataFlowKind::Read
+                        && edge.confidence == 0.75
+                }),
+                "{language:?}: compound-assignment RHS must flow into the mutation aggregate"
+            );
+            assert!(
+                facts.dataflow_edges.iter().all(|edge| {
+                    !(edge.source == rhs_value.id
+                        && edge.target == compound_target.id
+                        && edge.kind == types::DataFlowKind::Assign)
+                }),
+                "{language:?}: compound RHS alone must not be treated as the assigned value"
+            );
+
+            for &(line, expression) in conservative {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        !(node.kind == types::DataNodeKind::Expr
+                            && node.name.as_deref() == Some(expression)
+                            && node.range.start_line == line)
+                    }),
+                    "{language:?}: unsupported mutation {expression} remains outside the direct-variable boundary"
+                );
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        !(node.kind == types::DataNodeKind::Local && node.range.start_line == line)
+                    }),
+                    "{language:?}: unsupported mutation {expression} must not create a fake local write"
+                );
+                assert!(
+                    facts.dataflow_edges.iter().all(|edge| {
+                        !(edge.kind == types::DataFlowKind::FieldStore
+                            && edge.location.start_line == line)
+                    }),
+                    "{language:?}: unsupported compound target must not degrade to an RHS-only field store"
+                );
+            }
+        }
+    }
 }
 
 /// Verify that every language with lexical support has a compilable lexical query.

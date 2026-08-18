@@ -221,7 +221,9 @@ fn normalize_py_dataflow_builder(
 
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
         "df.pattern_target" => {
             if is_py_pattern_binding_identifier(node) {
                 make_df_assign_target(file_id, node, source, range)
@@ -229,7 +231,9 @@ fn normalize_py_dataflow_builder(
                 (None, None)
             }
         }
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call"]),
+        "df.assign_value" | "df.mutation_value" => {
+            make_df_assign_value(file_id, node, source, range, &["call"])
+        }
         "df.match_subject" => make_df_assign_value(file_id, node, source, range, &["call"]),
         "df.return_value" => {
             let node_id = DataNodeId::generate(
@@ -346,9 +350,11 @@ fn normalize_py_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.identifier_use" => {
+        "df.identifier_use" | "df.mutation_read" => {
             // Skip identifiers that are declaration names or property names
-            if is_py_identifier_declaration(node) || is_py_pattern_syntax(node) {
+            if (capture_name == "df.identifier_use" && is_py_identifier_declaration(node))
+                || is_py_pattern_syntax(node)
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();
@@ -478,7 +484,7 @@ impl DataflowSpec for PythonAdapter {
         FeatureSupport::supported_with_limitations(
             0.72,
             vec![
-                "match subjects flow conservatively to capture/as/star bindings; structural projection and post-match path-definedness remain path-insensitive",
+                "AST-driven local dataflow; direct-identifier augmented assignment preserves aggregate read-modify-write provenance (0.90); attribute/subscript mutation targets, in-place special-method dispatch, and alias effects remain conservative; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
             ],
         )
     }

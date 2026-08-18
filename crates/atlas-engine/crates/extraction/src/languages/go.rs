@@ -254,7 +254,7 @@ impl DataflowSpec for GoAdapter {
         FeatureSupport::supported_with_limitations(
             0.78,
             vec![
-                "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90), type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; selector/index/pointer mutation targets, case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
             ],
         )
     }
@@ -306,8 +306,12 @@ fn walk_go_assign_edges(
         create_assign_edges_from_expression_lists(left_list, right_list, pos_map, edges);
     }
 
-    // assignment_statement: x = expr
+    // assignment_statement: x = expr. Compound assignments are modeled as
+    // aggregate read-modify-write expressions by the shared builder.
     if kind == "assignment_statement"
+        && node
+            .child_by_field_name("operator")
+            .is_some_and(|operator| operator.kind() == "=")
         && let (Some(left_list), Some(right_list)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -827,15 +831,15 @@ fn normalize_go_dataflow_builder(
     match capture_name {
         "df.parameter" if node_text(node, source).as_deref() == Some("_") => (None, None),
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" | "df.receive_target"
+        "df.assign_target" | "df.receive_target" | "df.mutation_target"
             if node_text(node, source).as_deref() == Some("_") =>
         {
             (None, None)
         }
-        "df.assign_target" | "df.receive_target" => {
+        "df.assign_target" | "df.receive_target" | "df.mutation_target" => {
             make_df_assign_target(file_id, node, source, range)
         }
-        "df.assign_value" => {
+        "df.assign_value" | "df.mutation_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.receive_value" if is_go_receive_expression(node) => {
@@ -940,17 +944,19 @@ fn normalize_go_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
+        "df.identifier_use" | "df.mutation_read" => {
             if node_text(node, source).as_deref() == Some("_")
                 || is_go_type_switch_alias_identifier(node)
                 || is_go_receive_target_identifier(node)
             {
                 return (None, None);
             }
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["type_declaration", "type_spec"],
-            ) {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &["type_declaration", "type_spec"],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

@@ -17,9 +17,32 @@
 ;; --- Assignment statements (x = expr) ---
 (assignment_statement
   left: (expression_list
-    (_) @df.assign_target)
+    (identifier) @df.assign_target)
   right: (expression_list
     (_) @df.assign_value))
+
+;; --- Direct-variable read-modify-write statements ---
+(assignment_statement
+  left: (expression_list
+    . (identifier) @df.mutation_target .)
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>=" "&^="]
+  right: (expression_list
+    . (_) @df.assign_value .)) @df.mutation_value
+
+(assignment_statement
+  left: (expression_list
+    . (identifier) @df.mutation_read .)
+  operator: ["+=" "-=" "*=" "/=" "%=" "&=" "|=" "^=" "<<=" ">>=" "&^="])
+
+(inc_statement
+  . (identifier) @df.mutation_target .) @df.mutation_value
+(inc_statement
+  . (identifier) @df.mutation_read .)
+
+(dec_statement
+  . (identifier) @df.mutation_target .) @df.mutation_value
+(dec_statement
+  . (identifier) @df.mutation_read .)
 
 ;; --- Select receive clauses (case value, ok := <-ch / case value = <-ch) ---
 ;; The receive operation is one aggregate source event. Identifier targets are

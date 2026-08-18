@@ -219,7 +219,7 @@ impl DataflowSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative",
             ],
         )
     }
@@ -813,7 +813,9 @@ fn normalize_rust_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
+        "df.assign_target" | "df.mutation_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
         "df.pattern_target" => {
             if is_rust_pattern_binding_node(node, source) {
                 make_df_assign_target(file_id, node, source, range)
@@ -821,7 +823,7 @@ fn normalize_rust_dataflow_builder(
                 (None, None)
             }
         }
-        "df.assign_value" => {
+        "df.assign_value" | "df.mutation_value" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
         "df.match_subject" => {
@@ -943,21 +945,23 @@ fn normalize_rust_dataflow_builder(
         "df.receiver" | "df.literal" => {
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
-        "df.identifier_use" => {
-            if is_rust_pattern_declaration_syntax(node) {
+        "df.identifier_use" | "df.mutation_read" => {
+            if capture_name == "df.identifier_use" && is_rust_pattern_declaration_syntax(node) {
                 return (None, None);
             }
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &[
-                    "use_declaration",
-                    "mod_item",
-                    "struct_item",
-                    "enum_item",
-                    "trait_item",
-                    "impl_item",
-                ],
-            ) {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &[
+                        "use_declaration",
+                        "mod_item",
+                        "struct_item",
+                        "enum_item",
+                        "trait_item",
+                        "impl_item",
+                    ],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

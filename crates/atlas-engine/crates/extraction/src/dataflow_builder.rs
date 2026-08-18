@@ -362,10 +362,23 @@ fn walk_for_assign_edges(
     is_csharp: bool,
 ) {
     let kind = node.kind();
-    let is_compound_assignment = kind == "assignment_expression"
-        && node
+    let is_compound_assignment = match kind {
+        "assignment_expression" | "assignment_statement" => node
             .child_by_field_name("operator")
-            .is_some_and(|operator| operator.kind() != "=");
+            .is_some_and(|operator| operator.kind() != "="),
+        "augmented_assignment"
+        | "augmented_assignment_expression"
+        | "compound_assignment_expr"
+        | "operator_assignment" => true,
+        // The pinned Kotlin grammar exposes assignment operators as anonymous
+        // children and provides no `operator` field.
+        "assignment" => (0..node.child_count()).any(|index| {
+            node.child(index as u32).is_some_and(|child| {
+                !child.is_named() && matches!(child.kind(), "+=" | "-=" | "*=" | "/=" | "%=")
+            })
+        }),
+        _ => false,
+    };
 
     // Compound assignment / update expression:
     // direct target (Local) ← aggregate read-modify-write value (Expr).
@@ -374,11 +387,26 @@ fn walk_for_assign_edges(
     // remain conservative without language checks here.
     let mutation_target = match kind {
         "assignment_expression" if is_compound_assignment => node.child_by_field_name("left"),
-        "augmented_assignment_expression" => node.child_by_field_name("left"),
+        "augmented_assignment"
+        | "augmented_assignment_expression"
+        | "compound_assignment_expr"
+        | "operator_assignment" => node.child_by_field_name("left"),
+        "assignment_statement" if is_compound_assignment => node
+            .child_by_field_name("left")
+            .filter(|left| left.named_child_count() == 1)
+            .and_then(|left| left.named_child(0)),
+        "assignment" if is_compound_assignment => node
+            .named_child(0)
+            .map(|target| target.named_child(0).unwrap_or(target)),
         "update_expression" => node
             .child_by_field_name("argument")
             .or_else(|| node.named_child(0)),
-        "prefix_unary_expression" | "postfix_unary_expression" => node.named_child(0),
+        "inc_statement"
+        | "dec_statement"
+        | "prefix_expression"
+        | "postfix_expression"
+        | "prefix_unary_expression"
+        | "postfix_unary_expression" => node.named_child(0),
         _ => None,
     };
     if let Some(target_node) = mutation_target {

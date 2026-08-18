@@ -39,6 +39,32 @@
   "="
   (_) @df.assign_value)
 
+;; --- Direct-variable read-modify-write expressions ---
+(assignment
+  (directly_assignable_expression
+    . (simple_identifier) @df.mutation_target .)
+  ["+=" "-=" "*=" "/=" "%="]
+  (_) @df.assign_value) @df.mutation_value
+
+(assignment
+  (directly_assignable_expression
+    . (simple_identifier) @df.mutation_read .)
+  ["+=" "-=" "*=" "/=" "%="])
+
+(postfix_expression
+  . (simple_identifier) @df.mutation_target .
+  ["++" "--"]) @df.mutation_value
+(postfix_expression
+  . (simple_identifier) @df.mutation_read .
+  ["++" "--"])
+
+(prefix_expression
+  ["++" "--"]
+  . (simple_identifier) @df.mutation_target .) @df.mutation_value
+(prefix_expression
+  ["++" "--"]
+  . (simple_identifier) @df.mutation_read .)
+
 ;; --- Return value ---
 (jump_expression
   (_) @df.return_value)

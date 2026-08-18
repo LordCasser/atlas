@@ -32,9 +32,9 @@ use crate::frontend::{
     SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_value,
-    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal, make_df_return_value,
-    make_reference_use, make_scope_def_auto_name,
+    SymbolDefBuilder, make_binding_def, make_df_assign_field_target, make_df_assign_target,
+    make_df_assign_value, make_df_call_arg, make_df_parameter, make_df_receiver_or_literal,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -251,6 +251,7 @@ impl DataflowSpec for RubyAdapter {
         FeatureSupport::supported_with_limitations(
             0.65,
             vec![
+                "direct-identifier non-conditional operator assignment preserves aggregate read-modify-write provenance (0.90); receiver/index mutation targets, ||= and &&= conditional execution, operator-method dispatch, and alias effects remain conservative",
                 "implicit return is approximate (body_statement last-child heuristic)",
                 "method calls and field access share `call` node; attr_reader not resolved",
                 "dynamic methods / method_missing not resolved",
@@ -789,6 +790,7 @@ fn normalize_ruby_dataflow_builder(
             )
         }
         "df.match_subject" => make_df_assign_value(file_id, node, source, range, &["call"]),
+        "df.mutation_target" => make_df_assign_target(file_id, node, source, range),
         "df.assign_target" => {
             // Differentiate by AST node kind: identifier → Local,
             // instance_variable (@x) → Field, class_variable (@@x) → Field,
@@ -842,9 +844,10 @@ fn normalize_ruby_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.assign_value" | "df.multiple_assign_value" | "df.multiple_assign_element" => {
-            make_df_assign_value(file_id, node, source, range, &["call"])
-        }
+        "df.assign_value"
+        | "df.multiple_assign_value"
+        | "df.multiple_assign_element"
+        | "df.mutation_value" => make_df_assign_value(file_id, node, source, range, &["call"]),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => {
             // The captured node is the `identifier` child of a `call` node.
@@ -979,14 +982,16 @@ fn normalize_ruby_dataflow_builder(
                 None,
             )
         }
-        "df.identifier_use" => {
+        "df.identifier_use" | "df.mutation_read" => {
             if is_ruby_pattern_binding_node(node) {
                 return (None, None);
             }
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["class", "module", "method"],
-            ) {
+            if capture_name == "df.identifier_use"
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &["class", "module", "method"],
+                )
+            {
                 return (None, None);
             }
             let text = node_text(node, source).unwrap_or_default();

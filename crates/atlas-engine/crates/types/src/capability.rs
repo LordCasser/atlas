@@ -633,7 +633,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative",
-            "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
+            "AST-driven local dataflow; direct-identifier augmented assignment preserves aggregate read-modify-write provenance (0.90); attribute/subscript mutation targets, in-place special-method dispatch, and alias effects remain conservative; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
             "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
         ],
         feature_overrides: &[
@@ -651,7 +651,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.72,
                     &[
-                        "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
+                        "AST-driven local dataflow; direct-identifier augmented assignment preserves aggregate read-modify-write provenance (0.90); attribute/subscript mutation targets, in-place special-method dispatch, and alias effects remain conservative; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
                     ],
                 ),
             ),
@@ -1169,7 +1169,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with clause-local switch/select namespaces, identifier-only select receive declarations, and same-block mixed short-declaration identity; function-literal ownership remains conservative",
-            "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
+            "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90), type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; selector/index/pointer mutation targets, case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
             "generic type parameters not captured in dataflow layer",
             "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
         ],
@@ -1188,7 +1188,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.78,
                     &[
-                        "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
+                        "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90), type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; selector/index/pointer mutation targets, case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
                     ],
                 ),
             ),
@@ -1333,7 +1333,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
-            "AST-driven local dataflow with conservative match scrutinee-to-capture and guard-let value-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+            "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative",
             "macro_rules! body patterns not analyzed",
             "borrow checker semantics not modeled",
         ],
@@ -1352,7 +1352,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+                        "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1502,6 +1502,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
+            "direct-identifier non-conditional operator assignment preserves aggregate read-modify-write provenance (0.90); receiver/index mutation targets, ||= and &&= conditional execution, operator-method dispatch, and alias effects remain conservative",
             "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
             "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
             "dynamic methods (method_missing / define_method) not yet verified",
@@ -1522,6 +1523,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.65,
                     &[
+                        "direct-identifier non-conditional operator assignment preserves aggregate read-modify-write provenance (0.90); receiver/index mutation targets, ||= and &&= conditional execution, operator-method dispatch, and alias effects remain conservative",
                         "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                         "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                     ],
@@ -1588,7 +1590,7 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
-            "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
+            "direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90); navigation/index mutation targets, overloaded assignment/inc dispatch, and prefix/postfix result timing remain conservative; when subject initializers and simple local writes flow to scoped bindings, and late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
         ],
         feature_overrides: &[
             (
@@ -1605,7 +1607,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.67,
                     &[
-                        "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
+                        "direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90); navigation/index mutation targets, overloaded assignment/inc dispatch, and prefix/postfix result timing remain conservative; when subject initializers and simple local writes flow to scoped bindings, and late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -2020,7 +2022,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with clause-local switch/select namespaces, identifier-only select receive declarations, and same-block mixed short-declaration identity; function-literal ownership remains conservative",
-                "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
+                "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90), type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; selector/index/pointer mutation targets, case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative",
                 "generic type parameters not captured in dataflow layer",
                 "CFG covers branch/loop/switch/select sibling paths, direct same-function goto/label edges, blocking select semantics, and bounded path-sensitive defer registration with LIFO execution on normal function exit; cyclic or over-budget defer stacks fall back atomically to deferred-effect annotation, while panic/recover/Goexit unwinding and complex anonymous deferred bodies are not modeled",
             ]
@@ -2068,7 +2070,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.78,
                 vec![
-                    "AST-driven local dataflow with type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative"
+                    "AST-driven local dataflow with direct-identifier compound/update aggregate read-modify-write provenance (0.90), type-switch guard-value flow, identifier-only select receive aggregate flow (0.78), and mixed short-declaration identity; selector/index/pointer mutation targets, case-type projection, exact receive-result components, non-identifier receive targets, and parallel-assignment evaluation order remain conservative"
                 ],
             )
         );
@@ -2136,7 +2138,7 @@ mod tests {
             p.limitations,
             vec![
                 "binding_id-grouped use-def; comprehension first-iterable evaluation and dynamic namespace mutation remain conservative",
-                "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
+                "AST-driven local dataflow; direct-identifier augmented assignment preserves aggregate read-modify-write provenance (0.90); attribute/subscript mutation targets, in-place special-method dispatch, and alias effects remain conservative; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive",
                 "function/module/class namespace identity with isolated comprehensions; global/nonlocal and exception-alias deletion remain conservative",
             ]
         );
@@ -2183,7 +2185,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.72,
                 vec![
-                    "AST-driven local dataflow; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive"
+                    "AST-driven local dataflow; direct-identifier augmented assignment preserves aggregate read-modify-write provenance (0.90); attribute/subscript mutation targets, in-place special-method dispatch, and alias effects remain conservative; match subjects flow conservatively to capture/as/star bindings, while structural projection and post-match definedness remain path-insensitive"
                 ],
             )
         );
@@ -3141,7 +3143,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
-                "AST-driven local dataflow with conservative match scrutinee-to-capture and guard-let value-to-capture flow; structural projection, borrow/move modes, and guard control dependencies remain conservative",
+                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative",
                 "macro_rules! body patterns not analyzed",
                 "borrow checker semantics not modeled",
             ]
@@ -3189,7 +3191,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "match scrutinees and guard-let values flow conservatively to arm-local captures; structural projection, borrow/move modes, and guard control dependencies remain conservative"
+                    "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values flow conservatively to arm-local captures, while structural projection, borrow/move modes, and guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3365,6 +3367,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware source-ordered method/module/class/block binding for simple assignments, local targets in flat/nested/rest multiple assignment, parameters, rescue/for variables, and case/in captures; block writes reuse existing ancestors while new block locals remain isolated; numbered parameters remain conservative",
+                "direct-identifier non-conditional operator assignment preserves aggregate read-modify-write provenance (0.90); receiver/index mutation targets, ||= and &&= conditional execution, operator-method dispatch, and alias effects remain conservative",
                 "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                 "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive",
                 "dynamic methods (method_missing / define_method) not yet verified",
@@ -3414,6 +3417,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.65,
                 vec![
+                    "direct-identifier non-conditional operator assignment preserves aggregate read-modify-write provenance (0.90); receiver/index mutation targets, ||= and &&= conditional execution, operator-method dispatch, and alias effects remain conservative",
                     "flat multiple-assignment RHS lists use positional flow; single aggregate RHS, nested destructuring, and rest targets use conservative group/slice flow without structural element projection; implicit nil fill, `to_ary` coercion, and parallel evaluation order remain unmodeled",
                     "case/in subjects flow conservatively to bare/as/rest/key-only captures; structural projection and post-match path-definedness remain path-insensitive"
                 ],
@@ -3477,7 +3481,7 @@ mod tests {
             p.limitations,
             vec![
                 "scope-chain-aware parameter/local/catch binding with nested control-scope shadowing; extension receivers are not extracted by the pinned grammar and type-directed resolution is not modeled",
-                "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
+                "direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90); navigation/index mutation targets, overloaded assignment/inc dispatch, and prefix/postfix result timing remain conservative; when subject initializers and simple local writes flow to scoped bindings, and late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative",
             ]
         );
 
@@ -3523,7 +3527,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.67,
                 vec![
-                    "when subject initializers and simple local writes flow to scoped bindings; late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative"
+                    "direct-identifier compound/update expressions preserve aggregate read-modify-write provenance (0.90); navigation/index mutation targets, overloaded assignment/inc dispatch, and prefix/postfix result timing remain conservative; when subject initializers and simple local writes flow to scoped bindings, and late-declared locals preserve every concrete write origin across branch joins, while compiler-grade variable-initialization proof, smart-cast, type/range projection, and guard control dependencies remain conservative"
                 ],
             )
         );
