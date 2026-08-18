@@ -1424,6 +1424,79 @@ function inner() {
     assert_has_edge_kind(&path, DataFlowKind::ReturnToCall);
 }
 
+#[test]
+#[cfg(feature = "php")]
+fn fx_php_foreach_bindings_persist_in_function_namespace() {
+    let source = r#"<?php
+function iterate($items) {
+    foreach ($items as $key => $value) {
+        consume($value);
+    }
+    return $value + $key;
+}
+"#;
+    let store = index_files(&[("foreach_scope.php", source)]);
+    let file_id = FileId::generate("foreach_scope.php");
+    let mut bindings: Vec<_> = store
+        .find_bindings_by_file(&file_id)
+        .expect("PHP bindings")
+        .into_iter()
+        .filter(|binding| matches!(binding.name.as_str(), "items" | "key" | "value"))
+        .collect();
+    bindings.sort_by_key(|binding| binding.name.clone());
+    assert_eq!(bindings.len(), 3);
+    assert!(bindings.iter().all(|binding| binding.function_id.is_some()));
+    assert!(
+        bindings
+            .iter()
+            .all(|binding| binding.scope_id == bindings[0].scope_id),
+        "PHP parameter and foreach variables share the callable namespace"
+    );
+
+    let value_binding = bindings
+        .iter()
+        .find(|binding| binding.name == "value")
+        .expect("persisted foreach value binding");
+    let value_uses = store
+        .find_binding_uses_by_binding(&value_binding.id)
+        .expect("persisted foreach value uses");
+    assert!(value_uses.iter().any(|use_| use_.range.start_line == 3));
+    assert!(value_uses.iter().any(|use_| use_.range.start_line == 5));
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let sink = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 5
+        })
+        .expect("post-foreach value use");
+    assert_eq!(sink.binding_id, Some(value_binding.id));
+
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert!(response.ok, "PHP foreach trace failed: {response:?}");
+    assert_envelope_ok(&response, "php");
+    let path = response.result.expect("PHP foreach trace path");
+    assert_eq!(
+        path.sink
+            .binding_use
+            .as_ref()
+            .and_then(|use_| use_.binding_id),
+        Some(value_binding.id)
+    );
+    assert!(
+        !path.steps.is_empty(),
+        "post-foreach trace must reach an earlier value occurrence"
+    );
+}
+
 // ────────────────────────────────────────────────────────────────
 // Ruby: Cross‑function ArgToParam
 // ────────────────────────────────────────────────────────────────

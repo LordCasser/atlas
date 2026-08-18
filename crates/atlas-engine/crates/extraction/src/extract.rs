@@ -1115,7 +1115,7 @@ fn build_reference_binding_uses(
 
         // Extract the identifier text
         let name = match super::languages::node_text(node, ctx.source) {
-            Some(n) if !n.is_empty() => n,
+            Some(n) if !n.is_empty() => lexical_spec.normalize_binding_use_name(&n),
             _ => continue,
         };
 

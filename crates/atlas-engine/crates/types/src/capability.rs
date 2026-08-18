@@ -1388,7 +1388,7 @@ mod profiles {
         ],
         unsupported: &["scope_aware_binding"],
         limitations: &[
-            "name-based binding (no proper shadowing)",
+            "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
             "AST-driven local dataflow with language-specific gaps",
             "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
             "namespace aliases resolved at reference resolution layer",
@@ -1399,7 +1399,9 @@ mod profiles {
                 FeatureField::LexicalBindings,
                 FeatureOverride::WithLimitations(
                     0.62,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1413,7 +1415,9 @@ mod profiles {
                 FeatureField::UseDef,
                 FeatureOverride::WithLimitations(
                     0.62,
-                    &["name-based binding (no proper shadowing)"],
+                    &[
+                        "binding_id-grouped use-def follows PHP function/file variable namespaces for extracted declarations; assignment-created locals, global bindings, variable variables, and closure capture semantics remain conservative",
+                    ],
                 ),
             ),
             (
@@ -3191,7 +3195,7 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "name-based binding (no proper shadowing)",
+                "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
                 "AST-driven local dataflow with language-specific gaps",
                 "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
                 "namespace aliases resolved at reference resolution layer",
@@ -3231,7 +3235,9 @@ mod tests {
             fm.lexical_bindings,
             FeatureSupport::supported_with_limitations(
                 0.62,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3245,7 +3251,9 @@ mod tests {
             fm.use_def,
             FeatureSupport::supported_with_limitations(
                 0.62,
-                vec!["name-based binding (no proper shadowing)"],
+                vec![
+                    "binding_id-grouped use-def follows PHP function/file variable namespaces for extracted declarations; assignment-created locals, global bindings, variable variables, and closure capture semantics remain conservative"
+                ],
             )
         );
         assert_eq!(

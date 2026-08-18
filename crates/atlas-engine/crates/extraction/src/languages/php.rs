@@ -217,12 +217,33 @@ impl LexicalBindingSpec for PhpAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.50,
-            vec!["name-based binding (no proper shadowing)"],
+            0.62,
+            vec![
+                "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
         normalize_php_lexical(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn binding_use_query(&self) -> &str {
+        "(variable_name) @binding.use"
+    }
+
+    fn normalize_binding_use_name(&self, raw: &str) -> String {
+        strip_php_sigil(raw).to_string()
+    }
+
+    fn coalesce_same_scope_bindings(&self) -> bool {
+        true
+    }
+
+    fn is_lexical_scope(&self, kind: ScopeKind) -> bool {
+        matches!(
+            kind,
+            ScopeKind::File | ScopeKind::Function | ScopeKind::Method
+        )
     }
 }
 
@@ -401,7 +422,7 @@ fn normalize_php_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     let kind = php_binding_kind(capture_name)?;
-    let name = node_text(node, source)?;
+    let name = strip_php_sigil(&node_text(node, source)?).to_string();
     let range = node_range(node);
     Some(make_binding_def(file_id, kind, name, range))
 }
@@ -830,5 +851,72 @@ function f($req) {
             has_call_target,
             "should have CallTarget DataNode for sanitize"
         );
+    }
+
+    #[test]
+    fn test_foreach_bindings_share_function_namespace_after_loop() {
+        let source = concat!(
+            "<?php\n",
+            "function iterate($items) {\n",
+            "    foreach ($items as $key => $value) {\n",
+            "        consume($value);\n",
+            "    }\n",
+            "    return $value + $key;\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("foreach_scope.php");
+        let facts = crate::extract_file_with_mode(
+            &php_frontend(),
+            file_id,
+            std::path::Path::new("foreach_scope.php"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let mut bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| matches!(binding.name.as_str(), "items" | "key" | "value"))
+            .collect();
+        bindings.sort_by_key(|binding| binding.name.as_str());
+        assert_eq!(bindings.len(), 3);
+        let function_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.kind == ScopeKind::Function)
+            .expect("PHP function scope");
+        assert!(
+            bindings
+                .iter()
+                .all(|binding| binding.scope_id == function_scope.id)
+        );
+        assert!(bindings.iter().all(|binding| binding.function_id.is_some()));
+
+        let binding_by_name: std::collections::HashMap<_, _> = bindings
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.id))
+            .collect();
+        for (name, line) in [("value", 3), ("value", 5), ("key", 5), ("items", 2)] {
+            let use_ = facts
+                .binding_uses
+                .iter()
+                .find(|use_| use_.name == name && use_.range.start_line == line)
+                .unwrap_or_else(|| panic!("PHP {name} use on line {line}"));
+            assert_eq!(use_.binding_id, binding_by_name.get(name).copied());
+
+            let node = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("PHP {name} data node on line {line}"));
+            assert_eq!(node.binding_id, binding_by_name.get(name).copied());
+        }
     }
 }

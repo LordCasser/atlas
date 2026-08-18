@@ -1374,6 +1374,83 @@ fn n5_focus_baseline_language_units_match_index_full() {
     }
 }
 
+/// PHP foreach key/value declarations use the callable variable namespace,
+/// not the structural loop/block scopes. Focus and full Index must retain the
+/// same post-loop binding/dataflow facts without warming an unrelated unit.
+#[cfg(feature = "php")]
+#[test]
+fn n5_focus_php_foreach_namespace_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[
+        (
+            "foreach_scope.php",
+            "<?php\n\
+             function iterate($items) {\n\
+             \x20 foreach ($items as $key => $value) {\n\
+             \x20   consume($value);\n\
+             \x20 }\n\
+             \x20 return $value + $key;\n\
+             }\n",
+        ),
+        ("peer.php", "<?php\nfunction unrelated() { return 42; }\n"),
+    ];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_iterate = symbol_id_by_name(&indexed_store, "iterate");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_iterate);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_iterate);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| matches!(binding.1.as_str(), "items" | "key" | "value"))
+            .count(),
+        3,
+        "full Index must persist the parameter plus foreach key/value bindings"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let iterate = symbol_id_by_name(&focused_store, "iterate");
+    let unrelated = symbol_id_by_name(&focused_store, "unrelated");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&iterate)
+            .unwrap()
+            .is_empty(),
+        "PHP foreach unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&iterate, Some("php-foreach-namespace-parity"))
+        .expect("Focus ensure PHP iterate");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &iterate),
+        indexed_slice,
+        "PHP foreach dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &iterate),
+        indexed_bindings,
+        "PHP foreach callable bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&unrelated)
+            .unwrap()
+            .is_empty(),
+        "unrelated PHP unit must stay outside the Focus window"
+    );
+}
+
 /// Go type-switch aliases are clause-local implicit bindings. Full Index and
 /// Focus must persist the same three binding identities and guard-value flow
 /// for the standard-library `context.stringify` shape.

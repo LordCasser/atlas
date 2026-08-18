@@ -171,6 +171,12 @@ pub trait LexicalBindingSpec: Send + Sync {
         true
     }
 
+    /// Normalize an identifier captured by [`Self::binding_use_query`] into
+    /// the same namespace used by [`Self::normalize`].
+    fn normalize_binding_use_name(&self, raw: &str) -> String {
+        raw.to_string()
+    }
+
     /// Whether repeated declarations of a name in one scope share one binding.
     ///
     /// Most supported languages use declaration identity. Languages such as
