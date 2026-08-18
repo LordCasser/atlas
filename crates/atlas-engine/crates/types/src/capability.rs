@@ -1399,11 +1399,12 @@ mod profiles {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ],
-        unsupported: &["scope_aware_binding"],
+        unsupported: &[],
         limitations: &[
-            "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
-            "AST-driven local dataflow with language-specific gaps",
+            "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
+            "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
             "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
             "namespace aliases resolved at reference resolution layer",
             "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
@@ -1414,7 +1415,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.62,
                     &[
-                        "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
+                        "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
                     ],
                 ),
             ),
@@ -1422,7 +1423,9 @@ mod profiles {
                 FeatureField::LocalDataflow,
                 FeatureOverride::WithLimitations(
                     0.62,
-                    &["AST-driven local dataflow with language-specific gaps"],
+                    &[
+                        "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
+                    ],
                 ),
             ),
             (
@@ -1430,7 +1433,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.62,
                     &[
-                        "binding_id-grouped use-def follows PHP function/file variable namespaces for extracted declarations; assignment-created locals, global bindings, variable variables, and closure capture semantics remain conservative",
+                        "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
                     ],
                 ),
             ),
@@ -3218,14 +3221,15 @@ mod tests {
             "return_flow",
             "interprocedural_dataflow",
             "cfg",
+            "scope_aware_binding",
         ];
         assert_eq!(p.supported_features, expected_supported);
-        assert_eq!(p.unsupported_features, vec!["scope_aware_binding"]);
+        assert!(p.unsupported_features.is_empty());
         assert_eq!(
             p.limitations,
             vec![
-                "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative",
-                "AST-driven local dataflow with language-specific gaps",
+                "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative",
+                "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative",
                 "dynamic method calls via variable emit low-confidence edges (not yet resolved)",
                 "namespace aliases resolved at reference resolution layer",
                 "CFG body traversal for PHP function/method branch-loop-switch, elseif, and try/catch/finally is implemented; continuation routing uses path-isolated clones, C-family fall-through plus numeric break/continue nesting are implemented, direct same-function label goto uses dedicated Goto edges and executes intervening finally regions from inner to outer, and direct object-created explicit throws use an ordered syntactic exact-match handler cutoff; goto into loop/switch or across a finally-clause boundary is rejected; unknown labels, inherited or aliased catch types, thrown variables, implicit exceptions, and over-budget atomic fallback remain precision boundaries",
@@ -3265,7 +3269,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.62,
                 vec![
-                    "function/file namespace identity for parameters and foreach/catch/static declarations; assignment-created locals, global bindings, variable variables, nested destructuring, and closure capture semantics remain conservative"
+                    "scope-chain-aware file/function/method binding for parameters, assignment-created locals, foreach/catch/static declarations, and explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative"
                 ],
             )
         );
@@ -3273,7 +3277,9 @@ mod tests {
             fm.local_dataflow,
             FeatureSupport::supported_with_limitations(
                 0.62,
-                vec!["AST-driven local dataflow with language-specific gaps"],
+                vec![
+                    "AST-driven local dataflow; anonymous-function nodes remain in the enclosing named-function materialization unit, while compound/update assignment edges, global aliases, variable variables, and arrow-function bodies remain conservative"
+                ],
             )
         );
         assert_eq!(
@@ -3281,7 +3287,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.62,
                 vec![
-                    "binding_id-grouped use-def follows PHP function/file variable namespaces for extracted declarations; assignment-created locals, global bindings, variable variables, and closure capture semantics remain conservative"
+                    "binding_id-grouped use-def follows PHP file/function/method variable namespaces, including explicit anonymous-function captures; global aliases, variable variables, nested destructuring, and arrow-function ownership remain conservative"
                 ],
             )
         );

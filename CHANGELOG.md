@@ -28,7 +28,7 @@ All notable changes to Atlas will be documented in this file.
 ### Cross-language binding identity
 
 - Promote `scope_aware_binding` for TypeScript, JavaScript, ArkTS, Java, C,
-  C++, Go, Rust, Kotlin, and Cangjie after direct extraction, SQLite Trace, and Focus-vs-full-Index
+  C++, Go, Rust, Kotlin, Cangjie, and PHP after direct extraction, SQLite Trace, and Focus-vs-full-Index
   fixtures proved that same-name locals retain distinct `BindingId` and scope
   ownership. Java uses legal sibling-block redeclarations because overlapping
   local redeclaration is rejected by the language. Go mixed short declarations,
@@ -144,9 +144,12 @@ All notable changes to Atlas will be documented in this file.
   longer declarations; direct key/value bindings retain one identity inside
   and after the loop, and `$` normalization is shared by BindingDef,
   BindingUse, and DataNode facts. Extraction, SQLite Trace, and Focus-vs-full-
-  Index fixtures cover the boundary; assignment-created locals, globals,
-  variable variables, nested destructuring, and closure capture remain
-  conservative.
+  Index fixtures cover the boundary. Assignment-created locals and explicit
+  anonymous-function captures now use scope-chain identity; unresolved names
+  stop at function/method boundaries. Anonymous-function dataflow remains in
+  the enclosing named-function materialization unit. Global aliases, variable
+  variables, nested destructuring, compound/update assignment edges, and
+  arrow-function ownership remain conservative.
 - Resolve direct same-function PHP `goto` to standalone label `Join` targets
   through deterministic persisted `Goto` edges.
 - Execute every intervening path-isolated `finally` clone from inner to outer;

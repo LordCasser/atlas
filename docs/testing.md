@@ -41,7 +41,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
   `BindingId`/`scope_id` 以及 `BindingUse`/`DataNode.binding_id`，SQLite Trace 断言持久化后
   sink identity 与 Assign path，Focus cold unit 对 full Index 的 bindings/dataflow/CFG 对拍。
   当前共享矩阵覆盖 TypeScript、JavaScript、ArkTS、Java、C、C++、Go、Rust、Kotlin、
-  Cangjie；Python/C# 及其他 pattern/namespace 特化语言继续保留各自 fixture。Java 必须用语言
+  Cangjie、PHP；Python/C# 及其他 pattern/namespace 特化语言继续保留各自 fixture。Java 必须用语言
   合法的 sibling block，不能用编译器拒绝的 overlapping local redeclaration 伪造
   shadowing。
 - capability/status 测试必须验证数据库状态和用户可见输出，不能只检查内存对象。
