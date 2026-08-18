@@ -272,7 +272,134 @@ impl DataflowSpec for RubyAdapter {
         edges: &mut Vec<DataFlowEdge>,
     ) -> anyhow::Result<()> {
         walk_ruby_case_match_edges(ctx.root, pos_map, edges);
+        walk_ruby_multiple_assignment_edges(ctx.root, pos_map, edges);
         Ok(())
+    }
+}
+
+fn walk_ruby_multiple_assignment_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "assignment"
+        && let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        )
+        && left.kind() == "left_assignment_list"
+    {
+        let mut left_cursor = left.walk();
+        let groups: Vec<_> = left
+            .named_children(&mut left_cursor)
+            .map(|group| {
+                let mut targets = Vec::new();
+                collect_ruby_assignment_targets(group, &mut targets);
+                (
+                    group.kind() == "rest_assignment",
+                    group.kind() == "destructured_left_assignment",
+                    targets,
+                )
+            })
+            .collect();
+
+        let aggregate_rhs = right.kind() != "right_assignment_list";
+        let right_nodes = if aggregate_rhs {
+            vec![right]
+        } else {
+            let mut right_cursor = right.walk();
+            right.named_children(&mut right_cursor).collect()
+        };
+
+        for (index, (is_rest, is_destructured, targets)) in groups.iter().enumerate() {
+            let sources: &[tree_sitter::Node<'_>] = if aggregate_rhs {
+                &right_nodes
+            } else if *is_rest {
+                let trailing_groups = groups.len() - index - 1;
+                let end = right_nodes.len().saturating_sub(trailing_groups);
+                right_nodes.get(index..end).unwrap_or_default()
+            } else {
+                right_nodes
+                    .get(index..index.saturating_add(1))
+                    .unwrap_or_default()
+            };
+            let confidence = if aggregate_rhs || *is_rest || *is_destructured {
+                0.75
+            } else {
+                0.90
+            };
+
+            for source in sources {
+                let source_key = NodePosKey {
+                    start_byte: source.start_byte() as u32,
+                    end_byte: source.end_byte() as u32,
+                    kind: DataNodeKind::Expr,
+                };
+                let Some(&source_id) = pos_map.get(&source_key) else {
+                    continue;
+                };
+                for (target, target_kind, edge_kind) in targets {
+                    let target_key = NodePosKey {
+                        start_byte: target.start_byte() as u32,
+                        end_byte: target.end_byte() as u32,
+                        kind: *target_kind,
+                    };
+                    let Some(&target_id) = pos_map.get(&target_key) else {
+                        continue;
+                    };
+                    if edges.iter().any(|edge| {
+                        edge.source == source_id
+                            && edge.target == target_id
+                            && edge.kind == *edge_kind
+                    }) {
+                        continue;
+                    }
+                    let edge_id =
+                        DataFlowEdgeId::generate(&source_id, &target_id, edge_kind.as_str());
+                    edges.push(DataFlowEdge::new(
+                        edge_id,
+                        source_id,
+                        target_id,
+                        *edge_kind,
+                        node_range(*target),
+                        confidence,
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_ruby_multiple_assignment_edges(child, pos_map, edges);
+    }
+}
+
+fn collect_ruby_assignment_targets<'tree>(
+    node: tree_sitter::Node<'tree>,
+    targets: &mut Vec<(tree_sitter::Node<'tree>, DataNodeKind, DataFlowKind)>,
+) {
+    let target = match node.kind() {
+        "identifier" => Some((node, DataNodeKind::Local, DataFlowKind::Assign)),
+        "instance_variable" | "class_variable" | "call" => {
+            Some((node, DataNodeKind::Field, DataFlowKind::FieldStore))
+        }
+        "global_variable" => Some((node, DataNodeKind::Global, DataFlowKind::Assign)),
+        _ => None,
+    };
+    if let Some(target) = target {
+        targets.push(target);
+        return;
+    }
+    if !matches!(
+        node.kind(),
+        "destructured_left_assignment" | "rest_assignment"
+    ) {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_ruby_assignment_targets(child, targets);
     }
 }
 
@@ -710,7 +837,9 @@ fn normalize_ruby_dataflow_builder(
             };
             (Some(dn), None)
         }
-        "df.assign_value" => make_df_assign_value(file_id, node, source, range, &["call"]),
+        "df.assign_value" | "df.multiple_assign_value" | "df.multiple_assign_element" => {
+            make_df_assign_value(file_id, node, source, range, &["call"])
+        }
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_target" => {
             // The captured node is the `identifier` child of a `call` node.
@@ -1358,5 +1487,183 @@ mod tests {
             .find(|use_| use_.name == "late" && use_.range.start_line == 14)
             .expect("method-local use");
         assert_eq!(method_use.binding_id, Some(late_bindings[1].id));
+    }
+
+    #[test]
+    fn test_multiple_assignment_bindings_and_positional_flow() {
+        let source = concat!(
+            "def unpack(pair, tail)\n",
+            "  first, second = pair\n",
+            "  head, (left, *middle), last = 1, pair, tail\n",
+            "  @field, $global = pair, tail\n",
+            "  1.times do\n",
+            "    first, block_only = second, tail\n",
+            "    inner, *rest = pair\n",
+            "    consume(first, block_only, inner, rest)\n",
+            "  end\n",
+            "  consume(first, second, head, left, middle, last)\n",
+            "  [first, second, head, left, middle, last]\n",
+            "end\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &ruby_frontend(),
+            FileId::generate("multiple_assignment.rb"),
+            std::path::Path::new("multiple_assignment.rb"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let binding = |name: &str| {
+            let bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .collect();
+            assert_eq!(bindings.len(), 1, "expected one binding for {name}");
+            bindings[0]
+        };
+        let first_binding = binding("first");
+        for name in [
+            "pair",
+            "tail",
+            "second",
+            "head",
+            "left",
+            "middle",
+            "last",
+            "block_only",
+            "inner",
+            "rest",
+        ] {
+            binding(name);
+        }
+        for name in ["first", "second", "head", "left", "middle", "last"] {
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding(name).scope_id)
+                .unwrap();
+            assert_eq!(scope.kind, ScopeKind::Method, "{name} must be method-local");
+        }
+        for name in ["block_only", "inner", "rest"] {
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding(name).scope_id)
+                .unwrap();
+            assert_eq!(scope.kind, ScopeKind::Block, "{name} must be block-local");
+        }
+        let inner_first = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("first")
+                    && node.range.start_line == 5
+            })
+            .expect("block assignment target for first");
+        assert_eq!(inner_first.binding_id, Some(first_binding.id));
+
+        let node = |kind: DataNodeKind, name: &str, line: u32| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} on line {line}"))
+        };
+        let assert_flow = |source_name: &str,
+                           source_line: u32,
+                           target_kind: DataNodeKind,
+                           target_name: &str,
+                           target_line: u32,
+                           edge_kind: DataFlowKind| {
+            let source = node(DataNodeKind::Expr, source_name, source_line);
+            let target = node(target_kind, target_name, target_line);
+            assert!(
+                facts.dataflow_edges.iter().any(|edge| {
+                    edge.source == source.id && edge.target == target.id && edge.kind == edge_kind
+                }),
+                "missing {edge_kind:?} flow {source_name}@{source_line} -> {target_name}@{target_line}"
+            );
+        };
+
+        for target in ["first", "second"] {
+            assert_flow(
+                "pair",
+                1,
+                DataNodeKind::Local,
+                target,
+                1,
+                DataFlowKind::Assign,
+            );
+        }
+        assert_flow("1", 2, DataNodeKind::Local, "head", 2, DataFlowKind::Assign);
+        for target in ["left", "middle"] {
+            assert_flow(
+                "pair",
+                2,
+                DataNodeKind::Local,
+                target,
+                2,
+                DataFlowKind::Assign,
+            );
+        }
+        assert_flow(
+            "tail",
+            2,
+            DataNodeKind::Local,
+            "last",
+            2,
+            DataFlowKind::Assign,
+        );
+        assert_flow(
+            "pair",
+            3,
+            DataNodeKind::Field,
+            "@field",
+            3,
+            DataFlowKind::FieldStore,
+        );
+        assert_flow(
+            "tail",
+            3,
+            DataNodeKind::Global,
+            "$global",
+            3,
+            DataFlowKind::Assign,
+        );
+        assert_flow(
+            "second",
+            5,
+            DataNodeKind::Local,
+            "first",
+            5,
+            DataFlowKind::Assign,
+        );
+        assert_flow(
+            "tail",
+            5,
+            DataNodeKind::Local,
+            "block_only",
+            5,
+            DataFlowKind::Assign,
+        );
+        for target in ["inner", "rest"] {
+            assert_flow(
+                "pair",
+                6,
+                DataNodeKind::Local,
+                target,
+                6,
+                DataFlowKind::Assign,
+            );
+        }
     }
 }

@@ -13,6 +13,44 @@
   left: (identifier) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Multiple/destructured assignment targets ---
+(left_assignment_list
+  [(identifier)
+   (instance_variable)
+   (class_variable)
+   (global_variable)] @df.assign_target)
+
+(destructured_left_assignment
+  [(identifier)
+   (instance_variable)
+   (class_variable)
+   (global_variable)] @df.assign_target)
+
+(rest_assignment
+  [(identifier)
+   (instance_variable)
+   (class_variable)
+   (global_variable)] @df.assign_target)
+
+(left_assignment_list
+  (call) @df.assign_field_target)
+
+(destructured_left_assignment
+  (call) @df.assign_field_target)
+
+(rest_assignment
+  (call) @df.assign_field_target)
+
+;; Keep both the complete RHS and its positional children. A single aggregate
+;; RHS flows conservatively to every target; a right_assignment_list can be
+;; paired by top-level position in the Ruby adapter.
+(assignment
+  left: (left_assignment_list)
+  right: (_) @df.multiple_assign_value)
+
+(right_assignment_list
+  (_) @df.multiple_assign_element)
+
 ;; --- Return statements (Ruby: return is optional, captured when explicit) ---
 (return
   (_) @df.return_value)

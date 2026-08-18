@@ -12,6 +12,16 @@
 (assignment
   left: (identifier) @lexical.local)
 
+;; --- Multiple assignment locals (a, (b, *c) = values) ---
+(left_assignment_list
+  (identifier) @lexical.local)
+
+(destructured_left_assignment
+  (identifier) @lexical.local)
+
+(rest_assignment
+  (identifier) @lexical.local)
+
 ;; --- Block parameters (|x, y|) ---
 (block_parameters
   (identifier) @lexical.parameter)
