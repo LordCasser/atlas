@@ -21,3 +21,13 @@
 ;; --- Lambda parameter (x => expr) ---
 (lambda_expression
   (identifier) @lexical.parameter)
+
+;; --- Pattern variables (input is Type value / switch arms) ---
+(declaration_pattern
+  name: (identifier) @lexical.pattern)
+
+(recursive_pattern
+  name: (identifier) @lexical.pattern)
+
+(var_pattern
+  name: (identifier) @lexical.pattern)

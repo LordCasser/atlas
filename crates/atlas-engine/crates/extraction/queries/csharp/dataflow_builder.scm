@@ -66,5 +66,24 @@
 (await_expression
   (_) @df.await_value)
 
+;; --- Pattern subjects and direct capture targets ---
+(is_pattern_expression
+  expression: (_) @df.pattern_value)
+
+(switch_statement
+  value: (_) @df.pattern_value)
+
+(switch_expression
+  . (_) @df.pattern_value)
+
+(declaration_pattern
+  name: (identifier) @df.pattern_target)
+
+(recursive_pattern
+  name: (identifier) @df.pattern_target)
+
+(var_pattern
+  name: (identifier) @df.pattern_target)
+
 ;; --- Identifier uses (variable references) ---
 (identifier) @df.identifier_use

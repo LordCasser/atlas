@@ -7282,6 +7282,92 @@ fn fx_cfg_loop_cpp() {
 // C# CFG body traversal tests
 // ────────────────────────────────────────────────────────────────
 
+#[test]
+#[cfg(feature = "csharp")]
+fn fx_csharp_switch_pattern_bindings_persist_and_trace_from_subject() {
+    let source = r#"class PatternDispatch {
+    static int Dispatch(object input) {
+        return input switch {
+            string value when value.Length > 0 => Consume(value),
+            int value => Consume(value),
+            _ => 0,
+        };
+    }
+}
+"#;
+    let store = index_files(&[("PatternDispatch.cs", source)]);
+    let file_id = FileId::generate("PatternDispatch.cs");
+    let mut value_bindings: Vec<_> = store
+        .find_bindings_by_file(&file_id)
+        .expect("persisted C# bindings")
+        .into_iter()
+        .filter(|binding| binding.name == "value")
+        .collect();
+    value_bindings.sort_by_key(|binding| binding.range.start_byte);
+    assert_eq!(value_bindings.len(), 2);
+    assert_ne!(value_bindings[0].id, value_bindings[1].id);
+    assert_ne!(value_bindings[0].scope_id, value_bindings[1].scope_id);
+    assert_eq!(value_bindings[0].function_id, value_bindings[1].function_id);
+    assert!(value_bindings[0].function_id.is_some());
+
+    for binding in &value_bindings {
+        let uses = store
+            .find_binding_uses_by_binding(&binding.id)
+            .expect("persisted pattern uses");
+        assert!(uses.len() >= 2, "declaration and arm use: {uses:?}");
+        assert!(
+            uses.iter()
+                .all(|use_| use_.range.start_line == binding.range.start_line)
+        );
+    }
+
+    let data_nodes = store.find_data_nodes_by_file(&file_id).expect("data nodes");
+    let subject = data_nodes
+        .iter()
+        .find(|node| {
+            node.kind == DataNodeKind::Expr
+                && node.name.as_deref() == Some("input")
+                && node.range.start_line == 2
+        })
+        .expect("persisted switch subject");
+    let targets: Vec<_> = data_nodes
+        .iter()
+        .filter(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some("value"))
+        .collect();
+    assert_eq!(targets.len(), 2);
+    let subject_edges = store
+        .find_dataflow_edges_by_source(&subject.id)
+        .expect("persisted subject edges");
+    assert!(targets.iter().all(|target| {
+        subject_edges
+            .iter()
+            .any(|edge| edge.target == target.id && edge.kind == DataFlowKind::Assign)
+    }));
+
+    let sink = data_nodes
+        .iter()
+        .filter(|node| {
+            node.kind == DataNodeKind::VariableUse
+                && node.name.as_deref() == Some("value")
+                && node.range.start_line == 3
+        })
+        .max_by_key(|node| node.range.start_column)
+        .expect("guarded arm body use");
+    assert_eq!(sink.binding_id, Some(value_bindings[0].id));
+
+    let engine = TraceEngine::new(store.clone());
+    let response = engine.trace_variable(
+        &file_id,
+        sink.range.start_line + 1,
+        sink.range.start_column + 1,
+        20,
+    );
+    assert_envelope_ok(&response, "csharp");
+    let path = response.result.expect("C# pattern trace path");
+    assert_has_edge_kind(&path, DataFlowKind::Assign);
+    assert_source_name(&path, "input");
+}
+
 /// Verify C# CFG body traversal for if/else:
 /// Statement nodes in consequence/alternative, TrueBranch/FalseBranch edges,
 /// Join node, and post-Join flow.

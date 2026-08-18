@@ -8,6 +8,10 @@
 
 use crate::languages::{node_range, node_text};
 
+use std::collections::HashMap;
+
+use crate::dataflow_builder::NodePosKey;
+use crate::extraction_ctx::ExtractionCtx;
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
@@ -190,8 +194,10 @@ impl LexicalBindingSpec for CSharpAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.70,
-            vec!["name-based binding (no proper shadowing)"],
+            0.72,
+            vec![
+                "scope-chain-aware parameter/local/catch/pattern binding; switch pattern captures are arm-scoped, while definite-assignment and nested designation semantics remain conservative",
+            ],
         )
     }
     fn normalize(&self, ctx: NormalizeCtx<'_>, capture: Capture<'_>) -> Option<BindingDef> {
@@ -205,8 +211,10 @@ impl DataflowSpec for CSharpAdapter {
     }
     fn capability(&self) -> FeatureSupport {
         FeatureSupport::supported_with_limitations(
-            0.70,
-            vec!["AST-driven local dataflow with language-specific gaps"],
+            0.72,
+            vec![
+                "AST-driven local dataflow with conservative pattern subject-to-capture flow; structural projection and guard control dependencies remain conservative",
+            ],
         )
     }
     fn normalize(
@@ -215,6 +223,19 @@ impl DataflowSpec for CSharpAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_csharp_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_csharp_pattern_edges(ctx.root, pos_map, edges);
+        Ok(())
     }
 }
 
@@ -378,7 +399,149 @@ fn csharp_binding_kind(capture_name: &str) -> Option<BindingKind> {
         "lexical.parameter" => Some(BindingKind::Parameter),
         "lexical.local" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
+        "lexical.pattern" => Some(BindingKind::Local),
         _ => None,
+    }
+}
+
+fn is_csharp_pattern_binding_node(node: tree_sitter::Node<'_>) -> bool {
+    node.kind() == "identifier"
+        && node.parent().is_some_and(|parent| {
+            matches!(
+                parent.kind(),
+                "declaration_pattern" | "recursive_pattern" | "var_pattern"
+            ) && parent.child_by_field_name("name").is_some_and(|name| {
+                name.start_byte() == node.start_byte() && name.end_byte() == node.end_byte()
+            })
+        })
+}
+
+fn collect_csharp_pattern_bindings<'tree>(
+    node: tree_sitter::Node<'tree>,
+    bindings: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if is_csharp_pattern_binding_node(node) {
+        bindings.push(node);
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_csharp_pattern_bindings(child, bindings);
+    }
+}
+
+fn is_csharp_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    node.kind() == "pattern" || node.kind().ends_with("_pattern")
+}
+
+fn connect_csharp_pattern_bindings(
+    value: tree_sitter::Node<'_>,
+    pattern_owner: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let value_key = NodePosKey {
+        start_byte: value.start_byte() as u32,
+        end_byte: value.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let Some(&source_id) = pos_map.get(&value_key) else {
+        return;
+    };
+
+    let mut targets = Vec::new();
+    collect_csharp_pattern_bindings(pattern_owner, &mut targets);
+    for target in targets {
+        let target_key = NodePosKey {
+            start_byte: target.start_byte() as u32,
+            end_byte: target.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let Some(&target_id) = pos_map.get(&target_key) else {
+            continue;
+        };
+        if edges.iter().any(|edge| {
+            edge.source == source_id
+                && edge.target == target_id
+                && edge.kind == DataFlowKind::Assign
+        }) {
+            continue;
+        }
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            target_id,
+            DataFlowKind::Assign,
+            node_range(target),
+            0.80,
+        ));
+    }
+}
+
+fn walk_csharp_pattern_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    match node.kind() {
+        "is_pattern_expression" => {
+            if let (Some(value), Some(pattern)) = (
+                node.child_by_field_name("expression"),
+                node.child_by_field_name("pattern"),
+            ) {
+                connect_csharp_pattern_bindings(value, pattern, pos_map, edges);
+            }
+        }
+        "switch_statement" => {
+            if let Some(value) = node.child_by_field_name("value")
+                && let Some(body) = node.child_by_field_name("body")
+            {
+                let mut cursor = body.walk();
+                for section in body
+                    .named_children(&mut cursor)
+                    .filter(|child| child.kind() == "switch_section")
+                {
+                    let mut section_cursor = section.walk();
+                    for pattern in section
+                        .named_children(&mut section_cursor)
+                        .filter(|child| is_csharp_pattern_syntax(*child))
+                    {
+                        connect_csharp_pattern_bindings(value, pattern, pos_map, edges);
+                    }
+                }
+            }
+        }
+        "switch_expression" => {
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.named_children(&mut cursor).collect();
+            if let Some(value) = children
+                .iter()
+                .copied()
+                .find(|child| child.kind() != "switch_expression_arm")
+            {
+                for arm in children
+                    .iter()
+                    .copied()
+                    .filter(|child| child.kind() == "switch_expression_arm")
+                {
+                    let mut arm_cursor = arm.walk();
+                    for pattern in arm
+                        .named_children(&mut arm_cursor)
+                        .filter(|child| is_csharp_pattern_syntax(*child))
+                    {
+                        connect_csharp_pattern_bindings(value, pattern, pos_map, edges);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_csharp_pattern_edges(child, pos_map, edges);
     }
 }
 
@@ -406,8 +569,10 @@ fn normalize_csharp_dataflow_builder(
     let range = node_range(node);
     match capture_name {
         "df.parameter" => make_df_parameter(file_id, node, source, range),
-        "df.assign_target" => make_df_assign_target(file_id, node, source, range),
-        "df.assign_value" => make_df_assign_value(
+        "df.assign_target" | "df.pattern_target" => {
+            make_df_assign_target(file_id, node, source, range)
+        }
+        "df.assign_value" | "df.pattern_value" => make_df_assign_value(
             file_id,
             node,
             source,
@@ -517,6 +682,9 @@ fn normalize_csharp_dataflow_builder(
             make_df_receiver_or_literal(file_id, capture_name, node, source, range)
         }
         "df.identifier_use" => {
+            if is_csharp_pattern_binding_node(node) {
+                return (None, None);
+            }
             if crate::languages::shared::is_identifier_decl_or_property(
                 node,
                 &["using_directive", "namespace_declaration"],
@@ -671,6 +839,301 @@ mod tests {
         assert!(
             has_expr,
             "should have an Expr DataNode from await DoAsync()"
+        );
+    }
+
+    #[test]
+    fn test_pattern_bindings_keep_arm_identity_and_subject_flow() {
+        let source = concat!(
+            "class PatternDispatch {\n",
+            "  static int Dispatch(object input) {\n",
+            "    return input switch {\n",
+            "      string value when value.Length > 0 => Consume(value),\n",
+            "      int value => Consume(value),\n",
+            "      Point { X: > 0 } point => Consume(point),\n",
+            "      var fallback => Consume(fallback),\n",
+            "    };\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("PatternDispatch.cs");
+        let facts = crate::extract_file_with_mode(
+            &csharp_frontend(),
+            file_id,
+            std::path::Path::new("PatternDispatch.cs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract C# switch patterns");
+
+        let mut value_bindings: Vec<_> = facts
+            .bindings
+            .iter()
+            .filter(|binding| binding.name == "value")
+            .collect();
+        value_bindings.sort_by_key(|binding| binding.range.start_byte);
+        assert_eq!(value_bindings.len(), 2);
+        assert_ne!(value_bindings[0].id, value_bindings[1].id);
+        assert_ne!(value_bindings[0].scope_id, value_bindings[1].scope_id);
+        assert!(
+            value_bindings
+                .iter()
+                .all(|binding| binding.function_id.is_some())
+        );
+
+        for binding in &value_bindings {
+            let uses: Vec<_> = facts
+                .binding_uses
+                .iter()
+                .filter(|use_| use_.binding_id == Some(binding.id))
+                .collect();
+            assert!(uses.len() >= 2, "declaration and arm use: {uses:?}");
+            assert!(
+                uses.iter()
+                    .all(|use_| use_.range.start_line == binding.range.start_line)
+            );
+        }
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == 2
+            })
+            .expect("switch subject");
+        let value_targets: Vec<_> = facts
+            .data_nodes
+            .iter()
+            .filter(|node| {
+                node.kind == DataNodeKind::Local && node.name.as_deref() == Some("value")
+            })
+            .collect();
+        assert_eq!(value_targets.len(), 2);
+        assert!(value_targets.iter().all(|target| {
+            facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            })
+        }));
+        assert!(
+            value_targets
+                .iter()
+                .all(|target| target.binding_id.is_some())
+        );
+        for name in ["point", "fallback"] {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| node.kind == DataNodeKind::Local && node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{name} pattern target"));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == subject.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+            }));
+            assert!(target.binding_id.is_some());
+        }
+    }
+
+    #[test]
+    fn test_is_pattern_binding_reaches_guard_and_true_body() {
+        let source = concat!(
+            "class PatternGuard {\n",
+            "  static int Dispatch(object input) {\n",
+            "    if (input is string text && text.Length > 0) {\n",
+            "      return Consume(text);\n",
+            "    }\n",
+            "    return 0;\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("PatternGuard.cs");
+        let facts = crate::extract_file_with_mode(
+            &csharp_frontend(),
+            file_id,
+            std::path::Path::new("PatternGuard.cs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract C# is-pattern");
+
+        let binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "text")
+            .expect("is-pattern binding");
+        let scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == binding.scope_id)
+            .expect("pattern scope");
+        assert_eq!(scope.kind, ScopeKind::Conditional);
+        let uses: Vec<_> = facts
+            .binding_uses
+            .iter()
+            .filter(|use_| use_.name == "text")
+            .collect();
+        assert_eq!(uses.len(), 3, "declaration, guard, and body use: {uses:?}");
+        assert!(uses.iter().all(|use_| use_.binding_id == Some(binding.id)));
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == 2
+            })
+            .expect("is-pattern subject");
+        let target = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("text")
+                    && node.binding_id == Some(binding.id)
+            })
+            .expect("is-pattern target");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == subject.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts.data_nodes.iter().all(|node| {
+                node.kind != DataNodeKind::VariableUse || node.range != target.range
+            })
+        );
+    }
+
+    #[test]
+    fn test_switch_statement_pattern_binding_receives_subject() {
+        let source = concat!(
+            "class PatternSwitch {\n",
+            "  static int Dispatch(object input) {\n",
+            "    switch (input) {\n",
+            "      case string text when text.Length > 0:\n",
+            "        return Consume(text);\n",
+            "      default:\n",
+            "        return 0;\n",
+            "    }\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("PatternSwitch.cs");
+        let facts = crate::extract_file_with_mode(
+            &csharp_frontend(),
+            file_id,
+            std::path::Path::new("PatternSwitch.cs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract C# switch statement pattern");
+
+        let binding = facts
+            .bindings
+            .iter()
+            .find(|binding| binding.name == "text")
+            .expect("switch-section binding");
+        let uses: Vec<_> = facts
+            .binding_uses
+            .iter()
+            .filter(|use_| use_.name == "text")
+            .collect();
+        assert_eq!(uses.len(), 3, "declaration, guard, and body use: {uses:?}");
+        assert!(uses.iter().all(|use_| use_.binding_id == Some(binding.id)));
+
+        let subject = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Expr
+                    && node.name.as_deref() == Some("input")
+                    && node.range.start_line == 2
+            })
+            .expect("switch statement subject");
+        let target = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("text")
+                    && node.binding_id == Some(binding.id)
+            })
+            .expect("switch statement target");
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == subject.id
+                && edge.target == target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+    }
+
+    #[test]
+    fn test_nested_switch_patterns_keep_subject_ownership() {
+        let source = concat!(
+            "class NestedPattern {\n",
+            "  static int Dispatch(object outer, object inner) {\n",
+            "    return outer switch {\n",
+            "      string outerText => inner switch {\n",
+            "        int innerValue => Consume(innerValue),\n",
+            "        _ => Consume(outerText),\n",
+            "      },\n",
+            "      _ => 0,\n",
+            "    };\n",
+            "  }\n",
+            "}\n",
+        );
+        let file_id = FileId::generate("NestedPattern.cs");
+        let facts = crate::extract_file_with_mode(
+            &csharp_frontend(),
+            file_id,
+            std::path::Path::new("NestedPattern.cs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .expect("extract nested C# switch patterns");
+
+        let node = |kind, name: &str, line| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} on line {line}"))
+        };
+        let outer_subject = node(DataNodeKind::Expr, "outer", 2);
+        let inner_subject = node(DataNodeKind::Expr, "inner", 3);
+        let outer_target = node(DataNodeKind::Local, "outerText", 3);
+        let inner_target = node(DataNodeKind::Local, "innerValue", 4);
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == outer_subject.id
+                && edge.target == outer_target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(facts.dataflow_edges.iter().any(|edge| {
+            edge.source == inner_subject.id
+                && edge.target == inner_target.id
+                && edge.kind == DataFlowKind::Assign
+        }));
+        assert!(
+            facts
+                .dataflow_edges
+                .iter()
+                .all(|edge| { edge.source != outer_subject.id || edge.target != inner_target.id })
         );
     }
 }

@@ -1374,6 +1374,92 @@ fn n5_focus_baseline_language_units_match_index_full() {
     }
 }
 
+/// C# switch pattern variables are scoped to individual arms. Focus must
+/// preserve the same subject-to-capture flow and same-name binding identities
+/// as full Index without materializing a peer method.
+#[cfg(feature = "csharp")]
+#[test]
+fn n5_focus_csharp_switch_pattern_dataflow_matches_index_full() {
+    const FIXTURE: &[(&str, &str)] = &[(
+        "PatternDispatch.cs",
+        "class PatternDispatch {\n\
+             \x20 static int Dispatch(object input) {\n\
+             \x20   return input switch {\n\
+             \x20     string value when value.Length > 0 => Consume(value),\n\
+             \x20     int value => Consume(value),\n\
+             \x20     _ => 0,\n\
+             \x20   };\n\
+             \x20 }\n\
+             \x20 static int Peer() { return 42; }\n\
+             }\n",
+    )];
+
+    let indexed = setup_project(FIXTURE);
+    let indexed_project = indexed.path().to_string_lossy().to_string();
+    CommandContext::open(&indexed_project, DbMode::InitOrCreate).expect("init index db");
+    index::run(&indexed_project, &[], &[], &[], "full").expect("index full");
+    let indexed_store = open_store(&indexed);
+    let indexed_dispatch = symbol_id_by_name(&indexed_store, "Dispatch");
+    let indexed_slice = unit_dataflow_slice(&indexed_store, &indexed_dispatch);
+    let indexed_bindings = unit_binding_slice(&indexed_store, &indexed_dispatch);
+    assert_eq!(
+        indexed_bindings
+            .iter()
+            .filter(|binding| binding.0 == "local" && binding.1 == "value")
+            .count(),
+        2,
+        "full Index must retain one value binding per switch arm"
+    );
+    assert_eq!(
+        indexed_slice
+            .nodes
+            .iter()
+            .filter(|node| node.0 == DataNodeKind::Local.as_str() && node.1 == "value")
+            .count(),
+        2,
+        "full Index must retain both pattern capture events"
+    );
+
+    let focused = setup_project(FIXTURE);
+    let focused_project = focused.path().to_string_lossy().to_string();
+    CommandContext::open(&focused_project, DbMode::InitOrCreate).expect("init focus db");
+    index::run(&focused_project, &[], &[], &[], "structural").expect("structural base");
+    let focused_store = open_store(&focused);
+    let materialize =
+        FocusMaterialize::open(focused_store.clone(), Some(focused.path().to_path_buf()));
+    let dispatch = symbol_id_by_name(&focused_store, "Dispatch");
+    let peer = symbol_id_by_name(&focused_store, "Peer");
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&dispatch)
+            .unwrap()
+            .is_empty(),
+        "C# pattern unit must be cold before Focus ensure"
+    );
+
+    materialize
+        .dataflow()
+        .ensure_for_function(&dispatch, Some("csharp-pattern-parity"))
+        .expect("Focus ensure C# Dispatch");
+    assert_eq!(
+        unit_dataflow_slice(&focused_store, &dispatch),
+        indexed_slice,
+        "C# pattern dataflow/CFG: Focus ensure == Index full"
+    );
+    assert_eq!(
+        unit_binding_slice(&focused_store, &dispatch),
+        indexed_bindings,
+        "C# pattern bindings: Focus ensure == Index full"
+    );
+    assert!(
+        focused_store
+            .find_data_nodes_by_function(&peer)
+            .unwrap()
+            .is_empty(),
+        "peer C# method must stay outside the Focus window"
+    );
+}
+
 /// PHP foreach key/value declarations use the callable variable namespace,
 /// not the structural loop/block scopes. Focus and full Index must retain the
 /// same post-loop binding/dataflow facts without warming an unrelated unit.

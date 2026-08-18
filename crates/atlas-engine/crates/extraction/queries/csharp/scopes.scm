@@ -24,6 +24,14 @@
 
 (switch_statement) @scope.conditional
 
+;; Pattern variables are scoped per switch section/arm. Capturing only the
+;; enclosing switch would conflate same-named declarations in sibling arms.
+(switch_section) @scope.conditional
+
+(switch_expression_arm) @scope.conditional
+
+(conditional_expression) @scope.conditional
+
 (for_statement) @scope.loop
 
 (foreach_statement) @scope.loop
