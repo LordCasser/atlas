@@ -8,6 +8,8 @@ use crate::frontend::{
     LexicalBindingSpec, NormalizeCtx, ParserSpec, ReferenceExtractorSpec, ScopeExtractorSpec,
     SymbolExtractorSpec,
 };
+use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
+use std::collections::HashMap;
 use types::capability::FeatureSupport;
 use types::*;
 
@@ -148,7 +150,7 @@ impl LexicalBindingSpec for JavaScriptAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
             ],
         )
     }
@@ -165,7 +167,7 @@ impl DataflowSpec for JavaScriptAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
             ],
         )
     }
@@ -175,6 +177,19 @@ impl DataflowSpec for JavaScriptAdapter {
         capture: Capture<'_>,
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_js_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        super::typescript::build_ts_language_edges(ctx.root, pos_map, edges);
+        Ok(())
     }
 }
 

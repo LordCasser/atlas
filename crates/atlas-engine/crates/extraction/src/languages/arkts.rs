@@ -17,7 +17,9 @@ use crate::frontend::{
 };
 use crate::languages::node_text;
 use crate::languages::shared::{make_reference_use, make_scope_def_auto_name};
+use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::path::Path;
 use types::capability::FeatureSupport;
 use types::*;
@@ -699,7 +701,7 @@ impl LexicalBindingSpec for ArkTsAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized",
+                "scope-chain-aware binding via TS grammar; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics and ArkUI callback ownership remain conservative",
             ],
         )
     }
@@ -721,7 +723,7 @@ impl DataflowSpec for ArkTsAdapter {
         FeatureSupport::supported_with_limitations(
             0.60,
             vec![
-                "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
+                "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, async scheduling, ArkUI trailing-block, and nested callback internals remain conservative",
             ],
         )
     }
@@ -736,6 +738,19 @@ impl DataflowSpec for ArkTsAdapter {
             ctx.source,
             ctx.file_id,
         )
+    }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        crate::languages::typescript::build_ts_language_edges(ctx.root, pos_map, edges);
+        Ok(())
     }
 }
 

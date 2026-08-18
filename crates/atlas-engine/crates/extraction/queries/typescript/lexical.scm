@@ -22,6 +22,18 @@
   (variable_declarator
     name: (identifier) @lexical.local))
 
+;; --- for...of / for...in iteration variables ---
+;; The leaf captures are intentionally broad because destructuring patterns
+;; may nest. The adapter keeps only supported leaves inside the `left` field of
+;; a for_in_statement and creates bindings only for let/const declarations.
+(for_in_statement
+  left: (identifier) @lexical.for_variable)
+(array_pattern (identifier) @lexical.for_variable)
+(pair_pattern value: (identifier) @lexical.for_variable)
+(rest_pattern (identifier) @lexical.for_variable)
+(assignment_pattern left: (identifier) @lexical.for_variable)
+(shorthand_property_identifier_pattern) @lexical.for_variable
+
 ;; --- Import aliases ---
 (import_specifier (identifier) @lexical.import_alias)
 ;; Default import: `import foo from 'bar'` — the import_clause wraps the identifier

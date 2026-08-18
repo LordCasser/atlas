@@ -469,8 +469,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
         ],
         feature_overrides: &[
             (
@@ -478,7 +478,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                        "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -487,7 +487,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -496,7 +496,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                        "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -549,8 +549,8 @@ mod profiles {
         unsupported: &[],
         limitations: &[
             "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
-            "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+            "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+            "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
         ],
         feature_overrides: &[
             (
@@ -558,7 +558,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                        "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -567,7 +567,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                        "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -576,7 +576,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
+                        "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
                     ],
                 ),
             ),
@@ -993,7 +993,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized",
+                        "scope-chain-aware binding via TS grammar; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics and ArkUI callback ownership remain conservative",
                     ],
                 ),
             ),
@@ -1002,7 +1002,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.60,
                     &[
-                        "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative",
+                        "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, async scheduling, ArkUI trailing-block, and nested callback internals remain conservative",
                     ],
                 ),
             ),
@@ -2247,8 +2247,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
             ]
         );
 
@@ -2285,7 +2285,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                    "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2294,7 +2294,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2303,7 +2303,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                    "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2357,8 +2357,8 @@ mod tests {
             p.limitations,
             vec![
                 "shares TypeScript adapter (TSX-only constructs may trigger warnings)",
-                "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns",
-                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative",
+                "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative",
+                "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative",
             ]
         );
 
@@ -2395,7 +2395,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                    "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2404,7 +2404,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, and async paths remain conservative"
+                    "AST-driven local dataflow; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2413,7 +2413,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "scope-chain-aware binding with shadowing support; edge cases in nested destructuring and async patterns"
+                    "scope-chain-aware binding with shadowing support; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics, remaining declaration destructuring edge cases, and async scheduling remain conservative"
                 ],
             )
         );
@@ -2839,7 +2839,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "scope-chain-aware binding via TS grammar; ArkUI callback ownership is not independently symbolized"
+                    "scope-chain-aware binding via TS grammar; let/const for-of/for-in simple and nested pattern captures are loop-scoped; var-loop binding semantics and ArkUI callback ownership remain conservative"
                 ],
             )
         );
@@ -2848,7 +2848,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.60,
                 vec![
-                    "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; member/subscript mutation targets, prefix/postfix result timing, nested destructuring, async paths, ArkUI trailing-block, and nested callback internals remain conservative"
+                    "dataflow via TS grammar; direct-identifier arithmetic/bitwise augmented and update expressions preserve aggregate read-modify-write provenance (0.90); direct-identifier logical &&=/||=/??= assignments preserve path-insensitive old-value/RHS may-provenance (Read 0.75, Assign 0.90) without proving RHS execution; let/const declarations and existing-local assignments in for-of/for-in (including nested patterns and for-await) receive whole iterable/object aggregate provenance (Assign 0.65); exact element/key projection, var-loop binding semantics, member/subscript mutation or iteration targets, prefix/postfix result timing, remaining declaration destructuring edge cases, async scheduling, ArkUI trailing-block, and nested callback internals remain conservative"
                 ],
             )
         );

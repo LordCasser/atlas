@@ -998,6 +998,192 @@ mod tests {
     }
 
     #[test]
+    fn test_typescript_family_for_in_bindings_receive_iterable_aggregate() {
+        let cases = vec![
+            #[cfg(feature = "typescript")]
+            ("for_in.ts", Language::TypeScript),
+            #[cfg(feature = "javascript")]
+            ("for_in.js", Language::JavaScript),
+            #[cfg(feature = "arkts")]
+            ("for_in.ets", Language::ArkTS),
+        ];
+        let source = concat!(
+            "async function select(value, rows, records, stream, values, record) {\n",
+            "  let key = 'outer';\n",
+            "  for (const [key, count] of rows) {\n",
+            "    consume(key, count);\n",
+            "  }\n",
+            "  consume(key);\n",
+            "  for (const { name, meta: { score } } of records) {\n",
+            "    consume(name, score);\n",
+            "  }\n",
+            "  for await (const item of stream) {\n",
+            "    consume(item);\n",
+            "  }\n",
+            "  for (value of values) {\n",
+            "    consume(value);\n",
+            "  }\n",
+            "  for (const property in record) {\n",
+            "    consume(property);\n",
+            "  }\n",
+            "  for (holder.value of values) {\n",
+            "    consume(holder.value);\n",
+            "  }\n",
+            "  for (items[0] of values) {\n",
+            "    consume(items[0]);\n",
+            "  }\n",
+            "  for (var legacy of values) {\n",
+            "    consume(legacy);\n",
+            "  }\n",
+            "  return value;\n",
+            "}\n",
+        );
+
+        for (path, language) in cases {
+            let frontend = crate::languages::create_frontend(language)
+                .unwrap_or_else(|| panic!("missing {language:?} frontend"));
+            let facts = crate::extract_file_with_mode(
+                &frontend,
+                FileId::generate(path),
+                std::path::Path::new(path),
+                source,
+                "hash",
+                crate::ExtractionMode::Full,
+                &(),
+            )
+            .unwrap_or_else(|error| panic!("{language:?} extraction failed: {error:#}"));
+
+            let mut key_bindings: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "key")
+                .collect();
+            key_bindings.sort_by_key(|binding| binding.range.start_byte);
+            assert_eq!(key_bindings.len(), 2, "{language:?}: outer and loop key");
+            let outer_key = key_bindings[0];
+            let loop_key = key_bindings[1];
+            assert_ne!(outer_key.id, loop_key.id, "{language:?}");
+            assert_ne!(outer_key.scope_id, loop_key.scope_id, "{language:?}");
+            assert_eq!(
+                facts
+                    .scopes
+                    .iter()
+                    .find(|scope| scope.id == loop_key.scope_id)
+                    .map(|scope| scope.kind),
+                Some(types::ScopeKind::Loop),
+                "{language:?}: for binding must be loop-scoped"
+            );
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "key"
+                    && use_.range.start_line == 3
+                    && use_.binding_id == Some(loop_key.id)
+            }));
+            assert!(facts.binding_uses.iter().any(|use_| {
+                use_.name == "key"
+                    && use_.range.start_line == 5
+                    && use_.binding_id == Some(outer_key.id)
+            }));
+            assert!(
+                facts
+                    .bindings
+                    .iter()
+                    .all(|binding| !matches!(binding.name.as_str(), "meta" | "legacy")),
+                "{language:?}: property keys and var-loop targets must not become loop-scoped bindings"
+            );
+
+            let value_binding = facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == "value")
+                .unwrap_or_else(|| panic!("{language:?}: value parameter binding"));
+            assert_eq!(
+                facts
+                    .bindings
+                    .iter()
+                    .filter(|binding| binding.name == "value")
+                    .count(),
+                1,
+                "{language:?}: assignment-form loop must reuse the existing binding"
+            );
+
+            let binding_id = |name: &str| {
+                facts
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == name)
+                    .unwrap_or_else(|| panic!("{language:?}: missing binding {name}"))
+                    .id
+            };
+            for (iterable_name, loop_line, target_name, binding_id) in [
+                ("rows", 2, "key", loop_key.id),
+                ("rows", 2, "count", binding_id("count")),
+                ("records", 6, "name", binding_id("name")),
+                ("records", 6, "score", binding_id("score")),
+                ("stream", 9, "item", binding_id("item")),
+                ("values", 12, "value", value_binding.id),
+                ("record", 15, "property", binding_id("property")),
+            ] {
+                let iterable = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Expr
+                            && node.name.as_deref() == Some(iterable_name)
+                            && node.range.start_line == loop_line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!("{language:?}: missing iterable {iterable_name} on line {loop_line}")
+                    });
+                let target = facts
+                    .data_nodes
+                    .iter()
+                    .find(|node| {
+                        node.kind == types::DataNodeKind::Local
+                            && node.name.as_deref() == Some(target_name)
+                            && node.range.start_line == loop_line
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{language:?}: missing loop target {target_name} on line {loop_line}"
+                        )
+                    });
+                assert_eq!(target.binding_id, Some(binding_id), "{language:?}");
+                assert!(
+                    facts.dataflow_edges.iter().any(|edge| {
+                        edge.source == iterable.id
+                            && edge.target == target.id
+                            && edge.kind == types::DataFlowKind::Assign
+                            && edge.confidence == 0.65
+                    }),
+                    "{language:?}: {iterable_name} must provide aggregate provenance to {target_name}"
+                );
+            }
+
+            for line in [18, 21] {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        node.kind != types::DataNodeKind::Local || node.range.start_line != line
+                    }),
+                    "{language:?}: member/subscript loop targets remain conservative"
+                );
+            }
+            for line in [2, 6, 9, 15] {
+                assert!(
+                    facts.data_nodes.iter().all(|node| {
+                        node.kind != types::DataNodeKind::VariableUse
+                            || node.range.start_line != line
+                            || !matches!(
+                                node.name.as_deref(),
+                                Some("key" | "count" | "name" | "score" | "item" | "property")
+                            )
+                    }),
+                    "{language:?}: declaration-form loop targets must not be modeled as reads"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_c_style_variable_mutations_preserve_read_modify_write_provenance() {
         let cases = vec![
             #[cfg(feature = "c")]

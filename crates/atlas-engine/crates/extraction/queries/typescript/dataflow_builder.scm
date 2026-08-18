@@ -41,6 +41,19 @@
   name: (identifier) @df.assign_target
   value: (_) @df.assign_value)
 
+;; --- for...of / for...in iteration bindings ---
+;; The adapter filters broad pattern-leaf captures against the left side of a
+;; for_in_statement, then adds whole-iterable aggregate Assign edges (0.65).
+(for_in_statement
+  left: (identifier) @df.for_target)
+(for_in_statement
+  right: (_) @df.for_iterable)
+(array_pattern (identifier) @df.for_target)
+(pair_pattern value: (identifier) @df.for_target)
+(rest_pattern (identifier) @df.for_target)
+(assignment_pattern left: (identifier) @df.for_target)
+(shorthand_property_identifier_pattern) @df.for_target
+
 ;; --- Return statements ---
 ;; return expr
 (return_statement (_) @df.return_value)
