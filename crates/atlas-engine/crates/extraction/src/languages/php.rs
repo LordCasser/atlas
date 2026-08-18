@@ -9,6 +9,8 @@
 //! namespace separator is `\`.
 
 use crate::languages::{node_range, node_text};
+use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
+use std::collections::HashMap;
 
 use crate::frontend::{
     Capture, DataflowSpec, FrontendParts, ImportExtractorSpec, LanguageFrontend,
@@ -275,6 +277,19 @@ impl DataflowSpec for PhpAdapter {
     ) -> (Option<DataNode>, Option<DataFlowEdge>) {
         normalize_php_dataflow_builder(&capture.name, capture.node, ctx.source, ctx.file_id)
     }
+
+    fn build_language_edges(
+        &self,
+        ctx: &ExtractionCtx<'_>,
+        pos_map: &HashMap<NodePosKey, DataNodeId>,
+        _nodes: &[DataNode],
+        _bindings: &[BindingDef],
+        _scopes: &[ScopeDef],
+        edges: &mut Vec<DataFlowEdge>,
+    ) -> anyhow::Result<()> {
+        walk_php_destructure_edges(ctx.root, pos_map, edges);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +432,7 @@ fn php_extract_signature(
 fn php_binding_kind(capture_name: &str) -> Option<BindingKind> {
     match capture_name {
         "lexical.parameter" => Some(BindingKind::Parameter),
-        "lexical.local" => Some(BindingKind::Local),
+        "lexical.local" | "lexical.destructure" => Some(BindingKind::Local),
         "lexical.catch_variable" => Some(BindingKind::CatchVariable),
         _ => None,
     }
@@ -430,6 +445,9 @@ fn normalize_php_lexical(
     file_id: FileId,
 ) -> Option<BindingDef> {
     if php_enclosing_callable_kind(node) == Some("arrow_function") {
+        return None;
+    }
+    if capture_name == "lexical.destructure" && !is_php_list_destructure_target(node) {
         return None;
     }
     let kind = php_binding_kind(capture_name)?;
@@ -465,6 +483,158 @@ fn php_enclosing_callable_kind(node: tree_sitter::Node<'_>) -> Option<&'static s
     None
 }
 
+fn is_php_list_destructure_key_read(node: tree_sitter::Node<'_>) -> bool {
+    let mut item = node;
+    while let Some(parent) = item.parent() {
+        if parent.kind() == "list_literal" {
+            let mut sibling = item.next_sibling();
+            while let Some(next) = sibling {
+                if next.is_extra() {
+                    sibling = next.next_sibling();
+                    continue;
+                }
+                return next.kind() == "=>";
+            }
+            return false;
+        }
+        item = parent;
+    }
+    false
+}
+
+/// Whether a variable captured directly under a PHP `list_literal` is a target
+/// rather than the key expression immediately before `=>`.
+fn is_php_list_destructure_target(node: tree_sitter::Node<'_>) -> bool {
+    let item = node
+        .parent()
+        .filter(|parent| parent.kind() == "by_ref")
+        .unwrap_or(node);
+    item.parent()
+        .is_some_and(|parent| parent.kind() == "list_literal")
+        && !is_php_list_destructure_key_read(node)
+}
+
+fn is_php_foreach_binding_target(node: tree_sitter::Node<'_>) -> bool {
+    let mut parent = node.parent();
+    while let Some(current) = parent {
+        if current.kind() == "foreach_statement" {
+            return php_foreach_parts(current).is_some_and(|(_, value)| {
+                !is_php_list_destructure_key_read(node)
+                    && value.start_byte() <= node.start_byte()
+                    && value.end_byte() >= node.end_byte()
+            });
+        }
+        parent = current.parent();
+    }
+    false
+}
+
+fn collect_php_destructure_targets<'tree>(
+    node: tree_sitter::Node<'tree>,
+    targets: &mut Vec<tree_sitter::Node<'tree>>,
+) {
+    if node.kind() == "variable_name" {
+        if node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "list_literal")
+            && !is_php_list_destructure_target(node)
+        {
+            return;
+        }
+        targets.push(node);
+        return;
+    }
+    if !matches!(node.kind(), "by_ref" | "list_literal" | "pair") {
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_php_destructure_targets(child, targets);
+    }
+}
+
+fn connect_php_destructure_targets(
+    value: tree_sitter::Node<'_>,
+    target_owner: tree_sitter::Node<'_>,
+    confidence: f64,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    let value_key = NodePosKey {
+        start_byte: value.start_byte() as u32,
+        end_byte: value.end_byte() as u32,
+        kind: DataNodeKind::Expr,
+    };
+    let Some(&source_id) = pos_map.get(&value_key) else {
+        return;
+    };
+
+    let mut targets = Vec::new();
+    collect_php_destructure_targets(target_owner, &mut targets);
+    for target in targets {
+        let target_key = NodePosKey {
+            start_byte: target.start_byte() as u32,
+            end_byte: target.end_byte() as u32,
+            kind: DataNodeKind::Local,
+        };
+        let Some(&target_id) = pos_map.get(&target_key) else {
+            continue;
+        };
+        if edges.iter().any(|edge| {
+            edge.source == source_id
+                && edge.target == target_id
+                && edge.kind == DataFlowKind::Assign
+        }) {
+            continue;
+        }
+        let edge_id =
+            DataFlowEdgeId::generate(&source_id, &target_id, DataFlowKind::Assign.as_str());
+        edges.push(DataFlowEdge::new(
+            edge_id,
+            source_id,
+            target_id,
+            DataFlowKind::Assign,
+            node_range(target),
+            confidence,
+        ));
+    }
+}
+
+fn php_foreach_parts(
+    node: tree_sitter::Node<'_>,
+) -> Option<(tree_sitter::Node<'_>, tree_sitter::Node<'_>)> {
+    let mut cursor = node.walk();
+    let mut children = node
+        .named_children(&mut cursor)
+        .filter(|child| !child.is_extra());
+    Some((children.next()?, children.next()?))
+}
+
+fn walk_php_destructure_edges(
+    node: tree_sitter::Node<'_>,
+    pos_map: &HashMap<NodePosKey, DataNodeId>,
+    edges: &mut Vec<DataFlowEdge>,
+) {
+    if node.kind() == "assignment_expression"
+        && let (Some(left), Some(right)) = (
+            node.child_by_field_name("left"),
+            node.child_by_field_name("right"),
+        )
+        && left.kind() == "list_literal"
+    {
+        connect_php_destructure_targets(right, left, 0.75, pos_map, edges);
+    } else if node.kind() == "foreach_statement"
+        && let Some((collection, value)) = php_foreach_parts(node)
+    {
+        connect_php_destructure_targets(collection, value, 0.65, pos_map, edges);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_php_destructure_edges(child, pos_map, edges);
+    }
+}
+
 fn normalize_php_dataflow_builder(
     capture_name: &str,
     node: tree_sitter::Node,
@@ -496,24 +666,29 @@ fn normalize_php_dataflow_builder(
                 )
             })
             .unwrap_or((None, None)),
-        "df.assign_target" => node_text(node, source)
-            .map(|raw| {
-                let name = strip_php_sigil(&raw).to_string();
-                let node_id = DataNodeId::generate(
-                    &file_id,
-                    None::<&SymbolId>,
-                    "local",
-                    Some(&name),
-                    Some(&name),
-                    range.start_byte,
-                );
-                (
-                    Some(DataNode::local(node_id, file_id, None, None, &name, range)),
-                    None,
-                )
-            })
-            .unwrap_or((None, None)),
-        "df.assign_value" => make_df_assign_value(
+        "df.assign_target" | "df.foreach_target" | "df.destructure_target" => {
+            if capture_name == "df.destructure_target" && !is_php_list_destructure_target(node) {
+                return (None, None);
+            }
+            node_text(node, source)
+                .map(|raw| {
+                    let name = strip_php_sigil(&raw).to_string();
+                    let node_id = DataNodeId::generate(
+                        &file_id,
+                        None::<&SymbolId>,
+                        "local",
+                        Some(&name),
+                        Some(&name),
+                        range.start_byte,
+                    );
+                    (
+                        Some(DataNode::local(node_id, file_id, None, None, &name, range)),
+                        None,
+                    )
+                })
+                .unwrap_or((None, None))
+        }
+        "df.assign_value" | "df.destructure_value" | "df.foreach_value" => make_df_assign_value(
             file_id,
             node,
             source,
@@ -696,10 +871,12 @@ fn normalize_php_dataflow_builder(
         }
         "df.identifier_use" => {
             // Filter out declaration contexts and superglobals
-            if crate::languages::shared::is_identifier_decl_or_property(
-                node,
-                &["namespace_use_clause", "use_declaration"],
-            ) {
+            if !is_php_list_destructure_key_read(node)
+                && crate::languages::shared::is_identifier_decl_or_property(
+                    node,
+                    &["namespace_use_clause", "use_declaration"],
+                )
+            {
                 return (None, None);
             }
             // Skip left-hand side of assignment (already captured as df.assign_target)
@@ -709,6 +886,9 @@ fn normalize_php_dataflow_builder(
                     .child_by_field_name("left")
                     .is_some_and(|n| n.id() == node.id())
             {
+                return (None, None);
+            }
+            if is_php_list_destructure_target(node) || is_php_foreach_binding_target(node) {
                 return (None, None);
             }
             // Skip superglobals (already captured as df.superglobal)
@@ -949,6 +1129,147 @@ function f($req) {
                 })
                 .unwrap_or_else(|| panic!("PHP {name} data node on line {line}"));
             assert_eq!(node.binding_id, binding_by_name.get(name).copied());
+        }
+    }
+
+    #[test]
+    fn test_nested_destructuring_bindings_and_conservative_flow() {
+        let source = concat!(
+            "<?php\n",
+            "function unpack($source, $rows, $selector) {\n",
+            "    [$first, [$left, &$right]] = $source;\n",
+            "    ['id' => $id, 'meta' => ['flag' => $flag]] = $source;\n",
+            "    list($a, list($b, $c)) = $source;\n",
+            "    [$selector => $selected] = $source;\n",
+            "    foreach ($rows as [$row_first, [$row_left, $row_right]]) {\n",
+            "        consume($row_first, $row_left, $row_right);\n",
+            "    }\n",
+            "    foreach ($rows as ['id' => $row_id, 'meta' => ['flag' => $row_flag]]) {\n",
+            "        consume($row_id, $row_flag);\n",
+            "    }\n",
+            "    foreach ($rows as $direct_key => &$direct_value) {\n",
+            "        consume($direct_key, $direct_value);\n",
+            "    }\n",
+            "    return consume($first, $left, $right, $id, $flag, $a, $b, $c, $selected);\n",
+            "}\n",
+        );
+        let facts = crate::extract_file_with_mode(
+            &php_frontend(),
+            FileId::generate("nested_destructure.php"),
+            std::path::Path::new("nested_destructure.php"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        let binding = |name: &str| {
+            let matches: Vec<_> = facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == name)
+                .collect();
+            assert_eq!(matches.len(), 1, "expected one binding for {name}");
+            matches[0]
+        };
+        for name in [
+            "source",
+            "rows",
+            "selector",
+            "first",
+            "left",
+            "right",
+            "id",
+            "flag",
+            "a",
+            "b",
+            "c",
+            "selected",
+            "row_first",
+            "row_left",
+            "row_right",
+            "row_id",
+            "row_flag",
+            "direct_key",
+            "direct_value",
+        ] {
+            let binding = binding(name);
+            let scope = facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == binding.scope_id)
+                .expect("binding scope");
+            assert_eq!(scope.kind, ScopeKind::Function, "{name} function scope");
+        }
+        let selector_binding = binding("selector");
+        assert_eq!(selector_binding.range.start_line, 1);
+        assert!(
+            !facts.data_nodes.iter().any(|node| {
+                node.kind == DataNodeKind::Local
+                    && node.name.as_deref() == Some("selector")
+                    && node.range.start_line == 5
+            }),
+            "a keyed-destructuring selector is a read, not a target"
+        );
+        let selector_use = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("selector")
+                    && node.range.start_line == 5
+            })
+            .expect("selector key read");
+        assert_eq!(selector_use.binding_id, Some(selector_binding.id));
+
+        let node = |kind: DataNodeKind, name: &str, line: u32| {
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == kind
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .unwrap_or_else(|| panic!("missing {kind:?} {name} on line {line}"))
+        };
+        let assert_flow = |source_name: &str, line: u32, target_name: &str, confidence: f64| {
+            let source = node(DataNodeKind::Expr, source_name, line);
+            let target = node(DataNodeKind::Local, target_name, line);
+            let edge = facts
+                .dataflow_edges
+                .iter()
+                .find(|edge| {
+                    edge.source == source.id
+                        && edge.target == target.id
+                        && edge.kind == DataFlowKind::Assign
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing Assign flow {source_name}@{line} -> {target_name}@{line}")
+                });
+            assert_eq!(edge.confidence, confidence);
+            assert_eq!(target.binding_id, Some(binding(target_name).id));
+        };
+
+        for target in ["first", "left", "right"] {
+            assert_flow("$source", 2, target, 0.75);
+        }
+        for target in ["id", "flag"] {
+            assert_flow("$source", 3, target, 0.75);
+        }
+        for target in ["a", "b", "c"] {
+            assert_flow("$source", 4, target, 0.75);
+        }
+        assert_flow("$source", 5, "selected", 0.75);
+        for target in ["row_first", "row_left", "row_right"] {
+            assert_flow("$rows", 6, target, 0.65);
+        }
+        for target in ["row_id", "row_flag"] {
+            assert_flow("$rows", 9, target, 0.65);
+        }
+        for target in ["direct_key", "direct_value"] {
+            assert_flow("$rows", 12, target, 0.65);
         }
     }
 

@@ -10,6 +10,45 @@
   left: (variable_name) @df.assign_target
   right: (_) @df.assign_value)
 
+;; --- Array destructuring ([] and list()) ---
+(list_literal
+  (variable_name) @df.destructure_target)
+
+(list_literal
+  (by_ref
+    (variable_name) @df.destructure_target))
+
+(assignment_expression
+  left: (list_literal)
+  right: (_) @df.destructure_value)
+
+;; --- Foreach collection and direct key/value targets ---
+;; The collection is the named child before the literal `as` token. Nested
+;; []/list() targets are already captured by df.destructure_target.
+(foreach_statement
+  (_) @df.foreach_value
+  "as")
+
+(foreach_statement
+  "as"
+  (variable_name) @df.foreach_target)
+
+(foreach_statement
+  "as"
+  (by_ref
+    (variable_name) @df.foreach_target))
+
+(foreach_statement
+  "as"
+  (pair
+    (variable_name) @df.foreach_target))
+
+(foreach_statement
+  "as"
+  (pair
+    (by_ref
+      (variable_name) @df.foreach_target)))
+
 ;; --- Return statements ---
 (return_statement
   (_) @df.return_value)
