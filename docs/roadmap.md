@@ -214,11 +214,11 @@ Pre-release TUI/MCP/Focus alignment review:
   seven positional discovery fields; the later content fingerprint phase
   remains a separate boundary.
 - Focus-vs-full-Index dataflow/CFG parity now has a shared baseline matrix for
-  TypeScript, JavaScript, Python, Java, C, C++, ArkTS, C#, and PHP. Go, C#,
-  Rust, Ruby, Kotlin, Cangjie, and PHP retain stronger feature-specific parity
+  all 14 languages. Go, C#, Rust, Ruby, Kotlin, Cangjie, PHP, and the
+  TypeScript/JavaScript/ArkTS grammar family retain stronger feature-specific parity
   fixtures for their type-switch, switch-pattern, match, Ruby multiple
-  assignment/modifier-loop, subject-binding, and callable-variable-namespace
-  boundaries.
+  assignment/modifier-loop, subject-binding, callable-variable-namespace, and
+  direct-variable mutation boundaries.
 
 ### 1.6 Completed baseline release gates
 
@@ -238,6 +238,16 @@ The original baseline implementation blockers are closed and covered by the rele
 ### 2.1 DataflowInterproc + persistent summary layer ✅
 
 All 14 languages are now at `DataflowInterproc` level. The current schema added 4 persistent summary tables (`function_summaries`, `summary_param_reaches`, `summary_return_sources`, `summary_call_arg_sources`) with `CrossFunctionBridge` for ArgToParam/ReturnToCall interprocedural bridges.
+
+> **TypeScript-family mutation status (updated 2026-08)**: TypeScript,
+> JavaScript, and ArkTS now share direct-identifier `op=` and prefix/postfix
+> `++`/`--` extraction without losing their persisted language identities. The
+> whole expression is an aggregate read-modify-write value; previous target
+> value and explicit RHS flow into it, then it flows to the coalesced local at
+> 0.90. Direct extraction, SQLite/Trace, and cold Focus vs full Index cover all
+> three identities independently. Member/subscript targets, logical-assignment
+> conditional execution, prefix/postfix result timing, nested destructuring,
+> async paths, and ArkUI callback/trailing-block internals remain conservative.
 
 > **CFG status (updated 2026-08)**: CFG builder (`cfg_builder.rs`) exposes limited function/method CFG for all 14 languages. PHP branch/loop/switch/elseif, wrapped throw, return terminals, persisted E2E, golden, and the repository PHP syntax example are verified at WithLimitations(0.60). Switch sibling paths preserve C/C++/JS/TS/ArkTS/PHP and Java-colon implicit fall-through plus Go's explicit `fallthrough`; Go `select` additionally preserves communication/default siblings and blocking no-default semantics，真实 `gin.Context.Stream` 覆盖 SQLite persistence。`Break`/`Continue` edges resolve nested control paths, including PHP numeric nesting and Java、JS/TS/ArkTS、Go、Rust、Kotlin grammar-visible lexical labels；标签 target 可跨 finally/managed cleanup 后再由目标 loop/block 消费，真实 `ESLZ4Compressor.compress64k/compress` 覆盖 labeled break/continue 的 SQLite persistence。C/C++/Go/C#/PHP direct same-function goto/label 使用专用 `Goto` edge；C# 在 goto 退出时按内到外顺序经过 using `BlockExit` 与 path-isolated finally clone，禁止跳入更深的词法/cleanup region 或跳出 finally clause。PHP standalone label 复用 Join target，允许跳入普通 block 或跳出 loop/switch，禁止跳入 loop/switch 或跨 finally-clause 边界，退出 nested try 时按内到外经过 path-isolated finally clone。真实 Redis `hdr_percentiles_print` 与 Shadowsocks `Listener.ReceiveCallback` 覆盖 direct goto persistence，synthetic C#/PHP fixtures 覆盖 cleanup-crossing goto 的 extraction→SQLite persistence；未知/非直接目标终止本地 best-effort 路径。Go defer 在 64-clone 预算内按 CFG×runtime-stack 展开，条件注册不会串线，normal return 通过专用 `Defer` edge 和 owner-matched `BlockExit` 执行 LIFO cleanup；真实 Gin `Engine.RunUnix` 覆盖 early/final return 的不同持久化 defer stack。Rust `?` 保留 success continuation 与 residual return-to-Exit，并在 closure/async boundary 停止；Rust `let-else` 将 success 与显式 return/break/continue、unconditional-loop 或 unqualified builtin panic-like macro alternative 分离，真实 `Controller::print_file_ranges` 与 `EscapeSequenceOffsetsIterator::next_osc` 覆盖 SQLite persistence。Ruby modifier while/until 区分 plain pre-test 与 `begin...end` post-test，并复用既有 `next`/`redo`/`break` target 语义。C++ lowers try/catch and explicit throw through `Exception` edges；JavaScript/TypeScript/ArkTS、Java、C#、PHP、Python、Kotlin、Cangjie 和 Ruby 进一步以 path-isolated finally/ensure clones 表达 normal、return、throw、break 与 continue continuation。Java/C#/PHP direct object-created explicit throw 按源码顺序连接 handler，并在首个无 guard 的语法精确匹配处截断；真实 Elasticsearch `RestActions.getQueryContent` 覆盖 extraction→SQLite 边界。Java try-with-resources、C# using、Python with、Kotlin use 与 Ruby block resource 使用持久化 owner 匹配 normal/abrupt completion 的隔离 BlockExit，并确定性地按 LIFO 生成 cleanup；cleanup 自身抛出的异常会保留有序 `Throw` continuation，经过外层资源退出与 finally/ensure 后进入词法 handler。注释 AST extras 不生成可执行 Statement，包括 label 与正文之间的 comment extras。单个路径隔离区域超过 64 个 clone 时原子回退为 Statement。All return/throw terminals connect to the unique function Exit. Go cyclic/over-budget defer、panic/recover/Goexit 与复杂 anonymous deferred body、Rust macro shadowing/re-export、custom never-return macro 与 panic unwind/catch_unwind、ArkUI trailing blocks and nested arrow callbacks、Ruby ordinary iterator/callback blocks、cleanup exception suppression/replacement 与精确 identity、computed goto、C# `goto case/default`、C++ cross-scope destruction、grammar-hidden labels、继承/alias/变量/guard handler selection 和 implicit exceptions remain explicit boundaries.
 

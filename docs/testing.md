@@ -37,7 +37,7 @@ Atlas 术语分层见 `docs/architecture.md` §1.1：`ExtractionMode`（L2）、
 - 所有已编译语言至少进入一条 Focus function-unit 与 full Index 的 bindings、dataflow（含 edge kind/confidence）、CFG
   对拍；共享基线矩阵覆盖普通函数边界，语言特有语义继续使用独立 fixture，不能用基线
   测试替代 type-switch、mixed short declaration、Go select receive、match binding、PHP nested/keyed
-  destructuring 与 direct-variable mutation、Ruby multiple assignment、Java guarded type/record pattern、C# parenthesized nested designation、Kotlin
+  destructuring、JS/TS/ArkTS 与 PHP direct-variable mutation、Ruby multiple assignment、Java guarded type/record pattern、C# parenthesized nested designation、Kotlin
   late-assignment branch provenance、Cangjie simple/nested-tuple/enum-payload
   `for-in` loop binding/aggregate provenance、modifier loop、nested lexical shadowing
   等精确断言。
@@ -371,6 +371,7 @@ search `lang:` prefix → `CapabilityProfile::all_compiled()` → golden fixture
 | Cross-fn Phase2 | `focus_mode_phase2_arg_to_param_without_summary` | **无 summary** 时 `RuntimeEdgeProvider` 仍产出 `ArgToParam`（防误删 Phase2） |
 | ArkTS AppStorage | `arkts_app_storage_bridges_writer_value_to_web_bound_field` + `cold_arkts_trace_materializes_cross_directory_appstorage_writer` | `set/setOrCreate` value 通过精确 key 匹配到 `StorageProp/StorageLink` 字段与 UI `CallArg`；literal/expression 与 receiver 不得误合并；冷 Focus 跨目录 writer 经 resume materialize 后必须出现 `StateFlow` |
 | ArkTS declaration/search | `declaration_recovery_preserves_navigation_component_and_following_builder` + `execute_decorator_query_refines_mixed_manifest_and_structural_scope` | 深层 ArkUI DSL 不得吞 owning struct/build/后续 Builder；混合 manifest/structural scope 的 exact decorator search 必须补齐 structural facts 后再声明 complete/total |
+| JS/TS/ArkTS direct-variable mutation | `test_typescript_family_variable_mutations_preserve_read_modify_write_provenance` + `fx_typescript_family_variable_mutations_persist_and_trace_read_modify_write_inputs` + `n5_focus_typescript_family_variable_mutations_match_index_full` | 三种 language identity 各自验证 direct identifier `op=`/`++`/`--` 的 previous-value/RHS→aggregate Expr、Expr→Local(0.90)、SQLite/Trace 与 Focus==full Index；member/subscript target 保持负边界 |
 | FileLock 互斥 | `reject_if_held_by_foreign_live_pid` 等 | 其他 live PID → `cli_index_lock_held`；同 PID 豁免 |
 | 短名 / 限定名解析 | `resolve_by_name_short_name_*`（atlas-engine） | 短名 `GetDev` 命中 `CertUtils::GetDev`；多短名 → Ambiguous + 全 qname `symbol_ref`；精确 qname 仍 UniqueQname |
 | C++ 限定调用抽取 | `test_cpp_qualified_call_ref_simple_name_and_full_text`（extraction） | ref.name=`GetDev`、text=`CertUtils::GetDev`、receiver=`CertUtils`；嵌套 `A::B::method` 全文/前缀正确 |

@@ -75,6 +75,11 @@ equivalence. Read the profile limitations for destructuring, pattern,
 callback, definite-assignment, and dynamic-namespace boundaries before relying
 on an apparently resolved same-name use.
 
+TypeScript, JavaScript, and ArkTS direct-identifier `op=` / `++` / `--` facts
+preserve aggregate read-modify-write provenance; each response still reports
+its own language identity. Member/subscript mutation targets, conditional
+logical assignment, and prefix/postfix result timing remain conservative.
+
 ### Source encoding and positions
 
 - Atlas decodes project sources internally before extraction. UTF-8 is direct;
@@ -227,6 +232,9 @@ Reuse `symbol_ref` from prior results when present.
 - Stay local: file/dir scope, exact symbol, then expand.
 - Value flow: `trace(point)` then `trace(variable)` — this is how you get **local dataflow**
   without a full index.
+- For `op=` / `++` / `--`, place the trace column inside the operator to select
+  the aggregate mutation `Expr`; a column on the identifier intentionally
+  resolves the higher-priority `Local` node.
 - For `calls`, use incoming/outgoing for one hop; deepen only with
   `direction="both"`. Resume before deepening on cold Focus.
 - C/C++ system headers: pass `include_roots` when needed.
