@@ -6,6 +6,17 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### Rust dataflow
+
+- Bind bare, tuple/tuple-struct, struct shorthand/renamed, `ref`/`mut`, `@`,
+  slice, and canonical or-pattern captures in an isolated `match_arm` scope.
+  The match scrutinee flows conservatively to each capture, while guard and
+  arm-body uses resolve the same binding identity.
+- Cover nested-match ownership, constructor/type rejection, SQLite trace, and
+  Focus-vs-full-Index parity. Structural projection, borrow/move modes,
+  guard-let bindings, guard control dependencies, and syntactically ambiguous
+  single-segment constants remain explicit precision boundaries.
+
 ### Cangjie dataflow
 
 - Bind simple, tuple, enum-payload, and type-pattern captures in an isolated
