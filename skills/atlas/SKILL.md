@@ -75,12 +75,15 @@ equivalence. Read the profile limitations for destructuring, pattern,
 callback, definite-assignment, and dynamic-namespace boundaries before relying
 on an apparently resolved same-name use.
 
-TypeScript、JavaScript、ArkTS、C、C++、Java and C# direct-identifier compound
-assignment / `++` / `--` facts preserve aggregate read-modify-write provenance;
-each response still reports its own language identity. Member/field、subscript/
-element/array and pointer mutation targets remain conservative, as do logical or
-conditional assignment execution、overloaded/dynamic operator semantics、numeric
-promotion/boxing and prefix/postfix result timing where the language supports them.
+TypeScript、JavaScript、ArkTS、Python、Java、C、C++、Go、C#、Rust、PHP、Ruby and
+Kotlin preserve aggregate read-modify-write provenance for their supported
+direct-identifier compound/update forms; each response still reports its own
+language identity. Cangjie does not yet claim direct-variable mutation support.
+Attribute/member/field/navigation、subscript/element/array/index、receiver and
+pointer/dereference mutation targets remain conservative, as do logical or
+conditional assignment execution（including Ruby `||=`/`&&=`）、overloaded/dynamic
+operator semantics、numeric promotion/boxing and prefix/postfix result timing where
+the language supports them.
 
 ### Source encoding and positions
 
