@@ -21,10 +21,11 @@
 (closure_parameters
   (identifier) @lexical.parameter)
 
-;; --- Match arm bindings ---
+;; --- Match arm and let-condition bindings ---
 ;; Broad grammar captures are filtered by the adapter. This reaches nested
-;; tuple/struct/ref/@ patterns while rejecting constructor paths, guard syntax,
-;; and non-canonical alternatives of an or-pattern.
+;; tuple/struct/ref/@ patterns in match arms, match guards, and if/while
+;; conditions while rejecting constructor paths and non-canonical alternatives
+;; of an or-pattern.
 (match_pattern
   (identifier) @lexical.pattern)
 (_pattern

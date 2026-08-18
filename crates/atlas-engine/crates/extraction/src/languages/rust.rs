@@ -120,7 +120,20 @@ fn normalize_rust_scope(
         "scope.loop" => ScopeKind::Loop,
         _ => return None,
     };
-    let range = node_range(node);
+    // Rust if-let bindings are visible through the successful consequence but
+    // never in `else`. Model that semantic namespace directly instead of
+    // letting the full `if_expression` AST span leak captures into alternatives.
+    let range = if capture_name == "scope.conditional" && node.kind() == "if_expression" {
+        let mut range = node_range(node);
+        let consequence = node.child_by_field_name("consequence")?;
+        let consequence_range = node_range(consequence);
+        range.end_byte = consequence_range.end_byte;
+        range.end_line = consequence_range.end_line;
+        range.end_column = consequence_range.end_column;
+        range
+    } else {
+        node_range(node)
+    };
 
     Some(make_scope_def_auto_name(file_id, kind, range))
 }
@@ -198,7 +211,7 @@ impl LexicalBindingSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
+                "scope-chain-aware binding with arm-local match captures and source-ordered match-guard/if/while let-condition chains; if-let captures are excluded from else branches, while syntactically ambiguous single-segment constants remain conservative",
             ],
         )
     }
@@ -219,7 +232,7 @@ impl DataflowSpec for RustAdapter {
         FeatureSupport::supported_with_limitations(
             0.70,
             vec![
-                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
+                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
             ],
         )
     }
@@ -245,7 +258,7 @@ impl DataflowSpec for RustAdapter {
     }
 }
 
-/// Walk the AST for Rust-specific let bindings and match captures.
+/// Walk the AST for Rust-specific declarations and pattern captures.
 fn walk_rust_language_edges(
     node: tree_sitter::Node,
     source: &str,
@@ -350,7 +363,7 @@ fn walk_rust_language_edges(
     }
 
     if node.kind() == "let_condition"
-        && rust_match_guard_let_condition(node).is_some()
+        && rust_supported_let_condition(node).is_some()
         && let (Some(pattern), Some(value)) = (
             node.child_by_field_name("pattern"),
             node.child_by_field_name("value"),
@@ -363,7 +376,7 @@ fn walk_rust_language_edges(
         };
         if let Some(&source_id) = pos_map.get(&value_key) {
             let mut targets = Vec::new();
-            collect_rust_guard_let_binding_nodes(pattern, source, &mut targets);
+            collect_rust_let_binding_nodes(pattern, source, &mut targets);
             for target in targets {
                 connect_rust_pattern_flow(source_id, target, pos_map, edges);
             }
@@ -647,14 +660,27 @@ fn rust_match_guard_let_condition(node: tree_sitter::Node<'_>) -> Option<tree_si
     node_is_within(let_condition, guard).then_some(let_condition)
 }
 
-fn is_rust_guard_let_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
-    rust_match_guard_let_condition(node)
+fn rust_control_let_condition(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let let_condition = nearest_ancestor_of_kind(node, "let_condition")?;
+    std::iter::successors(let_condition.parent(), |current| current.parent())
+        .find(|ancestor| matches!(ancestor.kind(), "if_expression" | "while_expression"))
+        .and_then(|owner| owner.child_by_field_name("condition"))
+        .filter(|condition| node_is_within(let_condition, *condition))
+        .map(|_| let_condition)
+}
+
+fn rust_supported_let_condition(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    rust_match_guard_let_condition(node).or_else(|| rust_control_let_condition(node))
+}
+
+fn is_rust_let_pattern_syntax(node: tree_sitter::Node<'_>) -> bool {
+    rust_supported_let_condition(node)
         .and_then(|condition| condition.child_by_field_name("pattern"))
         .is_some_and(|pattern| node_is_within(node, pattern))
 }
 
 fn is_rust_pattern_declaration_syntax(node: tree_sitter::Node<'_>) -> bool {
-    is_rust_match_arm_pattern_syntax(node) || is_rust_guard_let_pattern_syntax(node)
+    is_rust_match_arm_pattern_syntax(node) || is_rust_let_pattern_syntax(node)
 }
 
 fn is_canonical_rust_or_alternative(
@@ -745,20 +771,20 @@ fn is_rust_match_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool
     is_rust_binding_node_in_pattern(node, source, root_pattern)
 }
 
-fn is_rust_guard_let_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
-    rust_match_guard_let_condition(node)
+fn is_rust_let_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
+    rust_supported_let_condition(node)
         .and_then(|condition| condition.child_by_field_name("pattern"))
         .is_some_and(|pattern| is_rust_binding_node_in_pattern(node, source, pattern))
 }
 
 fn is_rust_pattern_binding_node(node: tree_sitter::Node<'_>, source: &str) -> bool {
-    is_rust_match_binding_node(node, source) || is_rust_guard_let_binding_node(node, source)
+    is_rust_match_binding_node(node, source) || is_rust_let_binding_node(node, source)
 }
 
 fn rust_pattern_root_and_value<'tree>(
     node: tree_sitter::Node<'tree>,
 ) -> Option<(tree_sitter::Node<'tree>, tree_sitter::Node<'tree>)> {
-    if let Some(condition) = rust_match_guard_let_condition(node) {
+    if let Some(condition) = rust_supported_let_condition(node) {
         return Some((
             condition.child_by_field_name("pattern")?,
             condition.child_by_field_name("value")?,
@@ -873,18 +899,18 @@ fn collect_rust_match_binding_nodes<'tree>(
     }
 }
 
-fn collect_rust_guard_let_binding_nodes<'tree>(
+fn collect_rust_let_binding_nodes<'tree>(
     node: tree_sitter::Node<'tree>,
     source: &str,
     bindings: &mut Vec<tree_sitter::Node<'tree>>,
 ) {
-    if is_rust_guard_let_binding_node(node, source) {
+    if is_rust_let_binding_node(node, source) {
         bindings.push(node);
         return;
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        collect_rust_guard_let_binding_nodes(child, source, bindings);
+        collect_rust_let_binding_nodes(child, source, bindings);
     }
 }
 
@@ -901,7 +927,7 @@ fn normalize_rust_lexical(
     let name = node_text(node, source)?;
     let range = node_range(node);
     let mut binding = make_binding_def(file_id, kind, name, range);
-    if let Some(condition) = rust_match_guard_let_condition(node)
+    if let Some(condition) = rust_supported_let_condition(node)
         && condition
             .child_by_field_name("pattern")
             .is_some_and(|pattern| node_is_within(node, pattern))
@@ -966,8 +992,8 @@ fn normalize_rust_dataflow_builder(
         "df.match_subject" => {
             make_df_assign_value(file_id, node, source, range, &["call_expression"])
         }
-        "df.guard_value" => {
-            if rust_match_guard_let_condition(node).is_some() {
+        "df.let_condition_value" => {
+            if rust_supported_let_condition(node).is_some() {
                 make_df_assign_value(file_id, node, source, range, &["call_expression"])
             } else {
                 (None, None)
@@ -1757,5 +1783,184 @@ fn inspect(value: Message, fallback: Option<(i32, i32)>) -> i32 {
                 .iter()
                 .all(|node| node.binding_id == Some(guard_extra.id))
         );
+    }
+
+    #[test]
+    fn test_rust_control_let_bindings_preserve_scope_order_and_projection_flow() {
+        let source = r#"fn inspect(
+    input: Option<(i32, Option<i32>)>,
+    outer: i32,
+    mut queue: Vec<Option<(i32, i32)>>,
+) -> i32 {
+    let first = outer;
+    if let Some((first, nested)) = input
+        && let Some(second) = nested
+        && first < second
+    {
+        consume(first, second);
+    } else {
+        consume(first, outer);
+    }
+    consume(first, outer);
+    while let Some((left, right)) = queue.pop() {
+        consume(left, right);
+    }
+    consume(first, outer)
+}
+"#;
+        let file_id = FileId::generate("control_let_bindings.rs");
+        let facts = crate::extract_file_with_mode(
+            &rust_frontend(),
+            file_id,
+            std::path::Path::new("control_let_bindings.rs"),
+            source,
+            "hash",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            facts
+                .bindings
+                .iter()
+                .filter(|binding| binding.name == "first")
+                .count(),
+            2,
+            "outer and if-let first binding"
+        );
+        let binding = |name: &str, line| {
+            facts
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name && binding.range.start_line == line)
+                .unwrap_or_else(|| panic!("missing {name} binding on line {line}"))
+        };
+        let outer_first = binding("first", 5);
+        let control_first = binding("first", 6);
+        let nested = binding("nested", 6);
+        let second = binding("second", 7);
+        let left = binding("left", 15);
+        let right = binding("right", 15);
+
+        assert_eq!(control_first.scope_id, nested.scope_id);
+        assert_eq!(nested.scope_id, second.scope_id);
+        let if_scope = facts
+            .scopes
+            .iter()
+            .find(|scope| scope.id == control_first.scope_id)
+            .expect("if-let scope");
+        assert_eq!(if_scope.kind, ScopeKind::Conditional);
+        assert_eq!(left.scope_id, right.scope_id);
+        assert_eq!(
+            facts
+                .scopes
+                .iter()
+                .find(|scope| scope.id == left.scope_id)
+                .expect("while-let scope")
+                .kind,
+            ScopeKind::Loop
+        );
+
+        let assert_use = |name: &str, line, expected: &BindingDef| {
+            let uses: Vec<_> = facts
+                .data_nodes
+                .iter()
+                .filter(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some(name)
+                        && node.range.start_line == line
+                })
+                .collect();
+            assert_eq!(uses.len(), 1, "one {name} use on line {line}");
+            assert_eq!(uses[0].binding_id, Some(expected.id));
+        };
+        assert_use("first", 8, control_first);
+        assert_use("first", 10, control_first);
+        for line in [12, 14, 18] {
+            assert_use("first", line, outer_first);
+        }
+        assert_use("left", 16, left);
+        assert_use("right", 16, right);
+        let else_first = facts
+            .data_nodes
+            .iter()
+            .find(|node| {
+                node.kind == DataNodeKind::VariableUse
+                    && node.name.as_deref() == Some("first")
+                    && node.range.start_line == 12
+            })
+            .expect("else first use");
+        assert!(if_scope.range.end_byte < else_first.range.start_byte);
+
+        assert!(control_first.visible_from_byte > control_first.range.end_byte);
+        assert_eq!(control_first.visible_from_byte, nested.visible_from_byte);
+        assert!(second.visible_from_byte > control_first.visible_from_byte);
+        assert_eq!(
+            facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some("nested")
+                        && node.range.start_line == 7
+                })
+                .expect("second let-condition RHS")
+                .binding_id,
+            Some(nested.id)
+        );
+
+        for (target_binding, access_path, source_name, source_line) in [
+            (control_first, "input[0][0]", "input", 6),
+            (nested, "input[0][1]", "input", 6),
+            (second, "nested[0]", "nested", 7),
+            (left, "(queue.pop())[0][0]", "queue.pop()", 15),
+            (right, "(queue.pop())[0][1]", "queue.pop()", 15),
+        ] {
+            let target = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Local && node.binding_id == Some(target_binding.id)
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing control-let Local target {}", target_binding.name)
+                });
+            let source_node = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.name.as_deref() == Some(source_name)
+                        && node.range.start_line == source_line
+                })
+                .unwrap_or_else(|| panic!("missing control-let source {source_name}"));
+            let projection = facts
+                .data_nodes
+                .iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::Expr
+                        && node.range == target.range
+                        && node.access_path.as_deref() == Some(access_path)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing projection {access_path} for {}",
+                        target_binding.name
+                    )
+                });
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == source_node.id
+                    && edge.target == projection.id
+                    && edge.kind == DataFlowKind::FieldLoad
+                    && (edge.confidence - 0.80).abs() < f64::EPSILON
+            }));
+            assert!(facts.dataflow_edges.iter().any(|edge| {
+                edge.source == projection.id
+                    && edge.target == target.id
+                    && edge.kind == DataFlowKind::Assign
+                    && (edge.confidence - 0.90).abs() < f64::EPSILON
+            }));
+        }
     }
 }

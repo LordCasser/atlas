@@ -1332,8 +1332,8 @@ mod profiles {
         ],
         unsupported: &[],
         limitations: &[
-            "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
-            "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
+            "scope-chain-aware binding with arm-local match captures and source-ordered match-guard/if/while let-condition chains; if-let captures are excluded from else branches, while syntactically ambiguous single-segment constants remain conservative",
+            "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
             "macro_rules! body patterns not analyzed",
             "borrow checker semantics not modeled",
         ],
@@ -1343,7 +1343,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
+                        "scope-chain-aware binding with arm-local match captures and source-ordered match-guard/if/while let-condition chains; if-let captures are excluded from else branches, while syntactically ambiguous single-segment constants remain conservative",
                     ],
                 ),
             ),
@@ -1352,7 +1352,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
+                        "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -1361,7 +1361,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "scope-chain-aware use-def; match guard/body and source-ordered guard-let chain uses share arm-local identities",
+                        "scope-chain-aware use-def; match guard/body and source-ordered match-guard/if/while let-condition chains share branch-local identities, with if-let captures excluded from else branches",
                     ],
                 ),
             ),
@@ -1370,7 +1370,7 @@ mod profiles {
                 FeatureOverride::WithLimitations(
                     0.70,
                     &[
-                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and guard-let RHS values use fixed syntactic tuple/tuple-struct/struct/slice-prefix projections for arm-local captures used by later guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
+                        "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and match-guard/if/while let-condition RHS values use fixed syntactic tuple/tuple-struct/struct/slice-prefix projections for captures used by later conditions/success bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
                     ],
                 ),
             ),
@@ -3142,8 +3142,8 @@ mod tests {
         assert_eq!(
             p.limitations,
             vec![
-                "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative",
-                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative",
+                "scope-chain-aware binding with arm-local match captures and source-ordered match-guard/if/while let-condition chains; if-let captures are excluded from else branches, while syntactically ambiguous single-segment constants remain conservative",
+                "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative",
                 "macro_rules! body patterns not analyzed",
                 "borrow checker semantics not modeled",
             ]
@@ -3182,7 +3182,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "scope-chain-aware binding with arm-local match captures and source-ordered guard-let chains; syntactically ambiguous single-segment constants remain conservative"
+                    "scope-chain-aware binding with arm-local match captures and source-ordered match-guard/if/while let-condition chains; if-let captures are excluded from else branches, while syntactically ambiguous single-segment constants remain conservative"
                 ],
             )
         );
@@ -3191,7 +3191,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and guard-let values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative"
+                    "direct-identifier compound assignment preserves aggregate read-modify-write provenance (0.90); field/index/dereference mutation targets and operator-trait dispatch/coercions remain conservative; match scrutinees and match-guard/if/while let-condition values use exact syntactic access-path projection for fixed tuple/tuple-struct/struct/slice-prefix captures (FieldLoad 0.80, Assign 0.90), while bare/@ whole captures and post-`..` targets retain aggregate flow (0.75); runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative"
                 ],
             )
         );
@@ -3200,7 +3200,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "scope-chain-aware use-def; match guard/body and source-ordered guard-let chain uses share arm-local identities"
+                    "scope-chain-aware use-def; match guard/body and source-ordered match-guard/if/while let-condition chains share branch-local identities, with if-let captures excluded from else branches"
                 ],
             )
         );
@@ -3209,7 +3209,7 @@ mod tests {
             FeatureSupport::supported_with_limitations(
                 0.70,
                 vec![
-                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and guard-let RHS values use fixed syntactic tuple/tuple-struct/struct/slice-prefix projections for arm-local captures used by later guards/bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, runtime-length suffix projection, borrow/move modes, and guard control dependencies remain conservative"
+                    "Control-flow graph with branch/loop body traversal and match sibling traversal implemented; Rust let-else separates the successful match from explicit return/break/continue, unconditional-loop, and standalone unqualified builtin panic/unreachable/todo/unimplemented macro alternatives, and Rust ? preserves both the success continuation and residual return-to-Exit path outside nested closure/async boundaries; a direct unguarded wildcard arm suppresses the synthetic no-match path; match scrutinees and match-guard/if/while let-condition RHS values use fixed syntactic tuple/tuple-struct/struct/slice-prefix projections for captures used by later conditions/success bodies; implicit Drop is a function-exit effect heuristic rather than path-sensitive lexical RAII; nested-expression macros, macro shadowing/re-exports, custom never-return macros, panic unwinding/catch_unwind, guarded/range exhaustiveness, runtime-length suffix projection, borrow/move modes, and condition/guard control dependencies remain conservative"
                 ],
             )
         );
