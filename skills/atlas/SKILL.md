@@ -88,6 +88,13 @@ operator-specific truthiness/nullish control dependency. Ruby and Cangjie
 semantics、numeric promotion/boxing and prefix/postfix result timing remain
 conservative where the language supports them.
 
+TypeScript、JavaScript and ArkTS `let`/`const` declaration destructuring binds
+simple、renamed、nested、default-left and rest targets in the enclosing block.
+The whole initializer reaches every supported target through aggregate Assign
+0.85；computed keys and default RHS expressions remain reads. Treat this as
+aggregate origin evidence, not exact property/index projection. `var`
+declarations and assignment/parameter destructuring remain conservative.
+
 TypeScript、JavaScript and ArkTS `let`/`const` `for...of`/`for...in` simple or
 nested pattern captures are loop-scoped；direct existing-local assignment forms
 reuse the prior binding. The whole iterable/object reaches each supported target

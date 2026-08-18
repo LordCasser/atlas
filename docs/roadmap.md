@@ -251,8 +251,8 @@ All 14 languages are now at `DataflowInterproc` level. The current schema added 
 > identity independently. Attribute/member/field/navigation、subscript/element/array/
 > index、receiver 与 pointer/dereference targets、
 > overloaded/dynamic operator semantics、
-> numeric promotion/boxing、prefix/postfix result timing、remaining declaration
-> destructuring edge cases, async scheduling and ArkUI callback/trailing-block
+> numeric promotion/boxing、prefix/postfix result timing、`var` declaration/loop
+> binding semantics、assignment/parameter destructuring、async scheduling and ArkUI callback/trailing-block
 > internals remain conservative according to each language profile.
 > TypeScript、JavaScript 与 ArkTS 的 direct-identifier
 > `&&=`/`||=`/`??=` additionally preserve path-insensitive old-value/RHS
@@ -372,6 +372,14 @@ MCP 工具面已重构为 15 个 open-first 短名工具。`index`、`task_statu
   Direct extraction、SQLite/Trace、cold Focus==full Index 与真实 OpenCode
   `defaultPreferred ??= select(process.env.SHELL)` 覆盖该边界；member/subscript
   target 与 operator-specific truthiness/nullish control dependency 保持保守。
+- ✅ TypeScript、JavaScript 与 ArkTS 的 `let/const` declaration destructuring
+  simple/renamed/nested/default/rest target 已使用 block-scoped binding；computed
+  key 与 default RHS 保持读取。Whole initializer 以 Assign 0.85 向每个 target
+  提供 aggregate provenance。Direct extraction、SQLite/Trace、cold Focus==full
+  Index 与真实 OpenCode `toV1Message` 的 `{ id: _, sessionID: __, ...rest } = info`
+  覆盖三种 identity。OpenCode 语料审计包含 2,201 行 direct `const` object/array
+  declaration destructuring，分布于 771 个文件。Exact property/index projection、
+  `var` declaration binding 与 assignment/parameter destructuring 保持保守。
 - ✅ TypeScript、JavaScript 与 ArkTS 的 `let/const` `for-of`/`for-in`
   simple/nested pattern capture 已使用 loop-scoped binding；无 declaration 的
   direct existing-local assignment form 复用原 binding。Whole iterable/object
@@ -554,6 +562,17 @@ CFG + DataFlow
   `defaultPreferred ??= select(process.env.SHELL)` fixture cover TypeScript、
   JavaScript and ArkTS identities independently. Member/subscript targets and
   exact truthiness/nullish control dependency remain explicit boundaries.
+- **TypeScript-family declaration destructuring — scoped phase implemented:**
+  broad pinned-grammar leaf captures are accepted only when recursive pattern
+  classification proves they belong to the `name` field of a `let/const`
+  `variable_declarator`. Simple、renamed、nested、default-left and rest targets
+  join the enclosing block scope；computed keys and default RHS expressions stay
+  reads. The whole initializer reaches every supported target through aggregate
+  `Assign` at 0.85. Direct extraction、SQLite/Trace、cold Focus-vs-full-Index and
+  the real OpenCode `{ id: _, sessionID: __, ...rest } = info` fixture cover
+  TypeScript、JavaScript and ArkTS identities independently. Exact property/index
+  projection、`var` declaration binding and assignment/parameter destructuring
+  remain explicit precision boundaries.
 - **TypeScript-family iteration binding — scoped phase implemented:** pinned
   `for_in_statement` fields drive one shared TS-family path. `let/const`
   simple/nested pattern leaves join the loop scope；direct existing-local
