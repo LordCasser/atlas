@@ -9,7 +9,7 @@ description: >-
   scoped MCP tools; do not run atlas index from the agent (blocks large repos).
 license: MIT
 metadata:
-  version: "1.6.1"
+  version: "1.7.0"
   repository: https://github.com/lordcasser/atlas
 ---
 
