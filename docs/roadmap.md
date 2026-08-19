@@ -3,24 +3,24 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current development focus: Atlas 1.7.0 release candidate
+## 1. Current baseline: Atlas 1.7.0
 
-Workspace version is **1.7.0**. Everything after git tag **`v1.6.1`** belongs
-to this language-precision and Focus/MCP convergence release. The release moves
+Workspace version is **1.7.0**. Git tag **`v1.7.0`** seals the
+language-precision and Focus/MCP convergence release after **`v1.6.1`**. It moves
 the persisted database contract from Schema V3 to V4, strengthens binding、
 dataflow and CFG evidence across all 14 default languages, aligns Focus with
 full Index extraction semantics, and upgrades the MCP adapter to rmcp 3.x while
 retaining the 15-tool surface and Trace V1 response contract. Release changes
-are recorded in `CHANGELOG.md` §1.7.0; new development returns to its Unreleased
-section after the release-preparation commits. Tag **`v1.6.1`** remains sealed.
+are recorded in `CHANGELOG.md` §1.7.0; subsequent development belongs in its
+Unreleased section. Tags **`v1.7.0`** and **`v1.6.1`** remain sealed.
 
 Tag **`v1.5.5`** and earlier remain sealed. The CFG v3 milestone (structured
 control-transfer/exception/resource facts, Schema V3 persistence, aligned
 Focus/Index/MCP consumers, cross-language real-project regression coverage)
 shipped in 1.6.0; see `CHANGELOG.md` §1.6.0.
 
-Goal: ship Atlas 1.7.0 with repeatable CLI/TUI/MCP behavior, explicit language
-boundaries, and rebuild-safe persisted semantics for local repositories.
+Goal: keep the Atlas 1.7.x CLI/TUI/MCP contract stable while advancing only
+evidence-backed language precision and explicitly versioned persisted semantics.
 
 ### 1.1 Packaging and installation
 
@@ -33,7 +33,7 @@ boundaries, and rebuild-safe persisted semantics for local repositories.
   arm64, Windows x86_64/arm64, Rust 1.88+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
-- Add release notes / changelog entry for the current release candidate. ✅ Done:
+- Add release notes / changelog entry for the current release. ✅ Done:
   `CHANGELOG.md` contains a dedicated 1.7.0 language-precision and Focus/MCP
   convergence section above the sealed 1.6.x and 1.5.x history.
 
@@ -218,7 +218,7 @@ Path-level verification record for 1.6.1:
   checkpoint, so `Ctrl-C` during that phase waits for completion — far less
   visible now that the phase runs in seconds rather than minutes, but unfixed.
 
-✅ Done for the 1.7.0 release candidate: verified on 2026-08-19. Formatting,
+✅ Done for 1.7.0: verified on 2026-08-19. Formatting,
 all-feature workspace check/tests, workspace-wide all-target/all-feature
 `-D warnings` Clippy, and the release MCP binary build completed with exit code
 0. All 16 workspace packages report 1.7.0, and `target/release/atlas --version`
@@ -230,7 +230,7 @@ not migrated. A local macOS arm64 archive round-trip preserved the release
 binary byte-for-byte. Linux, Windows, riscv64, and Windows ARM execution remains
 the responsibility of the six-target gated release matrix.
 
-Pre-release TUI/MCP/Focus alignment review:
+1.7.0 TUI/MCP/Focus alignment review:
 
 - Query cache authority is `PipelineGrade` + whole-repository finalized scope
   + fresh complete per-file coverage for the requested `QueryNeed`; display

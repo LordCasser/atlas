@@ -152,4 +152,4 @@ If a full cache already exists (`last_index_time` / rich status), MCP simply reu
 
 ## Build note
 
-`cargo build --release -p atlas-cli --features mcp` · Rust 1.85+ (edition 2024).
+`cargo build --release -p atlas-cli --features mcp` · Rust 1.88+ (edition 2024).
