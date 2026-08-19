@@ -116,14 +116,14 @@ pub fn run(project: &str) -> anyhow::Result<()> {
     println!();
     if all_ok {
         println!("All checks passed. Atlas is ready!");
+        Ok(())
     } else {
         println!("Some checks failed.");
         if needs_rebuild_hint {
             print_rebuild_hint(project, &db_path);
         }
+        anyhow::bail!("Atlas readiness checks failed")
     }
-
-    Ok(())
 }
 
 // --- helpers ---
@@ -251,5 +251,24 @@ mod tests {
         let db_path = initialized_db_path(&temp_dir);
 
         assert_eq!(read_catalog_tier(&db_path).unwrap(), "none");
+    }
+
+    #[test]
+    fn doctor_succeeds_for_current_database() {
+        let project = tempfile::tempdir().unwrap();
+        let atlas_dir = project.path().join(".atlas");
+        std::fs::create_dir(&atlas_dir).unwrap();
+        let store = Store::open_db(&atlas_dir.join("atlas.db")).unwrap();
+        store.init_schema().unwrap();
+        drop(store);
+
+        assert!(run(project.path().to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn doctor_fails_when_database_is_missing() {
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(run(project.path().to_str().unwrap()).is_err());
     }
 }

@@ -20,6 +20,12 @@ The persisted database contract moves from Schema V3 to Schema V4. Atlas does
 not migrate older indexes: remove the project `.atlas/atlas.db` or `.atlas/`
 and rebuild it with 1.7.0 before relying on the new semantic facts.
 
+### CLI release readiness
+
+- Make `atlas doctor` return a failing process status whenever a readiness
+  check fails, so release scripts and CI cannot mistake a printed `[FAIL]` for
+  a successful health check.
+
 ### MCP SDK
 
 - Upgrade the pinned `rmcp` dependency from 1.7.0 to 3.0.1 and adapt the
