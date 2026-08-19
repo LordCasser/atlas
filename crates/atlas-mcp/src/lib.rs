@@ -131,7 +131,7 @@ impl AtlasMcpService {
             .content
             .into_iter()
             .map(|block| match block {
-                protocol::ContentBlock::Text { text } => rmcp_model::Content::text(text),
+                protocol::ContentBlock::Text { text } => rmcp_model::ContentBlock::text(text),
             })
             .collect();
 
@@ -177,7 +177,8 @@ impl ServerHandler for AtlasMcpService {
         &self,
         request: rmcp_model::CallToolRequestParams,
         context: RequestContext<rmcp::RoleServer>,
-    ) -> impl Future<Output = Result<rmcp_model::CallToolResult, rmcp::ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<rmcp_model::CallToolResponse, rmcp::ErrorData>> + Send + '_
+    {
         let start = std::time::Instant::now();
         let tool_name = request.name.to_string();
         let progress_token = request.progress_token();
@@ -251,7 +252,7 @@ impl ServerHandler for AtlasMcpService {
                 ok = !tool_error,
             );
             tracing::info!(parent: &_span, "request handled");
-            let result = Ok(Self::to_rmcp_result(tool_result));
+            let result = Ok(Self::to_rmcp_result(tool_result).into());
 
             // Close the request-scoped sender before awaiting the forwarder.
             // Otherwise a sync request carrying a progress token waits forever
@@ -280,6 +281,15 @@ mod tests {
             service.blocking_gate.available_permits(),
             super::MAX_CONCURRENT_TOOL_CALLS
         );
+    }
+
+    #[test]
+    fn server_supports_legacy_and_current_protocol_versions() {
+        let service = super::AtlasMcpService::new_unopened();
+        let versions = rmcp::ServerHandler::supported_protocol_versions(&service);
+
+        assert!(versions.contains(&rmcp::model::ProtocolVersion::V_2025_11_25));
+        assert!(versions.contains(&rmcp::model::ProtocolVersion::V_2026_07_28));
     }
 
     #[test]

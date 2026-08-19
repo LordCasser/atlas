@@ -6,6 +6,16 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### MCP SDK
+
+- Upgrade the pinned `rmcp` dependency from 1.7.0 to 3.0.1 and adapt the
+  handwritten server handler to the MRTR-aware `CallToolResponse` API and the
+  renamed `ContentBlock` model.
+- Keep the stdio server compatible with both the `2025-11-25` and
+  `2026-07-28` protocol revisions through rmcp's version-gated wire encoding,
+  with a regression test for the advertised versions. The `atlas-mcp` minimum
+  Rust version is now 1.88, matching rmcp 3.x.
+
 ### MCP Focus convergence
 
 - Materialize every deferred inventory-only search candidate as an explicit

@@ -47,7 +47,7 @@ source code ──parse/extract──▶ .atlas/atlas.db ──query──▶ TU
 
 ### Requirements
 
-- Rust 1.85+ (Rust edition 2024)
+- Rust 1.88+ (Rust edition 2024)
 - Git, recommended for file discovery (`atlas` falls back to filesystem traversal when needed)
 
 ### Build from source
@@ -93,7 +93,7 @@ Published binary matrix:
 | Windows arm64 | `aarch64-pc-windows-msvc` | `atlas-windows-arm64.zip` |
 
 Linux musl binaries are checked for static linking in CI. Source builds require
-Rust 1.85+; release CI uses the stable Rust toolchain for the configured target.
+Rust 1.88+; release CI uses the stable Rust toolchain for the configured target.
 
 ## Quick start
 

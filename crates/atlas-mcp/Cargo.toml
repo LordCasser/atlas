@@ -2,6 +2,7 @@
 name = "atlas-mcp"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.88"
 description = "Atlas MCP (Model Context Protocol) server — tools for IDE/agent integration"
 license = "MIT"
 repository = "https://github.com/LordCasser/atlas"
@@ -14,7 +15,7 @@ anyhow = "1"
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rmcp = { version = "=1.7.0", default-features = false, features = ["server", "transport-io"] }
+rmcp = { version = "=3.0.1", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 

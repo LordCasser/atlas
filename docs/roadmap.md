@@ -30,7 +30,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   release targets.
 - Document verified platform matrix, minimum Rust version, and feature choices.
   ✅ Done: README lists release assets for Linux x86_64/arm64/riscv64, macOS
-  arm64, Windows x86_64/arm64, Rust 1.85+, and the `mcp` release feature.
+  arm64, Windows x86_64/arm64, Rust 1.88+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
 - Add release notes / changelog entry for the current public version. ✅ Done:
@@ -89,6 +89,38 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
 - Publish verified performance baselines. ✅ Done: `docs/performance.md`
   includes the 2026-07-08 release-mode Atlas self-index smoke baseline on a
   clean `git archive HEAD` checkout, plus historical large-project baselines.
+
+### 1.5 MCP 2026-07-28 adoption
+
+The rmcp 3.x adapter keeps the existing stdio server and can negotiate both
+`2025-11-25` and `2026-07-28`. The dependency/API change is recorded in
+`CHANGELOG.md`; the remaining protocol work is intentionally capability-driven:
+
+1. **Cache the deterministic tool catalog.** Add positive `ttlMs` and an
+   authorization-independent `cacheScope` to `tools/list`, with wire tests for
+   modern negotiation and legacy omission.
+2. **Preserve complete JSON Schema 2020-12 tool schemas.** Replace the current
+   root-schema projection (`type` / `properties` / `required`) with one lossless
+   schema boundary before using conditionals, composition, or `$defs` to express
+   action-specific argument contracts.
+3. **Use MRTR only where a request genuinely needs more input.** Candidate
+   selection, missing project/include context, or confirmation can return
+   `input_required`; deterministic queries keep their current one-round result.
+   Any echoed `requestState` must be integrity-protected and time-bounded.
+4. **Choose one long-running request control plane.** Evaluate mapping Focus
+   query snapshots, cancellation, and terminal results to the official Tasks
+   Extension and `subscriptions/listen`. Do not retain permanent parallel
+   implementations of the same lifecycle; keep `query_id` / `resume_query`
+   until the extension can preserve the current replay and terminal-gap rules.
+5. **Treat stateless HTTP as an application-state redesign.** A future remote
+   transport may adopt discovery and `Mcp-Method` / `Mcp-Name` routing only
+   after active-project identity and query snapshots become explicit durable
+   handles. Removing protocol sessions alone does not make Atlas stateless.
+
+OAuth client flows and deprecated Roots/Sampling/Logging adoption are not
+current Atlas server work. The upstream references are the
+[rmcp 3.x migration guide](https://github.com/modelcontextprotocol/rust-sdk/discussions/969)
+and the [MCP 2026-07-28 release](https://blog.modelcontextprotocol.io/posts/2026-07-28/).
 
 ### Release smoke tests
 
