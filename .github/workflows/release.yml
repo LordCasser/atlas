@@ -61,6 +61,11 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
+      - name: Verify release tag matches workspace version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: python -c "import os,tomllib; actual=tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version']; expected=os.environ['RELEASE_TAG'].removeprefix('v'); assert actual == expected, f'tag version {expected} != workspace version {actual}'"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -113,12 +118,17 @@ jobs:
             exit 1
           fi
 
-      - name: Package (Linux / macOS / cross-compiled Windows)
-        if: runner.os != 'Windows'
+      - name: Package (Linux / macOS)
+        if: ${{ runner.os != 'Windows' && !contains(matrix.target, 'windows') }}
         run: |
-          EXE=${{ contains(matrix.target, 'windows') && 'atlas.exe' || 'atlas' }}
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.asset }} "$EXE"
+          tar czf ../../../${{ matrix.asset }} atlas
+
+      - name: Package (cross-compiled Windows)
+        if: ${{ runner.os != 'Windows' && contains(matrix.target, 'windows') }}
+        run: |
+          cd target/${{ matrix.target }}/release
+          python -m zipfile -c ../../../${{ matrix.asset }} atlas.exe
 
       - name: Package (Windows native)
         if: runner.os == 'Windows'
