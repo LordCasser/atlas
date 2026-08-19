@@ -3,24 +3,24 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current development focus: post-Atlas 1.6.1
+## 1. Current development focus: Atlas 1.7.0 release candidate
 
-Workspace version is **1.6.1**. Everything after git tag **`v1.6.0`** is an
-latest released baseline is an indexing performance release: per-phase bulk-load index staging, predicate
-pushdown in function-pointer and summary queries, removal of the strategy-6
-scope mutex, directory-first proximity fuzzy search, a pooled SQLite read path,
-and sliding-window progress rates. No MCP tool name, schema, trace envelope,
-SQLite schema version, or extraction semantic changed; index contents are
-identical to 1.6.0. Post-1.6.1 development resumes language-precision work;
-unreleased semantic changes are tracked in `CHANGELOG.md`'s Unreleased section.
-Tag **`v1.6.0`** remains sealed; see `CHANGELOG.md` §1.6.1.
+Workspace version is **1.7.0**. Everything after git tag **`v1.6.1`** belongs
+to this language-precision and Focus/MCP convergence release. The release moves
+the persisted database contract from Schema V3 to V4, strengthens binding、
+dataflow and CFG evidence across all 14 default languages, aligns Focus with
+full Index extraction semantics, and upgrades the MCP adapter to rmcp 3.x while
+retaining the 15-tool surface and Trace V1 response contract. Release changes
+are recorded in `CHANGELOG.md` §1.7.0; new development returns to its Unreleased
+section after the release-preparation commits. Tag **`v1.6.1`** remains sealed.
 
 Tag **`v1.5.5`** and earlier remain sealed. The CFG v3 milestone (structured
 control-transfer/exception/resource facts, Schema V3 persistence, aligned
 Focus/Index/MCP consumers, cross-language real-project regression coverage)
 shipped in 1.6.0; see `CHANGELOG.md` §1.6.0.
 
-Goal: ship a stable first version where CLI and MCP tools are usable by end users and agents against a local repository.
+Goal: ship Atlas 1.7.0 with repeatable CLI/TUI/MCP behavior, explicit language
+boundaries, and rebuild-safe persisted semantics for local repositories.
 
 ### 1.1 Packaging and installation
 
@@ -33,9 +33,9 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   arm64, Windows x86_64/arm64, Rust 1.88+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
-- Add release notes / changelog entry for the current public version. ✅ Done:
-  `CHANGELOG.md` contains a dedicated 1.6.1 indexing-performance section above
-  the sealed 1.6.0 CFG v3 milestone and the sealed 1.5.x history.
+- Add release notes / changelog entry for the current release candidate. ✅ Done:
+  `CHANGELOG.md` contains a dedicated 1.7.0 language-precision and Focus/MCP
+  convergence section above the sealed 1.6.x and 1.5.x history.
 
 ### 1.2 User-facing documentation
 
@@ -81,7 +81,7 @@ Goal: ship a stable first version where CLI and MCP tools are usable by end user
   rebuild guidance and `.atlas/atlas.db` cleanup instructions for incompatible
   development databases.
 - Keep MCP and trace JSON output stable for scripted/agent use; CLI stdout JSON
-  is not part of the current 1.6.x command surface. ✅ Done: engine trace
+  is not part of the current 1.7.x command surface. ✅ Done: engine trace
   envelope tests lock the serialized V1 fields, MCP schema validation freezes
   tool argument shapes, and `handler_regression` covers the `trace` tool through
   `ToolRouter::call_tool()` including `query_id`/`analysis` and retired-field
@@ -217,6 +217,18 @@ Path-level verification record for 1.6.1:
   open projects should be measured. Edge building still has no cancellation
   checkpoint, so `Ctrl-C` during that phase waits for completion — far less
   visible now that the phase runs in seconds rather than minutes, but unfixed.
+
+✅ Done for the 1.7.0 release candidate: verified on 2026-08-19. Formatting,
+all-feature workspace check/tests, workspace-wide all-target/all-feature
+`-D warnings` Clippy, and the release MCP binary build completed with exit code
+0. All 16 workspace packages report 1.7.0, and `target/release/atlas --version`
+reports 1.7.0. The release binary negotiates both MCP `2025-11-25` and
+`2026-07-28` over stdio and identifies itself as `atlas-mcp 1.7.0`. `atlas
+doctor` correctly rejects the checkout's ignored Schema V3 database (expected
+V4) and prints the documented remove/rebuild guidance; the stale database was
+not migrated. A local macOS arm64 archive round-trip preserved the release
+binary byte-for-byte. Linux, Windows, riscv64, and Windows ARM execution remains
+the responsibility of the six-target gated release matrix.
 
 Pre-release TUI/MCP/Focus alignment review:
 

@@ -6,6 +6,20 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [1.7.0] - 2026-08-19
+
+All changes after tag `v1.6.1` belong to 1.7.0. This is a language-precision
+and Focus/MCP convergence release: all 14 default languages gain stronger
+binding, dataflow, CFG, or product-path parity evidence; Focus and full Index
+share the same extraction semantics; and the MCP adapter moves to rmcp 3.x
+while retaining the 15-tool surface and Trace V1 response contract.
+
+The persisted database contract moves from Schema V3 to Schema V4. Atlas does
+not migrate older indexes: remove the project `.atlas/atlas.db` or `.atlas/`
+and rebuild it with 1.7.0 before relying on the new semantic facts.
+
 ### MCP SDK
 
 - Upgrade the pinned `rmcp` dependency from 1.7.0 to 3.0.1 and adapt the
@@ -53,6 +67,39 @@ All notable changes to Atlas will be documented in this file.
   `LanguageCapabilityProfile.features` remains the single runtime gating truth;
   slot capabilities are implementation contracts checked against it, not a
   second user-visible profile.
+
+### Cross-language mutation provenance
+
+- Preserve aggregate read-modify-write provenance for the supported direct-
+  identifier assignment/update forms of all 14 default language identities.
+  Previous values and explicit RHS operands reach a mutation expression, which
+  reaches the write; member、field、subscript、receiver and pointer targets
+  remain language-specific conservative boundaries.
+- Activate a write only after its explicit RHS has been evaluated, so a
+  read-modify-write expression reads the prior definition. Persist every
+  source-ordered may-reach definition across branch joins, while linear Trace
+  chooses the nearest write and prefers a resolved `ReturnToCall` bridge over
+  a syntactic call target.
+- Cover the shared behavior through extraction tests, SQLite-backed Trace,
+  real-source fixtures, and Focus-vs-full-Index parity across the language
+  families rather than relying on one adapter's unit tests.
+
+### TypeScript、JavaScript and ArkTS dataflow
+
+- Model direct identifier arithmetic/bitwise mutations plus `&&=`、`||=` and
+  `??=`. Logical assignments expose path-insensitive old-value/RHS may-
+  provenance without claiming that the RHS executes on every path.
+- Bind `let`/`const` declaration destructuring and destructured function、
+  method and arrow parameters. Object/array assignment destructuring reuses
+  existing source-visible bindings instead of declaring new names; `for...of`
+  and `for...in` patterns preserve their declaration-vs-assignment boundary.
+- Flow each whole initializer、RHS、call argument or iterable to the supported
+  pattern leaves with an explicitly aggregate confidence. Computed keys and
+  default RHS expressions remain reads; exact component projection、default
+  activation、`var` semantics、member/subscript targets and parallel evaluation
+  order remain explicit limitations. Direct extraction, SQLite Trace, real
+  OpenCode shapes, and cold Focus-vs-full-Index tests retain distinct
+  TypeScript、JavaScript and ArkTS identities.
 
 ### Go dataflow
 
@@ -109,6 +156,20 @@ All notable changes to Atlas will be documented in this file.
   Focus-vs-full-Index parity. Structural projection, borrow/move modes,
   guard control dependencies, and syntactically ambiguous single-segment
   constants remain explicit precision boundaries.
+- Preserve source-ordered bindings for ordinary `let`/`let-else` patterns,
+  `if let`/let-chain and `while let` captures. Fixed tuple、tuple-struct、struct
+  and slice-prefix captures receive syntactic `FieldLoad` projections, while
+  whole-pattern and runtime-length cases retain aggregate provenance.
+- Bind named function/method parameter-pattern leaves with a shared top-level
+  runtime argument position. Full summaries and Focus runtime bridges carry
+  the whole caller argument to each leaf; receiver-to-`self` flow, closure
+  invocation resolution and exact argument-component projection remain
+  conservative.
+- Persist guarded `match` arms as explicit CFG branches: dispatch enters the
+  guard, true reaches the body, and false terminates that arm at the shared
+  join without inventing ordered pattern re-dispatch. Extraction, SQLite and
+  Focus/full parity fixtures cover both synthetic adversarial and real-source
+  shapes.
 
 ### Storage
 

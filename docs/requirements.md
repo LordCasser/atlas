@@ -371,7 +371,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 
 ## 7. 当前阶段验收焦点
 
-当前 workspace crate 拆分和 15-tool MCP 收敛已经完成。当前阶段不再做新的大拆分，也不启动 Corpus 产品线；重点是稳定 Atlas 1.6.x 的公共契约、文档、发布验证和真实项目性能。
+当前 workspace crate 拆分和 15-tool MCP 收敛已经完成。当前阶段不再做新的大拆分，也不启动 Corpus 产品线；重点是稳定 Atlas 1.7.x 的公共契约、文档、发布验证和真实项目性能。
 
 阶段完成条件：
 

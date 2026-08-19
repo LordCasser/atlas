@@ -1,6 +1,6 @@
 # Atlas documentation
 
-This directory keeps the release-facing documentation for the current Atlas 1.6.x development line. The trace JSON contract remains versioned separately as v1.
+This directory keeps the release-facing documentation for the current Atlas 1.7.x development line. The trace JSON contract remains versioned separately as v1.
 
 ## Baseline UX contracts
 
