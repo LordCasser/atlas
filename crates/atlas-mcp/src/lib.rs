@@ -26,6 +26,7 @@ pub mod protocol;
 pub mod tools;
 
 const MAX_CONCURRENT_TOOL_CALLS: usize = 4;
+const TOOL_CATALOG_TTL_MS: u64 = 300_000;
 
 // Re-export for integration tests and diagnostics
 pub use protocol::Tool;
@@ -141,6 +142,24 @@ impl AtlasMcpService {
             rmcp_model::CallToolResult::success(content)
         }
     }
+
+    fn list_tools_result(
+        tools: Vec<rmcp_model::Tool>,
+        protocol_version: Option<&rmcp_model::ProtocolVersion>,
+    ) -> rmcp_model::ListToolsResult {
+        let result = rmcp_model::ListToolsResult::with_all_items(tools);
+        if protocol_version.is_some_and(|version| {
+            version.as_str() >= rmcp_model::ProtocolVersion::V_2026_07_28.as_str()
+        }) {
+            // Safe as public because this catalog is fixed in the binary and does not depend on
+            // the project, user, or authorization. Re-evaluate this scope if it becomes dynamic.
+            result
+                .with_ttl_ms(TOOL_CATALOG_TTL_MS)
+                .with_cache_scope(rmcp_model::CacheScope::Public)
+        } else {
+            result
+        }
+    }
 }
 
 impl ServerHandler for AtlasMcpService {
@@ -159,9 +178,10 @@ impl ServerHandler for AtlasMcpService {
     fn list_tools(
         &self,
         _request: Option<rmcp_model::PaginatedRequestParams>,
-        _context: RequestContext<rmcp::RoleServer>,
+        context: RequestContext<rmcp::RoleServer>,
     ) -> impl Future<Output = Result<rmcp_model::ListToolsResult, rmcp::ErrorData>> + Send + '_
     {
+        let protocol_version = context.protocol_version();
         let tools = self
             .router
             .list_tools()
@@ -169,7 +189,7 @@ impl ServerHandler for AtlasMcpService {
             .into_iter()
             .map(Self::to_rmcp_tool)
             .collect();
-        let result = Ok(rmcp_model::ListToolsResult::with_all_items(tools));
+        let result = Ok(Self::list_tools_result(tools, protocol_version.as_ref()));
         std::future::ready(result)
     }
 
@@ -295,5 +315,78 @@ mod tests {
     #[test]
     fn server_new_is_constructable() {
         // Verify the server struct compiles without Mutex
+    }
+
+    #[test]
+    fn tool_catalog_cache_metadata_is_version_gated() {
+        let service = super::AtlasMcpService::new_unopened();
+        let tools = service
+            .router
+            .list_tools()
+            .tools
+            .into_iter()
+            .map(super::AtlasMcpService::to_rmcp_tool)
+            .collect::<Vec<_>>();
+
+        let unknown = super::AtlasMcpService::list_tools_result(tools.clone(), None);
+        let legacy = super::AtlasMcpService::list_tools_result(
+            tools.clone(),
+            Some(&rmcp::model::ProtocolVersion::V_2025_11_25),
+        );
+        let modern = super::AtlasMcpService::list_tools_result(
+            tools,
+            Some(&rmcp::model::ProtocolVersion::V_2026_07_28),
+        );
+
+        assert_eq!(unknown.ttl_ms, None);
+        assert_eq!(unknown.cache_scope, None);
+        assert_eq!(legacy.ttl_ms, None);
+        assert_eq!(legacy.cache_scope, None);
+        assert_eq!(modern.ttl_ms, Some(super::TOOL_CATALOG_TTL_MS));
+        assert_eq!(modern.cache_scope, Some(rmcp::model::CacheScope::Public));
+    }
+
+    #[test]
+    fn tool_catalog_wire_shape_preserves_catalog_and_legacy_result_type() {
+        let service = super::AtlasMcpService::new_unopened();
+        let tools = service
+            .router
+            .list_tools()
+            .tools
+            .into_iter()
+            .map(super::AtlasMcpService::to_rmcp_tool)
+            .collect::<Vec<_>>();
+        let legacy = super::AtlasMcpService::list_tools_result(
+            tools.clone(),
+            Some(&rmcp::model::ProtocolVersion::V_2025_11_25),
+        );
+        let modern = super::AtlasMcpService::list_tools_result(
+            tools,
+            Some(&rmcp::model::ProtocolVersion::V_2026_07_28),
+        );
+        assert_eq!(legacy.tools, modern.tools);
+
+        let modern_wire = serde_json::to_value(&modern).expect("modern list_tools serializes");
+        assert_eq!(modern_wire["ttlMs"], super::TOOL_CATALOG_TTL_MS);
+        assert_eq!(modern_wire["cacheScope"], "public");
+        assert_eq!(modern_wire["resultType"], "complete");
+
+        let mut legacy_wire_result = rmcp::model::ServerResult::ListToolsResult(legacy);
+        legacy_wire_result.strip_result_type_for_legacy_peer();
+        let legacy_wire =
+            serde_json::to_value(legacy_wire_result).expect("legacy list_tools serializes");
+        assert!(legacy_wire.get("ttlMs").is_none());
+        assert!(legacy_wire.get("cacheScope").is_none());
+        assert!(legacy_wire.get("resultType").is_none());
+    }
+
+    #[test]
+    fn newer_protocol_versions_receive_modern_cache_metadata() {
+        let newer: rmcp::model::ProtocolVersion =
+            serde_json::from_value(serde_json::json!("2027-01-01"))
+                .expect("date-version protocol parses");
+        let result = super::AtlasMcpService::list_tools_result(Vec::new(), Some(&newer));
+        assert_eq!(result.ttl_ms, Some(super::TOOL_CATALOG_TTL_MS));
+        assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Public));
     }
 }

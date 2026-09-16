@@ -96,9 +96,11 @@ The rmcp 3.x adapter keeps the existing stdio server and can negotiate both
 `2025-11-25` and `2026-07-28`. The dependency/API change is recorded in
 `CHANGELOG.md`; the remaining protocol work is intentionally capability-driven:
 
-1. **Cache the deterministic tool catalog.** Add positive `ttlMs` and an
-   authorization-independent `cacheScope` to `tools/list`, with wire tests for
-   modern negotiation and legacy omission.
+1. **Cache the deterministic tool catalog.** ✅ Done: the rmcp wire adapter
+   adds `ttlMs: 300000` and authorization-independent `cacheScope: "public"`
+   for protocol `2026-07-28+`; legacy and unknown versions omit both fields.
+   `atlas-mcp` unit tests cover version gating, newer date versions, complete
+   modern wire shape, legacy `resultType` stripping, and identical tool arrays.
 2. **Preserve complete JSON Schema 2020-12 tool schemas.** Replace the current
    root-schema projection (`type` / `properties` / `required`) with one lossless
    schema boundary before using conditionals, composition, or `$defs` to express

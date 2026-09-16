@@ -6,7 +6,13 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
-No changes yet.
+### MCP
+
+- Add standard `tools/list` cache hints for protocol `2026-07-28+`:
+  `ttlMs: 300000` and `cacheScope: "public"`. Legacy and unknown protocol
+  versions retain the existing wire shape, including omission of cache hints
+  and legacy `resultType` handling; the 15-tool catalog and `tools/call`
+  behavior are unchanged.
 
 ## [1.7.0] - 2026-08-19
 
