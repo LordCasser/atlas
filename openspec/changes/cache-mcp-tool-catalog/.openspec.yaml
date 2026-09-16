@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-09-17
+goal: 缓存确定性的 15-tool catalog，减少重复传输，同时按协商协议版本省略旧客户端不认识的字段。
