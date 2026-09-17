@@ -318,12 +318,21 @@ fn make_semantic_analysis_tools() -> Vec<Tool> {
 
 // ── Domain rules tools (semantic analysis) ──────────────────────────
 
+fn action_aware_object_schema(
+    properties: serde_json::Value,
+    conditions: serde_json::Value,
+) -> ToolInputSchema {
+    let mut schema = ToolInputSchema::object(properties, None).into_object();
+    schema.insert("allOf".into(), conditions);
+    ToolInputSchema::from_object(schema)
+}
+
 fn make_domain_rules_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "domain_rules".into(),
             description: "Manage domain rules for lifecycle analysis. action='add' defines which functions allocate/free/own memory (required: rule_kind [free_fn|alloc_fn|owned_pattern|cleanup_fn], pattern). action='list' shows rules, optionally filtered by source (builtin/learned/user). action='delete' removes a rule (required: rule_id). action='learn' auto-discovers rule candidates from project patterns (optional: min_confidence).".into(),
-            input_schema: ToolInputSchema::object(
+            input_schema: action_aware_object_schema(
                 json!({
                     "action": {
                         "type": "string",
@@ -342,7 +351,22 @@ fn make_domain_rules_tools() -> Vec<Tool> {
                     "min_confidence": { "type": "number", "description": "Minimum confidence threshold for action='learn' (default 0.5)." },
                     "limit": { "type": "integer", "maximum": 500, "description": "Max rules or learned candidates returned for list/learn (default 200, hard max 500)." },
                 }),
-                None,
+                json!([
+                    {
+                        "if": {
+                            "properties": {"action": {"const": "add"}},
+                            "required": ["action"]
+                        },
+                        "then": {"required": ["rule_kind", "pattern"]}
+                    },
+                    {
+                        "if": {
+                            "properties": {"action": {"const": "delete"}},
+                            "required": ["action"]
+                        },
+                        "then": {"required": ["rule_id"]}
+                    }
+                ]),
             ),
         },
     ]
@@ -355,7 +379,7 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
         Tool {
             name: "fp_dispatches".into(),
             description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). Annotations are stored in the active project database; graph edges are materialized immediately.".into(),
-            input_schema: ToolInputSchema::object(
+            input_schema: action_aware_object_schema(
                 json!({
                     "action": {
                         "type": "string",
@@ -368,7 +392,27 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
                     "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
                     "limit": { "type": "integer", "maximum": 500, "description": "Max annotations returned for action='list' (default 200, hard max 500)." },
                 }),
-                None,
+                json!([
+                    {
+                        "if": {
+                            "properties": {"action": {"const": "add"}},
+                            "required": ["action"]
+                        },
+                        "then": {"required": ["field_qname", "target_qname"]}
+                    },
+                    {
+                        "if": {
+                            "properties": {"action": {"const": "delete"}},
+                            "required": ["action"]
+                        },
+                        "then": {
+                            "anyOf": [
+                                {"required": ["annotation_id"]},
+                                {"required": ["field_qname"]}
+                            ]
+                        }
+                    }
+                ]),
             ),
         },
     ]

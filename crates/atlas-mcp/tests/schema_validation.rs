@@ -231,6 +231,74 @@ fn v1_tool_argument_shapes_are_frozen() {
 }
 
 #[test]
+fn mutation_tool_schemas_expose_action_specific_required_fields() {
+    let tools = make_all_tools();
+
+    let domain_rules = tools
+        .iter()
+        .find(|tool| tool.name == "domain_rules")
+        .expect("domain_rules tool must exist");
+    assert!(
+        domain_rules.input_schema.get("required").is_none(),
+        "omitting action must keep the default list operation valid"
+    );
+    assert_eq!(
+        domain_rules.input_schema.get("allOf"),
+        Some(&serde_json::json!([
+            {
+                "if": {
+                    "properties": {"action": {"const": "add"}},
+                    "required": ["action"]
+                },
+                "then": {"required": ["rule_kind", "pattern"]}
+            },
+            {
+                "if": {
+                    "properties": {"action": {"const": "delete"}},
+                    "required": ["action"]
+                },
+                "then": {"required": ["rule_id"]}
+            }
+        ])),
+        "domain_rules conditions must match the handler's add/delete contract"
+    );
+
+    let fp_dispatches = tools
+        .iter()
+        .find(|tool| tool.name == "fp_dispatches")
+        .expect("fp_dispatches tool must exist");
+    assert!(
+        fp_dispatches.input_schema.get("required").is_none(),
+        "omitting action must keep the default list operation valid"
+    );
+    assert_eq!(
+        fp_dispatches.input_schema.get("allOf"),
+        Some(&serde_json::json!([
+            {
+                "if": {
+                    "properties": {"action": {"const": "add"}},
+                    "required": ["action"]
+                },
+                "then": {"required": ["field_qname", "target_qname"]}
+            },
+            {
+                "if": {
+                    "properties": {"action": {"const": "delete"}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "anyOf": [
+                        {"required": ["annotation_id"]},
+                        {"required": ["field_qname"]}
+                    ]
+                }
+            }
+        ])),
+        "fp_dispatches delete must accept either identifier, including both together"
+    );
+}
+
+#[test]
 fn removed_background_index_tools_are_not_registered() {
     let tools = make_all_tools();
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();

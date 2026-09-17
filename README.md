@@ -246,8 +246,8 @@ Primary required arguments:
 | `trace` | none at schema level; `kind` defaults to `point`, and each trace kind validates its own position or symbol arguments |
 | `lifecycle` | `symbol`, `field` |
 | `branch_diff` | `symbol` |
-| `domain_rules` | none; actions validate their own required fields |
-| `fp_dispatches` | none; actions validate their own required fields |
+| `domain_rules` | none unconditionally; omitted `action` lists rules, `add` requires `rule_kind` + `pattern`, and `delete` requires `rule_id` |
+| `fp_dispatches` | none unconditionally; omitted `action` lists annotations, `add` requires `field_qname` + `target_qname`, and `delete` requires `annotation_id` or `field_qname` (both are accepted; ID wins) |
 | `tasks` | none |
 | `resume_query` | `query_id` |
 

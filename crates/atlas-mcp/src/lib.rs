@@ -4545,6 +4545,28 @@ mod tests {
     }
 
     #[test]
+    fn action_dependent_catalog_constraints_round_trip_to_rmcp_wire() {
+        for name in ["domain_rules", "fp_dispatches"] {
+            let tool = super::make_all_tools()
+                .into_iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} tool must exist"));
+            let expected = tool
+                .input_schema
+                .get("allOf")
+                .cloned()
+                .unwrap_or_else(|| panic!("{name} must define action constraints"));
+
+            let converted = super::AtlasMcpService::to_rmcp_tool(tool);
+            let wire = serde_json::to_value(converted).expect("rmcp tool serializes");
+            assert_eq!(
+                wire["inputSchema"]["allOf"], expected,
+                "{name} action constraints changed across the rmcp boundary"
+            );
+        }
+    }
+
+    #[test]
     fn tool_catalog_cache_metadata_is_version_gated() {
         let service = super::AtlasMcpService::new_unopened();
         let tools = service

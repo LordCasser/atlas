@@ -67,6 +67,11 @@ All notable changes to Atlas will be documented in this file.
   instead of publishing stale terminal `partial` coverage without a retry
   marker. Real pending work, bounded terminal gaps, ordering, limits, schemas,
   and the existing Tasks/`resume_query` control planes remain unchanged.
+- Add machine-readable action-specific required fields to the `domain_rules`
+  and `fp_dispatches` input schemas. JSON Schema 2020-12 clients can now reject
+  missing add/delete arguments before dispatch, while omitted `action` still
+  means list, function-pointer delete still accepts either identifier (or both),
+  and server-side handler validation remains authoritative.
 
 ## [1.7.0] - 2026-08-19
 

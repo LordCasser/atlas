@@ -47,8 +47,11 @@ evidence-backed language precision and explicitly versioned persisted semantics.
 
 - Freeze V1 MCP tool naming: short names without `atlas_` prefix. ✅ Done.
 - Freeze V1 tool schemas and document argument requirements. ✅ Done: tool
-  names, schema property sets, and required fields are locked by
-  `schema_validation`; README documents primary required arguments.
+  names, schema property sets, unconditional required fields, and the
+  action-specific add/delete requirements for `domain_rules` and
+  `fp_dispatches` are locked by `schema_validation`; the latter use root-level
+  JSON Schema 2020-12 conditions while preserving omitted-action list defaults.
+  README documents primary required arguments.
 - Add machine-readable version metadata for MCP clients. ✅ Done: `project(status)`
   returns `server.atlas_version`, `server.tool_contract_version`, and
   `server.compiled_features`, with regression coverage.
