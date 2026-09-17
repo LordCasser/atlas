@@ -836,6 +836,32 @@ fn explore_ambiguous_symbol_returns_list() {
 }
 
 #[test]
+fn explore_symbol_selector_completes_an_ambiguous_name() {
+    let store = test_store();
+    insert_test_symbol(&store, "a.ts", "shared_func");
+    insert_test_symbol(&store, "b.ts", "shared_func");
+    let router = test_router(store);
+    router.ensure_graph_initialized().unwrap();
+
+    let (resp_str, is_error) = router.handle_explore(&json!({
+        "symbol": {
+            "qualified_name": "shared_func",
+            "file_path": "b.ts",
+            "line": 1,
+            "kind": "function",
+            "language": "typescript"
+        },
+        "source_mode": "none",
+        "include_file_context": false,
+        "include_recommendations": false
+    }));
+    assert!(!is_error, "precise selector should complete: {resp_str}");
+    let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
+    assert!(resp.get("ambiguous").is_none(), "{resp}");
+    assert_eq!(resp["resolution"]["resolved"]["file_path"], "b.ts");
+}
+
+#[test]
 fn explore_accepts_source_lines_param() {
     let store = test_store();
     let _sid = insert_test_symbol(&store, "test.ts", "myfunc2");

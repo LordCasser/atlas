@@ -10,5 +10,5 @@
 
 ## 3. 验证与审查
 
-- [ ] 3.1 运行 `openspec validate cache-mcp-tool-catalog --strict`、`cargo fmt --all -- --check`、`cargo test -p atlas-mcp --all-features`、`cargo test -p atlas-cli --features mcp` 与 `cargo clippy -p atlas-mcp --all-targets --all-features -- -D warnings`，全部退出码为 0。
-- [ ] 3.2 由独立 reviewer 审查最终 diff、协议版本边界和验证证据；修复所有阻塞项后复跑受影响检查。
+- [x] 3.1 运行 `openspec validate cache-mcp-tool-catalog --strict`、`cargo fmt --all -- --check`、`cargo test -p atlas-mcp --all-features`、`cargo test -p atlas-cli --features mcp` 与 `cargo clippy -p atlas-mcp --all-targets --all-features -- -D warnings`，全部退出码为 0。
+- [x] 3.2 由独立 reviewer 审查最终 diff、协议版本边界和验证证据；修复所有阻塞项后复跑受影响检查。

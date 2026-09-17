@@ -9,10 +9,58 @@ All notable changes to Atlas will be documented in this file.
 ### MCP
 
 - Add standard `tools/list` cache hints for protocol `2026-07-28+`:
-  `ttlMs: 300000` and `cacheScope: "public"`. Legacy and unknown protocol
-  versions retain the existing wire shape, including omission of cache hints
-  and legacy `resultType` handling; the 15-tool catalog and `tools/call`
-  behavior are unchanged.
+  `ttlMs: 300000` and `cacheScope: "public"`. Legacy or indeterminate
+  protocol versions retain the existing wire shape, including omission of
+  cache hints and legacy `resultType` handling; the 15-tool catalog and
+  `tools/call` behavior are unchanged.
+- Preserve complete JSON Schema 2020-12 tool `inputSchema` objects across the
+  Atlas-to-rmcp boundary, including root-level composition, conditionals,
+  `$defs`, and unknown future keywords. The current 15-tool wire schemas remain
+  unchanged. **Breaking Rust API:** `ToolInputSchema` now wraps a complete JSON
+  object; downstream field-literal construction and direct `properties` /
+  `required` field access must migrate to its constructor and object accessors.
+- Add the first MCP multi-round input flow for ambiguous `explore` calls.
+  Protocol `2026-07-28+` clients that declare form elicitation receive a
+  standard `input_required` candidate picker; accepting a choice reuses the
+  normal `SymbolSelector` path while preserving all other arguments. Legacy,
+  non-interactive, deterministic, declined, and cancelled calls retain complete
+  one-round results. The flow emits no `requestState` and rejects injected
+  state instead of trusting client-controlled data.
+- Add form-based path completion when an explicit `project(action="open")`
+  omits `project_path`. Modern form-capable clients can supply the missing
+  directory through `input_required`; the retry preserves the original
+  arguments and reuses the existing canonicalization, directory, SQLite, and
+  schema checks. Legacy, non-interactive, non-open, wrong-typed, declined, and
+  cancelled calls retain their existing complete results. This flow is also
+  stateless and rejects injected `requestState`.
+- Add the first MCP Tasks Extension control plane for long-running Focus
+  queries. Protocol `2026-07-28+` clients that declare
+  `io.modelcontextprotocol/tasks` receive one standard task handle when a
+  non-`explore` call exhausts its interactive budget with a real, project-bound
+  retry snapshot. `tasks/get`, `tasks/update`, and cooperative `tasks/cancel`
+  use rmcp's task manager; replay remains pinned to the original project and
+  reuses the existing `resume_query` terminal and gap rules. Legacy and
+  non-task clients retain `query_id` / `tasks` / `resume_query`, while fast
+  terminal, tool-error, MRTR, catalog, and schema behavior remains unchanged.
+  Task status is polled in this increment; push delivery waits for rmcp to
+  route task IDs through `subscriptions/listen`.
+- Extend the Tasks control plane to delayed `explore` calls when the modern
+  client declares both Tasks and form elicitation. If Focus replay resolves to
+  multiple symbols, the same task enters `input_required`; `tasks/update` can
+  accept one exact selector, while decline/cancel completes with the original
+  candidate list. The task remains pinned to its original project, permits at
+  most one candidate round, and keeps its original 300-second deadline. Clients
+  without form support retain the existing `query_id` / `resume_query` path,
+  and fast ambiguous calls continue to use the direct candidate MRTR.
+- Add destructive-action confirmation for persistent `domain_rules(delete)` and
+  `fp_dispatches(delete)` calls made by protocol `2026-07-28+` clients that
+  declare form elicitation. Each boolean prompt identifies the canonical project
+  and exact target; its random opaque `requestState` is backed by a bounded,
+  300-second, one-shot server entry that preserves the complete arguments and
+  pins the original `ActiveProject`. Accepting reuses the existing delete,
+  materialized-edge cleanup, and graph-refresh paths; decline, cancel, or false
+  completes without mutation. Legacy/no-form clients retain direct core
+  behavior, so confirmation is a usability safeguard rather than authorization.
 
 ## [1.7.0] - 2026-08-19
 

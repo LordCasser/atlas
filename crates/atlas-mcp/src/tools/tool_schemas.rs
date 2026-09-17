@@ -15,9 +15,8 @@ fn make_project_tools() -> Vec<Tool> {
     vec![Tool {
         name: "project".into(),
         description: "Open, inspect, or list files in a project. Use action='open' to synchronously activate a project backed by project/.atlas/atlas.db; MCP open never indexes or scans the whole tree. Explicit indexing is CLI-only (`atlas index`). action='status' reports the active project and focus state; action='files' lists known project files.".into(),
-        input_schema: ToolInputSchema {
-            schema_type: "object".into(),
-            properties: Some(json!({
+        input_schema: ToolInputSchema::object(
+            json!({
                 "action": {
                     "type": "string",
                     "enum": ["open", "status", "files"],
@@ -28,9 +27,9 @@ fn make_project_tools() -> Vec<Tool> {
                 "limit": { "type": "integer", "maximum": 1000, "description": "Max files returned (action='files', default 500, hard max 1000)." },
                 "language": { "type": "string", "description": "Filter files by language (action='files', e.g. 'rust', 'typescript')." },
                 "path_prefix": { "type": "string", "description": "Filter files by path prefix (action='files')." },
-            })),
-            required: None,
-        },
+            }),
+            None,
+        ),
     }]
 }
 // ── SymbolSelector schema helpers ────────────────────────────────────
@@ -84,24 +83,22 @@ fn make_symbol_tools() -> Vec<Tool> {
         Tool {
             name: "search".into(),
             description: "Search symbols by name within a required project-relative scope. Scope is always required because it is both the result boundary and the focus seed; an existing CLI-built whole-repository index improves precision/performance but does not make scope optional.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "query": { "type": "string", "description": "Search query text" },
                     "scope": { "type": "string", "description": "Required project-relative directory or file scope (e.g. 'drivers/net', 'src', 'kernel/sched'). Defines the search boundary and focus hotspot." },
                     "kind": { "type": "string", "description": "Optional SymbolKind filter (function, class, ...)" },
                     "limit": { "type": "integer", "maximum": 200, "description": "Max results (default 20, hard max 200)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: Some(vec!["query".into(), "scope".into()]),
-            },
+                }),
+                Some(vec!["query".into(), "scope".into()]),
+            ),
         },
         Tool {
             name: "symbol".into(),
             description: "Get symbol information by qualified name (symbol). view='detail' returns kind, location, and signature (with optional source via includeCode). view='context' returns structured callers, callees, file peers, imports, and dependencies. view='usages' returns reference usages. Default view is 'detail'.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": symbol_param_schema("Qualified symbol name. String matches are auto-resolved; use SymbolSelector object for precise disambiguation."),
                     "file_path": { "type": "string", "description": "File path relative to project root. When combined with 'line', resolves the symbol at this position (alternative to 'symbol' parameter)." },
                     "line": { "type": "integer", "description": "1-based line number. Used with 'file_path' for position-based symbol lookup." },
@@ -115,9 +112,9 @@ fn make_symbol_tools() -> Vec<Tool> {
                     "includeFilePeers": { "type": "boolean", "description": "Include file peer symbols in context view (default: true). Set false for faster, smaller responses." },
                     "limit": { "type": "integer", "maximum": 100, "description": "Max results for view='usages' (default 50, hard max 100)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: Some(vec!["symbol".into()]),
-            },
+                }),
+                Some(vec!["symbol".into()]),
+            ),
         },
     ]
 }
@@ -129,9 +126,8 @@ fn make_graph_tools() -> Vec<Tool> {
         Tool {
             name: "calls".into(),
             description: "Query the call graph around a symbol. direction='incoming' (callers) and 'outgoing' (callees) are fixed 1-hop and include signature when available; depth is ignored (warning). direction='both' enables multi-hop via depth (default 1, max 5). edge_kinds defaults to [\"calls\",\"instantiates\",\"implements\"]; use [\"*\"] for all kinds.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches are auto-aggregated. Use SymbolSelector object for a precise single-symbol query."),
                     "direction": {
                         "type": "string",
@@ -146,16 +142,15 @@ fn make_graph_tools() -> Vec<Tool> {
                         "description": "Edge kinds to follow. Default: [\"calls\",\"instantiates\",\"implements\"]. Use [\"*\"] or [] for all edge kinds (neighbor query mode)."
                     },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: Some(vec!["symbol".into()]),
-            },
+                }),
+                Some(vec!["symbol".into()]),
+            ),
         },
         Tool {
             name: "explore".into(),
             description: "Symbol dossier: investigate a symbol's identity, source code, call evidence with callsite snippets, non-call relations (implements, extends, references, field access, etc.), file context (imports/exports/peers), and recommended next queries. For multi-hop graph traversal use atlas_calls.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches return candidates. Use SymbolSelector object for precise disambiguation."),
                     "scope": { "type": "string", "description": "Optional project-relative directory or file scope for cold/local exploration (e.g. drivers/hid, net/smc). Keeps first-pass analysis bounded to the requested region." },
                     "source_mode": { "type": "string", "enum": ["excerpt", "full", "none"], "description": "Source display mode: excerpt (snippet around definition), full (entire symbol body, capped by max_source_bytes=65536), none (skip source). Default: excerpt." },
@@ -166,16 +161,15 @@ fn make_graph_tools() -> Vec<Tool> {
                     "include_file_context": { "type": "boolean", "description": "Include imports, exports, and file peers. Default: true." },
                     "include_recommendations": { "type": "boolean", "description": "Include recommended next queries. Default: true." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: Some(vec!["symbol".into()]),
-            },
+                }),
+                Some(vec!["symbol".into()]),
+            ),
         },
         Tool {
             name: "path".into(),
             description: "Find the shortest path between two symbols through the graph (BFS). By default only follows call edges (calls, instantiates, implements, registers_callback). Use edge_kinds to override. Each edge hop includes direction (forward/reverse) and confidence. The path also includes breakpoints describing indirect hops, test code contamination, and reversed edges. Use prefer_production: true to prefer paths through production code over test files.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "from": symbol_param_schema("Source symbol qualified name. Ambiguous matches are auto-aggregated."),
                     "to": symbol_param_schema("Target symbol qualified name. Ambiguous matches are auto-aggregated."),
                     "max_depth": { "type": "integer", "maximum": 10, "description": "Max search depth (default 5, hard max 10)." },
@@ -192,16 +186,15 @@ fn make_graph_tools() -> Vec<Tool> {
                     },
                     "includeCode": { "type": "boolean", "description": "When true, includes source code for each node in the path. Default false." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: Some(vec!["from".into(), "to".into()]),
-            },
+                }),
+                Some(vec!["from".into(), "to".into()]),
+            ),
         },
         Tool {
             name: "impact".into(),
             description: "Compute impact analysis: all symbols reachable from a given symbol via call graph traversal. Use direction='both' for bidirectional (downstream + upstream), direction='incoming' for callers only. Use semantic=true to include lifecycle invariants and branch diffs for impacted functions.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": symbol_param_schema("Qualified symbol name. Ambiguous matches are auto-aggregated."),
                     "direction": {
                         "type": "string",
@@ -210,9 +203,9 @@ fn make_graph_tools() -> Vec<Tool> {
                     },
                     "depth": { "type": "integer", "maximum": 5, "description": "Max traversal depth (default 3, hard max 5)." },
                     "semantic": { "type": "boolean", "description": "When true, includes semantic impact analysis (lifecycle invariants, branch diffs) for impacted functions. Default false." },
-                })),
-                required: Some(vec!["symbol".into()]),
-            },
+                }),
+                Some(vec!["symbol".into()]),
+            ),
         },
     ]
 }
@@ -224,9 +217,8 @@ fn make_file_graph_tools() -> Vec<Tool> {
         Tool {
             name: "file_dependencies".into(),
             description: "Find file-level dependencies by project-relative path. direction='outgoing' lists files that this file imports/includes, 'incoming' lists files that import/include this file, 'both' returns both directions. file_path is required (project-relative, no file_id).".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "file_path": { "type": "string", "description": "Project-relative file path (e.g. 'src/main.rs'). Required." },
                     "direction": {
                         "type": "string",
@@ -240,9 +232,9 @@ fn make_file_graph_tools() -> Vec<Tool> {
                         "description": "Analysis mode: 'manifest' (default, fast — uses existing DB facts, no lazy extraction) vs 'structural' (bounded lazy refinement for better coverage).",
                         "default": "manifest"
                     },
-                })),
-                required: Some(vec!["file_path".into()]),
-            },
+                }),
+                Some(vec!["file_path".into()]),
+            ),
         },
     ]
 }
@@ -254,9 +246,8 @@ pub(crate) fn make_trace_tools() -> Vec<Tool> {
         Tool {
             name: "trace".into(),
             description: "Source-level trace queries. kind='point' resolves a source position (file+line+column) to its full context. kind='variable' traces where a variable's value comes from (backward dataflow). kind='forward' traces the forward call chain from source to target. kind='callers' traces how a function gets invoked (backward call chain to farthest caller). Use file_id (hex) or file_path (project-relative) for position-based kinds; use symbol for kind='callers'; use from/to for kind='forward'.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "kind": {
                         "type": "string",
                         "description": "Trace operation kind.",
@@ -288,9 +279,9 @@ pub(crate) fn make_trace_tools() -> Vec<Tool> {
                     "to": symbol_param_schema("Target qualified symbol name."),
                     "max_depth": { "type": "integer", "maximum": 100, "description": "Maximum traversal depth (kind='variable'/'forward'/'callers', hard max 100; defaults vary by kind)." },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional request-scoped C/C++ include search roots (project-relative). Used only for lazy include resolution in this call; not persisted. Example: [\"include\", \"third_party/include\"]" },
-                })),
-                required: None,
-            },
+                }),
+                None,
+            ),
         },
     ]
 }
@@ -302,27 +293,25 @@ fn make_semantic_analysis_tools() -> Vec<Tool> {
         Tool {
             name: "lifecycle".into(),
             description: "Analyze a field's lifecycle within a function using CFG effect annotations (C/C++). Walks the control-flow graph to track a field through allocate → use → free transitions, detecting use-after-free, double-free, and missing-free patterns. Each transition includes owner-bound true/false/case/exception branch context. Triggers lazy structural extraction if CFG not yet built.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": { "type": "string", "description": "Qualified function name to analyze (e.g. 'handle_request')" },
                     "field": { "type": "string", "description": "Field path to track (e.g. 'data->state.ptr' for C/C++ struct field access)" },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional C/C++ include roots" },
-                })),
-                required: Some(vec!["symbol".into(), "field".into()]),
-            },
+                }),
+                Some(vec!["symbol".into(), "field".into()]),
+            ),
         },
         Tool {
             name: "branch_diff".into(),
             description: "Compare side effects of sibling branches (if/else, switch) within a function. Detects suspicious asymmetries — e.g., one branch frees a field but the other does not. Uses CFG effect annotations (C/C++ only initially).".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "symbol": { "type": "string", "description": "Qualified function name to analyze" },
                     "include_roots": { "type": "array", "items": { "type": "string" }, "description": "Optional C/C++ include roots" },
-                })),
-                required: Some(vec!["symbol".into()]),
-            },
+                }),
+                Some(vec!["symbol".into()]),
+            ),
         },
     ]
 }
@@ -334,9 +323,8 @@ fn make_domain_rules_tools() -> Vec<Tool> {
         Tool {
             name: "domain_rules".into(),
             description: "Manage domain rules for lifecycle analysis. action='add' defines which functions allocate/free/own memory (required: rule_kind [free_fn|alloc_fn|owned_pattern|cleanup_fn], pattern). action='list' shows rules, optionally filtered by source (builtin/learned/user). action='delete' removes a rule (required: rule_id). action='learn' auto-discovers rule candidates from project patterns (optional: min_confidence).".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "action": {
                         "type": "string",
                         "enum": ["add", "list", "delete", "learn"],
@@ -353,9 +341,9 @@ fn make_domain_rules_tools() -> Vec<Tool> {
                     "confidence": { "type": "number", "description": "Confidence 0.0-1.0 (default 1.0 for user-declared)." },
                     "min_confidence": { "type": "number", "description": "Minimum confidence threshold for action='learn' (default 0.5)." },
                     "limit": { "type": "integer", "maximum": 500, "description": "Max rules or learned candidates returned for list/learn (default 200, hard max 500)." },
-                })),
-                required: None,
-            },
+                }),
+                None,
+            ),
         },
     ]
 }
@@ -367,9 +355,8 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
         Tool {
             name: "fp_dispatches".into(),
             description: "Manage function-pointer dispatch annotations for C/C++ code. action='add' declares a mapping from a struct's function-pointer field to its concrete target function (required: field_qname, target_qname). action='list' returns all declared annotations. action='delete' removes an annotation (required: annotation_id OR field_qname). Annotations are stored in the active project database; graph edges are materialized immediately.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "action": {
                         "type": "string",
                         "enum": ["add", "list", "delete"],
@@ -380,9 +367,9 @@ fn make_fp_dispatch_tools() -> Vec<Tool> {
                     "annotation_id": { "type": "string", "description": "Annotation ID from list (alternative identifier for action='delete')." },
                     "confidence": { "type": "number", "description": "Confidence score 0.0-1.0 (default 1.0 for user-declared)." },
                     "limit": { "type": "integer", "maximum": 500, "description": "Max annotations returned for action='list' (default 200, hard max 500)." },
-                })),
-                required: None,
-            },
+                }),
+                None,
+            ),
         },
     ]
 }
@@ -394,24 +381,22 @@ fn make_task_tools() -> Vec<Tool> {
         Tool {
             name: "tasks".into(),
             description: "List focus/lazy extraction jobs and query refinement state. Without arguments, lists all active jobs. Use query_id to filter refinement work triggered by a specific query.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "query_id": { "type": "string", "description": "Optional query_id to filter jobs." },
-                })),
-                required: None,
-            },
+                }),
+                None,
+            ),
         },
         Tool {
             name: "resume_query".into(),
             description: "Re-run a previous query snapshot to get enhanced results after focus/lazy refinement. Returns the same format as the original tool with potentially richer data.".into(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".into(),
-                properties: Some(json!({
+            input_schema: ToolInputSchema::object(
+                json!({
                     "query_id": { "type": "string", "description": "The query_id from a previous tool call response" },
-                })),
-                required: Some(vec!["query_id".into()]),
-            },
+                }),
+                Some(vec!["query_id".into()]),
+            ),
         },
     ]
 }

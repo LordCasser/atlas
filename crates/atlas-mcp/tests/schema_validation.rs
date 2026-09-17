@@ -199,9 +199,8 @@ fn v1_tool_argument_shapes_are_frozen() {
             .unwrap_or_else(|| panic!("{name} tool must exist"));
         let actual_props: BTreeSet<&str> = tool
             .input_schema
-            .properties
-            .as_ref()
-            .and_then(|props| props.as_object())
+            .get("properties")
+            .and_then(|properties| properties.as_object())
             .unwrap_or_else(|| panic!("{name} tool must have object properties"))
             .keys()
             .map(String::as_str)
@@ -214,9 +213,14 @@ fn v1_tool_argument_shapes_are_frozen() {
 
         let actual_required: BTreeSet<&str> = tool
             .input_schema
-            .required
-            .as_ref()
-            .map(|required| required.iter().map(String::as_str).collect())
+            .get("required")
+            .and_then(|required| required.as_array())
+            .map(|required| {
+                required
+                    .iter()
+                    .map(|value| value.as_str().expect("required entries must be strings"))
+                    .collect()
+            })
             .unwrap_or_default();
         let expected_required: BTreeSet<&str> = expected_required.iter().copied().collect();
         assert_eq!(
@@ -252,19 +256,19 @@ fn schema_search_requires_scope_and_has_no_background_flag() {
 
     let required = search_tool
         .input_schema
-        .required
-        .as_ref()
+        .get("required")
+        .and_then(serde_json::Value::as_array)
         .expect("search tool must have required fields");
-    assert!(required.iter().any(|r| r == "query"));
+    assert!(required.iter().any(|value| value == "query"));
     assert!(
-        required.iter().any(|r| r == "scope"),
+        required.iter().any(|value| value == "scope"),
         "search scope must be required"
     );
 
     let props = search_tool
         .input_schema
-        .properties
-        .as_ref()
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
         .expect("search tool must have properties in its schema");
     assert!(
         props.get("background").is_none(),
@@ -282,8 +286,8 @@ fn schema_project_open_has_no_background_index_parameters() {
 
     let props = project_tool
         .input_schema
-        .properties
-        .as_ref()
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
         .expect("project tool must have properties in its schema");
     for removed in ["background", "scan_files", "force_memory", "storage"] {
         assert!(
@@ -303,9 +307,8 @@ fn schema_tasks_observes_queries_not_async_tasks() {
 
     let props = tasks_tool
         .input_schema
-        .properties
-        .as_ref()
-        .and_then(|props| props.as_object())
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
         .expect("tasks tool must have object properties");
     assert!(
         props.get("query_id").is_some(),
@@ -334,9 +337,8 @@ fn schema_graph_tools_accept_request_scoped_include_roots() {
             .unwrap_or_else(|| panic!("{name} tool must exist"));
         let props = tool
             .input_schema
-            .properties
-            .as_ref()
-            .and_then(|props| props.as_object())
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
             .unwrap_or_else(|| panic!("{name} tool must have object properties"));
         assert!(
             props.get("include_roots").is_some(),
@@ -365,11 +367,9 @@ fn schema_warn_on_incomplete_tool_schemas() {
     for tool in &tools {
         let has_props = tool
             .input_schema
-            .properties
-            .as_ref()
-            .and_then(|p| p.as_object())
-            .map(|o| !o.is_empty())
-            .unwrap_or(false);
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|properties| !properties.is_empty());
         if !has_props {
             println!(
                 "WARNING: Tool '{}' has no properties in its input schema",

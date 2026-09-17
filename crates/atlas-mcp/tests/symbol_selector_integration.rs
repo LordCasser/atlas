@@ -107,9 +107,9 @@ fn find_tool<'a>(tools: &'a [atlas_mcp::Tool], name: &str) -> &'a atlas_mcp::Too
 fn get_oneof_for_param<'a>(tool: &'a atlas_mcp::Tool, prop_name: &str) -> &'a serde_json::Value {
     let props = tool
         .input_schema
-        .properties
-        .as_ref()
-        .expect("schema must have properties");
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("schema must have object properties");
     let param = props
         .get(prop_name)
         .unwrap_or_else(|| panic!("{prop_name} not found in schema for {}", tool.name));

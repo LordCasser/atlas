@@ -14,7 +14,7 @@
 - **AND** 响应继续包含完整工具目录
 
 #### Scenario: A newer date-version requests the tool catalog
-- **WHEN** 客户端以晚于 `2026-07-28` 的日期版本请求 `tools/list`
+- **WHEN** 服务端已成功协商一个受支持且晚于 `2026-07-28` 的日期版本，客户端请求 `tools/list`
 - **THEN** 服务端按现代协议返回相同的缓存元数据
 
 ### Requirement: Legacy protocol omits cache metadata

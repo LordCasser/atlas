@@ -98,22 +98,43 @@ The rmcp 3.x adapter keeps the existing stdio server and can negotiate both
 
 1. **Cache the deterministic tool catalog.** ✅ Done: the rmcp wire adapter
    adds `ttlMs: 300000` and authorization-independent `cacheScope: "public"`
-   for protocol `2026-07-28+`; legacy and unknown versions omit both fields.
-   `atlas-mcp` unit tests cover version gating, newer date versions, complete
+   for protocol `2026-07-28+`; legacy or indeterminate versions omit both
+   fields. `atlas-mcp` unit tests cover version gating, newer date versions, complete
    modern wire shape, legacy `resultType` stripping, and identical tool arrays.
-2. **Preserve complete JSON Schema 2020-12 tool schemas.** Replace the current
-   root-schema projection (`type` / `properties` / `required`) with one lossless
-   schema boundary before using conditionals, composition, or `$defs` to express
-   action-specific argument contracts.
-3. **Use MRTR only where a request genuinely needs more input.** Candidate
-   selection, missing project/include context, or confirmation can return
-   `input_required`; deterministic queries keep their current one-round result.
-   Any echoed `requestState` must be integrity-protected and time-bounded.
-4. **Choose one long-running request control plane.** Evaluate mapping Focus
-   query snapshots, cancellation, and terminal results to the official Tasks
-   Extension and `subscriptions/listen`. Do not retain permanent parallel
-   implementations of the same lifecycle; keep `query_id` / `resume_query`
-   until the extension can preserve the current replay and terminal-gap rules.
+2. **Preserve complete JSON Schema 2020-12 tool schemas.** ✅ Done: Atlas now
+   owns each `inputSchema` as one complete JSON object and moves it unchanged
+   into the rmcp model instead of projecting only `type` / `properties` /
+   `required`. Synthetic advanced-keyword and full 15-tool catalog parity tests
+   lock root-level composition, conditionals, `$defs`, unknown-keyword fidelity,
+   existing schema content, and tool order.
+3. **Use MRTR only where a request genuinely needs more input.** Three
+   increments are now complete: ambiguous `explore` offers a candidate picker;
+   explicit `project(action="open")` calls that omit `project_path` offer a
+   bounded string form; and the persistent `domain_rules(delete)` /
+   `fp_dispatches(delete)` mutations require a boolean confirmation from modern
+   form-capable clients. The delete flow uses a random opaque `requestState`
+   backed by at most 128 server-side entries, expires after 300 seconds, binds
+   the complete original arguments and `ActiveProject`, and consumes each offer
+   on its first redemption. Accepting reuses the existing delete handlers on the
+   pinned project; decline, cancel, and explicit false complete without mutation.
+   Legacy and non-interactive clients retain direct core behavior, so this is an
+   accidental-deletion safeguard rather than authorization. Include-context
+   remains a separate future slice.
+4. **Choose one long-running request control plane.** Two polling increments
+   ✅: protocol `2026-07-28+` clients that declare the Tasks Extension receive
+   one task handle when a Focus query really exceeds its interactive budget.
+   `tasks/get`, `tasks/update`, and cooperative `tasks/cancel` reuse the existing
+   snapshot replay and terminal-gap rules, with replay pinned to the project
+   that created the query. Delayed `explore` also requires declared form
+   elicitation; when replay resolves to multiple symbols, the same task enters
+   `input_required`, accepts at most one exact candidate response, and keeps its
+   original 300-second deadline. Clients without form support retain the
+   existing `query_id` / `tasks` / `resume_query` path, while fast ambiguous
+   `explore` calls continue to use direct MRTR. Fast terminal calls, tool errors,
+   old protocols, and clients without Tasks keep their current results; do not
+   grow the legacy control plane. Task push through `subscriptions/listen`
+   remains pending because rmcp 3.0.1 does not yet route task IDs or
+   `notifications/tasks` through its subscription filter.
 5. **Treat stateless HTTP as an application-state redesign.** A future remote
    transport may adopt discovery and `Mcp-Method` / `Mcp-Name` routing only
    after active-project identity and query snapshots become explicit durable

@@ -278,6 +278,13 @@ pub struct ToolRouter {
     replay_focus_result: Option<atlas_engine::focus::runtime::FocusResult>,
 }
 
+/// Query replay bound to one immutable active-project identity.
+pub(crate) struct PinnedQueryReplay {
+    pub(crate) router: ToolRouter,
+    pub(crate) tool_name: String,
+    pub(crate) tool_args: serde_json::Value,
+}
+
 impl ToolRouter {
     /// Create a router with pre-built graph-backed engines.
     ///
@@ -334,6 +341,63 @@ impl ToolRouter {
             tools: Vec::new(),
             replay_focus_result: focus_result,
         }
+    }
+
+    /// Capture the current project identity for one task-eligible tool call.
+    ///
+    /// Project replacement may run concurrently with ordinary tool calls. The
+    /// returned router owns the `Arc<ActiveProject>` observed at this
+    /// linearization point, so the initial call, snapshot write, and task
+    /// preparation cannot drift to a later project. An unopened or poisoned
+    /// slot is captured as unopened rather than observing a subsequent open.
+    pub(crate) fn pin_project_scope(&self) -> Self {
+        Self {
+            project: ProjectSlot::new(self.project.get().ok()),
+            tools: Vec::new(),
+            replay_focus_result: None,
+        }
+    }
+
+    /// Capture one active project and its display root at the same linearization point.
+    ///
+    /// Destructive MRTR confirmation stores this router until the response arrives,
+    /// so a concurrent project switch cannot move the eventual mutation to another
+    /// database while the message still names the original project.
+    pub(crate) fn pin_active_project_scope(&self) -> Option<(Self, std::path::PathBuf)> {
+        let project = self.project.get().ok()?;
+        let root = project.root.clone();
+        Some((
+            Self {
+                project: ProjectSlot::new(Some(project)),
+                tools: Vec::new(),
+                replay_focus_result: None,
+            },
+            root,
+        ))
+    }
+
+    /// Bind future query replay to the project that currently owns `query_id`.
+    ///
+    /// The active project slot may be replaced while an MCP task is running. A
+    /// pinned replay keeps the original `ActiveProject` alive and captures the
+    /// snapshot's tool identity and arguments in the same lookup, preventing a
+    /// task from resolving the query against a later project.
+    pub(crate) fn pin_query_replay(&self, query_id: &str) -> Option<PinnedQueryReplay> {
+        let project = self.project.get().ok()?;
+        let (tool_name, tool_args) = {
+            let snapshots = project
+                .job_runtime
+                .query_snapshots
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let snapshot = snapshots.get(query_id)?;
+            (snapshot.tool_name.clone(), snapshot.tool_args.clone())
+        };
+        Some(PinnedQueryReplay {
+            router: Self::for_resume(project, None),
+            tool_name,
+            tool_args,
+        })
     }
 
     /// Access the active project as `Arc<ActiveProject>`. Panics if no project is active.

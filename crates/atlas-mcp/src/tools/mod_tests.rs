@@ -1638,9 +1638,9 @@ fn trace_tool_has_per_kind_descriptions() {
 
     let props = tool
         .input_schema
-        .properties
-        .as_ref()
-        .expect("should have properties");
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .expect("should have object properties");
     let kind = props.get("kind").expect("should have kind property");
 
     // Verify oneOf is present with 4 variants
