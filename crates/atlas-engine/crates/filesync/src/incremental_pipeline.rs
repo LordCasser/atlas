@@ -26,6 +26,7 @@ use crate::index_phases::{
     phase_materialize_annotations, phase_resolve_and_build, phase_write_batched,
     record_summaries_extraction_state,
 };
+use crate::index_pipeline_orchestrator::pipeline_grade;
 use crate::progress::{PhaseName, ProgressEvent, ProgressSink};
 use crate::sync_engine::SyncStats;
 
@@ -69,8 +70,9 @@ impl IncrementalPipeline {
         }
         sink.emit(ProgressEvent::PhaseStarted { phase, total: 0 });
 
-        let changed = crate::detector::detect_changes(&self.project_root, &self.store)
-            .context("Failed to detect changes against indexed content hashes")?;
+        let changed =
+            crate::detector::detect_changes_for_mode(&self.project_root, &self.store, &self.mode)
+                .context("Failed to detect source or capability changes against the index")?;
 
         sink.emit(ProgressEvent::PhaseFinished {
             phase,
@@ -291,6 +293,8 @@ impl IncrementalPipeline {
                 )),
             });
 
+            ensure_complete_extraction(&extracted, to_extract_rel.len())?;
+
             stats.new_nodes = extracted.stats.symbols;
 
             // ── Phase 6: DbWrite ─────────────────────────────────
@@ -304,6 +308,7 @@ impl IncrementalPipeline {
                 total: extracted.items.len() as u64,
             });
 
+            let expected_writes = extracted.items.len();
             let write_stats = phase_write_batched(
                 &self.store,
                 extracted,
@@ -332,12 +337,14 @@ impl IncrementalPipeline {
             sink.emit(ProgressEvent::PhaseFinished {
                 phase,
                 succeeded: write_stats.written as u64,
-                failed: (write_stats.batch_failures + write_stats.single_failures) as u64,
+                failed: write_stats.single_failures as u64,
                 detail: Some(format!(
-                    "{} written ({} batch failures, {} single failures)",
+                    "{} written ({} recovered batch failures, {} single failures)",
                     write_stats.written, write_stats.batch_failures, write_stats.single_failures
                 )),
             });
+
+            ensure_complete_write(&write_stats, expected_writes)?;
         }
 
         // ── Phase 7: Resolution ───────────────────────────────────
@@ -573,11 +580,11 @@ impl IncrementalPipeline {
             .as_secs()
             .to_string();
         self.store
-            .set_metadata("last_sync_time", &now)
+            .commit_sync_metadata(pipeline_grade(&self.mode).as_str(), &now)
             .map_err(|e| {
                 sink.emit(ProgressEvent::Warning {
                     phase,
-                    message: format!("Failed to commit sync metadata: {e:#}"),
+                    message: format!("Failed to atomically commit sync metadata: {e:#}"),
                 });
                 e
             })?;
@@ -595,10 +602,86 @@ impl IncrementalPipeline {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+fn ensure_complete_extraction(
+    extracted: &crate::index_phases::ExtractedFiles,
+    expected_files: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        extracted.stats.failed == 0
+            && extracted.stats.succeeded == expected_files
+            && extracted.items.len() == expected_files,
+        "incremental extraction incomplete: {} requested, {} succeeded, {} failed, {} result items",
+        expected_files,
+        extracted.stats.succeeded,
+        extracted.stats.failed,
+        extracted.items.len(),
+    );
+    Ok(())
+}
+
+fn ensure_complete_write(
+    write_stats: &crate::index_phases::WriteBatchStats,
+    expected_files: usize,
+) -> Result<()> {
+    anyhow::ensure!(
+        write_stats.single_failures == 0 && write_stats.written == expected_files,
+        "incremental DB write incomplete: {}/{} files written, {} single-file failures",
+        write_stats.written,
+        expected_files,
+        write_stats.single_failures,
+    );
+    Ok(())
+}
+
 /// Convert absolute paths to project-relative paths.
 fn to_relative_paths(paths: &[PathBuf], root: &Path) -> Vec<PathBuf> {
     paths
         .iter()
         .map(|p| p.strip_prefix(root).unwrap_or(p).to_path_buf())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index_phases::{ExtractedFiles, ExtractionPhaseStats, WriteBatchStats};
+
+    #[test]
+    fn incomplete_extraction_is_fatal() {
+        let extracted = ExtractedFiles {
+            items: Vec::new(),
+            stats: ExtractionPhaseStats {
+                attempted: 1,
+                succeeded: 0,
+                failed: 1,
+                symbols: 0,
+            },
+        };
+
+        let error = ensure_complete_extraction(&extracted, 1)
+            .expect_err("failed extraction must stop incremental finalization");
+        assert!(error.to_string().contains("extraction incomplete"));
+    }
+
+    #[test]
+    fn recovered_batch_failure_is_allowed_but_single_failure_is_fatal() {
+        let recovered = WriteBatchStats {
+            written: 2,
+            batch_failures: 1,
+            single_failures: 0,
+            ..Default::default()
+        };
+        ensure_complete_write(&recovered, 2)
+            .expect("successful single-file fallback must remain recoverable");
+
+        let incomplete = WriteBatchStats {
+            written: 1,
+            batch_failures: 1,
+            single_failures: 1,
+            ..Default::default()
+        };
+        let error = ensure_complete_write(&incomplete, 2)
+            .expect_err("single-file write failure must stop incremental finalization");
+        assert!(error.to_string().contains("DB write incomplete"));
+    }
 }

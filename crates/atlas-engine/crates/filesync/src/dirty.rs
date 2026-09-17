@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use db::Store;
 use extraction::ExtractionMode;
 use rayon::prelude::*;
@@ -61,16 +61,21 @@ fn build_dirty_set_with_required_capability(
 ) -> Result<DirtySet> {
     let current_hashes: HashMap<String, String> = discovered
         .par_iter()
-        .filter_map(|rel_path| {
+        .map(|rel_path| -> Result<(String, String)> {
             let abs_path = root.join(rel_path);
-            let content = std::fs::read(&abs_path).ok()?;
+            let content = std::fs::read(&abs_path).with_context(|| {
+                format!("Failed to read discovered file {}", abs_path.display())
+            })?;
             let hash = workspace::file_content_hash(&content);
-            let key = SourcePath::try_from_relative(&rel_path.to_string_lossy()).ok()?;
-            Some((key.as_str().to_string(), hash))
+            let key =
+                SourcePath::try_from_relative(&rel_path.to_string_lossy()).with_context(|| {
+                    format!("Failed to normalize discovered path {}", rel_path.display())
+                })?;
+            Ok((key.as_str().to_string(), hash))
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
-    let db_files = store.list_files().unwrap_or_default();
+    let db_files = store.list_files()?;
     let db_hashes: HashMap<String, String> = db_files
         .iter()
         .map(|f| (f.path.clone(), f.content_hash.clone()))
@@ -175,6 +180,25 @@ mod tests {
         assert_eq!(dirty.dirty, vec![PathBuf::from("main.ts")]);
         assert_eq!(dirty.clean_count, 0);
         assert!(dirty.deleted.is_empty());
+    }
+
+    #[test]
+    fn unreadable_or_missing_discovered_file_is_an_error_not_a_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = PathBuf::from("main.ts");
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+
+        let error = build_dirty_set_for_mode(
+            &store,
+            std::slice::from_ref(&path),
+            dir.path(),
+            &ExtractionMode::Structural,
+            None,
+        )
+        .expect_err("a discovered file that cannot be read must fail dirty-set computation");
+
+        assert!(error.to_string().contains("Failed to read discovered file"));
     }
 
     #[test]

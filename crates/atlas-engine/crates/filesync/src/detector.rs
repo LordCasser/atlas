@@ -2,9 +2,12 @@
 //! successful index or sync.
 
 use anyhow::Result;
-use std::collections::HashMap;
+use extraction::ExtractionMode;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use workspace::SourcePath;
 
+use crate::dirty::build_dirty_set_for_mode;
 use crate::discovery::DiscoveryConfig;
 
 /// Compute the BLAKE3 hex hash of a file's **raw** on-disk bytes (file identity).
@@ -75,6 +78,49 @@ pub fn detect_changes(root: &Path, store: &db::Store) -> Result<ChangedFiles> {
         }
     }
 
+    Ok(changes)
+}
+
+/// Detect files that must be synchronized for a target extraction mode.
+///
+/// Unlike [`detect_changes`], this treats a hash-clean indexed file as modified
+/// when its fresh, complete extraction state does not satisfy `mode`. The
+/// capability decision remains centralized in [`build_dirty_set_for_mode`].
+pub fn detect_changes_for_mode(
+    root: &Path,
+    store: &db::Store,
+    mode: &ExtractionMode,
+) -> Result<ChangedFiles> {
+    let discovered = crate::discovery::discover_files(root, &DiscoveryConfig::default())?;
+    let dirty_set = build_dirty_set_for_mode(store, &discovered, root, mode, None)?;
+    let indexed_paths: HashSet<String> = store
+        .list_files()?
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+
+    let mut changes = ChangedFiles {
+        deleted: dirty_set
+            .deleted
+            .into_iter()
+            .map(|path| root.join(path))
+            .collect(),
+        ..Default::default()
+    };
+
+    for rel_path in dirty_set.dirty {
+        let key = SourcePath::try_from_relative(&rel_path.to_string_lossy())?;
+        let absolute = root.join(&rel_path);
+        if indexed_paths.contains(key.as_str()) {
+            changes.modified.push(absolute);
+        } else {
+            changes.added.push(absolute);
+        }
+    }
+
+    changes.added.sort();
+    changes.modified.sort();
+    changes.deleted.sort();
     Ok(changes)
 }
 
@@ -161,6 +207,46 @@ mod tests {
 
         let changes = detect_changes(dir.path(), &store).unwrap();
         assert_eq!(changes.modified, vec![path]);
+    }
+
+    #[test]
+    fn mode_aware_detection_reindexes_hash_clean_files_missing_capability() {
+        use types::{FactCoverage, FileId, FileInfo, Language, ParseStatus};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("main.ts");
+        let source = b"export const value = 1;\n";
+        fs::write(&path, source).unwrap();
+        let content_hash = workspace::file_content_hash(source);
+
+        let store = db::Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        let file_id = FileId::generate("main.ts");
+        store
+            .upsert_file(&FileInfo {
+                file_id,
+                path: "main.ts".into(),
+                language: Language::TypeScript,
+                content_hash: content_hash.clone(),
+                status: ParseStatus::Success,
+            })
+            .unwrap();
+        store
+            .upsert_file_extraction_state(
+                &file_id,
+                "manifest",
+                &content_hash,
+                "complete",
+                FactCoverage::from_layers(&["manifest"]),
+            )
+            .unwrap();
+
+        let changes =
+            detect_changes_for_mode(dir.path(), &store, &ExtractionMode::Structural).unwrap();
+
+        assert!(changes.added.is_empty());
+        assert_eq!(changes.modified, vec![path]);
+        assert!(changes.deleted.is_empty());
     }
 
     #[test]

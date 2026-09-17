@@ -6,6 +6,15 @@ All notable changes to Atlas will be documented in this file.
 
 ## [Unreleased]
 
+### CLI
+
+- Make `atlas sync --analysis <higher-grade>` honor the same capability-aware
+  dirty-set contract as full indexing. Hash-clean manifest files now reindex for
+  Structural, hash-clean Structural files reindex for Full, and successful
+  upgrades persist the matching pipeline grade, graph/summary facts, and sync
+  metadata. A real CLI-process regression reopens the persistent SQLite index
+  across `manifest → structural → full`; same-grade clean sync remains a no-op.
+
 ### MCP
 
 - Add standard `tools/list` cache hints for protocol `2026-07-28+`:

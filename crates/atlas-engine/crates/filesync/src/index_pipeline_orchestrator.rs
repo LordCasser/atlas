@@ -30,7 +30,7 @@ use crate::index_phases::{
 use crate::index_pipeline::{IndexPipelineOptions, IndexPipelineStats};
 use crate::progress::{PhaseName, ProgressEvent, ProgressSink};
 
-fn pipeline_grade(mode: &ExtractionMode) -> PipelineGrade {
+pub(crate) fn pipeline_grade(mode: &ExtractionMode) -> PipelineGrade {
     match mode {
         ExtractionMode::Manifest | ExtractionMode::ResolutionSymbols => PipelineGrade::Manifest,
         ExtractionMode::Structural => PipelineGrade::Structural,

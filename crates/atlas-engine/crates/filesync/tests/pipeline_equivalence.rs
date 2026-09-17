@@ -774,6 +774,95 @@ export function multiply(a: number, b: number): number {\n\
     );
 }
 
+/// A hash-clean project must still be reindexed when sync requests a higher
+/// extraction capability. Once Full is reached, repeating the same sync is a
+/// no-op and leaves the persistent facts stable.
+#[test]
+fn unchanged_incremental_sync_upgrades_capability_and_then_is_noop() {
+    use types::structs::FactCoverage;
+
+    let project = tempfile::tempdir().unwrap();
+    create_ts_project(project.path());
+    let db_dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open_db(&db_dir.path().join("upgrade.db")).unwrap());
+    store.init_schema().unwrap();
+
+    run_index_pipeline(
+        &store,
+        project.path(),
+        IndexPipelineOptions::new(ExtractionMode::Manifest),
+    )
+    .unwrap();
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("manifest".into())
+    );
+
+    let structural = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Structural,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(structural.files_reindexed, 4);
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("structural".into())
+    );
+    assert!(
+        store
+            .scope_has_fresh_complete_fact("", FactCoverage::from_bits(FactCoverage::STRUCTURAL),)
+            .unwrap()
+    );
+    assert!(store.get_stats().unwrap().total_edges > 0);
+    assert!(store.get_metadata("last_sync_time").unwrap().is_some());
+
+    let full = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Full,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(full.files_reindexed, 4);
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("full".into())
+    );
+    assert!(
+        store
+            .scope_has_fresh_complete_fact("", FactCoverage::from_bits(FactCoverage::DATAFLOW),)
+            .unwrap()
+    );
+    assert!(
+        !db::summary::SummaryStore::files_with_summaries(&store)
+            .unwrap()
+            .is_empty()
+    );
+
+    let before_noop = DbSnapshot::from_store(&store);
+    let summaries_before = db::summary::SummaryStore::files_with_summaries(&store).unwrap();
+    let noop = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Full,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(noop.files_reindexed, 0);
+    let after_noop = DbSnapshot::from_store(&store);
+    assert_eq!(after_noop.file_count, before_noop.file_count);
+    assert_eq!(after_noop.symbol_count, before_noop.symbol_count);
+    assert_eq!(after_noop.edge_count, before_noop.edge_count);
+    assert_eq!(after_noop.symbol_names, before_noop.symbol_names);
+    assert_eq!(after_noop.extraction_layers, before_noop.extraction_layers);
+    assert_eq!(
+        db::summary::SummaryStore::files_with_summaries(&store).unwrap(),
+        summaries_before
+    );
+}
+
 /// When fewer than 30% of files change, incremental Full mode takes the
 /// scoped summary path. Rebuilt summaries must restore the same persistent
 /// capability proof as a full summary build.

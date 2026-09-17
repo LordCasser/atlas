@@ -19,6 +19,27 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically commit the metadata that marks a successful incremental sync.
+    pub fn commit_sync_metadata(
+        &self,
+        pipeline_grade: &str,
+        sync_time: &str,
+    ) -> anyhow::Result<()> {
+        self.with_transaction(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO project_metadata (key, value) VALUES ('last_sync_time', ?1)",
+                params![sync_time],
+            )?;
+            // Grade is the final authority marker: publish it only in the same
+            // transaction as the accompanying sync timestamp.
+            tx.execute(
+                "INSERT OR REPLACE INTO project_metadata (key, value) VALUES ('indexed_pipeline_grade', ?1)",
+                params![pipeline_grade],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Delete a project metadata key.
     pub fn delete_metadata(&self, key: &str) -> anyhow::Result<()> {
         let conn = self.lock();
@@ -269,6 +290,26 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_sync_metadata_updates_grade_and_timestamp_together() {
+        let store = Store::open_in_memory().unwrap();
+        store.init_schema().unwrap();
+        store
+            .set_metadata("indexed_pipeline_grade", "manifest")
+            .unwrap();
+
+        store.commit_sync_metadata("structural", "123").unwrap();
+
+        assert_eq!(
+            store.get_metadata("indexed_pipeline_grade").unwrap(),
+            Some("structural".into())
+        );
+        assert_eq!(
+            store.get_metadata("last_sync_time").unwrap(),
+            Some("123".into())
+        );
+    }
 
     #[test]
     fn index_signature_tracks_repo_cache_authority_metadata() {
