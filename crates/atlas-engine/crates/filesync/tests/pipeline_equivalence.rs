@@ -1123,3 +1123,166 @@ export function add(a: number, b: number): number {\n\
         "'add' reference in main.ts should be unresolved after math.ts cleanup"
     );
 }
+
+/// Incremental sync must inherit the source-discovery scope committed by the
+/// last index. Scope-local changes and capability upgrades converge normally,
+/// while excluded/outside files stay out and historical cache pollution is
+/// removed without touching the source file.
+#[test]
+fn scoped_incremental_sync_preserves_inventory_and_upgrades_capability() {
+    use types::{FileId, FileInfo, Language, ParseStatus};
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("src/generated")).unwrap();
+    std::fs::create_dir_all(project.path().join("other")).unwrap();
+    std::fs::write(
+        project.path().join("src/main.ts"),
+        "import { add } from './math';\nexport function main(): number { return add(1, 2); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/math.ts"),
+        "export function add(a: number, b: number): number { return a + b; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/stale.ts"),
+        "export function stale(): number { return 0; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/generated/code.ts"),
+        "export function generated(): number { return 3; }\n",
+    )
+    .unwrap();
+    let outside_path = project.path().join("other/dep.ts");
+    let outside_source = b"export function outside(): number { return 4; }\n";
+    std::fs::write(&outside_path, outside_source).unwrap();
+
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    store.init_schema().unwrap();
+    let options = IndexPipelineOptions::new(ExtractionMode::Manifest)
+        .with_include_patterns(vec!["src/**".into()])
+        .with_exclude_patterns(vec!["src/generated/**".into()]);
+    run_index_pipeline(&store, project.path(), options).unwrap();
+
+    let scope_before = store.get_metadata("indexed_scope").unwrap().unwrap();
+    let mut indexed_paths: Vec<_> = store
+        .list_files()
+        .unwrap()
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    indexed_paths.sort();
+    assert_eq!(
+        indexed_paths,
+        ["src/main.ts", "src/math.ts", "src/stale.ts"]
+    );
+
+    // Simulate facts written by the old scope-bypassing sync implementation.
+    store
+        .upsert_file(&FileInfo {
+            file_id: FileId::generate("other/dep.ts"),
+            path: "other/dep.ts".into(),
+            language: Language::TypeScript,
+            content_hash: workspace::file_content_hash(outside_source),
+            status: ParseStatus::Success,
+        })
+        .unwrap();
+
+    std::fs::write(
+        project.path().join("src/main.ts"),
+        "import { add } from './math';\nexport function main(): number { return add(2, 3); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/new.ts"),
+        "export function fresh(): number { return 5; }\n",
+    )
+    .unwrap();
+    std::fs::remove_file(project.path().join("src/stale.ts")).unwrap();
+
+    let structural = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Structural,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(structural.files_reindexed, 3);
+    assert_eq!(structural.files_removed, 2);
+    assert!(outside_path.exists(), "sync must never delete source files");
+
+    let mut scoped_paths: Vec<_> = store
+        .list_files()
+        .unwrap()
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    scoped_paths.sort();
+    assert_eq!(scoped_paths, ["src/main.ts", "src/math.ts", "src/new.ts"]);
+    assert_eq!(
+        store.get_metadata("indexed_scope").unwrap(),
+        Some(scope_before.clone())
+    );
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("structural".into())
+    );
+
+    let full = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Full,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(full.files_reindexed, 3);
+    assert_eq!(
+        store.get_metadata("indexed_pipeline_grade").unwrap(),
+        Some("full".into())
+    );
+    assert_eq!(
+        store.get_metadata("indexed_scope").unwrap(),
+        Some(scope_before.clone())
+    );
+    assert!(
+        !db::summary::SummaryStore::files_with_summaries(&store)
+            .unwrap()
+            .is_empty()
+    );
+
+    let facts_before_noop = DbSnapshot::from_store(&store);
+    let sync_time_before_noop = store.get_metadata("last_sync_time").unwrap();
+    let noop = IncrementalPipeline::new(
+        Arc::clone(&store),
+        project.path().to_path_buf(),
+        ExtractionMode::Full,
+    )
+    .sync(&NoopSink, &mut || false)
+    .unwrap();
+    assert_eq!(noop.files_reindexed, 0);
+    let facts_after_noop = DbSnapshot::from_store(&store);
+    assert_eq!(facts_after_noop.file_count, facts_before_noop.file_count);
+    assert_eq!(
+        facts_after_noop.symbol_count,
+        facts_before_noop.symbol_count
+    );
+    assert_eq!(facts_after_noop.edge_count, facts_before_noop.edge_count);
+    assert_eq!(
+        facts_after_noop.symbol_names,
+        facts_before_noop.symbol_names
+    );
+    assert_eq!(
+        facts_after_noop.extraction_layers,
+        facts_before_noop.extraction_layers
+    );
+    assert_eq!(
+        store.get_metadata("last_sync_time").unwrap(),
+        sync_time_before_noop
+    );
+    assert_eq!(
+        store.get_metadata("indexed_scope").unwrap(),
+        Some(scope_before)
+    );
+}

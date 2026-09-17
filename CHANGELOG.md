@@ -8,6 +8,12 @@ All notable changes to Atlas will be documented in this file.
 
 ### CLI
 
+- Make `atlas sync` inherit the include/exclude scope persisted by the last
+  successful Index instead of silently widening discovery to the whole project.
+  Scope-local add/modify/delete and analysis upgrades still converge through the
+  shared dirty-set, old scope-external cache pollution is reconciled without
+  touching source files, malformed scope metadata fails closed, and a real
+  CLI-process regression verifies the reopened SQLite inventory and scope.
 - Make `atlas sync --analysis <higher-grade>` honor the same capability-aware
   dirty-set contract as full indexing. Hash-clean manifest files now reindex for
   Structural, hash-clean Structural files reindex for Full, and successful
