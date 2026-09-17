@@ -780,16 +780,24 @@ impl ToolRouter {
     /// This is the non-blocking companion to [`prepare_focus_query`]. It is
     /// used by latency-sensitive tools that have already returned a bounded
     /// result and want later calls/resume_query to see richer local facts.
+    pub(crate) fn try_enqueue_background_file_focus(
+        &self,
+        file_ids: &[FileId],
+    ) -> anyhow::Result<Option<atlas_engine::focus::runtime::FocusResult>> {
+        if file_ids.is_empty() {
+            return Ok(None);
+        }
+
+        self.project()
+            .query_runtime
+            .enqueue_file_focus_warm(file_ids)
+    }
+
     pub(crate) fn enqueue_background_file_focus(
         &self,
         file_ids: &[FileId],
     ) -> Option<atlas_engine::focus::runtime::FocusResult> {
-        if file_ids.is_empty() {
-            return None;
-        }
-
-        let project = self.project();
-        match project.query_runtime.enqueue_file_focus_warm(file_ids) {
+        match self.try_enqueue_background_file_focus(file_ids) {
             Ok(result) => result,
             Err(err) => {
                 tracing::warn!("background focus warming enqueue failed: {err:#}");

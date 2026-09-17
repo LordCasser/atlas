@@ -8,11 +8,13 @@
 use atlas_engine::FileId;
 use atlas_engine::InvestigationFocus;
 use atlas_engine::ScopedSearchRequest;
+use atlas_engine::ScopedSearchResponse;
 use atlas_engine::ScopedSearchService;
 use atlas_engine::SearchAnalysis;
 use atlas_engine::SearchCoverage;
 use atlas_engine::SearchResult;
 use atlas_engine::SymbolKind;
+use atlas_engine::focus::runtime::FocusResult;
 
 use super::analysis_envelope::{AnalysisEnvelope, GapRecord};
 use super::{
@@ -39,6 +41,13 @@ struct SearchHit {
     file: String,
     line: u32,
     layer: String,
+}
+
+struct ReconciledSearch {
+    response: ScopedSearchResponse,
+    background_focus: Option<FocusResult>,
+    pending_work: usize,
+    retry_after_ms: u64,
 }
 
 impl ToolRouter {
@@ -152,8 +161,21 @@ impl ToolRouter {
             Some(self.project().root.clone()),
         );
 
-        let engine_resp = match svc.execute(req) {
-            Ok(r) => r,
+        let initial_response = match svc.execute(req.clone()) {
+            Ok(response) => response,
+            Err(err) => {
+                let mut s = format!("Search error: {err}");
+                s.push_str(self.project().store_query_runtime.not_indexed_guidance());
+                return (s, true);
+            }
+        };
+        let ReconciledSearch {
+            response: engine_resp,
+            background_focus,
+            pending_work: background_pending,
+            retry_after_ms,
+        } = match self.reconcile_search_background(&svc, &req, initial_response) {
+            Ok(result) => result,
             Err(err) => {
                 let mut s = format!("Search error: {err}");
                 s.push_str(self.project().store_query_runtime.not_indexed_guidance());
@@ -181,15 +203,6 @@ impl ToolRouter {
         }
 
         let search_is_partial = matches!(engine_resp.coverage, SearchCoverage::Partial { .. });
-        let background_focus = if engine_resp.deferred_file_ids.is_empty() {
-            None
-        } else {
-            self.enqueue_background_file_focus(&engine_resp.deferred_file_ids)
-        };
-        let (background_pending, retry_after_ms) = background_focus
-            .as_ref()
-            .map(|result| result.pending_work_count_and_eta_ms())
-            .unwrap_or((0, 0));
         let background_search_pending = background_pending > 0;
 
         // Build the MCP JSON response from the engine response.
@@ -253,6 +266,51 @@ impl ToolRouter {
                 .with_analysis_summary("scoped search coverage is complete".into());
         }
         lr.build(response, self)
+    }
+
+    /// Reconcile the narrow execute→enqueue race for cold scoped search.
+    ///
+    /// A background Focus job can commit the deferred files after the search
+    /// service computed partial coverage but before we enqueue those same files.
+    /// In that state the scheduler correctly reports no pending work, while the
+    /// response would otherwise become a stale terminal partial. Re-read the
+    /// same request once; a second partial remains bounded and is never looped.
+    /// The pending count is returned from the same observation that made this
+    /// decision, so a job finishing immediately afterward can only cause one
+    /// harmless extra retry, never another terminal stale partial.
+    fn reconcile_search_background(
+        &self,
+        service: &ScopedSearchService,
+        request: &ScopedSearchRequest,
+        mut response: ScopedSearchResponse,
+    ) -> anyhow::Result<ReconciledSearch> {
+        let mut background_focus =
+            self.try_enqueue_background_file_focus(&response.deferred_file_ids)?;
+        let mut pending_observation = background_focus
+            .as_ref()
+            .map(FocusResult::pending_work_count_and_eta_ms)
+            .unwrap_or((0, 0));
+        let needs_terminal_reconciliation =
+            matches!(response.coverage, SearchCoverage::Partial { .. })
+                && !response.deferred_file_ids.is_empty()
+                && pending_observation.0 == 0;
+
+        if needs_terminal_reconciliation {
+            response = service.execute(request.clone())?;
+            background_focus =
+                self.try_enqueue_background_file_focus(&response.deferred_file_ids)?;
+            pending_observation = background_focus
+                .as_ref()
+                .map(FocusResult::pending_work_count_and_eta_ms)
+                .unwrap_or((0, 0));
+        }
+
+        Ok(ReconciledSearch {
+            response,
+            background_focus,
+            pending_work: pending_observation.0,
+            retry_after_ms: pending_observation.1,
+        })
     }
 
     // ── symbol detail ─────────────────────────────────────────────────────
@@ -808,6 +866,231 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::tools::query_snapshot::QueryStatus;
+
+    #[test]
+    fn cold_search_reconciles_deferred_files_completed_before_enqueue() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..3 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+        let project = router.project();
+        let service = ScopedSearchService::new_with_project_root(
+            project.store.clone(),
+            project.materialize.structural().clone(),
+            Some(project.root.clone()),
+        );
+        let request = ScopedSearchRequest {
+            query: "Widget".into(),
+            scope: Some("src".into()),
+            analysis: SearchAnalysis::Auto,
+            limit: 10,
+            ..Default::default()
+        };
+
+        let initial = service.execute(request.clone()).unwrap();
+        assert!(
+            matches!(initial.coverage, SearchCoverage::Partial { .. }),
+            "cold bounded pass must start partial: {initial:?}"
+        );
+        assert_eq!(initial.deferred_file_ids.len(), 1, "{initial:?}");
+
+        project
+            .materialize
+            .structural()
+            .ensure_structural_for_file_ids(&initial.deferred_file_ids)
+            .expect("simulate background completion before MCP enqueue");
+        let reconciled = router
+            .reconcile_search_background(&service, &request, initial)
+            .expect("zero-pending race should re-read once");
+
+        assert!(
+            reconciled.background_focus.is_none(),
+            "no work remains after completion"
+        );
+        assert_eq!(reconciled.pending_work, 0, "{:#?}", reconciled.response);
+        assert_eq!(reconciled.retry_after_ms, 0, "{:#?}", reconciled.response);
+        assert!(
+            matches!(reconciled.response.coverage, SearchCoverage::Full),
+            "current complete facts must replace stale partial coverage: {:?}",
+            reconciled.response
+        );
+        assert_eq!(reconciled.response.total, 3, "{:?}", reconciled.response);
+        assert!(
+            reconciled.response.deferred_file_ids.is_empty(),
+            "{:?}",
+            reconciled.response
+        );
+        assert!(
+            reconciled
+                .response
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("bounded file subset")),
+            "complete reconciliation must not retain stale bounded guidance: {:?}",
+            reconciled.response
+        );
+    }
+
+    #[test]
+    fn cold_search_reconciliation_keeps_no_progress_work_terminal_and_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..3 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+        let project = router.project();
+        let service = ScopedSearchService::new_with_project_root(
+            project.store.clone(),
+            project.materialize.structural().clone(),
+            Some(project.root.clone()),
+        );
+        let request = ScopedSearchRequest {
+            query: "Widget".into(),
+            scope: Some("src".into()),
+            analysis: SearchAnalysis::Auto,
+            limit: 10,
+            ..Default::default()
+        };
+        let initial = service.execute(request.clone()).unwrap();
+        let deferred_id = initial.deferred_file_ids[0];
+        let deferred_path = project
+            .store
+            .find_file_inventory_by_id(&deferred_id)
+            .unwrap()
+            .expect("deferred inventory row")
+            .path;
+        std::fs::remove_file(root.path().join(deferred_path)).unwrap();
+
+        let terminal_focus = router
+            .try_enqueue_background_file_focus(&initial.deferred_file_ids)
+            .unwrap()
+            .expect("deleted deferred file should still create a tracked job");
+        for _ in 0..100 {
+            if terminal_focus.pending_work_count_and_eta_ms().0 == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(terminal_focus.pending_work_count_and_eta_ms().0, 0);
+        assert!(
+            terminal_focus
+                .job_tracker
+                .as_ref()
+                .is_some_and(|tracker| tracker.are_all_done(&terminal_focus.pending_closure_ids)),
+            "deleted deferred file must reach a tracked terminal no-progress state"
+        );
+
+        let retryable = router
+            .reconcile_search_background(&service, &request, initial)
+            .expect("the first no-progress replay may create one normalized group job");
+        assert!(
+            matches!(retryable.response.coverage, SearchCoverage::Partial { .. }),
+            "failed structural work must not be promoted to complete: {:?}",
+            retryable.response
+        );
+        assert_eq!(retryable.pending_work, 1, "{:?}", retryable.response);
+        assert!(retryable.retry_after_ms > 0, "{:?}", retryable.response);
+        let retry_focus = retryable
+            .background_focus
+            .as_ref()
+            .expect("the normalized no-progress group must stay tracked");
+        for _ in 0..100 {
+            if retry_focus.pending_work_count_and_eta_ms().0 == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(retry_focus.pending_work_count_and_eta_ms().0, 0);
+
+        let next_pass = service.execute(request.clone()).unwrap();
+        let terminal = router
+            .reconcile_search_background(&service, &request, next_pass)
+            .expect("the completed no-progress group must become terminal");
+        assert!(
+            matches!(terminal.response.coverage, SearchCoverage::Partial { .. }),
+            "permanent missing-file work must remain partial: {:?}",
+            terminal.response
+        );
+        assert_eq!(terminal.pending_work, 0, "{:?}", terminal.response);
+        assert_eq!(terminal.retry_after_ms, 0, "{:?}", terminal.response);
+        assert!(
+            !terminal.response.deferred_file_ids.is_empty(),
+            "the permanent missing-file boundary must remain explicit"
+        );
+    }
+
+    #[test]
+    fn cold_search_keeps_one_retry_when_focus_finishes_after_pending_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for idx in 0..3 {
+            std::fs::write(
+                src.join(format!("widget{idx}.ts")),
+                "export function Widget() {}\nWidget();\n",
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store.init_schema().unwrap();
+        let router = ToolRouter::new_empty(store, root.path().to_path_buf());
+        let project = router.project();
+        let service = ScopedSearchService::new_with_project_root(
+            project.store.clone(),
+            project.materialize.structural().clone(),
+            Some(project.root.clone()),
+        );
+        let request = ScopedSearchRequest {
+            query: "Widget".into(),
+            scope: Some("src".into()),
+            analysis: SearchAnalysis::Auto,
+            limit: 10,
+            ..Default::default()
+        };
+        let initial = service.execute(request.clone()).unwrap();
+        let reconciled = router
+            .reconcile_search_background(&service, &request, initial)
+            .expect("pending background work should be observed once");
+
+        assert_eq!(reconciled.pending_work, 1, "{:?}", reconciled.response);
+        assert!(reconciled.retry_after_ms > 0, "{:?}", reconciled.response);
+        let focus = reconciled
+            .background_focus
+            .as_ref()
+            .expect("pending observation must retain its FocusResult");
+        for _ in 0..100 {
+            if focus.pending_work_count_and_eta_ms().0 == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(focus.pending_work_count_and_eta_ms().0, 0);
+        assert_eq!(
+            reconciled.pending_work, 1,
+            "the response must keep the decision-time observation even after completion"
+        );
+    }
 
     #[test]
     fn cold_search_tracks_deferred_focus_and_converges() {
@@ -879,6 +1162,17 @@ mod tests {
         assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
         assert_eq!(resumed["total"], 3, "{resumed}");
         assert_eq!(resumed["results"].as_array().unwrap().len(), 3, "{resumed}");
+        assert!(resumed.get("gaps").is_none(), "{resumed}");
+        assert!(
+            resumed["warnings"]
+                .as_array()
+                .is_none_or(|warnings| warnings.iter().all(|warning| {
+                    !warning
+                        .as_str()
+                        .is_some_and(|warning| warning.contains("bounded file subset"))
+                })),
+            "complete response must not retain stale bounded guidance: {resumed}"
+        );
     }
 
     #[test]
@@ -944,5 +1238,37 @@ mod tests {
         );
         assert_eq!(resumed["coverage"]["state"], "complete", "{resumed}");
         assert_eq!(resumed["total"], 6, "{resumed}");
+        assert!(resumed.get("gaps").is_none(), "{resumed}");
+        assert!(
+            resumed["warnings"]
+                .as_array()
+                .is_none_or(|warnings| warnings.iter().all(|warning| {
+                    !warning
+                        .as_str()
+                        .is_some_and(|warning| warning.contains("bounded file subset"))
+                })),
+            "ready response must not retain stale bounded guidance: {resumed}"
+        );
+
+        let settled = router
+            .project()
+            .job_runtime
+            .query_snapshots
+            .lock()
+            .unwrap()
+            .get(&query_id)
+            .cloned()
+            .expect("settled search query snapshot");
+        assert_eq!(settled.status, QueryStatus::Ready);
+        assert_eq!(
+            settled
+                .focus_result
+                .as_ref()
+                .map(FocusResult::pending_work_count_and_eta_ms)
+                .unwrap_or((0, 0))
+                .0,
+            0,
+            "ready snapshot must not retain pending work"
+        );
     }
 }

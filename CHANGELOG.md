@@ -61,6 +61,12 @@ All notable changes to Atlas will be documented in this file.
   materialized-edge cleanup, and graph-refresh paths; decline, cancel, or false
   completes without mutation. Legacy/no-form clients retain direct core
   behavior, so confirmation is a usability safeguard rather than authorization.
+- Make cold scoped search converge across the execute-to-enqueue race. When an
+  inventory-backed pass reports deferred files but Focus has already finished
+  them before MCP can enqueue the work, Atlas now re-reads the same request once
+  instead of publishing stale terminal `partial` coverage without a retry
+  marker. Real pending work, bounded terminal gaps, ordering, limits, schemas,
+  and the existing Tasks/`resume_query` control planes remain unchanged.
 
 ## [1.7.0] - 2026-08-19
 

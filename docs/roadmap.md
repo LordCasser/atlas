@@ -132,7 +132,12 @@ The rmcp 3.x adapter keeps the existing stdio server and can negotiate both
    existing `query_id` / `tasks` / `resume_query` path, while fast ambiguous
    `explore` calls continue to use direct MRTR. Fast terminal calls, tool errors,
    old protocols, and clients without Tasks keep their current results; do not
-   grow the legacy control plane. Task push through `subscriptions/listen`
+   grow the legacy control plane. Cold scoped search also coordinates the narrow
+   execute-to-enqueue race: if a bounded pass names deferred files but Focus has
+   already completed them before enqueue, the adapter re-reads that same request
+   once so complete current facts cannot be published as a stale terminal
+   `partial` result. Real pending work and permanent bounded gaps keep their
+   existing retry/terminal behavior. Task push through `subscriptions/listen`
    remains pending because rmcp 3.0.1 does not yet route task IDs or
    `notifications/tasks` through its subscription filter.
 5. **Treat stateless HTTP as an application-state redesign.** A future remote
