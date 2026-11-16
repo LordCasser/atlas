@@ -71,9 +71,13 @@ pub fn discover_files_bounded(
     let deadline = Instant::now() + timeout;
     let atlasignore_patterns = load_atlasignore(root);
 
-    if let Some((files, complete, raw_count)) =
-        discover_via_git_bounded(root, config, &atlasignore_patterns, max_files, deadline)?
-        && (raw_count > 0 || !complete)
+    if let Some((files, complete, raw_count)) = discover_via_git_bounded(
+        &mut git_ls_files(root),
+        config,
+        &atlasignore_patterns,
+        max_files,
+        deadline,
+    )? && (raw_count > 0 || !complete)
     {
         return Ok((files, complete));
     }
@@ -94,18 +98,21 @@ fn is_git_repo(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn git_ls_files(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.args([
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ]);
+    command.current_dir(root);
+    command
+}
+
 fn discover_via_git(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let output = match Command::new("git")
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .current_dir(root)
-        .output()
-    {
+    let output = match git_ls_files(root).output() {
         Ok(o) => o,
         Err(_) => return discover_via_walk(root), // git not available — fall back
     };
@@ -131,21 +138,14 @@ fn discover_via_git(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 fn discover_via_git_bounded(
-    root: &Path,
+    command: &mut Command,
     config: &DiscoveryConfig,
     atlasignore_patterns: &[String],
     max_files: usize,
     deadline: Instant,
 ) -> anyhow::Result<Option<(Vec<PathBuf>, bool, usize)>> {
-    let mut child = match Command::new("git")
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .current_dir(root)
+    let mut child = match command
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -153,13 +153,9 @@ fn discover_via_git_bounded(
         Ok(child) => child,
         Err(_) => return Ok(None),
     };
-    let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Ok(None);
-    };
+    let stdout = child.stdout.take().expect("piped Git stdout");
     let (sender, receiver) = mpsc::sync_channel(256);
-    let reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut stdout = BufReader::new(stdout);
         let mut bytes = Vec::new();
         loop {
@@ -184,14 +180,7 @@ fn discover_via_git_bounded(
 
     let mut files = Vec::new();
     let mut raw_count = 0usize;
-    loop {
-        if files.len() >= max_files || Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            drop(receiver);
-            let _ = reader.join();
-            return Ok(Some((files, false, raw_count)));
-        }
+    while files.len() < max_files && Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(remaining) {
             Ok(path) => {
@@ -200,24 +189,31 @@ fn discover_via_git_bounded(
                     files.push(path);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(receiver);
-                let _ = reader.join();
-                return Ok(Some((files, false, raw_count)));
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let status = child.wait()?;
-                let _ = reader.join();
-                return if status.success() {
-                    Ok(Some((files, true, raw_count)))
-                } else {
-                    Ok(None)
-                };
+                while Instant::now() < deadline {
+                    if let Some(status) = child.try_wait()? {
+                        return Ok(status.success().then_some((files, true, raw_count)));
+                    }
+                    std::thread::sleep(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(10)),
+                    );
+                }
+                break;
             }
         }
     }
+
+    // A Git launcher's descendants can keep stdout open after the launcher is killed.
+    // Disconnect the reader and reap the direct child outside the discovery budget.
+    drop(receiver);
+    let _ = child.kill();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(Some((files, false, raw_count)))
 }
 
 // ── filesystem walk (fallback) ─────────────────────────────────────────
@@ -399,6 +395,8 @@ fn matches_any_glob(path: &Path, patterns: &[String]) -> bool {
         return false;
     }
     let path_str = path.to_string_lossy();
+    #[cfg(windows)]
+    let path_str = path_str.replace('\\', "/");
     patterns.iter().any(|pat| glob_match(&path_str, pat))
 }
 
@@ -519,30 +517,52 @@ mod tests {
     #[test]
     fn bounded_discovery_reports_limit_as_partial() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("src/nested")).unwrap();
         for index in 0..4 {
             std::fs::write(
-                root.path().join(format!("src/file_{index}.ts")),
+                root.path().join(format!("src/nested/file_{index}.ts")),
                 "export const value = 1;\n",
             )
             .unwrap();
         }
 
-        let (files, complete) = discover_files_bounded(
+        let (files, complete) = discover_via_walk_bounded(
             root.path(),
             &DiscoveryConfig {
-                include_patterns: vec!["src/**".into()],
+                include_patterns: vec!["src/nested/**".into()],
                 exclude_patterns: Vec::new(),
                 ..Default::default()
             },
+            &[],
             2,
-            Duration::from_secs(1),
+            Instant::now() + Duration::from_secs(1),
         )
         .unwrap();
 
         assert_eq!(files.len(), 2);
         assert!(!complete);
-        assert!(files.iter().all(|path| path.starts_with("src")));
+        assert!(files.iter().all(|path| path.starts_with("src/nested")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_discovery_returns_while_a_descendant_keeps_stdout_open() {
+        let mut command = Command::new("sh");
+        command.args(["-c", r"sleep 4 & printf 'src/example.ts\000'; wait"]);
+        let start = Instant::now();
+        let (files, complete, _) = discover_via_git_bounded(
+            &mut command,
+            &DiscoveryConfig::default(),
+            &[],
+            10,
+            start + Duration::from_secs(1),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(files, vec![PathBuf::from("src/example.ts")]);
+        assert!(!complete);
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

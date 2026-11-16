@@ -1077,7 +1077,13 @@ fn run_rg_candidate_paths(
     definition_like: bool,
 ) -> Result<Vec<String>> {
     let mut cmd = std::process::Command::new("rg");
-    cmd.args(["--files-with-matches", "--no-heading", "--max-count=1"]);
+    cmd.args([
+        "--files-with-matches",
+        "--no-heading",
+        "--max-count=1",
+        "--path-separator",
+        "/",
+    ]);
     for glob in [
         "*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.rs", "*.go", "*.java", "*.py", "*.ts",
         "*.tsx", "*.js", "*.jsx", "*.ets", "*.sts", "*.cs", "*.php", "*.rb", "*.kt", "*.kts",
@@ -1102,7 +1108,9 @@ fn run_rg_candidate_paths(
     if let Some(scope) = scope.filter(|s| !s.is_empty() && *s != ".") {
         cmd.arg(scope);
     }
+    // With no path argument, ripgrep uses stdin when it sees a readable pipe.
     cmd.current_dir(project_root)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 

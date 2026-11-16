@@ -2280,12 +2280,12 @@ mod tests {
             rmcp::model::TaskStatus::InputRequired,
         )
         .await;
-        assert_eq!(
-            blocking_gate.available_permits(),
-            1,
-            "waiting for task input must not retain the shared blocking permit"
-        );
-        let selection = task_candidate_selection(&input, 1);
+        let selection = {
+            let _permit = blocking_gate
+                .try_acquire()
+                .expect("waiting for task input must leave the shared blocking permit available");
+            task_candidate_selection(&input, 1)
+        };
 
         let second_root = tempfile::tempdir().expect("replacement project root");
         let second_store =
