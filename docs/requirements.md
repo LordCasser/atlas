@@ -211,7 +211,7 @@ Atlas 不做 taint rule / finding 产品能力。Atlas 不包含 taint 代码、
   该行为是 source-order
   approximation，不得表述为 CFG-aware SSA 或精确 branch merge。
 - `CallsiteArg`：已移除。`callsites.args_json` + call-arg `DataNode` 为当前唯一调用实参事实源；如未来需结构化实参表，应在 schema 中新增替代设计并同步测试。
-- `FunctionSummary`：已实现持久化摘要层（当前 Schema V4）：`function_summaries`、`summary_param_reaches`、`summary_return_sources`、`summary_call_arg_sources` 四张表，通过 `CrossFunctionBridge` 实现 ArgToParam 和 ReturnToCall 跨函数桥接；CFG 节点同时持久化托管资源作用域归属。当前开发线不兼容旧 schema；schema 变化后必须重建索引。
+- `FunctionSummary` 通过 `function_summaries`、`summary_param_reaches`、`summary_return_sources` 和 `summary_call_arg_sources` 持久化摘要。`CrossFunctionBridge` 使用摘要建立 ArgToParam 和 ReturnToCall 跨函数桥接。CFG 节点同时持久化托管资源作用域归属。Schema 变化后需要重建索引。
 
 语言能力按等级验收，不要求所有语言一次性达到同等精度：
 
@@ -353,7 +353,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 当前基线验收标准：
 
 1. 全部 14 种语言能进入解析路径，均达到 DataflowInterproc 级别；Cangjie 已提升至 DataflowInterproc。
-2. `atlas index` 能生成 `.atlas/atlas.db`（Schema V4）。
+2. `atlas index` 能按当前 schema 生成 `.atlas/atlas.db`。
 3. TUI / MCP `search` 工具能检索符号。
 4. CLI 或 MCP 能查询基本 callers/callees。
 5. 所有语言 import/include resolution 可用。
@@ -362,7 +362,7 @@ CLI 参数必须失败得明确。`--analysis` 只允许 `manifest`、`structura
 8. MCP 输出可被 Agent 消费，并控制预算。
 9. 关系结果暴露 confidence/provenance。
 10. 语言 fixtures 和集成测试覆盖主链路。
-11. 持久化跨函数摘要层、source-ordered binding activation 与托管资源 CFG owner（Schema V4）已实现。
+11. 持久化跨函数摘要层、source-ordered binding activation 与托管资源 CFG owner 已实现。
 12. MCP/shared pipeline、CLI index、CLI sync、以及裸 `atlas` 首跑 structural index 在各自声明的分析等级下语义一致；删除文件、Full summaries、lazy diagnostics、capability mask 和 TUI index-mode 状态栏都有发布前验证。
 13. 部分索引的大型项目中，首次 cold symbol/explore 能按符号级 bounded closure 收敛；
     dependency-only 文件不被误算 structural，后台成功/失败都能到达可解释终态。

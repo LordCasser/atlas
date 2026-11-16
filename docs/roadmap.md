@@ -3,16 +3,11 @@
 Tracks **goals and remaining work**. Landed capabilities are stated in the present tense.  
 Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
-## 1. Current baseline: Atlas 1.7.0
+## 1. Current baseline for Atlas 1.7.1
 
-Workspace version is **1.7.0**. Git tag **`v1.7.0`** seals the
-language-precision and Focus/MCP convergence release after **`v1.6.1`**. It moves
-the persisted database contract from Schema V3 to V4, strengthens binding、
-dataflow and CFG evidence across all 14 default languages, aligns Focus with
-full Index extraction semantics, and upgrades the MCP adapter to rmcp 3.x while
-retaining the 15-tool surface and Trace V1 response contract. Release changes
-are recorded in `CHANGELOG.md` §1.7.0; subsequent development belongs in its
-Unreleased section. Tags **`v1.7.0`** and **`v1.6.1`** remain sealed.
+Workspace version **1.7.1** uses SQLite Schema V35 and retains the 15-tool MCP
+surface. Release changes and index rebuild instructions are recorded in
+[`CHANGELOG.md` §1.7.1](../CHANGELOG.md#171---2026-11-16).
 
 Tag **`v1.5.5`** and earlier remain sealed. The CFG v3 milestone (structured
 control-transfer/exception/resource facts, Schema V3 persistence, aligned
@@ -33,9 +28,7 @@ evidence-backed language precision and explicitly versioned persisted semantics.
   arm64, Windows x86_64/arm64, Rust 1.88+, and the `mcp` release feature.
 - Decide whether releases are distributed as source-only, release binaries, or both.
   ✅ Done: README states releases are source plus binaries.
-- Add release notes / changelog entry for the current release. ✅ Done:
-  `CHANGELOG.md` contains a dedicated 1.7.0 language-precision and Focus/MCP
-  convergence section above the sealed 1.6.x and 1.5.x history.
+- Add release notes and a changelog entry for the current release. ✅ Done.
 
 ### 1.2 User-facing documentation
 
@@ -71,10 +64,10 @@ evidence-backed language precision and explicitly versioned persisted semantics.
 ### 1.4 CLI and database release gates
 
 - Ensure `atlas doctor` exposes release-relevant state. ✅ Done: doctor
-  prints Atlas version, Schema V4 state, canonical index mode from `Store`, compiled
+  prints Atlas version, schema version, canonical index mode from `Store`, compiled
   features, and per-language capability profiles; helper tests cover schema and
   index-mode reads.
-- Compatibility: Schema V4 with no migration chain for older development schemas
+- Compatibility: Schema V35 with no migration chain for older development schemas
   (direct DDL changes + re-index). ✅ Done: `init_schema()` only initializes
   empty unversioned databases or current-version databases, stamps fresh DBs
   with `CURRENT_SCHEMA_VERSION`, and rejects non-empty v0 development databases

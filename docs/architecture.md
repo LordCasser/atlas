@@ -3,7 +3,7 @@
 本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
 版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前基线：Atlas `1.7.0`、SQLite Schema V4、16 个 Cargo package、14 种默认语言、15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前基线为 Atlas `1.7.1`、SQLite Schema V35、16 个 Cargo package、14 种默认语言和 15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -64,7 +64,7 @@ crates/
   atlas-engine/        facade crate，re-export types/db/extraction/resolution/graph/analysis/search/context/filesync/focus_materialize, dossier
     crates/types/      ID、enum、IR、binding、dataflow、CFG、trace 查询类型、capability profiles
     crates/workspace/  ProjectRoot、WorkspacePaths、SourcePath
-    crates/db/         SQLite schema v4、Store API、readers、schema 初始化基础设施
+    crates/db/         SQLite schema、Store API、readers、schema 初始化基础设施
     crates/extraction/ tree-sitter 解析、query、scope、semantic binder、lexical binder、dataflow、CFG、worker pool
     crates/resolution/ builtin filter、scope/container/import/include/name matching、PathAliasResolver
     crates/graph/      GraphBuilder、GraphSnapshot、GraphEngine
@@ -369,9 +369,9 @@ MCP Tool
 - `fragmentation_ratio` = `freelist_count / page_count`：表示空闲页面占比；高值意味着 `VACUUM` 可压缩文件。
 - `cache_coverage_ratio` = `cache_size_kib / total_db_kib`：表示页面缓存是否能在内存中覆盖整个 DB。>1.0 时所有页面理论可常驻内存。
 
-### 6.1 Schema（当前版本：V4）
+### 6.1 Schema
 
-当前 schema 版本为 V4。软件处于快速原型期，新库以主 DDL 为准，不保留
+当前 schema 版本为 V35。新库以主 DDL 为准，不保留
 旧 schema 运行时补丁路径。schema contract 改变时直接更新主
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
 中累积旧版本补丁路径。当 `user_version` 与 `CURRENT_SCHEMA_VERSION`
@@ -566,7 +566,7 @@ Manifest 不是“低成本 definitions”。每个语言必须显式实现 top-
 
 ### 7.2 跨函数桥接（DataflowInterproc）
 
-Schema V4 包含持久化摘要层，并在 CFG 节点上持久化托管资源作用域归属：
+SQLite 持久化函数摘要和 CFG 节点的托管资源作用域归属。
 
 ```
 dataflow_edges    = intra-procedural, fine-grained, direct edges
@@ -1099,7 +1099,7 @@ discover files
 - 目标 capability 映射为：`Manifest`/`ResolutionSymbols` 需要 manifest，`Structural` 需要 structural，`Full` 需要 dataflow；更高层 capability 可满足低层要求。
 - `project_metadata` 中 `last_index_time`、`last_sync_time` 等可选键不存在时表示未知/尚未发生，不是错误，不得产生 warning；只有表/列/SQL 等真实查询失败才记录 warning/error。
 - inventory、unresolved/symbol 计数、summary 与 capability mask 都是事实边界：SQL/row decode/identity 错误必须向上失败，不能用空列表或 0 伪装成功；file/unit capability 必须对全部 fresh layer 做 bitwise OR，而非读取任意一行。
-- 当前版本未发布，不保留旧 schema 运行时 fallback；如果 schema contract 改变，应更新 DDL 和调用方，并要求重新建库/重索引。
+- Schema contract 变化时，同步更新 DDL 和调用方，并要求重建索引。
 - `filesync::clean_stale_file_*` 是 stale facts 清理边界；所有入口必须先清理 incoming refs 和 outgoing edges，再删除旧 facts。
 - path alias 配置文件集合由 `resolution::PATH_ALIAS_CONFIG_FILES` 定义，当前为 `tsconfig.json` 和 `jsconfig.json`；检测、提交 hash、加载 resolver 必须使用同一来源。
 - 此契约（入口管参数/锁/UI/进度，管线管索引机制）是核心架构不变式，由 `pipeline_equivalence` 集成测试验证：同一项目通过不同入口索引必须产生相同 DB 状态（files/symbols/edges/summaries）。`IndexPipeline`（全量）与 `IncrementalPipeline`（增量）是仅有的 DB 变更编排路径；CLI/TUI 不得复制 phase 逻辑。

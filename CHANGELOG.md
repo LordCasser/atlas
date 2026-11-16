@@ -4,7 +4,16 @@ All notable changes to Atlas will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [1.7.1] - 2026-11-16
+
+Atlas 1.7.1 fixes cold MCP search on Windows, preserves index scope and
+analysis upgrades during sync, and improves C++ analysis and indexing.
+
+### Upgrading
+
+- The SQLite schema moves from V4 to V35. Move the existing project `.atlas/`
+  directory aside and run `atlas index --project <path>` with Atlas 1.7.1 to
+  rebuild the index.
 
 ### CLI
 
@@ -23,6 +32,11 @@ All notable changes to Atlas will be documented in this file.
 
 ### MCP
 
+- Fix scoped search on Windows before a CLI index exists. Git discovery returns
+  within its budget when a descendant holds stdout open, native paths match
+  nested scopes, and ripgrep runs independently of the MCP input pipe.
+- Exercise acquisition of the shared blocking permit while an `explore` task
+  waits for a candidate selection.
 - Add standard `tools/list` cache hints for protocol `2026-07-28+`:
   `ttlMs: 300000` and `cacheScope: "public"`. Legacy or indeterminate
   protocol versions retain the existing wire shape, including omission of
@@ -87,6 +101,18 @@ All notable changes to Atlas will be documented in this file.
   missing add/delete arguments before dispatch, while omitted `action` still
   means list, function-pointer delete still accepts either identifier (or both),
   and server-side handler validation remains authoritative.
+
+### Analysis and indexing
+
+- Preserve qualified C++ definitions and the identities of scoped C++, Java,
+  and Kotlin callables, including overloads.
+- Improve C++ call resolution, lookup diagnostics, and source navigation.
+  Indexing can associate supplied compiler observations with matching indexed
+  inputs and retain selected declarations when a body is unavailable.
+- Add read-only call-context and declaration navigation in the Rust API with
+  bounded reuse of parsed source within each request.
+- Reuse extraction workers for hashing, resolution, and graph building, and
+  reuse compiled Tree-sitter queries across extractions.
 
 ## [1.7.0] - 2026-08-19
 
