@@ -186,7 +186,7 @@ computation can still have semantic limits.
 Raw Rust trace calls do not materialize or refresh dependencies themselves;
 their caller must ensure dataflow for the required functions first. This does
 not add a CodeServer value-flow operation or authorize writes to Ready Artifacts.
-Schema 35 requires rebuilding indexes created with earlier database schemas.
+Schema V5 requires rebuilding indexes created with previous releases.
 
 ---
 

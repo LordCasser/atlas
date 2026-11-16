@@ -24,7 +24,7 @@ This directory keeps the release-facing documentation for the current Atlas 1.7.
   file just because `files.content_hash` is unchanged.
 - Missing optional metadata such as `last_index_time` or `last_sync_time` is a
   normal empty-project/fresh-index state and must not produce warnings.
-- Atlas uses Schema V35. Schema changes update the primary DDL and code
+- Atlas uses Schema V5. Schema changes update the primary DDL and code
   together and require rebuilding the project index.
 
 ## Baseline focus contracts

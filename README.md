@@ -71,6 +71,8 @@ cargo install --path crates/atlas-cli --features mcp
 Atlas releases are distributed as source plus release binaries. The GitHub
 release workflow builds `atlas-cli` with `--features mcp`, so release binaries
 include the CLI, TUI, and MCP server.
+The workflow also publishes `atlas-skill.zip`, which extracts to an `atlas/`
+skill directory containing `SKILL.md`, agent configuration, and references.
 
 Repeatable local release build:
 
@@ -259,7 +261,7 @@ Trace tools return the `TraceQueryResponse<T>` envelope documented in [`docs/tra
 
 ## Architecture
 
-Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. Schema V35 uses one persistent SQLite database with bounded Focus extraction. Bindings persist their source-order activation point, and CFG nodes persist managed-resource lexical ownership so ordered shadowing and path-isolated scope exits survive indexing.
+Atlas is a Rust workspace with 16 Cargo packages. The public entry points are `atlas-cli` (CLI + TUI), `atlas-mcp`, and the `atlas-engine` facade. Engine internals are split by responsibility so extraction, persistence, graph construction, search, context, dossier assembly, focus scheduling, and trace can evolve independently. Schema V5 uses one persistent SQLite database with bounded Focus extraction. Bindings persist their source-order activation point, and CFG nodes persist managed-resource lexical ownership so ordered shadowing and path-isolated scope exits survive indexing.
 
 For a cold scoped query, Focus keeps two distinct boundaries: relevant files receive
 structural extraction, while import/include dependencies normally receive only

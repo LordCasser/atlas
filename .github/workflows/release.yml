@@ -149,3 +149,30 @@ jobs:
         with:
           files: ${{ matrix.asset }}
           fail_on_unmatched_files: false
+
+  package-skill:
+    name: Atlas skill
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Package Atlas skill
+        working-directory: skills
+        run: python -m zipfile -c ../atlas-skill.zip atlas
+
+      - name: Upload skill artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: atlas-skill.zip
+          path: atlas-skill.zip
+          if-no-files-found: error
+
+      - name: Upload skill to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: atlas-skill.zip
+          fail_on_unmatched_files: true

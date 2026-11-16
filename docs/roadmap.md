@@ -5,7 +5,7 @@ Version-to-version changes belong only in [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## 1. Current baseline for Atlas 1.7.1
 
-Workspace version **1.7.1** uses SQLite Schema V35 and retains the 15-tool MCP
+Workspace version **1.7.1** uses SQLite Schema V5 and retains the 15-tool MCP
 surface. Release changes and index rebuild instructions are recorded in
 [`CHANGELOG.md` §1.7.1](../CHANGELOG.md#171---2026-11-16).
 
@@ -67,7 +67,7 @@ evidence-backed language precision and explicitly versioned persisted semantics.
   prints Atlas version, schema version, canonical index mode from `Store`, compiled
   features, and per-language capability profiles; helper tests cover schema and
   index-mode reads.
-- Compatibility: Schema V35 with no migration chain for older development schemas
+- Compatibility: Schema V5 with no migration chain for older development schemas
   (direct DDL changes + re-index). ✅ Done: `init_schema()` only initializes
   empty unversioned databases or current-version databases, stamps fresh DBs
   with `CURRENT_SCHEMA_VERSION`, and rejects non-empty v0 development databases

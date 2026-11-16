@@ -11,9 +11,14 @@ analysis upgrades during sync, and improves C++ analysis and indexing.
 
 ### Upgrading
 
-- The SQLite schema moves from V4 to V35. Move the existing project `.atlas/`
-  directory aside and run `atlas index --project <path>` with Atlas 1.7.1 to
-  rebuild the index.
+- The SQLite schema moves from V4 to V5. Move the existing project `.atlas/`
+  directory aside and run `atlas index --project <path>` to rebuild the index.
+  This also applies to indexes created with the initial V35 build of `v1.7.1`.
+
+### Release packaging
+
+- Upload `atlas-skill.zip` as a separate release asset containing the `atlas/`
+  skill directory, agent configuration, and references.
 
 ### CLI
 

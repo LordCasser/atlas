@@ -3,7 +3,7 @@
 本文是 Atlas 的**单一权威架构文档**：只写**当前**设计原则、不变量与实现事实。  
 版本演进、迁移与破坏性变更见 [`CHANGELOG.md`](../CHANGELOG.md)，不在本文复述。
 
-> 当前基线为 Atlas `1.7.1`、SQLite Schema V35、16 个 Cargo package、14 种默认语言和 15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
+> 当前源码使用 SQLite Schema V5，包含 16 个 Cargo package、14 种默认语言和 15 个 MCP 工具。版本号以 workspace manifests 为准，schema 以 `db::CURRENT_SCHEMA_VERSION` 为准，语言能力以 `LanguageCapabilityProfile` / `atlas doctor` 为准，MCP 工具面以 `make_all_tools()` 为准。
 
 ## 1. 总体原则
 
@@ -371,7 +371,7 @@ MCP Tool
 
 ### 6.1 Schema
 
-当前 schema 版本为 V35。新库以主 DDL 为准，不保留
+当前 schema 版本为 V5。新库以主 DDL 为准，不保留
 旧 schema 运行时补丁路径。schema contract 改变时直接更新主
 DDL、调用方和文档，并要求重新建库/重索引；不得在 `Store::init_schema`
 中累积旧版本补丁路径。当 `user_version` 与 `CURRENT_SCHEMA_VERSION`

@@ -32,11 +32,7 @@
 //! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
 
 /// Current schema version.
-// v30 records demonstrated argument incompatibility in C++ failure facts.
-// v31 distinguishes exhausted C++ type-identity analysis from semantic gaps.
-// v33 retains function-template signatures and explicit template call syntax.
-// v35 retains unmodeled C++ allocation regions with callable ownership.
-pub const CURRENT_SCHEMA_VERSION: i64 = 35;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
