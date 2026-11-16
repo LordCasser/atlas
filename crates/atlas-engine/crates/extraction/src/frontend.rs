@@ -80,6 +80,18 @@ pub trait ParserSpec: Send + Sync {
     fn parser_source<'a>(&self, source: &'a str) -> Cow<'a, str> {
         Cow::Borrowed(source)
     }
+    /// Resolve supported syntax ambiguities using names in the source.
+    /// Returned nodes retain original byte/line coordinates. This runs for
+    /// clean trees as well: syntax-only grammars can choose a wrong declaration
+    /// alternative without producing ERROR nodes.
+    fn refine_tree(
+        &self,
+        _source: &str,
+        tree: tree_sitter::Tree,
+        _canceled: &dyn Fn() -> bool,
+    ) -> Option<tree_sitter::Tree> {
+        Some(tree)
+    }
     /// Optionally provide a byte-stable recovery source for declaration and
     /// scope extraction after the primary parse has completed.
     ///

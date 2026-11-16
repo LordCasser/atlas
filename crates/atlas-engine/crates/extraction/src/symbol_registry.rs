@@ -10,7 +10,9 @@
 use std::collections::{HashMap, HashSet};
 
 use types::ids::{EdgeId, FileId, ReferenceId, ScopeId, SymbolId};
-use types::{RawEdge, ReferenceUse, ScopeDef, SymbolDef, SymbolKind, TextRange};
+use types::{
+    Language, RawEdge, ReferenceUse, ScopeDef, ScopeKind, SymbolDef, SymbolKind, TextRange,
+};
 
 /// Definitions-derived symbol table used to resolve source symbols for
 /// references and dataflow edges.  It is intentionally built only from the
@@ -21,17 +23,26 @@ pub struct SymbolRegistry {
     scopes: Vec<ScopeDef>,
     scope_parents: HashMap<ScopeId, ScopeId>,
     owner_by_scope: HashMap<ScopeId, SymbolId>,
+    unowned_callable_scopes: HashSet<ScopeId>,
+    /// Initializers evaluated by the surrounding caller, inside a nested
+    /// callable's source extent (for example C++ init-captures).
+    caller_initializers: HashMap<SymbolId, TextRange>,
 }
 
 impl SymbolRegistry {
     /// Build a registry from normalized definitions and the reconstructed scope
     /// tree.  No IDs are generated here; all owners come from `symbols`.
-    pub fn new(symbols: &[SymbolDef], scopes: &[ScopeDef]) -> Self {
+    pub fn new(
+        symbols: &[SymbolDef],
+        scopes: &[ScopeDef],
+        caller_initializers: HashMap<SymbolId, TextRange>,
+    ) -> Self {
         let known_symbols = symbols.iter().map(|s| s.id).collect();
         let scope_parents = scopes
             .iter()
             .filter_map(|s| s.parent_id.map(|pid| (s.id, pid)))
             .collect::<HashMap<_, _>>();
+        let scope_defs: HashMap<_, _> = scopes.iter().map(|scope| (scope.id, scope)).collect();
 
         // Map each executable/type scope to the best symbol that owns it.  More
         // specific callable symbols beat class/namespace owners when several
@@ -44,6 +55,20 @@ impl SymbolRegistry {
             let Some(priority) = source_symbol_priority(sym.kind) else {
                 continue;
             };
+            // `scope_id` also describes where a declaration occurs. A local
+            // elaborated type or prototype does not own that surrounding block
+            // or class. Only a compatible defining scope can establish an owner.
+            if !scope_defs.get(&scope_id).is_some_and(|scope| {
+                owns_scope(sym.kind, scope.kind)
+                    && (sym.language != Language::Cpp
+                        || matches!(
+                            sym.kind,
+                            SymbolKind::Namespace | SymbolKind::Module | SymbolKind::Package
+                        )
+                        || sym.range == scope.range)
+            }) {
+                continue;
+            }
             let span = sym.range.byte_len();
             match owner_by_scope.get(&scope_id) {
                 Some((old_priority, old_span, _))
@@ -55,6 +80,12 @@ impl SymbolRegistry {
             }
         }
 
+        let unowned_callable_scopes = scopes
+            .iter()
+            .filter(|scope| matches!(scope.kind, ScopeKind::Function | ScopeKind::Method))
+            .filter(|scope| !owner_by_scope.contains_key(&scope.id))
+            .map(|scope| scope.id)
+            .collect();
         Self {
             known_symbols,
             scopes: scopes.to_vec(),
@@ -63,6 +94,8 @@ impl SymbolRegistry {
                 .into_iter()
                 .map(|(scope, (_, _, symbol))| (scope, symbol))
                 .collect(),
+            unowned_callable_scopes,
+            caller_initializers,
         }
     }
 
@@ -75,8 +108,22 @@ impl SymbolRegistry {
     pub fn source_for_range(&self, range: TextRange) -> Option<SymbolId> {
         let mut current = crate::languages::shared::innermost_scope(&self.scopes, range);
         while let Some(scope_id) = current {
+            // A callable whose identity is unavailable does not execute in
+            // its ancestor's body. Keep its source unknown at this boundary.
+            if self.unowned_callable_scopes.contains(&scope_id) {
+                return None;
+            }
             if let Some(owner) = self.owner_by_scope.get(&scope_id) {
-                return Some(*owner);
+                if !self
+                    .caller_initializers
+                    .get(owner)
+                    .is_some_and(|initializers| {
+                        initializers.start_byte <= range.start_byte
+                            && range.end_byte <= initializers.end_byte
+                    })
+                {
+                    return Some(*owner);
+                }
             }
             current = self.scope_parents.get(&scope_id).copied();
         }
@@ -126,6 +173,26 @@ impl SymbolRegistry {
             }
             true
         });
+    }
+}
+
+fn owns_scope(symbol: SymbolKind, scope: ScopeKind) -> bool {
+    match symbol {
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => {
+            matches!(scope, ScopeKind::Function | ScopeKind::Method)
+        }
+        SymbolKind::Class | SymbolKind::Struct | SymbolKind::Interface | SymbolKind::Trait => {
+            matches!(
+                scope,
+                ScopeKind::Class | ScopeKind::Struct | ScopeKind::Interface | ScopeKind::Trait
+            )
+        }
+        SymbolKind::Enum => scope == ScopeKind::Enum,
+        SymbolKind::Namespace | SymbolKind::Module | SymbolKind::Package => matches!(
+            scope,
+            ScopeKind::File | ScopeKind::Module | ScopeKind::Namespace
+        ),
+        _ => false,
     }
 }
 

@@ -1,7 +1,7 @@
 //! Virtual edges for runtime dataflow tracing.
 //!
 //! When the backward slicer hits a function boundary (parameter node at the
-//! top of a function, or call-return node with an associated [`Callsite`]),
+//! top of a function, or call-return node with an associated callsite),
 //! it needs to "jump" across the call boundary to continue tracing into the
 //! caller or callee.  These cross-boundary jumps are modelled as virtual
 //! [`TraceEdge`]s provided by a [`TraceEdgeProvider`].
@@ -13,15 +13,13 @@
 //! || Backward (callee return → caller result) || Return DataNode in callee || Expr/CallResult DataNode in caller || Slicer reaches a call-result node with known callee ||
 //! || Backward (framework state write → reactive field read) || AppStorage value argument || `@StorageLink` / `@StorageProp` field access || Keys match ||
 //!
-//! The [`RuntimeEdgeProvider`] uses [`super::summary::FunctionSummary`] to
-//! bridge call boundaries and ArkTS framework-managed state. When no summary
-//! exists yet it falls back to direct callsite joins.
+//! The [`RuntimeEdgeProvider`] joins recorded arguments, parameters and return
+//! nodes through each actual callsite, retaining the invocation boundary.
 
 use db::TraceStore;
 use types::dataflow::DataFlowEdge;
 use types::enums::{DataFlowKind, DataNodeKind, Language, ReferenceKind, SymbolKind};
-use types::ids::{DataNodeId, FileId, SymbolId};
-use types::structs::Callsite;
+use types::ids::{CallsiteId, DataNodeId, FileId, SymbolId};
 
 // ---------------------------------------------------------------------------
 // TraceEdge — a cross-boundary dataflow connection
@@ -39,6 +37,8 @@ pub struct TraceEdge {
     pub target_id: DataNodeId,
     /// Edge kind — typically `ArgToParam` or `ReturnToCall`.
     pub kind: DataFlowKind,
+    /// The actual call boundary represented by this edge, when applicable.
+    pub callsite_id: Option<CallsiteId>,
     /// Confidence (0.0–1.0).  Virtual edges have lower confidence than
     /// intra-procedural dataflow edges.
     pub confidence: f64,
@@ -65,7 +65,7 @@ pub trait TraceEdgeProvider: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// RuntimeEdgeProvider — bridges using FunctionSummary
+// RuntimeEdgeProvider — joins adjacent recorded boundaries
 // ---------------------------------------------------------------------------
 
 /// Bridges call boundaries and framework state using query-time DB joins.
@@ -75,12 +75,9 @@ pub trait TraceEdgeProvider: Send + Sync {
 /// 1. **ArkTS reactive field** → match its decorator key to AppStorage writes.
 /// 2. **Parameter node** → find callers via `callsites_by_callee`, match
 ///    each caller's call-arg DataNode to this parameter by arg_index.
-/// 3. **CallReturn / Expr nodes with callsite_id** → find the callee
-///    function, look up its summary, connect each ReturnFlow source back
-///    to this call-result node.
-/// 4. **Direct callsite join** — when summary is unavailable, match
-///    caller call-arg DataNodes to callee parameters using the existing
-///    `callsite_id` on DataNodes and the callsite's callee symbol.
+/// 3. **CallReturn nodes with callsite_id** → connect each recorded
+///    callee return node to this call-result node. The slicer follows local
+///    return dependencies without collapsing intermediate callsites.
 pub struct RuntimeEdgeProvider;
 
 impl TraceEdgeProvider for RuntimeEdgeProvider {
@@ -95,195 +92,66 @@ impl TraceEdgeProvider for RuntimeEdgeProvider {
         };
         let mut runtime_edges = arkts_state_incoming(&target_node, store)?;
 
-        // ── Phase 1: try CrossFunctionBridge (persisted summaries) ──
-        let bridge_edges = match target_node.kind {
-            DataNodeKind::Parameter => {
-                crate::cross_function::CrossFunctionBridge::incoming_for_param(target_id, store)
-                    .unwrap_or_default()
-            }
-            DataNodeKind::CallReturn | DataNodeKind::Expr => {
-                crate::cross_function::CrossFunctionBridge::incoming_for_call_result(
-                    target_id, store,
-                )
-                .unwrap_or_default()
-            }
-            _ => vec![],
-        };
-
-        if !bridge_edges.is_empty() {
-            runtime_edges.extend(bridge_edges);
-            return Ok(runtime_edges);
-        }
-
-        // ── Phase 2: runtime BFS join (Focus primary; Full when no summary) ──
-        // Focus never runs summary phase, so this path is the designed cross-
-        // function bridge for query-time materialize — not a legacy shim.
-        let mut edges = runtime_edges;
-
+        // Keep each actual call boundary. Collapsing through summaries or
+        // matching an indirect caller by parameter index loses the entered
+        // callsite and can mix different invocations.
         match target_node.kind {
-            // ── Parameter: find direct + indirect callers ──
             DataNodeKind::Parameter => {
-                let function_id = match &target_node.function_id {
-                    Some(fid) => *fid,
-                    None => return Ok(vec![]),
+                let Some(function_id) = target_node.function_id else {
+                    return Ok(runtime_edges);
                 };
-
-                // Layer 1: direct callers
-                let direct_callers = store.find_resolved_callsites_by_callee(&function_id)?;
-                let param_index =
-                    crate::cross_function::find_param_index(store, &function_id, target_id)?;
-
-                for rc in &direct_callers {
-                    let cs = &rc.callsite;
-                    for (arg_idx, arg) in cs.args.iter().enumerate() {
-                        let arg_dn_id = match &arg.data_node_id {
-                            Some(dn_id) => dn_id,
-                            None => continue,
-                        };
-                        if let Some(param_idx) = param_index
-                            && arg_idx == param_idx
-                        {
-                            edges.push(TraceEdge {
-                                source_id: *arg_dn_id,
-                                target_id: *target_id,
-                                kind: DataFlowKind::ArgToParam,
-                                confidence: 0.67,
-                                provenance: format!(
-                                    "direct caller arg[{}] at callsite {} → callee param[{}]",
-                                    arg_idx,
-                                    hex::encode(cs.id.as_bytes()),
-                                    param_idx,
-                                ),
-                            });
-                        }
+                let Some(index) =
+                    crate::cross_function::find_param_index(store, &function_id, target_id)?
+                else {
+                    return Ok(runtime_edges);
+                };
+                for resolved in store.find_resolved_callsites_by_callee(&function_id)? {
+                    if let Some(source_id) = resolved
+                        .callsite
+                        .args
+                        .get(index)
+                        .and_then(|arg| arg.data_node_id)
+                    {
+                        runtime_edges.push(TraceEdge {
+                            source_id,
+                            target_id: *target_id,
+                            kind: DataFlowKind::ArgToParam,
+                            callsite_id: Some(resolved.callsite.id),
+                            confidence: 0.67,
+                            provenance: "recorded call argument to parameter".into(),
+                        });
                     }
                 }
-
-                // Layer 3: nested call bridge.
-                // For each direct caller arg at this parameter position,
-                // if the arg is a call result (CallReturn/Expr with callsite_id),
-                // bridge from the inner callee's return sources to this param.
-                for rc in &direct_callers {
-                    let cs = &rc.callsite;
-                    if let Some(param_idx) = param_index {
-                        for (arg_idx, arg) in cs.args.iter().enumerate() {
-                            if arg_idx != param_idx {
-                                continue;
-                            }
-                            let arg_dn_id = match &arg.data_node_id {
-                                Some(dn_id) => dn_id,
-                                None => continue,
-                            };
-                            // Check if this argument is a call result
-                            if let Ok(Some(arg_dn)) = store.get_data_node(arg_dn_id)
-                                && (arg_dn.kind == DataNodeKind::CallReturn
-                                    || arg_dn.kind == DataNodeKind::Expr)
-                                && let Some(inner_csid) = arg_dn.callsite_id
-                                && let Ok(inner_rcs) =
-                                    store.find_resolved_callsites_by_id(&inner_csid)
-                                && let Some(inner_rc) = inner_rcs.first()
-                            {
-                                let inner_callee = &inner_rc.callee;
-                                if let Ok(inner_summary) =
-                                    crate::summary::SummaryBuilder::build(store, inner_callee, None)
-                                {
-                                    for rf in &inner_summary.return_flows {
-                                        for src_id in &rf.sources {
-                                            edges.push(TraceEdge {
-                                                                source_id: *src_id,
-                                                                target_id: *target_id,
-                                                                kind: DataFlowKind::ReturnToCall,
-                                                                confidence: 0.55,
-                                                                provenance: format!(
-                                                                    "nested call return {} → outer param (via callsite {})",
-                                                                    hex::encode(rf.return_id.as_bytes()),
-                                                                    hex::encode(inner_csid.as_bytes()),
-                                                                ),
-                                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Layer 2: indirect callers (recursive, up to depth 3)
-                const MAX_INDIRECT_DEPTH: usize = 3;
-                let indirect = find_indirect_callers(store, &function_id, MAX_INDIRECT_DEPTH);
-                for (depth, _caller_sym_id, cs) in &indirect {
-                    // Match args by position using the ORIGINAL callee's
-                    // parameter index, not the indirect caller's param set.
-                    if let Some(p_idx) = param_index {
-                        for (arg_idx, arg) in cs.args.iter().enumerate() {
-                            let arg_dn_id = match &arg.data_node_id {
-                                Some(dn_id) => dn_id,
-                                None => continue,
-                            };
-                            if arg_idx == p_idx {
-                                let depth_penalty = 0.85_f64.powi(*depth as i32);
-                                edges.push(TraceEdge {
-                                    source_id: *arg_dn_id,
+            }
+            DataNodeKind::CallReturn => {
+                // Only the dedicated result node receives callee return
+                // values. Arguments retain the receiving invocation identity.
+                let mut calls = store.find_callsites_by_file(&target_node.file_id)?;
+                calls.retain(|call| {
+                    Some(call.caller) == target_node.function_id
+                        && target_node.callsite_id == Some(call.id)
+                });
+                for call in calls {
+                    let callsite_id = call.id;
+                    for resolved in store.find_resolved_callsites_by_id(&callsite_id)? {
+                        for node in store.find_data_nodes_by_function(&resolved.callee)? {
+                            if node.kind == DataNodeKind::Return {
+                                runtime_edges.push(TraceEdge {
+                                    source_id: node.id,
                                     target_id: *target_id,
-                                    kind: DataFlowKind::ArgToParam,
-                                    confidence: 0.67 * depth_penalty,
-                                    provenance: format!(
-                                        "indirect(depth={depth}) caller arg[{}] at callsite {} → param[{}]",
-                                        arg_idx,
-                                        hex::encode(cs.id.as_bytes()),
-                                        p_idx,
-                                    ),
+                                    kind: DataFlowKind::ReturnToCall,
+                                    callsite_id: Some(callsite_id),
+                                    confidence: 0.67,
+                                    provenance: "recorded callee return to call result".into(),
                                 });
                             }
                         }
                     }
                 }
             }
-
-            // ── CallReturn-like: find the callee and connect its returns ──
-            DataNodeKind::CallReturn | DataNodeKind::Expr => {
-                let callsite_id = match &target_node.callsite_id {
-                    Some(csid) => csid,
-                    None => return Ok(vec![]),
-                };
-
-                // Find the callsite → get the callee symbol
-                let callee_sym_id =
-                    match crate::cross_function::resolve_callsite_to_callee(store, callsite_id)? {
-                        Some(sym) => sym,
-                        None => return Ok(vec![]),
-                    };
-
-                // Try summary-based bridge first.
-                // Pass None for function_range: SummaryBuilder uses all DataNodes
-                // in the file and relies on graph connectivity for scoping.
-                // (function_id is not reliably set on DataNodes, and callers
-                // here don't have source-level function body ranges.)
-                if let Ok(summary) =
-                    crate::summary::SummaryBuilder::build(store, &callee_sym_id, None)
-                {
-                    for rf in &summary.return_flows {
-                        for src_id in &rf.sources {
-                            edges.push(TraceEdge {
-                                source_id: *src_id,
-                                target_id: *target_id,
-                                kind: DataFlowKind::ReturnToCall,
-                                confidence: rf.confidence * 0.85, // cross-boundary penalty
-                                provenance: format!(
-                                    "callee return {} → call site {} (summary bridge)",
-                                    hex::encode(rf.return_id.as_bytes()),
-                                    hex::encode(callsite_id.as_bytes()),
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
-
             _ => {}
         }
-
-        Ok(edges)
+        Ok(runtime_edges)
     }
 }
 
@@ -483,6 +351,7 @@ fn arkts_state_for_field(
                 source_id,
                 target_id,
                 kind: DataFlowKind::StateFlow,
+                callsite_id: None,
                 confidence: if key_is_literal { 0.72 } else { 0.60 },
                 provenance: format!(
                     "ArkTS AppStorage.{setter}({key}) → reactive field {}",
@@ -539,47 +408,6 @@ impl TraceEdge {
             confidence: self.confidence,
         }
     }
-}
-
-/// Recursively find indirect callers of a function through the call graph.
-///
-/// BFS from the given function through all callers.  Returns tuples of
-/// (depth, caller_symbol_id, callsite).  Depth 1 = direct caller, 2 = caller
-/// of caller, etc.  Bounded by `max_depth`.
-fn find_indirect_callers(
-    store: &dyn TraceStore,
-    function_id: &SymbolId,
-    max_depth: usize,
-) -> Vec<(usize, SymbolId, Callsite)> {
-    let mut results = Vec::new();
-    let mut visited: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
-    visited.insert(*function_id);
-
-    // BFS queue: (depth, function_id)
-    let mut queue: std::collections::VecDeque<(usize, SymbolId)> =
-        std::collections::VecDeque::new();
-    queue.push_back((0, *function_id));
-
-    while let Some((depth, current_fid)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let callers = match store.find_resolved_callsites_by_callee(&current_fid) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        for rc in callers {
-            let cs = &rc.callsite;
-            let caller_sym = cs.caller;
-            if visited.contains(&caller_sym) {
-                continue;
-            }
-            visited.insert(caller_sym);
-            results.push((depth + 1, caller_sym, cs.clone()));
-            queue.push_back((depth + 1, caller_sym));
-        }
-    }
-    results
 }
 
 #[cfg(test)]

@@ -14,10 +14,12 @@ pub const ALL_WRITE_INDEXES: &[&str] = &[
     "idx_binding_uses_binding",
     "idx_binding_uses_file",
     "idx_binding_uses_reference",
+    "idx_binding_uses_scope",
     // bindings
     "idx_bindings_file",
     "idx_bindings_function",
     "idx_bindings_symbol",
+    "idx_bindings_scope",
     // callsites
     "idx_callsites_caller",
     "idx_callsites_reference",
@@ -114,10 +116,12 @@ pub const FINAL_QUERY_INDEXES: &[&str] = &[
     "idx_binding_uses_binding",
     "idx_binding_uses_file",
     "idx_binding_uses_reference",
+    "idx_binding_uses_scope",
     // bindings
     "idx_bindings_file",
     "idx_bindings_function",
     "idx_bindings_symbol",
+    "idx_bindings_scope",
     // callsites (idx_callsites_reference is created with RESOLUTION_INDEXES)
     "idx_callsites_caller",
     // fpa

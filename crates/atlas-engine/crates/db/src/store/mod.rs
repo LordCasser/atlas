@@ -39,6 +39,8 @@ mod annotations;
 mod cfg;
 mod closure_coverage;
 mod closure_generations;
+mod cpp_types;
+pub use cpp_types::{CppCallRegions, CppTypeLookupReadWork, CppTypeLookupSelection};
 mod dataflow;
 pub(crate) mod domain_rules;
 mod edges;
@@ -491,6 +493,18 @@ impl Store {
         crate::bulk_schema::execute_batch_ddl(&conn, &sqls)
     }
 
+    /// Restore lookup indexes before replacing files after a bulk load.
+    /// The minimal resolution set cannot support foreign-key cascades without
+    /// repeated full scans. FTS stays deferred until final publication.
+    pub fn create_file_replacement_indexes(&self) -> anyhow::Result<()> {
+        let conn = self.lock();
+        let sqls: Vec<_> = crate::bulk_schema::ALL_WRITE_INDEXES
+            .iter()
+            .map(|idx| self.index_create_sql(idx))
+            .collect();
+        crate::bulk_schema::execute_batch_ddl(&conn, &sqls)
+    }
+
     /// Create summary-only indexes (dataflow/CFG) before SummaryBuild.
     /// Called only for `--analysis full`, after Phase 7, before Phase 9.
     pub fn create_summary_indexes_if_needed(&self) -> anyhow::Result<()> {
@@ -663,6 +677,10 @@ impl Store {
                 "CREATE INDEX IF NOT EXISTS idx_scopes_file ON scopes(file_id)".into(),
             "idx_scopes_parent" =>
                 "CREATE INDEX IF NOT EXISTS idx_scopes_parent ON scopes(parent_id)".into(),
+            "idx_bindings_scope" =>
+                "CREATE INDEX IF NOT EXISTS idx_bindings_scope ON bindings(scope_id)".into(),
+            "idx_binding_uses_scope" =>
+                "CREATE INDEX IF NOT EXISTS idx_binding_uses_scope ON binding_uses(scope_id)".into(),
             // references
             "idx_references_file" =>
                 "CREATE INDEX IF NOT EXISTS idx_references_file ON \"references\"(file_id)".into(),
@@ -828,54 +846,75 @@ impl Store {
         file_id: &FileId,
         facts: &FileFacts,
     ) -> anyhow::Result<()> {
+        self.with_transaction(|tx| Self::replace_file_facts_tx(tx, file_id, facts))
+    }
+
+    /// Replace a bounded batch in one transaction, sharing the single-file
+    /// invalidation logic. On failure the whole batch, including invalidation,
+    /// rolls back. This avoids a WAL commit/checkpoint for every input file.
+    pub fn replace_file_facts_batch_with_invalidation(
+        &self,
+        batch: &[FileFacts],
+    ) -> anyhow::Result<()> {
         self.with_transaction(|tx| {
-            // Any unchanged file that resolved a reference into the replaced
-            // file must leave the canonical-resolution fast path. Its source
-            // hash is unchanged, but its resolution context is not.
-            tx.execute(
-                r#"UPDATE extraction_state SET resolution_fingerprint = NULL
-                   WHERE layer = 'resolution' AND unit_id IS NULL
-                     AND file_id IN (
-                       SELECT DISTINCT r.file_id FROM "references" r
-                       WHERE r.resolved_symbol_id IN (
-                           SELECT symbol_id FROM symbols WHERE file_id = ?1
-                       )
-                     )"#,
-                params![file_id],
-            )?;
-            // Invalidate cross-file references pointing to this file's symbols.
-            tx.execute(
-                r#"UPDATE "references" SET
-                    resolved_symbol_id = NULL,
-                    resolved_confidence = NULL,
-                    resolved_strategy = NULL,
-                    resolved_provenance = NULL
-                   WHERE resolved_symbol_id IN (
-                        SELECT symbol_id FROM symbols WHERE file_id = ?1
-                   )"#,
-                params![file_id],
-            )?;
-            // Delete outgoing edges derived from this file's references.
-            tx.execute(
-                r#"DELETE FROM symbol_edges WHERE ref_id IN (
-                    SELECT reference_id FROM "references" WHERE file_id = ?1
-                )"#,
-                params![file_id],
-            )?;
-            // Delete incoming edges that target symbols belonging to this
-            // file. The target column has no FK, so CASCADE from files→symbols
-            // does not reach these rows.
-            tx.execute(
-                r#"DELETE FROM symbol_edges WHERE target IN (
-                    SELECT symbol_id FROM symbols WHERE file_id = ?1
-                )"#,
-                params![file_id],
-            )?;
-            // Atomically delete old facts and insert new ones.
-            tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
-            write_file_facts(tx, facts)?;
+            for facts in batch {
+                Self::replace_file_facts_tx(tx, &facts.file.file_id, facts)?;
+            }
             Ok(())
         })
+    }
+
+    fn replace_file_facts_tx(
+        tx: &Transaction<'_>,
+        file_id: &FileId,
+        facts: &FileFacts,
+    ) -> anyhow::Result<()> {
+        // Any unchanged file that resolved a reference into the replaced
+        // file must leave the canonical-resolution fast path. Its source
+        // hash is unchanged, but its resolution context is not.
+        tx.execute(
+            r#"UPDATE extraction_state SET resolution_fingerprint = NULL
+               WHERE layer = 'resolution' AND unit_id IS NULL
+                 AND file_id IN (
+                   SELECT DISTINCT r.file_id FROM "references" r
+                   WHERE r.resolved_symbol_id IN (
+                       SELECT symbol_id FROM symbols WHERE file_id = ?1
+                   )
+                 )"#,
+            params![file_id],
+        )?;
+        // Invalidate cross-file references pointing to this file's symbols.
+        tx.execute(
+            r#"UPDATE "references" SET
+                resolved_symbol_id = NULL,
+                resolved_confidence = NULL,
+                resolved_strategy = NULL,
+                resolved_provenance = NULL, failure_json = NULL
+               WHERE resolved_symbol_id IN (
+                    SELECT symbol_id FROM symbols WHERE file_id = ?1
+               )"#,
+            params![file_id],
+        )?;
+        // Delete outgoing edges derived from this file's references.
+        tx.execute(
+            r#"DELETE FROM symbol_edges WHERE ref_id IN (
+                SELECT reference_id FROM "references" WHERE file_id = ?1
+            )"#,
+            params![file_id],
+        )?;
+        // Delete incoming edges that target symbols belonging to this
+        // file. The target column has no FK, so CASCADE from files→symbols
+        // does not reach these rows.
+        tx.execute(
+            r#"DELETE FROM symbol_edges WHERE target IN (
+                SELECT symbol_id FROM symbols WHERE file_id = ?1
+            )"#,
+            params![file_id],
+        )?;
+        // Atomically delete old facts and insert new ones.
+        tx.execute("DELETE FROM files WHERE file_id = ?1", params![file_id])?;
+        write_file_facts(tx, facts)?;
+        Ok(())
     }
 
     /// Upsert symbols, scopes, and imports from a ResolutionSymbols extraction.
@@ -1287,6 +1326,129 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         store
+    }
+
+    #[test]
+    fn file_diagnostics_follow_current_facts_and_are_removed_on_replace_or_delete() {
+        let store = test_store();
+        let mut facts = FileFacts {
+            file: test_file(),
+            diagnostics: vec![ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: "missing token".into(),
+                range: Some(TextRange {
+                    start_byte: 12,
+                    end_byte: 12,
+                    ..Default::default()
+                }),
+            }],
+            ..Default::default()
+        };
+        store.insert_file_facts(&facts).unwrap();
+        assert_eq!(
+            store.file_diagnostics(&facts.file.file_id).unwrap(),
+            facts.diagnostics
+        );
+        store
+            .lock()
+            .execute(
+                "UPDATE files SET content_hash = 'different' WHERE file_id = ?1",
+                params![facts.file.file_id],
+            )
+            .unwrap();
+        assert!(
+            store
+                .file_diagnostics(&facts.file.file_id)
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .replace_file_facts(&facts.file.file_id, &facts)
+            .unwrap();
+        assert_eq!(
+            store.file_diagnostics(&facts.file.file_id).unwrap(),
+            facts.diagnostics
+        );
+        facts.diagnostics.clear();
+        store
+            .replace_file_facts(&facts.file.file_id, &facts)
+            .unwrap();
+        assert!(
+            store
+                .file_diagnostics(&facts.file.file_id)
+                .unwrap()
+                .is_empty()
+        );
+        facts.diagnostics.push(ExtractDiagnostic {
+            level: DiagnosticLevel::Warning,
+            message: "file warning".into(),
+            range: None,
+        });
+        store.insert_file_facts_batch(&[facts.clone()]).unwrap();
+        assert_eq!(
+            store.file_diagnostics(&facts.file.file_id).unwrap(),
+            facts.diagnostics
+        );
+        store.delete_file_data(&facts.file.file_id).unwrap();
+        let count: i64 = store
+            .lock_read()
+            .query_row("SELECT COUNT(*) FROM file_diagnostics", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn replacement_batch_rolls_back_prior_files_when_a_later_file_is_invalid() {
+        let store = test_store();
+        let file = test_file();
+        let original = test_symbol(file.file_id, "original", SymbolKind::Function);
+        store
+            .insert_file_facts(&FileFacts {
+                file: file.clone(),
+                symbols: vec![original.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+        let replacement = test_symbol(file.file_id, "replacement", SymbolKind::Function);
+        let mut first = FileFacts {
+            file: file.clone(),
+            symbols: vec![replacement.clone()],
+            ..Default::default()
+        };
+        first.file.content_hash = "changed".into();
+        let mut second = FileFacts {
+            file: FileInfo {
+                file_id: FileId::generate("second.ts"),
+                path: "second.ts".into(),
+                ..file.clone()
+            },
+            symbols: vec![test_symbol(
+                FileId::generate("missing.ts"),
+                "invalid",
+                SymbolKind::Function,
+            )],
+            ..Default::default()
+        };
+        assert!(
+            store
+                .replace_file_facts_batch_with_invalidation(&[first.clone(), second.clone()])
+                .is_err()
+        );
+        assert_eq!(
+            store.get_file(&file.file_id).unwrap().unwrap().content_hash,
+            file.content_hash
+        );
+        assert!(store.find_symbol_by_id(&original.id).unwrap().is_some());
+        assert!(store.find_symbol_by_id(&replacement.id).unwrap().is_none());
+        assert!(store.get_file(&second.file.file_id).unwrap().is_none());
+        second.symbols.clear();
+        store
+            .replace_file_facts_batch_with_invalidation(&[first, second])
+            .unwrap();
+        assert!(store.find_symbol_by_id(&original.id).unwrap().is_none());
+        assert!(store.find_symbol_by_id(&replacement.id).unwrap().is_some());
     }
 
     fn test_file() -> FileInfo {
@@ -2966,6 +3128,14 @@ mod tests {
             )
             .unwrap();
 
+        // A complete Full record also needs the producer's computation version.
+        store
+            .lock()
+            .execute(
+                "UPDATE extraction_state SET dataflow_version = ?1 WHERE layer = 'dataflow'",
+                rusqlite::params![types::lazy::DATAFLOW_ANALYZER_VERSION],
+            )
+            .unwrap();
         assert_eq!(store.read_catalog_tier().unwrap(), "full");
     }
 
@@ -3030,6 +3200,8 @@ mod tests {
                     budget_exceeded: false,
                     capability_mask: FactCoverage::from_bits(bit),
                     built_at: String::new(),
+                    dataflow_version: Some(types::lazy::DATAFLOW_ANALYZER_VERSION),
+                    diagnostics: vec![],
                 })
                 .unwrap();
         }
@@ -3046,6 +3218,92 @@ mod tests {
     }
 
     #[test]
+    fn dataflow_freshness_is_shared_by_index_reuse_capabilities_and_catalog() {
+        use types::lazy::DATAFLOW_ANALYZER_VERSION;
+        for version in [None, Some(0), Some(DATAFLOW_ANALYZER_VERSION)] {
+            let store = test_store();
+            let facts = FileFacts {
+                file: test_file(),
+                layer: "dataflow".into(),
+                dataflow_version: version,
+                ..Default::default()
+            };
+            store.insert_file_facts(&facts).unwrap();
+            let current = version == Some(DATAFLOW_ANALYZER_VERSION);
+            for scope in ["", facts.file.path.as_str()] {
+                assert_eq!(
+                    store
+                        .scope_has_fresh_complete_fact(
+                            scope,
+                            FactCoverage::from_bits(FactCoverage::DATAFLOW),
+                        )
+                        .unwrap(),
+                    current,
+                    "scope reuse: {scope:?}, {version:?}",
+                );
+                assert!(
+                    store
+                        .scope_has_fresh_complete_fact(
+                            scope,
+                            FactCoverage::from_bits(FactCoverage::STRUCTURAL),
+                        )
+                        .unwrap()
+                );
+            }
+            assert_eq!(
+                store
+                    .file_has_fresh_complete_capability(
+                        &facts.file.file_id,
+                        &facts.file.content_hash,
+                        FactCoverage::from_bits(FactCoverage::DATAFLOW)
+                    )
+                    .unwrap(),
+                current,
+                "index reuse: {version:?}"
+            );
+            let file_mask = store.get_capability_mask(&facts.file.file_id).unwrap();
+            let derived = store.derive_capability_for_files(&[facts.file.file_id]);
+            for mask in [file_mask, derived] {
+                assert!(
+                    mask.has(FactCoverage::STRUCTURAL),
+                    "structural facts remain available"
+                );
+                assert_eq!(mask.has(FactCoverage::DATAFLOW), current);
+            }
+            assert_eq!(
+                store.get_capability_counts().unwrap().0,
+                usize::from(current)
+            );
+            assert_eq!(store.read_catalog_tier().unwrap() == "full", current);
+            let unit_id = [7u8; 16];
+            store
+                .upsert_unit_extraction_state(&UnitExtractionStateRecord {
+                    file_id: facts.file.file_id,
+                    unit_id,
+                    layer: "dataflow".into(),
+                    content_hash: facts.file.content_hash,
+                    status: "complete".into(),
+                    node_count: Some(0),
+                    edge_count: Some(0),
+                    budget_exceeded: false,
+                    capability_mask: FactCoverage::from_bits(
+                        FactCoverage::STRUCTURAL | FactCoverage::DATAFLOW | FactCoverage::CFG,
+                    ),
+                    built_at: String::new(),
+                    dataflow_version: version,
+                    diagnostics: vec![],
+                })
+                .unwrap();
+            let unit_mask = store
+                .get_capability_mask_for_unit(&facts.file.file_id, &unit_id)
+                .unwrap();
+            assert!(unit_mask.has(FactCoverage::STRUCTURAL));
+            assert_eq!(unit_mask.has(FactCoverage::DATAFLOW), current);
+            assert_eq!(unit_mask.has(FactCoverage::CFG), current);
+        }
+    }
+
+    #[test]
     fn file_capability_mask_excludes_stale_layers() {
         let store = test_store();
         let mut file = test_file();
@@ -3057,6 +3315,13 @@ mod tests {
                 &file.content_hash,
                 "complete",
                 FactCoverage::from_bits(FactCoverage::DATAFLOW),
+            )
+            .unwrap();
+        store
+            .lock()
+            .execute(
+                "UPDATE extraction_state SET dataflow_version = ?1 WHERE layer = 'dataflow'",
+                rusqlite::params![types::lazy::DATAFLOW_ANALYZER_VERSION],
             )
             .unwrap();
         assert!(
@@ -3308,6 +3573,13 @@ mod tests {
             .unwrap();
 
         // Simulate summaries extraction
+        store
+            .lock()
+            .execute(
+                "UPDATE extraction_state SET dataflow_version = ?1 WHERE layer = 'dataflow'",
+                rusqlite::params![types::lazy::DATAFLOW_ANALYZER_VERSION],
+            )
+            .unwrap();
         store
             .upsert_file_extraction_state(
                 &file_id,
@@ -3572,6 +3844,44 @@ mod tests {
                     "final index {name} should NOT exist yet"
                 );
             }
+        }
+
+        #[test]
+        fn file_replacement_avoids_full_scans_for_foreign_key_cleanup_after_bulk_load() {
+            let store = test_store();
+            store.drop_writable_indexes(&mut false).unwrap();
+            store.create_resolution_indexes().unwrap();
+            let plans = || {
+                let conn = store.lock();
+                let mut plans = Vec::new();
+                for (table, key) in [
+                    ("files", "file_id"),
+                    ("scopes", "scope_id"),
+                    ("symbols", "symbol_id"),
+                    ("bindings", "binding_id"),
+                    ("\"references\"", "reference_id"),
+                ] {
+                    let mut statement = conn
+                        .prepare(&format!(
+                            "EXPLAIN QUERY PLAN DELETE FROM {table} WHERE {key} = ?1"
+                        ))
+                        .unwrap();
+                    plans.extend(
+                        statement
+                            .query_map([vec![0u8; 32]], |row| row.get::<_, String>(3))
+                            .unwrap()
+                            .map(Result::unwrap),
+                    );
+                }
+                plans
+            };
+            assert!(plans().iter().any(|line| line.starts_with("SCAN ")));
+            store.create_file_replacement_indexes().unwrap();
+            let prepared = plans();
+            assert!(
+                prepared.iter().all(|line| !line.starts_with("SCAN ")),
+                "foreign-key cleanup must use indexed lookups: {prepared:#?}"
+            );
         }
 
         #[test]

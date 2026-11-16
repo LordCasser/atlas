@@ -35,6 +35,44 @@ impl Locator {
         line: u32,
         column: u32,
     ) -> anyhow::Result<TracePoint> {
+        let nodes = store.find_data_nodes_by_file(file_id)?;
+        let data_node = find_best_data_node_at_position(
+            &nodes,
+            line.saturating_sub(1),
+            column.saturating_sub(1),
+        )
+        .cloned();
+        Self::locate_with_node(store, file_id, line, column, data_node)
+    }
+
+    /// Resolve a recorded node without choosing another kind at its position.
+    /// Returns None if the identity is absent from this store. Positional
+    /// reference/scope context remains contextual; data_node and incident
+    /// edges are taken from this exact recorded identity.
+    pub fn locate_node(
+        store: &(impl DataflowReader + CallGraphReader + SymbolReader),
+        node_id: &DataNodeId,
+    ) -> anyhow::Result<Option<TracePoint>> {
+        let Some(node) = store.get_data_node(node_id)? else {
+            return Ok(None);
+        };
+        Self::locate_with_node(
+            store,
+            &node.file_id,
+            node.range.start_line.saturating_add(1),
+            node.range.start_column.saturating_add(1),
+            Some(node.clone()),
+        )
+        .map(Some)
+    }
+
+    fn locate_with_node(
+        store: &(impl DataflowReader + CallGraphReader + SymbolReader),
+        file_id: &FileId,
+        line: u32,
+        column: u32,
+        data_node: Option<DataNode>,
+    ) -> anyhow::Result<TracePoint> {
         // Convert 1-based editor coordinates to 0-based internal representation.
         // tree-sitter produces 0-based line/column, and TextRange stores those
         // directly.  CLI and MCP accept 1-based input (editor convention).
@@ -61,19 +99,10 @@ impl Locator {
         let scopes = store.find_scopes_by_file(file_id)?;
         let scope = find_innermost_at_position(&scopes, |s| &s.range, line0, col0).cloned();
 
-        // 4. Find the data node at this position using semantic priority
-        //    (prefer CallArg over VariableUse, etc.) then smallest byte range.
-        let data_nodes = store.find_data_nodes_by_file(file_id)?;
-        let data_node = find_best_data_node_at_position(&data_nodes, line0, col0).cloned();
-
-        // 5. Collect incoming and outgoing dataflow edges
+        // Collect edges from the selected identity, not a second positional lookup.
         let (incoming, outgoing) = if let Some(ref dn) = data_node {
-            let inc_edges = store
-                .find_dataflow_edges_by_target(&dn.id)
-                .unwrap_or_default();
-            let out_edges = store
-                .find_dataflow_edges_by_source(&dn.id)
-                .unwrap_or_default();
+            let inc_edges = store.find_dataflow_edges_by_target(&dn.id)?;
+            let out_edges = store.find_dataflow_edges_by_source(&dn.id)?;
             let incoming = resolve_data_node_refs(store, &inc_edges, |e| &e.source)?;
             let outgoing = resolve_data_node_refs(store, &out_edges, |e| &e.target)?;
             (incoming, outgoing)
@@ -88,6 +117,7 @@ impl Locator {
         let (binding, binding_use) = find_binding_at_position(store, file_id, line0, col0)?;
 
         Ok(TracePoint {
+            call_context: vec![],
             reference: reference.cloned(),
             resolved_symbol,
             data_node,

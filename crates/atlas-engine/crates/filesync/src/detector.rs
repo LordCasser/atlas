@@ -22,6 +22,14 @@ fn compute_blake3_hex(path: &Path) -> anyhow::Result<String> {
 /// whole-project indexes. A present but malformed value is an authority error:
 /// silently widening it to the whole project would violate the recorded scope.
 fn sync_discovery_config(store: &db::Store) -> Result<DiscoveryConfig> {
+    let mut config = DiscoveryConfig {
+        file_languages: store
+            .get_metadata(crate::index_pipeline::KEY_FILE_LANGUAGES)?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default(),
+        ..Default::default()
+    };
     let Some(raw_scope) = store
         .get_metadata("indexed_scope")
         .context("Failed to read indexed_scope metadata")?
@@ -30,7 +38,7 @@ fn sync_discovery_config(store: &db::Store) -> Result<DiscoveryConfig> {
             target: "atlas_sync",
             "indexed_scope metadata is missing; treating the database as a legacy whole-project index"
         );
-        return Ok(DiscoveryConfig::default());
+        return Ok(config);
     };
 
     let scope: serde_json::Value = serde_json::from_str(&raw_scope)
@@ -56,10 +64,9 @@ fn sync_discovery_config(store: &db::Store) -> Result<DiscoveryConfig> {
             .collect()
     };
 
-    Ok(DiscoveryConfig {
-        include_patterns: parse_patterns("include")?,
-        exclude_patterns: parse_patterns("exclude")?,
-    })
+    config.include_patterns = parse_patterns("include")?;
+    config.exclude_patterns = parse_patterns("exclude")?;
+    Ok(config)
 }
 
 /// All changes detected in the project since last index.
@@ -361,14 +368,14 @@ mod tests {
     }
 
     #[test]
-    fn mode_aware_detection_reindexes_hash_clean_files_missing_capability() {
+    fn mode_aware_detection_reindexes_scoped_language_overrides_missing_capability() {
         use types::{FactCoverage, FileId, FileInfo, Language, ParseStatus};
 
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::create_dir_all(dir.path().join("other")).unwrap();
-        let path = dir.path().join("src/main.ts");
-        let outside = dir.path().join("other/dep.ts");
+        let path = dir.path().join("src/main");
+        let outside = dir.path().join("other/dep");
         let source = b"export const value = 1;\n";
         fs::write(&path, source).unwrap();
         fs::write(&outside, "export const outside = 2;\n").unwrap();
@@ -377,11 +384,18 @@ mod tests {
         let store = db::Store::open_in_memory().unwrap();
         store.init_schema().unwrap();
         set_scope(&store, &["src/**"], &[]);
-        let file_id = FileId::generate("src/main.ts");
+        store
+            .set_metadata(
+                crate::index_pipeline::KEY_FILE_LANGUAGES,
+                &serde_json::json!({"src/main": Language::TypeScript, "other/dep": Language::TypeScript})
+                    .to_string(),
+            )
+            .unwrap();
+        let file_id = FileId::generate("src/main");
         store
             .upsert_file(&FileInfo {
                 file_id,
-                path: "src/main.ts".into(),
+                path: "src/main".into(),
                 language: Language::TypeScript,
                 content_hash: content_hash.clone(),
                 status: ParseStatus::Success,

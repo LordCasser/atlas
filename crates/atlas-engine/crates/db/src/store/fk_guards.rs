@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use types::bindings::{BindingDef, BindingUse};
 use types::cfg::{CfgEdge, CfgNode};
 use types::dataflow::{DataFlowEdge, DataNode};
-use types::ids::{BindingId, CfgNodeId, DataNodeId, ScopeId, SymbolId};
+use types::ids::{BindingId, CfgNodeId, DataNodeId, FileId, ScopeId, SymbolId};
 
 // ── DB-resident validation (for lazy build path) ─────────────────────────
 
@@ -53,12 +53,17 @@ pub(crate) fn query_existing_function_ids(
     Ok(existing.into_iter().collect())
 }
 
-/// Query the DB for existing scope IDs referenced by bindings.
+/// Query the DB for existing declaration and use scopes.
 pub(crate) fn query_existing_scope_ids(
     conn: &Connection,
     bindings: &[BindingDef],
+    uses: &[BindingUse],
 ) -> anyhow::Result<HashSet<ScopeId>> {
-    let ids: HashSet<ScopeId> = bindings.iter().map(|b| b.scope_id).collect();
+    let ids: HashSet<ScopeId> = bindings
+        .iter()
+        .map(|b| b.scope_id)
+        .chain(uses.iter().map(|u| u.scope_id))
+        .collect();
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
@@ -245,10 +250,13 @@ pub(crate) struct ValidatedDataflowPayload {
 /// Validate a full dataflow payload against DB-resident entities.
 ///
 /// Used by `replace_dataflow_for_unit` (lazy build path).  Queries the
-/// `symbols` and `scopes` tables to verify FK references, then filters
-/// each entity type.  Returns only rows whose FK references are satisfied.
+/// `symbols`, `scopes` and same-file `bindings` tables to verify FK references.
+/// Existing declarations are reused rather than replaced; the returned
+/// bindings are only the valid declarations that still need inserting.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_dataflow_payload_db(
     conn: &Connection,
+    file_id: &FileId,
     data_nodes: &[DataNode],
     dataflow_edges: &[DataFlowEdge],
     bindings: &[BindingDef],
@@ -257,15 +265,30 @@ pub(crate) fn validate_dataflow_payload_db(
     cfg_edges: &[CfgEdge],
 ) -> anyhow::Result<ValidatedDataflowPayload> {
     let valid_function_ids = query_existing_function_ids(conn, bindings, data_nodes)?;
-    let valid_scope_ids = query_existing_scope_ids(conn, bindings)?;
+    let valid_scope_ids = query_existing_scope_ids(conn, bindings, binding_uses)?;
 
-    let safe_bindings = filter_bindings(bindings, &valid_function_ids, &valid_scope_ids);
+    // Structural indexing owns declaration identity. A lazy unit may refer to
+    // an enclosing or file-scope declaration without republishing its row.
+    let mut stmt = conn.prepare("SELECT binding_id FROM bindings WHERE file_id = ?1")?;
+    let existing_bindings: HashSet<BindingId> = stmt
+        .query_map([file_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut safe_bindings = filter_bindings(bindings, &valid_function_ids, &valid_scope_ids);
+    safe_bindings.retain(|b| b.file_id == *file_id && !existing_bindings.contains(&b.id));
 
-    let valid_binding_ids: HashSet<BindingId> = safe_bindings.iter().map(|b| b.id).collect();
+    let mut valid_binding_ids = existing_bindings;
+    valid_binding_ids.extend(safe_bindings.iter().map(|b| b.id));
 
-    let safe_binding_uses = filter_binding_uses(binding_uses, &valid_binding_ids);
+    let safe_binding_uses = filter_binding_uses(binding_uses, &valid_binding_ids)
+        .into_iter()
+        .filter(|u| u.file_id == *file_id && valid_scope_ids.contains(&u.scope_id))
+        .collect();
 
-    let safe_data_nodes = filter_data_nodes(data_nodes, &valid_function_ids, &valid_binding_ids);
+    let safe_data_nodes: Vec<_> =
+        filter_data_nodes(data_nodes, &valid_function_ids, &valid_binding_ids)
+            .into_iter()
+            .filter(|n| n.file_id == *file_id)
+            .collect();
     let valid_data_node_ids: HashSet<DataNodeId> = safe_data_nodes.iter().map(|n| n.id).collect();
 
     let safe_dataflow_edges = filter_dataflow_edges(dataflow_edges, &valid_data_node_ids);

@@ -16,8 +16,8 @@ use db::{ClaimResult, Store};
 use extraction::{ExtractionMode, LanguageFrontend, create_frontend};
 use types::capability::LanguageCapabilityProfile;
 use types::enums::Language;
-use types::ids::{BindingId, CallsiteId, CfgNodeId, DataNodeId, FileId};
-use types::lazy::{AnalysisUnit, LazyWindow};
+use types::ids::{CfgNodeId, DataNodeId, FileId};
+use types::lazy::{AnalysisUnit, DATAFLOW_ANALYZER_VERSION, LazyWindow};
 use types::structs::FactCoverage;
 
 use crate::constants::{LAYER_DATAFLOW, LAZY_DATAFLOW_BUDGET_MS, STATUS_COMPLETE, STATUS_PARTIAL};
@@ -95,6 +95,8 @@ struct DataflowPayload {
     cfg_edges: Vec<types::CfgEdge>,
     budget_exceeded: bool,
     has_cfg: bool,
+    diagnostics: Vec<types::ExtractDiagnostic>,
+    incomplete: bool,
 }
 
 impl DataflowPayload {
@@ -108,6 +110,8 @@ impl DataflowPayload {
             cfg_edges: vec![],
             budget_exceeded: false,
             has_cfg: false,
+            diagnostics: vec![],
+            incomplete: false,
         }
     }
 }
@@ -121,6 +125,7 @@ pub(crate) struct EnsureResult {
     pub pending_job_ids: Vec<String>,
     pub budget_exceeded: bool,
     pub has_cfg: bool,
+    pub incomplete: bool,
 }
 
 /// Thread-safe, process-lifetime cache for LanguageFrontend instances.
@@ -225,32 +230,7 @@ impl LazyDataflowLoader {
                     }
                 };
             result.budget_exceeded |= payload.budget_exceeded;
-
-            // ── Callsite ID remap ───────────────────────────────────────
-            // LazyDataflow skips callsite extraction (mode.rs:86-89), so
-            // DataNodes keep provisional byte-based callsite_ids set during
-            // dataflow extraction.  Query the DB's structural callsites
-            // (already written during the structural index phase) and build
-            // a provisional→real map.
-            let cs_id_map: std::collections::HashMap<CallsiteId, CallsiteId> =
-                match store.find_callsites_by_file(&units[0].file_id) {
-                    Ok(callsites) => callsites,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to find callsites for lazy remap (file {:?}): {e:#}",
-                            units[0].file_id
-                        );
-                        Vec::new()
-                    }
-                }
-                .iter()
-                .map(|cs| {
-                    (
-                        CallsiteId::from_file_byte(&units[0].file_id, cs.range.start_byte),
-                        cs.id,
-                    )
-                })
-                .collect();
+            result.incomplete |= payload.incomplete;
 
             // Step 4: Partition and write per uncached unit
             let file_info = store.get_file(&units[0].file_id)?.ok_or_else(|| {
@@ -271,19 +251,7 @@ impl LazyDataflowLoader {
                 // claimed unit here would leave a permanent `building` row and
                 // make resume_query unable to converge.
 
-                let mut unit_payload = partition_payload_for_unit(&payload, unit);
-
-                // Remap provisional byte-based callsite_ids to real
-                // CallsiteIds so that downstream backfill and query
-                // joins (update_callsite_arg_data_nodes,
-                // find_data_nodes_by_callsite) operate on real IDs.
-                for dn in &mut unit_payload.data_nodes {
-                    if let Some(ref provisional) = dn.callsite_id
-                        && let Some(real) = cs_id_map.get(provisional)
-                    {
-                        dn.callsite_id = Some(*real);
-                    }
-                }
+                let unit_payload = partition_payload_for_unit(&payload, unit);
 
                 let write_result = (|| -> Result<()> {
                     store.replace_dataflow_for_unit(
@@ -298,7 +266,7 @@ impl LazyDataflowLoader {
 
                     store.update_callsite_arg_data_nodes(unit, &unit_payload.data_nodes)?;
 
-                    let status = if payload.budget_exceeded {
+                    let status = if payload.budget_exceeded || payload.incomplete {
                         STATUS_PARTIAL
                     } else {
                         STATUS_COMPLETE
@@ -324,6 +292,8 @@ impl LazyDataflowLoader {
                         budget_exceeded: payload.budget_exceeded,
                         capability_mask,
                         built_at: String::new(),
+                        dataflow_version: Some(DATAFLOW_ANALYZER_VERSION),
+                        diagnostics: unit_payload.diagnostics,
                     })?;
                     Ok(())
                 })();
@@ -343,7 +313,7 @@ impl LazyDataflowLoader {
 }
 
 /// Check whether a unit's dataflow state is already cached (including
-/// pre-built data from a full index).  Does NOT build or write anything.
+/// pre-built data from a full index). Full adoption records a unit cache entry.
 ///
 /// Returns `(cached, payload)` where `cached` is true if the unit state
 /// was already up-to-date.
@@ -357,6 +327,7 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             .map(|f| f.content_hash)
             .unwrap_or_default();
         if unit_state.content_hash == current_hash
+            && unit_state.dataflow_version == Some(DATAFLOW_ANALYZER_VERSION)
             && unit_state.status == STATUS_COMPLETE
             && !unit_state.budget_exceeded
         {
@@ -365,12 +336,15 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
             payload.has_cfg = unit_state.capability_mask.has(FactCoverage::CFG);
             return Ok((true, payload));
         }
+        // A stale/partial unit is not evidence of a completed Full build.
+        // Never re-adopt its old nodes via the file fallback below.
+        return Ok((false, DataflowPayload::empty()));
     }
 
     // 1.5. Check for pre-built dataflow from a full index
     {
-        let prebuilt = store.count_data_nodes_for_unit(unit).unwrap_or(0);
-        if prebuilt > 0 {
+        if store.file_dataflow_is_current(&unit.file_id)? {
+            let prebuilt = store.count_data_nodes_for_unit(unit)?;
             let file = store.get_file(&unit.file_id)?.ok_or_else(|| {
                 anyhow::anyhow!("file not found for prebuilt check: {:?}", unit.file_id)
             })?;
@@ -405,6 +379,8 @@ fn check_cache(store: &Store, unit: &AnalysisUnit) -> Result<(bool, DataflowPayl
                 budget_exceeded: false,
                 capability_mask,
                 built_at: String::new(),
+                dataflow_version: Some(DATAFLOW_ANALYZER_VERSION),
+                diagnostics: vec![], // Full diagnostics are already persisted at file scope.
             })?;
             let mut payload = DataflowPayload::empty();
             payload.has_cfg = unit_has_cfg;
@@ -465,10 +441,18 @@ fn build_dataflow_for_file(
         &source,
         &content_hash,
         ExtractionMode::LazyDataflow {
+            include_parameter_outputs: true,
             window: window.clone(),
+            callsites: store.find_callsites_by_file(&file_id)?,
         },
         &(),
     )?;
+
+    anyhow::ensure!(
+        facts.dataflow_version == Some(DATAFLOW_ANALYZER_VERSION),
+        "dataflow computation is unsupported for {}",
+        file_info.path
+    );
 
     Ok(DataflowPayload {
         data_nodes: facts.data_nodes,
@@ -479,6 +463,8 @@ fn build_dataflow_for_file(
         cfg_edges: facts.cfg_edges,
         budget_exceeded: facts.budget_exceeded,
         has_cfg: false,
+        diagnostics: facts.diagnostics,
+        incomplete: facts.dataflow_failed || facts.lexical_failed || facts.cfg_failed,
     })
 }
 
@@ -488,6 +474,8 @@ fn build_dataflow_for_file(
 /// For function-scoped units, matches `function_id == unit.symbol_id`.
 /// For top-level (file-scoped) units, matches `function_id IS NULL`.
 /// Edges are included when either endpoint belongs to this unit's nodes.
+/// Lexical uses retain their own scope and are included by source range,
+/// independently of the declaration's owning function.
 fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) -> DataflowPayload {
     // Partition data nodes by function_id
     let data_nodes: Vec<types::DataNode> = payload
@@ -505,7 +493,6 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
         .filter(|b| b.function_id == unit.symbol_id)
         .cloned()
         .collect();
-    let binding_ids: HashSet<BindingId> = bindings.iter().map(|b| b.id).collect();
 
     // Partition cfg_nodes by function_id (CfgNode always has function_id,
     // so top-level units will always get an empty set)
@@ -526,11 +513,16 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
         .cloned()
         .collect();
 
-    // Partition binding_uses: include uses that reference this unit's bindings
+    // Uses are observations within the source window, not declarations owned
+    // by this function. Captured and file-scope bindings remain valid inputs.
     let binding_uses: Vec<types::BindingUse> = payload
         .binding_uses
         .iter()
-        .filter(|bu| bu.binding_id.is_some_and(|bid| binding_ids.contains(&bid)))
+        .filter(|bu| {
+            bu.file_id == unit.file_id
+                && bu.range.start_byte >= unit.range.start_byte
+                && bu.range.end_byte <= unit.range.end_byte
+        })
         .cloned()
         .collect();
 
@@ -552,6 +544,21 @@ fn partition_payload_for_unit(payload: &DataflowPayload, unit: &AnalysisUnit) ->
         cfg_edges,
         budget_exceeded: payload.budget_exceeded,
         has_cfg: false,
+        // Keep global limits and intersecting ranges. A nested function can
+        // share context, but unrelated functions must not inherit this unit's
+        // semantic diagnostics. The trace additionally checks its visited node.
+        diagnostics: payload
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.range.is_none_or(|range| {
+                    range.start_byte <= unit.range.end_byte
+                        && unit.range.start_byte <= range.end_byte
+                })
+            })
+            .cloned()
+            .collect(),
+        incomplete: payload.incomplete,
     }
 }
 
@@ -936,5 +943,86 @@ mod tests {
         let mask = unit_dataflow_capability_mask(&store, &unit, true, true);
         assert!(mask.has(FactCoverage::CFG));
         assert!(!mask.has(FactCoverage::CALL_EDGES));
+    }
+
+    fn seed_prebuilt(store: &Store) -> AnalysisUnit {
+        let (file, symbol) = seed_file(store, "cached.ts", "current");
+        let unit = unit_for(file, symbol);
+        store
+            .insert_data_nodes(&[types::DataNode::local(
+                types::DataNodeId::generate(&file, Some(&symbol), "local", Some("old"), None, 1),
+                file,
+                Some(symbol),
+                None,
+                "old",
+                unit.range,
+            )])
+            .unwrap();
+        unit
+    }
+
+    #[test]
+    fn existing_nodes_do_not_establish_a_completed_full_extraction() {
+        let store = test_store();
+        let unit = seed_prebuilt(&store);
+        assert!(!check_cache(&store, &unit).unwrap().0);
+        assert!(
+            store
+                .get_unit_extraction_state(&unit.file_id, &unit.unit_id, LAYER_DATAFLOW)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn invalid_unit_state_cannot_be_relabelled_complete_from_existing_nodes() {
+        for (status, hash, budget_exceeded, version) in [
+            (
+                STATUS_PARTIAL,
+                "current",
+                true,
+                Some(DATAFLOW_ANALYZER_VERSION),
+            ),
+            ("failed", "current", false, Some(DATAFLOW_ANALYZER_VERSION)),
+            (
+                STATUS_COMPLETE,
+                "stale",
+                false,
+                Some(DATAFLOW_ANALYZER_VERSION),
+            ),
+            (STATUS_COMPLETE, "current", false, None),
+            (STATUS_COMPLETE, "current", false, Some(0)),
+        ] {
+            let store = test_store();
+            let unit = seed_prebuilt(&store);
+            store
+                .upsert_unit_extraction_state(&UnitExtractionStateRecord {
+                    file_id: unit.file_id,
+                    unit_id: unit.unit_id,
+                    layer: LAYER_DATAFLOW.into(),
+                    content_hash: hash.into(),
+                    status: status.into(),
+                    node_count: Some(1),
+                    edge_count: Some(0),
+                    budget_exceeded,
+                    capability_mask: FactCoverage::from_layers(&[LAYER_DATAFLOW]),
+                    built_at: String::new(),
+                    dataflow_version: version,
+                    diagnostics: vec![],
+                })
+                .unwrap();
+            assert!(
+                !check_cache(&store, &unit).unwrap().0,
+                "{status}/{hash}/{budget_exceeded}"
+            );
+            let state = store
+                .get_unit_extraction_state(&unit.file_id, &unit.unit_id, LAYER_DATAFLOW)
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.status, status);
+            assert_eq!(state.content_hash, hash);
+            assert_eq!(state.budget_exceeded, budget_exceeded);
+            assert_eq!(state.dataflow_version, version);
+        }
     }
 }

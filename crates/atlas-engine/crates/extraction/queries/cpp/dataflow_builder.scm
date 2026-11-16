@@ -2,8 +2,9 @@
 ;; call targets, call args, field access
 
 ;; --- Function parameters ---
-(parameter_declaration
-  declarator: (identifier) @df.parameter)
+;; Share declaration binding semantics with lexical extraction. The normalizer
+;; follows declarators and accepts only the owning function's parameter list.
+(identifier) @df.parameter
 
 ;; --- Assignments: target = value ---
 (assignment_expression
@@ -31,11 +32,19 @@
   declarator: (identifier) @df.assign_target
   value: (_) @df.assign_value)
 
+;; Init-capture RHS is a value in the enclosing evaluation scope. This does not
+;; bind the stored capture or any subsequent invocation of the closure body.
+(lambda_capture_initializer
+  right: (_) @df.assign_value)
+
 ;; --- Return statements ---
 (return_statement
   (_) @df.return_value)
 
 ;; --- Call targets: func(args) ---
+;; A result boundary exists even when no call reference/target was recorded.
+[(call_expression) (new_expression)] @df.call_result
+
 (call_expression
   function: (identifier) @df.call_target)
 

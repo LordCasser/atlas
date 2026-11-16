@@ -130,6 +130,11 @@ pub mod layer {
     /// cross-file reference resolution. Does NOT include full references,
     /// scopes, or dataflow.
     pub const RESOLUTION_SYMBOLS: &str = "resolution_symbols";
+    /// Compiler-selected declaration endpoints without extracted source semantics.
+    /// These support navigation/call identity, not source name lookup or body analysis.
+    /// Only identity, kind, names and location are populated; other fields do not
+    /// establish visibility, staticness, container membership or callable signatures.
+    pub const COMPILER_DECLARATION: &str = "compiler_declaration";
     /// Full symbols + references + scopes (from `--analysis structural`).
     pub const STRUCTURAL: &str = "structural";
     /// Dataflow nodes/edges (from lazy dataflow or `--analysis full`).
@@ -712,6 +717,9 @@ pub struct FileFacts {
     /// File metadata.
     pub file: FileInfo,
 
+    /// Written C++ types, available with structural/resolution-symbol facts.
+    pub cpp_types: Option<crate::cpp::CppFileTypes>,
+
     /// All symbol definitions found in this file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub symbols: Vec<SymbolDef>,
@@ -745,6 +753,10 @@ pub struct FileFacts {
     pub diagnostics: Vec<ExtractDiagnostic>,
 
     // ── Binding + Dataflow ──
+    /// Producer version for a supported dataflow computation; absent for
+    /// structural-only facts or data without established computation identity.
+    pub dataflow_version: Option<u32>,
+
     /// Lexical binding definitions (per-function variables/parameters).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<BindingDef>,

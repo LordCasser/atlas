@@ -159,7 +159,17 @@ impl CallsiteExtractorSpec for GenericCallsiteExtractor {
         source: &str,
     ) -> Option<CallsiteParts> {
         let node = root.descendant_for_byte_range(ref_start_byte, ref_end_byte)?;
-        let call_node = self.find_call_expression_ancestor(node)?;
+        // A reference can cover an entire callee expression. For f()(),
+        // that node is the inner call, while its invocation is the parent.
+        // Starting the ancestor walk at the callee itself would steal the
+        // inner call's arguments/range for the outer reference.
+        let call_node = node
+            .parent()
+            .filter(|parent| {
+                self.call_kinds.contains(&parent.kind())
+                    && parent.child_by_field_name("function") == Some(node)
+            })
+            .or_else(|| self.find_call_expression_ancestor(node))?;
 
         let call_range = crate::languages::node_range(call_node);
         let callee_range = crate::languages::node_range(node);
@@ -267,6 +277,7 @@ fn extract_argument_ranges(call_node: &tree_sitter::Node, _source: &str) -> Vec<
                         if arg_kind == ","
                             || arg_kind == "("
                             || arg_kind == ")"
+                            || arg_kind == "comment"
                             || arg_kind.is_empty()
                         {
                             continue;

@@ -237,6 +237,7 @@ pub struct SymbolDefBuilder {
     qualified_name: String,
     range: TextRange,
     signature: Option<String>,
+    discriminator: Option<String>,
     exported: bool,
 }
 
@@ -258,6 +259,7 @@ impl SymbolDefBuilder {
             qualified_name,
             range,
             signature: None,
+            discriminator: None,
             exported: false,
         }
     }
@@ -265,6 +267,12 @@ impl SymbolDefBuilder {
     /// Set the function/method signature string.
     pub fn signature(mut self, sig: Option<String>) -> Self {
         self.signature = sig;
+        self
+    }
+
+    /// Preserve distinct callable declaration syntax without claiming type resolution.
+    pub fn discriminator(mut self, value: Option<String>) -> Self {
+        self.discriminator = value;
         self
     }
 
@@ -277,14 +285,14 @@ impl SymbolDefBuilder {
     /// Build the `SymbolDef`.
     ///
     /// Generates a deterministic `SymbolId` from (file_id, language,
-    /// qualified_name, kind) via blake3.
+    /// qualified_name, kind, optional declaration discriminator) via blake3.
     pub fn build(self) -> SymbolDef {
         let symbol_id = SymbolId::generate(
             &self.file_id,
             self.language.as_str(),
             &self.qualified_name,
             self.kind.as_str(),
-            None::<&str>,
+            self.discriminator.as_deref(),
         );
 
         SymbolDef {
@@ -309,6 +317,77 @@ impl SymbolDefBuilder {
             layer: "structural".to_string(),
         }
     }
+}
+
+/// C++ declarators and JVM declaration headers distinguish overloads, including
+/// C++ cv/ref qualifiers and Kotlin receivers/default arguments. This is lexical
+/// identity: parameter spelling and modifiers remain significant. Bodies, comments
+/// and whitespace are excluded; no compiler signature equivalence is inferred.
+pub fn callable_declaration_identity(mut node: tree_sitter::Node, source: &str) -> Option<String> {
+    while !matches!(
+        node.kind(),
+        "function_declarator"
+            | "method_declaration"
+            | "constructor_declaration"
+            | "function_declaration"
+    ) {
+        node = node.parent()?;
+    }
+    let mut cursor = node.walk();
+    let end = node
+        .child_by_field_name("body")
+        .or_else(|| {
+            node.named_children(&mut cursor)
+                .find(|n| n.kind() == "function_body")
+        })
+        .map_or(node.end_byte(), |body| body.start_byte());
+    let mut identity = String::new();
+    visit_header_tokens(node, source, end, &mut |token| {
+        use std::fmt::Write;
+        let _ = write!(identity, "{}:{token}", token.len());
+    });
+    Some(identity)
+}
+
+fn visit_header_tokens(
+    node: tree_sitter::Node,
+    source: &str,
+    end: usize,
+    visit: &mut impl FnMut(&str),
+) {
+    if node.start_byte() >= end || node.kind().contains("comment") {
+        return;
+    }
+    if node.child_count() == 0 {
+        if let Ok(token) = node.utf8_text(source.as_bytes()) {
+            visit(token);
+        }
+    } else {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit_header_tokens(child, source, end, visit);
+        }
+    }
+}
+
+/// Read the explicit source package, independent of directory/build conventions.
+pub fn jvm_package_name(mut node: tree_sitter::Node, source: &str) -> Option<String> {
+    while let Some(parent) = node.parent() {
+        node = parent;
+    }
+    let mut cursor = node.walk();
+    let package = node
+        .named_children(&mut cursor)
+        .find(|n| matches!(n.kind(), "package_declaration" | "package_header"))?;
+    let mut cursor = package.walk();
+    let name = package
+        .named_children(&mut cursor)
+        .find(|n| matches!(n.kind(), "identifier" | "scoped_identifier"))?;
+    let mut value = String::new();
+    visit_header_tokens(name, source, name.end_byte(), &mut |token| {
+        value.push_str(token)
+    });
+    Some(value)
 }
 
 /// Normalize a language-level signature for compact UI/API display.
@@ -560,8 +639,9 @@ pub fn make_df_assign_value(
     call_kinds: &[&str],
 ) -> (Option<DataNode>, Option<DataFlowEdge>) {
     let text = super::node_text(node, source).unwrap_or_default();
-    let callsite_id = find_call_expression(node, call_kinds)
-        .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+    let callsite_id = find_call_expression(node, call_kinds).map(|ce| {
+        CallsiteId::from_file_range(&file_id, ce.start_byte() as u32, ce.end_byte() as u32)
+    });
     let node_id = DataNodeId::generate(
         &file_id,
         None::<&SymbolId>,
@@ -579,6 +659,40 @@ pub fn make_df_assign_value(
             binding_id: None,
             callsite_id,
             name: Some(text),
+            access_path: None,
+            arg_index: None,
+            range,
+        }),
+        None,
+    )
+}
+
+/// Capture an invocation/construction result without assuming a recorded call
+/// or a return-value mapping. The common result pass attaches a real invocation
+/// identity only for a supported ordinary call with the exact same range.
+pub fn make_df_call_result(
+    file_id: FileId,
+    node: tree_sitter::Node,
+    source: &str,
+    range: TextRange,
+) -> (Option<DataNode>, Option<DataFlowEdge>) {
+    let id = DataNodeId::generate(
+        &file_id,
+        None::<&SymbolId>,
+        "call_return",
+        Some(&format!("syntax:{}..{}", range.start_byte, range.end_byte)),
+        None,
+        range.start_byte,
+    );
+    (
+        Some(DataNode {
+            id,
+            file_id,
+            function_id: None,
+            kind: DataNodeKind::CallReturn,
+            binding_id: None,
+            callsite_id: None,
+            name: super::node_text(node, source),
             access_path: None,
             arg_index: None,
             range,
@@ -606,8 +720,15 @@ pub fn make_df_call_arg(
     call_kinds: &[&str],
 ) -> (Option<DataNode>, Option<DataFlowEdge>) {
     let text = super::node_text(node, source).unwrap_or_default();
-    let callsite_id = find_call_expression(node, call_kinds)
-        .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+    // The captured value belongs to the receiving call. If that value is
+    // itself a call expression, starting at the node would attach the outer
+    // argument to its inner evaluation instead.
+    let callsite_id = node
+        .parent()
+        .and_then(|parent| find_call_expression(parent, call_kinds))
+        .map(|ce| {
+            CallsiteId::from_file_range(&file_id, ce.start_byte() as u32, ce.end_byte() as u32)
+        });
     let node_id = DataNodeId::generate(
         &file_id,
         None::<&SymbolId>,

@@ -5,6 +5,10 @@
 
 (function_definition) @scope.function
 
+;; Lambda parameters and captures inhabit their own scope, including the
+;; declarator before the body block. They must not leak into the enclosing block.
+(lambda_expression) @scope.function
+
 (class_specifier (field_declaration_list)) @scope.class
 
 (struct_specifier (field_declaration_list)) @scope.class

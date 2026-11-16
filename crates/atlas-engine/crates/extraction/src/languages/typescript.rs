@@ -8,8 +8,8 @@
 
 use crate::languages::shared::{
     compact_signature, make_binding_def, make_df_assign_field_target, make_df_assign_target,
-    make_df_assign_value, make_df_call_arg, make_df_parameter, make_df_return_value,
-    make_reference_use, make_scope_def_auto_name,
+    make_df_assign_value, make_df_call_arg, make_df_call_result, make_df_parameter,
+    make_df_return_value, make_reference_use, make_scope_def_auto_name,
 };
 use crate::languages::{node_range, node_text};
 use crate::{dataflow_builder::NodePosKey, extraction_ctx::ExtractionCtx};
@@ -448,6 +448,7 @@ pub(crate) fn normalize_ts_dataflow_builder(
             range,
             &["call_expression", "new_expression"],
         ),
+        "df.call_result" => make_df_call_result(file_id, node, source, range),
         "df.return_value" => make_df_return_value(file_id, node, source, range),
         "df.call_arg" => make_df_call_arg(
             file_id,
@@ -473,7 +474,13 @@ pub(crate) fn normalize_ts_dataflow_builder(
                     node,
                     &["call_expression", "new_expression"],
                 )
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+                .map(|ce| {
+                    types::ids::CallsiteId::from_file_range(
+                        &file_id,
+                        ce.start_byte() as u32,
+                        ce.end_byte() as u32,
+                    )
+                });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&types::ids::SymbolId>,
@@ -567,7 +574,13 @@ pub(crate) fn normalize_ts_dataflow_builder(
                 node,
                 &["call_expression", "new_expression"],
             )
-            .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            .map(|ce| {
+                types::ids::CallsiteId::from_file_range(
+                    &file_id,
+                    ce.start_byte() as u32,
+                    ce.end_byte() as u32,
+                )
+            });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&types::ids::SymbolId>,

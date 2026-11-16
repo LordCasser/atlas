@@ -14,10 +14,32 @@
     (function_declarator (identifier) @definition.function)))
 
 (translation_unit
-  (class_specifier (type_identifier) @definition.class))
+  (function_definition
+    declarator: (function_declarator
+      declarator: (qualified_identifier) @definition.function)
+    body: (_)))
 
 (translation_unit
-  (struct_specifier (type_identifier) @definition.class))
+  (function_definition
+    type: (_)
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (qualified_identifier) @definition.function))
+    body: (_)))
+
+(translation_unit
+  (function_definition
+    type: (_)
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (qualified_identifier) @definition.function))
+    body: (_)))
+
+(translation_unit
+  (class_specifier name: [(type_identifier) (qualified_identifier)] @definition.class))
+
+(translation_unit
+  (struct_specifier name: [(type_identifier) (qualified_identifier)] @definition.class))
 
 (translation_unit
   (namespace_definition name: (_) @definition.namespace))
@@ -37,4 +59,4 @@
 
 (translation_unit
   (template_declaration
-    (class_specifier (type_identifier) @definition.class)))
+    (class_specifier name: [(type_identifier) (qualified_identifier)] @definition.class)))

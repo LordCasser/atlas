@@ -15,7 +15,54 @@ use crate::store_writers::{
     write_dataflow_edges,
 };
 
+/// Dataflow/CFG availability depends on the computation, while independently
+/// recorded structural facts remain usable when that computation is stale.
+fn current_dataflow_bits(mask: u16, version: Option<u32>, complete: bool) -> u16 {
+    if complete && version == Some(types::lazy::DATAFLOW_ANALYZER_VERSION) {
+        mask
+    } else {
+        mask & !(FactCoverage::DATAFLOW | FactCoverage::CFG)
+    }
+}
+
 impl Store {
+    /// Reuse Full dataflow only when its producer and source are current.
+    pub fn file_dataflow_is_current(&self, file_id: &FileId) -> anyhow::Result<bool> {
+        let conn = self.lock_read();
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM extraction_state s JOIN files f ON f.file_id = s.file_id
+             WHERE s.file_id = ?1 AND s.unit_id IS NULL AND s.layer = 'dataflow'
+               AND s.content_hash = f.content_hash AND s.status = 'complete'
+               AND s.budget_exceeded = 0 AND s.dataflow_version = ?2)",
+            params![file_id, types::lazy::DATAFLOW_ANALYZER_VERSION],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Current lazy-unit diagnostics; file-level extraction diagnostics remain
+    /// in their existing store and are not overwritten by partial materialization.
+    pub fn unit_dataflow_diagnostics(
+        &self,
+        file_id: &FileId,
+        function: Option<SymbolId>,
+    ) -> anyhow::Result<Vec<ExtractDiagnostic>> {
+        let range = TextRange::default();
+        let unit = match function {
+            Some(symbol) => types::lazy::AnalysisUnit::from_function(*file_id, symbol, range),
+            None => types::lazy::AnalysisUnit::from_top_level(*file_id, range),
+        };
+        let conn = self.lock_read();
+        let json: Option<String> = conn.query_row(
+            "SELECT s.diagnostics_json FROM extraction_state s JOIN files f ON f.file_id = s.file_id
+             WHERE s.file_id = ?1 AND s.unit_id = ?2 AND s.layer = 'dataflow'
+               AND s.content_hash = f.content_hash AND s.dataflow_version = ?3
+               AND s.status IN ('complete', 'partial')",
+            params![file_id, &unit.unit_id[..], types::lazy::DATAFLOW_ANALYZER_VERSION], |row| row.get(0),
+        ).optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
     /// Query the status and content_hash for a file at a given layer.
     ///
     /// Returns `None` if no record exists.  Layers: "manifest", "structural", "dataflow".
@@ -114,14 +161,18 @@ impl Store {
     pub fn count_fresh_file_extraction_state(&self) -> anyhow::Result<Vec<(String, String, i64)>> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT l.layer, l.status, COUNT(*)
+            "SELECT CASE WHEN l.layer = 'dataflow' AND l.dataflow_version IS NOT ?1
+                         THEN 'structural' ELSE l.layer END AS effective_layer,
+                    l.status, COUNT(DISTINCT l.file_id)
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.unit_id IS NULL AND l.content_hash = f.content_hash
-             GROUP BY l.layer, l.status
-             ORDER BY l.layer, l.status",
+             GROUP BY effective_layer, l.status
+             ORDER BY effective_layer, l.status",
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        let rows = stmt.query_map(params![types::lazy::DATAFLOW_ANALYZER_VERSION], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -141,7 +192,6 @@ impl Store {
             complete_count(&layer_counts, "structural"),
             complete_count(&layer_counts, "dataflow"),
             lazy_stats.total_unit_states,
-            lazy_stats.has_dataflow,
         )
         .to_string())
     }
@@ -160,21 +210,28 @@ impl Store {
 
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT layer, capability_mask FROM extraction_state
+            "SELECT layer, capability_mask, dataflow_version FROM extraction_state
              WHERE file_id = ?1
                AND unit_id IS NULL
                AND content_hash = ?2
-               AND status = 'complete'",
+               AND status = 'complete' AND budget_exceeded = 0",
         )?;
         let rows = stmt.query_map(params![file_id, content_hash], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<u32>>(2)?,
+            ))
         })?;
 
         let mut bits = 0u16;
         for row in rows {
-            let (layer, capability_mask) = row?;
-            bits |= capability_mask as u16;
-            bits |= FactCoverage::from_layers(&[layer.as_str()]).bits();
+            let (layer, capability_mask, version) = row?;
+            bits |= current_dataflow_bits(
+                capability_mask as u16 | FactCoverage::from_layers(&[layer.as_str()]).bits(),
+                version,
+                true,
+            );
         }
 
         Ok(FactCoverage::from_bits(bits).has_all(required.bits()))
@@ -220,6 +277,8 @@ impl Store {
                               AND l.unit_id IS NULL
                               AND l.content_hash = f.content_hash
                               AND l.status = 'complete'
+                              AND l.budget_exceeded = 0
+                              AND (?2 < 3 OR l.dataflow_version = ?3)
                               AND ((CASE l.layer
                                       WHEN 'manifest' THEN 1
                                       WHEN 'resolution_symbols' THEN 1
@@ -230,7 +289,11 @@ impl Store {
                                    OR (l.capability_mask & ?1) != 0)
                             )
                         )"#,
-                params![required_bit, minimum_layer_rank],
+                params![
+                    required_bit,
+                    minimum_layer_rank,
+                    types::lazy::DATAFLOW_ANALYZER_VERSION
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?
         } else {
@@ -251,6 +314,8 @@ impl Store {
                               AND l.unit_id IS NULL
                               AND l.content_hash = f.content_hash
                               AND l.status = 'complete'
+                              AND l.budget_exceeded = 0
+                              AND (?5 < 3 OR l.dataflow_version = ?6)
                               AND ((CASE l.layer
                                       WHEN 'manifest' THEN 1
                                       WHEN 'resolution_symbols' THEN 1
@@ -261,7 +326,14 @@ impl Store {
                                    OR (l.capability_mask & ?1) != 0)
                             )
                         )"#,
-                params![required_bit, scope, lower, upper, minimum_layer_rank],
+                params![
+                    required_bit,
+                    scope,
+                    lower,
+                    upper,
+                    minimum_layer_rank,
+                    types::lazy::DATAFLOW_ANALYZER_VERSION
+                ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?
         };
@@ -370,18 +442,24 @@ impl Store {
     pub fn get_capability_mask(&self, file_id: &FileId) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT l.capability_mask
+            "SELECT l.capability_mask, l.dataflow_version
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.file_id = ?1
                AND l.unit_id IS NULL
                AND l.content_hash = f.content_hash
-               AND l.status = 'complete'",
+               AND l.status = 'complete' AND l.budget_exceeded = 0",
         )?;
         let rows = stmt
-            .query_map(params![file_id], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()?;
-        let mask = rows.iter().fold(0u16, |acc, &m| acc | (m as u16));
+            .query_map(params![file_id], |row| {
+                Ok(current_dataflow_bits(
+                    row.get::<_, i64>(0)? as u16,
+                    row.get(1)?,
+                    true,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<u16>>>()?;
+        let mask = rows.iter().fold(0u16, |acc, &m| acc | m);
         Ok(FactCoverage::new(mask))
     }
 
@@ -393,23 +471,25 @@ impl Store {
     ) -> anyhow::Result<FactCoverage> {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
-            "SELECT l.capability_mask
+            "SELECT l.capability_mask, l.dataflow_version
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.file_id = ?1
                AND l.unit_id = ?2
                AND l.content_hash = f.content_hash
-               AND l.status = 'complete'",
+               AND l.status = 'complete' AND l.budget_exceeded = 0",
         )?;
         let masks = stmt
             .query_map(params![file_id, unit_id.as_slice()], |row| {
-                row.get::<_, i64>(0)
+                Ok(current_dataflow_bits(
+                    row.get::<_, i64>(0)? as u16,
+                    row.get(1)?,
+                    true,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(FactCoverage::new(
-            masks
-                .into_iter()
-                .fold(0u16, |bits, mask| bits | mask as u16),
+            masks.into_iter().fold(0u16, |bits, mask| bits | mask),
         ))
     }
 
@@ -429,27 +509,35 @@ impl Store {
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.unit_id IS NULL AND l.layer = 'dataflow'
-               AND l.status = 'complete' AND l.content_hash = f.content_hash",
+               AND l.status = 'complete' AND l.content_hash = f.content_hash
+               AND l.budget_exceeded = 0 AND l.dataflow_version = ?1",
         )?;
-        let files_with_dataflow: usize =
-            stmt.query_row([], |row| row.get::<_, i64>(0))?.max(0) as usize;
+        let files_with_dataflow: usize = stmt
+            .query_row(params![types::lazy::DATAFLOW_ANALYZER_VERSION], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .max(0) as usize;
 
         // Files with fresh structural but no dataflow layer.
         let mut stmt = conn.prepare(
             "SELECT COUNT(DISTINCT l.file_id)
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
-             WHERE l.unit_id IS NULL AND l.layer = 'structural'
+             WHERE l.unit_id IS NULL AND l.layer IN ('structural', 'dataflow')
                AND l.content_hash = f.content_hash
                AND l.file_id NOT IN (
                  SELECT d.file_id FROM extraction_state d
                  JOIN files fd ON fd.file_id = d.file_id
                  WHERE d.unit_id IS NULL AND d.layer = 'dataflow'
                    AND d.status = 'complete' AND d.content_hash = fd.content_hash
+                   AND d.budget_exceeded = 0 AND d.dataflow_version = ?1
                )",
         )?;
-        let files_structural_only: usize =
-            stmt.query_row([], |row| row.get::<_, i64>(0))?.max(0) as usize;
+        let files_structural_only: usize = stmt
+            .query_row(params![types::lazy::DATAFLOW_ANALYZER_VERSION], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .max(0) as usize;
 
         // Files with fresh manifest but no structural layer.
         let mut stmt = conn.prepare(
@@ -461,7 +549,7 @@ impl Store {
                AND l.file_id NOT IN (
                  SELECT d.file_id FROM extraction_state d
                  JOIN files fd ON fd.file_id = d.file_id
-                 WHERE d.unit_id IS NULL AND d.layer = 'structural'
+                 WHERE d.unit_id IS NULL AND d.layer IN ('structural', 'dataflow')
                    AND d.content_hash = fd.content_hash
                )",
         )?;
@@ -476,11 +564,15 @@ impl Store {
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.content_hash = f.content_hash
-               AND (l.capability_mask & ?1) != 0",
+               AND (l.capability_mask & ?1) != 0
+               AND l.status = 'complete' AND l.budget_exceeded = 0 AND l.dataflow_version = ?2",
         )?;
         let cfg_bit = FactCoverage::CFG as i64;
         let files_with_cfg: usize = stmt
-            .query_row(params![cfg_bit], |row| row.get::<_, i64>(0))?
+            .query_row(
+                params![cfg_bit, types::lazy::DATAFLOW_ANALYZER_VERSION],
+                |row| row.get::<_, i64>(0),
+            )?
             .max(0) as usize;
 
         Ok((
@@ -535,7 +627,7 @@ impl Store {
         // Also applies `from_layers` on the layer string as a fallback
         // for lazy-extraction records that write `capability_mask=0`.
         let cap_sql = format!(
-            "SELECT l.capability_mask, l.layer
+            "SELECT l.capability_mask, l.layer, l.dataflow_version, l.status, l.budget_exceeded
              FROM extraction_state l
              JOIN files f ON f.file_id = l.file_id
              WHERE l.file_id IN ({in_clause})
@@ -545,12 +637,20 @@ impl Store {
 
         if let Ok(mut stmt) = conn.prepare(&cap_sql)
             && let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<u32>>(2)?,
+                    row.get::<_, String>(3)? == "complete" && !row.get::<_, bool>(4)?,
+                ))
             })
         {
-            for (cap_mask_i64, layer) in rows.flatten() {
-                aggregated |= cap_mask_i64 as u16;
-                aggregated |= FactCoverage::from_layers(&[layer.as_str()]).bits();
+            for (cap_mask_i64, layer, version, complete) in rows.flatten() {
+                aggregated |= current_dataflow_bits(
+                    cap_mask_i64 as u16 | FactCoverage::from_layers(&[layer.as_str()]).bits(),
+                    version,
+                    complete,
+                );
             }
         }
 
@@ -592,7 +692,6 @@ fn compute_catalog_tier(
     structural_complete: i64,
     dataflow_file_complete: i64,
     lazy_total_unit_states: i64,
-    lazy_has_dataflow: bool,
 ) -> &'static str {
     let structural_or_better_complete = structural_complete.max(dataflow_file_complete);
 
@@ -616,8 +715,6 @@ fn compute_catalog_tier(
         }
     } else if lazy_total_unit_states > 0 {
         "structural+lazy"
-    } else if dataflow_file_complete >= total_files || lazy_has_dataflow {
-        "full"
     } else {
         "structural"
     }
@@ -638,7 +735,8 @@ impl Store {
         let conn = self.lock_read();
         let mut stmt = conn.prepare(
             "SELECT file_id, unit_id, layer, content_hash, status,
-                    node_count, edge_count, budget_exceeded, updated_at, capability_mask
+                    node_count, edge_count, budget_exceeded, updated_at, capability_mask,
+                    dataflow_version, diagnostics_json
              FROM extraction_state
              WHERE file_id = ?1 AND unit_id = ?2 AND layer = ?3",
         )?;
@@ -661,16 +759,17 @@ impl Store {
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         let unit_blob: &[u8] = &record.unit_id;
-        conn.execute(
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM extraction_state
              WHERE file_id = ?1 AND unit_id = ?2 AND layer = ?3",
             params![record.file_id, unit_blob, record.layer],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO extraction_state
              (file_id, unit_id, layer, content_hash, status,
-              node_count, edge_count, budget_exceeded, capability_mask, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+              node_count, edge_count, budget_exceeded, capability_mask, dataflow_version, diagnostics_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))",
             params![
                 record.file_id,
                 unit_blob,
@@ -681,8 +780,11 @@ impl Store {
                 record.edge_count,
                 record.budget_exceeded as i32,
                 record.capability_mask.bits() as i64,
+                record.dataflow_version,
+                serde_json::to_string(&record.diagnostics)?,
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -705,14 +807,14 @@ impl Store {
     /// 2. DELETE data_nodes belonging to this unit
     /// 3. DELETE cfg_edges for cfg_nodes in this unit
     /// 4. DELETE cfg_nodes belonging to this unit
-    /// 5. DELETE binding_uses in this unit (by file + scope filter)
-    /// 6. DELETE bindings in this unit
-    /// 7. INSERT new rows
+    /// 5. Reuse indexed declarations and upsert observed lexical uses
+    /// 6. INSERT new dataflow/CFG rows
     ///
     /// For function units, the unit is identified by `function_id`.
-    /// For top-level units, data nodes and bindings are identified by
-    /// `file_id + function_id IS NULL`. CFG is function-scoped and therefore
-    /// has no top-level replacement slice.
+    /// For top-level units, data nodes are identified by `file_id + function_id
+    /// IS NULL`. CFG has no top-level replacement slice. Declaration/use
+    /// lifetimes follow source replacement, not a dataflow computation: deleting
+    /// an enclosing declaration here would clear other units' binding FKs.
     #[allow(clippy::too_many_arguments)]
     pub fn replace_dataflow_for_unit(
         &self,
@@ -817,58 +919,6 @@ impl Store {
                 )?;
             }
 
-            // Clean up bindings + binding_uses for this unit.
-            // For function units, match by function_id.
-            // For top-level, match by file_id with function_id IS NULL.
-            {
-                let binding_ids: Vec<BindingId> = if let Some(ref func_id) = unit.symbol_id {
-                    let mut stmt = tx.prepare(
-                        "SELECT binding_id FROM bindings WHERE function_id = ?1",
-                    )?;
-                    stmt.query_map(params![func_id], |row| row.get::<_, BindingId>(0))?
-                        .filter_map(|r| match r {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                tracing::warn!(?e, "Binding ID decode error (by function), skipping");
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    let mut stmt = tx.prepare(
-                        "SELECT binding_id FROM bindings WHERE file_id = ?1 AND function_id IS NULL",
-                    )?;
-                    stmt.query_map(params![unit.file_id], |row| row.get::<_, BindingId>(0))?
-                        .filter_map(|r| match r {
-                            Ok(v) => Some(v),
-                            Err(e) => {
-                                tracing::warn!(?e, "Binding ID decode error (by file), skipping");
-                                None
-                            }
-                        })
-                        .collect()
-                };
-
-                for bid in &binding_ids {
-                    tx.execute(
-                        "DELETE FROM binding_uses WHERE binding_id = ?1",
-                        params![bid],
-                    )?;
-                }
-
-                if let Some(ref func_id) = unit.symbol_id {
-                    tx.execute(
-                        "DELETE FROM bindings WHERE function_id = ?1",
-                        params![func_id],
-                    )?;
-                } else {
-                    tx.execute(
-                        "DELETE FROM bindings WHERE file_id = ?1 AND function_id IS NULL",
-                        params![unit.file_id],
-                    )?;
-                }
-            }
-
             // ── FK-guarded validation ───────────────────────────────
             // Before inserting, verify FK references against DB state
             // (symbols/scopes) and the same-batch allowlists (bindings,
@@ -885,6 +935,7 @@ impl Store {
             };
             let validated = super::fk_guards::validate_dataflow_payload_db(
                 tx,
+                &unit.file_id,
                 data_nodes,
                 dataflow_edges,
                 bindings,

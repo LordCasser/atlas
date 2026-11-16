@@ -257,7 +257,11 @@ fn normalize_py_dataflow_builder(
                     .unwrap_or_else(|| name.clone());
                 let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
                     .map(|ce| {
-                        types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32)
+                        types::ids::CallsiteId::from_file_range(
+                            &file_id,
+                            ce.start_byte() as u32,
+                            ce.end_byte() as u32,
+                        )
                     });
                 let node_id = DataNodeId::generate(
                     &file_id,

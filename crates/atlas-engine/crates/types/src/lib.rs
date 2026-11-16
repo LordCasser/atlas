@@ -24,6 +24,7 @@ pub mod bindings;
 pub mod caller_path;
 pub mod capability;
 pub mod cfg;
+pub mod cpp;
 pub mod dataflow;
 pub mod effects;
 pub mod enums;

@@ -92,6 +92,7 @@ impl CrossFunctionBridge {
                                 source_id: row.source_node_id,
                                 target_id: *param_id,
                                 kind: DataFlowKind::ArgToParam,
+                                callsite_id: Some(cs.id),
                                 confidence: row.confidence * 0.92,
                                 provenance: format!(
                                     "summary bridge: caller_arg[{}] at callsite {} → callee param[{}]",
@@ -154,6 +155,7 @@ impl CrossFunctionBridge {
                     source_id: row.source_node_id,
                     target_id: *call_result_id,
                     kind: DataFlowKind::ReturnToCall,
+                    callsite_id: Some(*callsite_id),
                     confidence: row.confidence * 0.92,
                     provenance: format!(
                         "summary bridge: callee return {} → call result {}",
@@ -184,8 +186,10 @@ impl CrossFunctionBridge {
 /// runtime argument position. Once any parameter in a function has an
 /// explicit position, a missing position means that parameter has no matching
 /// call argument (for example Rust `self` or a closure parameter owned by an
-/// enclosing named function). Legacy language adapters without explicit
-/// positions retain source-order fallback.
+/// enclosing named function). C++ also uses a missing position for a known
+/// parameter whose invocation slot could not be established; an entirely
+/// unknown list must not fall back to its source order. Other adapters that
+/// do not produce explicit positions retain their current ordering behavior.
 pub(crate) fn find_param_index(
     store: &dyn TraceStore,
     function_id: &SymbolId,
@@ -206,6 +210,9 @@ pub(crate) fn find_param_index(
     if parameter_nodes
         .iter()
         .any(|parameter| parameter.arg_index.is_some())
+        || store
+            .find_symbol_by_id(function_id)?
+            .is_some_and(|symbol| symbol.language == types::Language::Cpp)
     {
         return Ok(parameter.arg_index.map(|index| index as usize));
     }
@@ -241,6 +248,15 @@ mod tests {
     }
 
     fn insert_test_function(store: &Store, file_id: FileId, name: &str) -> SymbolId {
+        insert_test_function_with_language(store, file_id, name, types::Language::TypeScript)
+    }
+
+    fn insert_test_function_with_language(
+        store: &Store,
+        file_id: FileId,
+        name: &str,
+        language: types::Language,
+    ) -> SymbolId {
         let range = TextRange {
             start_byte: 0,
             end_byte: 50,
@@ -250,13 +266,13 @@ mod tests {
             end_column: 1,
         };
         let sym = types::structs::SymbolDef {
-            id: SymbolId::generate(&file_id, "typescript", name, "function", None),
+            id: SymbolId::generate(&file_id, language.as_str(), name, "function", None),
             kind: SymbolKind::Function,
             name: name.into(),
             qualified_name: name.into(),
             symbol_path: vec![name.into()],
             file_id,
-            language: types::enums::Language::TypeScript,
+            language,
             range,
             name_range: range,
             signature: None,
@@ -272,6 +288,44 @@ mod tests {
         };
         store.insert_symbols(std::slice::from_ref(&sym)).unwrap();
         sym.id
+    }
+
+    #[test]
+    fn cpp_unknown_parameter_slot_does_not_fall_back_to_source_order() -> anyhow::Result<()> {
+        let store = test_store();
+        let file_id = FileId::generate("unknown.cpp");
+        store.upsert_file(&types::FileInfo {
+            file_id,
+            path: "unknown.cpp".into(),
+            language: types::Language::Cpp,
+            content_hash: "fixed".into(),
+            status: types::ParseStatus::Partial,
+        })?;
+        let function_id =
+            insert_test_function_with_language(&store, file_id, "selected", types::Language::Cpp);
+        let id = DataNodeId::generate(
+            &file_id,
+            Some(&function_id),
+            "parameter",
+            Some("input"),
+            None,
+            10,
+        );
+        let node = types::DataNode::parameter(
+            id,
+            file_id,
+            Some(function_id),
+            None,
+            "input",
+            TextRange {
+                start_byte: 10,
+                end_byte: 15,
+                ..TextRange::default()
+            },
+        );
+        store.insert_data_nodes(&[node])?;
+        assert_eq!(find_param_index(&store, &function_id, &id)?, None);
+        Ok(())
     }
 
     #[test]

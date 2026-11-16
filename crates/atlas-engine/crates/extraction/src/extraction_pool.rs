@@ -27,7 +27,7 @@ pub fn extraction_worker_count() -> usize {
 ///
 /// Using `LazyLock` avoids `OnceCell` pitfalls and ensures the pool is
 /// built exactly once, on first use, with the configured stack size.
-/// All extraction, resolution, and graph-building phases that use rayon
+/// All source hashing, extraction, resolution, and graph-building phases that use rayon
 /// `par_iter()` should install this pool via `pool.install(|| { ... })`.
 pub static EXTRACTION_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
     rayon::ThreadPoolBuilder::new()

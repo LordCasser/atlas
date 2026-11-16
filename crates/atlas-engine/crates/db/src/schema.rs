@@ -1,6 +1,6 @@
 //! Atlas-native SQLite schema DDL.
 //!
-//! Schema version: 4
+//! Schema version is defined by CURRENT_SCHEMA_VERSION below.
 //!
 //! ## Tables
 //! - `files`          — per-file metadata
@@ -32,7 +32,11 @@
 //! - `symbol_edge_candidates` — candidate graph edges (Medium/Low confidence)
 
 /// Current schema version.
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+// v30 records demonstrated argument incompatibility in C++ failure facts.
+// v31 distinguishes exhausted C++ type-identity analysis from semantic gaps.
+// v33 retains function-template signatures and explicit template call syntax.
+// v35 retains unmodeled C++ allocation regions with callable ownership.
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 /// Complete DDL for a fresh database.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS files (
@@ -43,6 +47,18 @@ CREATE TABLE IF NOT EXISTS files (
     status        TEXT NOT NULL DEFAULT 'success',
     last_modified TEXT,
     index_time    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cpp_type_facts (
+    file_id BLOB PRIMARY KEY NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    facts_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_diagnostics (
+    file_id BLOB PRIMARY KEY NOT NULL REFERENCES files(file_id) ON DELETE CASCADE,
+    content_hash TEXT NOT NULL,
+    diagnostics_json TEXT NOT NULL,
+    dataflow_version INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -118,6 +134,8 @@ CREATE TABLE IF NOT EXISTS "references" (
     resolved_confidence  REAL,
     resolved_strategy    TEXT,
     resolved_provenance  TEXT,
+    -- Precise failed lookup, when the resolver can identify its prerequisite.
+    failure_json        TEXT,
     -- lexical binding link (filled by SemanticBinder after extraction)
     binding_id           BLOB
 );
@@ -288,6 +306,8 @@ CREATE TABLE IF NOT EXISTS extraction_state (
     budget_exceeded INTEGER NOT NULL DEFAULT 0,
     capability_mask INTEGER NOT NULL DEFAULT 0,
     resolution_fingerprint TEXT,
+    dataflow_version INTEGER,
+    diagnostics_json TEXT NOT NULL DEFAULT '[]',
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE
 );
@@ -593,6 +613,8 @@ CREATE INDEX IF NOT EXISTS idx_callsites_reference
 -- Binding + Dataflow indexes
 CREATE INDEX IF NOT EXISTS idx_bindings_file
     ON bindings(file_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_scope
+    ON bindings(scope_id);
 CREATE INDEX IF NOT EXISTS idx_bindings_function
     ON bindings(function_id);
 CREATE INDEX IF NOT EXISTS idx_bindings_symbol
@@ -600,6 +622,8 @@ CREATE INDEX IF NOT EXISTS idx_bindings_symbol
 
 CREATE INDEX IF NOT EXISTS idx_binding_uses_file
     ON binding_uses(file_id);
+CREATE INDEX IF NOT EXISTS idx_binding_uses_scope
+    ON binding_uses(scope_id);
 CREATE INDEX IF NOT EXISTS idx_binding_uses_binding
     ON binding_uses(binding_id);
 CREATE INDEX IF NOT EXISTS idx_binding_uses_reference

@@ -59,6 +59,17 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Load extracted call references, including resolved calls, for a relation projection.
+    /// The caller must admit the artifact against its resource budget before loading.
+    pub fn get_all_call_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
+        let conn = self.lock_read();
+        let mut stmt = conn.prepare(&format!(
+            "{REFERENCE_SELECT_NO_WHERE} WHERE kind = ?1 ORDER BY file_id, range_start_byte, reference_id"
+        ))?;
+        let rows = stmt.query_map(params![ReferenceKind::Call.as_str()], row_to_reference)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find unresolved references (no resolved target).
     pub fn find_unresolved_references(&self) -> anyhow::Result<Vec<ReferenceUse>> {
         let conn = self.lock_read();
@@ -146,7 +157,7 @@ impl Store {
                 resolved_symbol_id = ?2,
                 resolved_confidence = ?3,
                 resolved_strategy = ?4,
-                resolved_provenance = ?5
+                resolved_provenance = ?5, failure_json = NULL
              WHERE reference_id = ?1",
             params![
                 reference_id,
@@ -176,7 +187,7 @@ impl Store {
                     resolved_symbol_id = ?2,
                     resolved_confidence = ?3,
                     resolved_strategy = ?4,
-                    resolved_provenance = ?5
+                    resolved_provenance = ?5, failure_json = NULL
                  WHERE reference_id = ?1",
             )?;
             for (ref_id, target) in resolutions {
@@ -194,6 +205,28 @@ impl Store {
 
     // ── Resolved fact invalidation (P2) ────────────────────────────────────
 
+    /// Clear selected primary targets and their resolution fingerprints. This
+    /// leaves references and supplemental graph edges intact; a building caller
+    /// is responsible for rebuilding edges before publishing the result.
+    pub fn invalidate_references(&self, references: &[ReferenceId]) -> anyhow::Result<()> {
+        self.with_transaction(|tx| {
+            let mut clear_state = tx.prepare(
+                "UPDATE extraction_state SET resolution_fingerprint = NULL
+                 WHERE file_id = (SELECT file_id FROM \"references\" WHERE reference_id = ?1)",
+            )?;
+            let mut clear_target = tx.prepare(
+                "UPDATE \"references\" SET resolved_symbol_id = NULL,
+                 resolved_confidence = NULL, resolved_strategy = NULL,
+                 resolved_provenance = NULL, failure_json = NULL WHERE reference_id = ?1",
+            )?;
+            for id in references {
+                clear_state.execute(params![id])?;
+                clear_target.execute(params![id])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Clear all resolution results for references belonging to a file.
     ///
     /// This is called when a file is modified — the references themselves
@@ -208,7 +241,7 @@ impl Store {
                 resolved_symbol_id = NULL,
                 resolved_confidence = NULL,
                 resolved_strategy = NULL,
-                resolved_provenance = NULL
+                resolved_provenance = NULL, failure_json = NULL
                WHERE file_id = ?1 AND resolved_symbol_id IS NOT NULL"#,
             params![file_id],
         )?;
@@ -244,7 +277,7 @@ impl Store {
                     resolved_symbol_id = NULL,
                     resolved_confidence = NULL,
                     resolved_strategy = NULL,
-                    resolved_provenance = NULL
+                    resolved_provenance = NULL, failure_json = NULL
                    WHERE resolved_symbol_id IN (
                        SELECT symbol_id FROM symbols WHERE file_id = ?1
                    )"#,
@@ -342,7 +375,7 @@ impl Store {
                         resolved_symbol_id = NULL,
                         resolved_confidence = NULL,
                         resolved_strategy = NULL,
-                        resolved_provenance = NULL
+                        resolved_provenance = NULL, failure_json = NULL
                        WHERE resolved_symbol_id IN (
                            SELECT symbol_id FROM symbols WHERE file_id = ?1
                        )"#,
@@ -386,13 +419,17 @@ impl Store {
     /// Returns the number of references invalidated.
     pub fn invalidate_all_references(&self) -> anyhow::Result<usize> {
         let conn = self.lock();
+        conn.execute(
+            "UPDATE extraction_state SET resolution_fingerprint = NULL",
+            [],
+        )?;
         let count = conn.execute(
             r#"UPDATE "references" SET
                 resolved_symbol_id = NULL,
                 resolved_confidence = NULL,
                 resolved_strategy = NULL,
-                resolved_provenance = NULL
-             WHERE resolved_symbol_id IS NOT NULL"#,
+                resolved_provenance = NULL, failure_json = NULL
+             WHERE (resolved_symbol_id IS NOT NULL OR failure_json IS NOT NULL)"#,
             [],
         )?;
         Ok(count)
@@ -457,6 +494,64 @@ impl Store {
         )?;
         let rows = stmt.query_map(params![target], row_to_edge)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Read reference-to-edge identities once for immutable query-side reuse.
+    /// This scans edge identity columns, not complete edge records. No schema
+    /// change or reference-column index is required, and non-call edges remain.
+    pub fn reference_edge_ids(
+        &self,
+        canceled: &dyn Fn() -> bool,
+    ) -> anyhow::Result<std::collections::BTreeMap<ReferenceId, Vec<EdgeId>>> {
+        anyhow::ensure!(!canceled(), "reference edge identity read canceled");
+        let conn = self.lock_read();
+        let mut statement = conn.prepare(
+            "SELECT ref_id, edge_id FROM symbol_edges WHERE ref_id IS NOT NULL ORDER BY edge_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, ReferenceId>(0)?, row.get::<_, EdgeId>(1)?))
+        })?;
+        let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
+        for row in rows {
+            anyhow::ensure!(!canceled(), "reference edge identity read canceled");
+            let (reference, edge) = row?;
+            result.entry(reference).or_default().push(edge);
+        }
+        anyhow::ensure!(!canceled(), "reference edge identity read canceled");
+        Ok(result)
+    }
+
+    /// Read complete edge records by their primary keys, keeping every kind.
+    /// Duplicate and absent IDs are harmless; cancellation never returns a
+    /// partial success. The database remains read-only.
+    pub fn find_edges_by_ids(
+        &self,
+        edge_ids: &[EdgeId],
+        canceled: &dyn Fn() -> bool,
+    ) -> anyhow::Result<Vec<RawEdge>> {
+        anyhow::ensure!(!canceled(), "edge identity read canceled");
+        let ids: std::collections::BTreeSet<_> = edge_ids.iter().copied().collect();
+        let ids: Vec<_> = ids.into_iter().collect();
+        let conn = self.lock_read();
+        let mut edges = std::collections::BTreeMap::new();
+        for chunk in ids.chunks(256) {
+            anyhow::ensure!(!canceled(), "edge identity read canceled");
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let mut statement = conn.prepare(&format!(
+                "SELECT edge_id, source, target, kind, confidence, provenance,
+                    ref_id, location_0, location_1, location_2, location_3, location_4, location_5,
+                    metadata, resolved_by FROM symbol_edges WHERE edge_id IN ({placeholders})"
+            ))?;
+            let rows =
+                statement.query_map(rusqlite::params_from_iter(chunk.iter()), row_to_edge)?;
+            for row in rows {
+                anyhow::ensure!(!canceled(), "edge identity read canceled");
+                let edge = row?;
+                edges.insert(edge.id, edge);
+            }
+        }
+        anyhow::ensure!(!canceled(), "edge identity read canceled");
+        Ok(edges.into_values().collect())
     }
 
     /// Load ALL edges (for GraphSnapshot construction).

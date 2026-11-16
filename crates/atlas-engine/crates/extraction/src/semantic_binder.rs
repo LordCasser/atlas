@@ -14,8 +14,9 @@
 //! `normalize_reference()`; the binder is the single authority for these
 //! fields.
 
+use std::collections::HashMap;
 use types::ids::FileId;
-use types::{RawEdge, ReferenceUse, ScopeDef, SymbolDef};
+use types::{RawEdge, ReferenceUse, ScopeDef, SymbolDef, SymbolId, TextRange};
 
 use super::symbol_registry::SymbolRegistry;
 
@@ -35,9 +36,13 @@ impl SemanticBinder {
     ///
     /// This internally constructs a `SymbolRegistry` for source-ownership
     /// resolution and retains the scope list for scope-binding.
-    pub fn new(symbols: &[SymbolDef], scopes: &[ScopeDef]) -> Self {
+    pub fn new(
+        symbols: &[SymbolDef],
+        scopes: &[ScopeDef],
+        caller_initializers: HashMap<SymbolId, TextRange>,
+    ) -> Self {
         Self {
-            registry: SymbolRegistry::new(symbols, scopes),
+            registry: SymbolRegistry::new(symbols, scopes, caller_initializers),
             scopes: scopes.to_vec(),
         }
     }
@@ -189,6 +194,58 @@ mod tests {
     }
 
     #[test]
+    fn missing_callable_identity_does_not_assign_its_body_to_an_ancestor() {
+        let range = |start_byte, end_byte| TextRange {
+            start_byte,
+            end_byte,
+            ..TextRange::default()
+        };
+        for (scope_kind, symbol_kind) in [
+            (ScopeKind::Namespace, SymbolKind::Namespace),
+            (ScopeKind::Function, SymbolKind::Function),
+        ] {
+            let outer = make_scope(scope_kind, "outer", range(0, 100), None);
+            let missing = make_scope(
+                ScopeKind::Function,
+                "unidentified",
+                range(30, 60),
+                Some(outer.id),
+            );
+            let nested = make_scope(
+                ScopeKind::Function,
+                "nested",
+                range(40, 50),
+                Some(missing.id),
+            );
+            let outer_symbol = make_symbol("outer", symbol_kind, outer.range, Some(outer.id));
+            let nested_symbol = make_symbol(
+                "nested",
+                SymbolKind::Function,
+                nested.range,
+                Some(nested.id),
+            );
+            let binder = SemanticBinder::new(
+                &[outer_symbol.clone(), nested_symbol.clone()],
+                &[outer, missing, nested],
+                Default::default(),
+            );
+            assert_eq!(
+                binder.source_for_range(range(20, 21)),
+                Some(outer_symbol.id)
+            );
+            assert_eq!(binder.source_for_range(range(35, 36)), None);
+            assert_eq!(
+                binder.source_for_range(range(45, 46)),
+                Some(nested_symbol.id)
+            );
+            assert_eq!(
+                binder.source_for_range(range(70, 71)),
+                Some(outer_symbol.id)
+            );
+        }
+    }
+
+    #[test]
     fn test_bind_scope_fills_scope_id() {
         let file_range = TextRange {
             start_byte: 0,
@@ -223,7 +280,8 @@ mod tests {
 
         let mut refs = vec![make_reference("bar", ReferenceKind::Usage, ref_range)];
 
-        let binder = SemanticBinder::new(&[func_sym], &[file_scope, func_scope]);
+        let binder =
+            SemanticBinder::new(&[func_sym], &[file_scope, func_scope], Default::default());
         binder.bind_scope(&mut refs);
 
         assert_eq!(refs[0].scope_id, Some(func_scope_id));
@@ -265,7 +323,8 @@ mod tests {
         let mut refs = vec![make_reference("bar", ReferenceKind::Usage, ref_range)];
         let mut edges = vec![];
 
-        let binder = SemanticBinder::new(&[func_sym], &[file_scope, func_scope]);
+        let binder =
+            SemanticBinder::new(&[func_sym], &[file_scope, func_scope], Default::default());
         binder.bind_all(make_file_id(), &mut refs, &mut edges);
 
         assert!(refs[0].source_symbol.is_some());

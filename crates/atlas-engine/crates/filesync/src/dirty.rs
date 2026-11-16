@@ -59,21 +59,23 @@ fn build_dirty_set_with_required_capability(
     required: FactCoverage,
     on_progress: Option<&(dyn Fn(u64) + Sync)>,
 ) -> Result<DirtySet> {
-    let current_hashes: HashMap<String, String> = discovered
-        .par_iter()
-        .map(|rel_path| -> Result<(String, String)> {
-            let abs_path = root.join(rel_path);
-            let content = std::fs::read(&abs_path).with_context(|| {
-                format!("Failed to read discovered file {}", abs_path.display())
-            })?;
-            let hash = workspace::file_content_hash(&content);
-            let key =
-                SourcePath::try_from_relative(&rel_path.to_string_lossy()).with_context(|| {
-                    format!("Failed to normalize discovered path {}", rel_path.display())
+    // Hashing precedes extraction and must not initialize a second Rayon pool.
+    let current_hashes: HashMap<String, String> = extraction::extraction_pool().install(|| {
+        discovered
+            .par_iter()
+            .map(|rel_path| -> Result<(String, String)> {
+                let abs_path = root.join(rel_path);
+                let content = std::fs::read(&abs_path).with_context(|| {
+                    format!("Failed to read discovered file {}", abs_path.display())
                 })?;
-            Ok((key.as_str().to_string(), hash))
-        })
-        .collect::<Result<_>>()?;
+                let hash = workspace::file_content_hash(&content);
+                let key = SourcePath::try_from_relative(&rel_path.to_string_lossy()).with_context(
+                    || format!("Failed to normalize discovered path {}", rel_path.display()),
+                )?;
+                Ok((key.as_str().to_string(), hash))
+            })
+            .collect::<Result<_>>()
+    })?;
 
     let db_files = store.list_files()?;
     let db_hashes: HashMap<String, String> = db_files
@@ -252,43 +254,47 @@ mod tests {
         std::fs::write(dir.path().join(&path), source).unwrap();
         let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
 
-        let store = Store::open_in_memory().unwrap();
-        store.init_schema().unwrap();
         let file_id = FileId::generate("main.ts");
-        store
-            .upsert_file(&FileInfo {
-                file_id,
-                path: "main.ts".into(),
-                language: Language::TypeScript,
-                content_hash: hash.clone(),
-                status: ParseStatus::Success,
-            })
-            .unwrap();
-        store
-            .upsert_file_extraction_state(
-                &file_id,
-                "dataflow",
-                &hash,
-                "complete",
-                FactCoverage::from_layers(&["dataflow"]),
-            )
-            .unwrap();
-
-        let structural = build_dirty_set_for_mode(
-            &store,
-            std::slice::from_ref(&path),
-            dir.path(),
-            &ExtractionMode::Structural,
-            None,
+        let mut facts = extraction::extract_file_with_mode(
+            &extraction::create_frontend(Language::TypeScript).unwrap(),
+            file_id,
+            &path,
+            source,
+            &hash,
+            ExtractionMode::Full,
+            &(),
         )
         .unwrap();
-        let full =
-            build_dirty_set_for_mode(&store, &[path], dir.path(), &ExtractionMode::Full, None)
-                .unwrap();
-
-        assert!(structural.dirty.is_empty());
-        assert_eq!(structural.clean_count, 1);
-        assert!(full.dirty.is_empty());
-        assert_eq!(full.clean_count, 1);
+        let current_version = facts.dataflow_version;
+        assert_eq!(
+            current_version,
+            Some(types::lazy::DATAFLOW_ANALYZER_VERSION)
+        );
+        for version in [current_version, Some(0), None] {
+            let store = Store::open_in_memory().unwrap();
+            store.init_schema().unwrap();
+            facts.dataflow_version = version;
+            store.insert_file_facts(&facts).unwrap();
+            let structural = build_dirty_set_for_mode(
+                &store,
+                std::slice::from_ref(&path),
+                dir.path(),
+                &ExtractionMode::Structural,
+                None,
+            )
+            .unwrap();
+            let full = build_dirty_set_for_mode(
+                &store,
+                std::slice::from_ref(&path),
+                dir.path(),
+                &ExtractionMode::Full,
+                None,
+            )
+            .unwrap();
+            assert!(structural.dirty.is_empty());
+            assert_eq!(structural.clean_count, 1);
+            assert_eq!(full.dirty.is_empty(), version == current_version);
+            assert_eq!(full.clean_count, usize::from(version == current_version));
+        }
     }
 }

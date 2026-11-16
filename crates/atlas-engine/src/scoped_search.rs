@@ -757,6 +757,7 @@ pub fn seed_file_inventory_from_scope(
     let config = DiscoveryConfig {
         include_patterns,
         exclude_patterns: Vec::new(),
+        ..Default::default()
     };
     let (files, complete) = discover_files_bounded(
         project_root,

@@ -32,6 +32,43 @@ use std::sync::Arc;
 // Helpers
 // ────────────────────────────────────────────────────────────────
 
+fn assert_operand_continuation(
+    store: &Store,
+    response: &atlas_engine::trace::TraceQueryResponse<atlas_engine::TracePath>,
+    operand: &str,
+) {
+    let path = response.result.as_ref().unwrap();
+    assert!(path.partial_result);
+    assert_eq!(
+        serde_json::to_value(&path.diagnostics).unwrap(),
+        serde_json::to_value(&response.diagnostics).unwrap()
+    );
+    let mut found = false;
+    for diagnostic in &response.diagnostics {
+        if diagnostic.code.as_deref() != Some("trace_alternatives_unexpanded") {
+            continue;
+        }
+        let detail: serde_json::Value =
+            serde_json::from_str(diagnostic.detail.as_ref().unwrap()).unwrap();
+        for edge in detail["edges"].as_array().unwrap() {
+            let id: atlas_engine::ids::DataNodeId =
+                serde_json::from_value(edge["source_id"].clone()).unwrap();
+            let node = store.get_data_node(&id).unwrap().unwrap();
+            if node.name.as_deref() == Some(operand) {
+                let position = &edge["position"];
+                assert_eq!(position["line"], node.range.start_line + 1);
+                assert_eq!(position["column"], node.range.start_column + 1);
+                assert_eq!(
+                    position["location"],
+                    serde_json::to_value(node.range).unwrap()
+                );
+                found = true;
+            }
+        }
+    }
+    assert!(found, "missing omitted operand {operand}");
+}
+
 /// Combined stats from the resolve + build pipeline.
 struct PipelineStats {
     resolution: ResolutionStats,
@@ -301,7 +338,7 @@ fn ts_slicer_traces_backward_dataflow_from_variable() {
     );
 
     // Slice backward from the result variable.
-    let path = Slicer::slice(store.as_ref(), &sink_point, 20, None)
+    let path = Slicer::slice(store.as_ref(), &sink_point, 20, None, &Default::default())
         .unwrap()
         .expect("backward slice should produce a path");
 
@@ -340,7 +377,7 @@ fn ts_slicer_returns_none_for_position_without_data_node() {
     let point = Locator::locate(store.as_ref(), &file_id, 1, 1).unwrap();
 
     // Slicer should return None when there is no data node.
-    let path = Slicer::slice(store.as_ref(), &point, 10, None).unwrap();
+    let path = Slicer::slice(store.as_ref(), &point, 10, None, &Default::default()).unwrap();
     assert!(
         path.is_none(),
         "slicer should return None for positions without data nodes"
@@ -512,11 +549,16 @@ function run(): void {
             edge.confidence < 0.7,
             "virtual ArgToParam edge should have confidence 0.67"
         );
-        assert!(
-            edge.provenance.contains("caller arg"),
-            "virtual edge provenance should mention 'caller arg': {}",
-            edge.provenance,
-        );
+        let boundary = edge
+            .callsite_id
+            .expect("argument mapping must retain its callsite");
+        let calls = store.find_resolved_callsites_by_id(&boundary).unwrap();
+        let call = calls
+            .iter()
+            .find(|call| Some(call.callee) == input_param.function_id)
+            .expect("the recorded call must enter this parameter's function");
+        assert_eq!(call.callsite.args[0].data_node_id, Some(edge.source_id));
+        assert_eq!(call.callsite.args[0].value, "42");
         assert_eq!(
             edge.target_id, input_param.id,
             "virtual edge should target the input parameter"
@@ -557,23 +599,17 @@ function run(): void {
     let (store, _stats) = index_files(files);
     let caller_file_id = FileId::generate("caller.ts");
 
-    // ── Find the assign_value Expr in caller that IS the call result ──
+    // The invocation result and the consuming initializer are distinct nodes.
     let data_nodes = store.find_data_nodes_by_file(&caller_file_id).unwrap();
-    let call_exprs: Vec<_> = data_nodes
+    let call_result_expr = data_nodes
         .iter()
-        .filter(|dn| dn.kind == atlas_engine::enums::DataNodeKind::Expr && dn.callsite_id.is_some())
-        .collect();
-    assert!(
-        !call_exprs.is_empty(),
-        "should have at least one Expr DataNode with callsite_id \
-         (assign_value of call expression in caller.ts); Fix: df.assign_value \
-         now gets callsite_id from enclosing call_expression"
-    );
-
-    let call_result_expr = call_exprs[0];
+        .find(|dn| {
+            dn.kind == DataNodeKind::CallReturn && dn.name.as_deref() == Some("compute(10, 3)")
+        })
+        .expect("recorded compute invocation result");
     assert!(
         call_result_expr.callsite_id.is_some(),
-        "call_result Expr must have callsite_id for return bridge"
+        "call result must have its actual invocation identity"
     );
 
     // ── Verify RuntimeEdgeProvider produces ReturnToCall edges ──
@@ -589,7 +625,7 @@ function run(): void {
     assert!(
         !return_edges.is_empty(),
         "RuntimeEdgeProvider should produce ReturnToCall edges from callee \
-         return to caller call-result Expr; found {} edges total, {} ReturnToCall",
+         return to caller CallReturn; found {} edges total, {} ReturnToCall",
         edges.len(),
         return_edges.len(),
     );
@@ -606,7 +642,7 @@ function run(): void {
         );
         assert_eq!(
             edge.target_id, call_result_expr.id,
-            "virtual edge should target the caller's call-result Expr"
+            "virtual edge should target the caller's invocation result"
         );
     }
 }
@@ -787,13 +823,31 @@ export struct MainPage {
             && edge.source_id == value_node_id
             && edge.target_id == sink_node.id
     }));
-    let path = Slicer::slice(store.as_ref(), &sink, 10, Some(&provider))
-        .unwrap()
-        .expect("state-backed Web field should be traceable");
+    let path = Slicer::slice(
+        store.as_ref(),
+        &sink,
+        10,
+        Some(&provider),
+        &Default::default(),
+    )
+    .unwrap()
+    .expect("state-backed Web field should be traceable");
     assert!(
         path.steps
             .iter()
-            .any(|step| step.edge_kind == DataFlowKind::StateFlow)
+            .any(|step| step.edge_kind == DataFlowKind::StateFlow),
+        "path sources: {:?}; diagnostics: {:?}",
+        path.steps
+            .iter()
+            .map(|step| (
+                step.edge_kind,
+                store
+                    .get_data_node(&step.from_node_id)
+                    .unwrap()
+                    .map(|node| (node.kind, node.name))
+            ))
+            .collect::<Vec<_>>(),
+        path.diagnostics.iter().map(|d| &d.code).collect::<Vec<_>>()
     );
 }
 
@@ -1760,12 +1814,18 @@ fn p5_ts_param_slice_caller_evidence_combined() {
     );
     assert!(resp.ok, "trace_variable should succeed");
     assert!(resp.capability.is_some(), "capability must be present");
-    assert!(!resp.partial_result, "full result expected, not partial");
     assert!(
-        resp.diagnostics.is_empty(),
-        "expected no diagnostics, got {:?}",
+        resp.partial_result,
+        "one operand path does not cover base * factor"
+    );
+    assert!(
+        resp.diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("trace_alternatives_unexpanded")),
+        "the omitted operand needs a continuation diagnostic: {:?}",
         resp.diagnostics
     );
+    assert_operand_continuation(&store, &resp, "base");
 
     let cap = resp
         .capability
@@ -1967,12 +2027,18 @@ fn p5_js_param_slice_caller_evidence_combined() {
     );
     assert!(resp.ok, "JS trace_variable should succeed");
     assert!(resp.capability.is_some(), "JS capability must be present");
-    assert!(!resp.partial_result, "JS full result expected, not partial");
     assert!(
-        resp.diagnostics.is_empty(),
-        "JS expected no diagnostics, got {:?}",
+        resp.partial_result,
+        "one operand path does not cover base * factor"
+    );
+    assert!(
+        resp.diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("trace_alternatives_unexpanded")),
+        "the omitted operand needs a continuation diagnostic: {:?}",
         resp.diagnostics
     );
+    assert_operand_continuation(&store, &resp, "base");
 
     let cap = resp
         .capability
@@ -2252,7 +2318,7 @@ fn sem_a_shadowing_inner_scope_not_traced_as_outer() {
         "locator should find a data node at 'total' position"
     );
 
-    let path = Slicer::slice(store.as_ref(), &point, 10, None)
+    let path = Slicer::slice(store.as_ref(), &point, 10, None, &Default::default())
         .expect("slice error")
         .expect("backward trace must produce path");
 
@@ -2338,7 +2404,7 @@ function scale(p: Point, factor: number): Point {
     )
     .expect("locate failed");
 
-    let path = Slicer::slice(store.as_ref(), &point, 10, None)
+    let path = Slicer::slice(store.as_ref(), &point, 10, None, &Default::default())
         .expect("slice error")
         .expect("field-base trace must produce path");
     assert!(!path.steps.is_empty(), "field-base trace must have steps");
@@ -2408,7 +2474,7 @@ function finalize(v: number): number { return v * 2; }
     )
     .expect("locate failed");
 
-    let path = Slicer::slice(store.as_ref(), &point, 20, None)
+    let path = Slicer::slice(store.as_ref(), &point, 20, None, &Default::default())
         .expect("slice error")
         .expect("multi-assignment trace must produce path");
     // The chain should have at least 3 dataflow edges:
@@ -2488,9 +2554,15 @@ function compute(): number {
     // For nested calls, we need interprocedural bridging to cross
     // function boundaries.
     use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
-        .expect("slice error")
-        .expect("nested call trace must produce path");
+    let path = Slicer::slice(
+        store.as_ref(),
+        &point,
+        20,
+        Some(&RuntimeEdgeProvider),
+        &Default::default(),
+    )
+    .expect("slice error")
+    .expect("nested call trace must produce path");
 
     assert!(!path.steps.is_empty(), "nested call trace must have steps");
     // Verify that the trace crosses at least one function boundary.
@@ -2555,9 +2627,15 @@ function main(): number {
 
     // Interprocedural bridge is needed to cross helper() → result boundary.
     use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
-        .expect("slice error")
-        .expect("cross-function trace must produce path");
+    let path = Slicer::slice(
+        store.as_ref(),
+        &point,
+        20,
+        Some(&RuntimeEdgeProvider),
+        &Default::default(),
+    )
+    .expect("slice error")
+    .expect("cross-function trace must produce path");
 
     assert!(
         path.steps
@@ -3398,13 +3476,11 @@ fn vfy_arkts_basic_extraction() {
 // Canonical path-level trace verification (cross-language baseline)
 // ────────────────────────────────────────────────────────────────
 
-/// TypeScript: canonical provenance path — param → field → local → call arg → call target → return.
-///
-/// Uses `TraceEngine::trace_variable` to verify that a complete dataflow
-/// chain is recoverable, not just individual edge presence.
+/// An unmodeled method result stops value propagation. Its receiver can be
+/// investigated separately through the known caller's argument and fields.
 #[cfg(feature = "typescript")]
 #[test]
-fn vfy_ts_canonical_provenance_path_field_to_return() {
+fn vfy_ts_unknown_method_result_keeps_receiver_continuation() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "provenance.ts",
@@ -3444,11 +3520,36 @@ function process(req: { body: { name: string } }): string {
         .as_ref()
         .expect("trace_variable should produce a result for TS");
 
-    // The path should have meaningful steps covering the full provenance chain:
-    //   req.body.name (Field) --FieldLoad--> ???
-    //   --> name (Local/Assign)
-    //   --> helper (CallTarget)
-    //   --> clean (Local) --> Return
+    assert_eq!(
+        path.source.data_node.as_ref().unwrap().kind,
+        DataNodeKind::CallReturn
+    );
+    assert_eq!(
+        path.source.data_node.as_ref().unwrap().name.as_deref(),
+        Some("input.trim()")
+    );
+    assert!(path.partial_result);
+    assert!(
+        path.diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("trace_call_result_unavailable"))
+    );
+    assert!(
+        path.steps
+            .iter()
+            .any(|step| step.edge_kind == DataFlowKind::ReturnToCall)
+    );
+    // Reading the receiver is a separate investigation, not proof that trim
+    // returns its receiver. Keep the same entered helper invocation.
+    let receiver = nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("input"))
+        .unwrap();
+    let continuation = engine.trace_data_node(&receiver.id, 20, &path.source.call_context);
+    assert!(continuation.ok);
+    let path = continuation.result.as_ref().unwrap();
+
+    // The receiver investigation retains the caller's field/argument chain.
     assert!(
         path.steps.len() >= 3,
         "canonical path should have at least 3 steps, got {}: {:?}",
@@ -3583,13 +3684,11 @@ def process(req):
     );
 }
 
-/// Java: canonical provenance path — param → field → local → call → return.
-///
-/// Verifies chained field access (`req.body.name`) and inter-procedural
-/// call bridging (`helper(name)`) on a Java fixture with callee in the same file.
+/// Java has the same unknown-result boundary and explicit receiver continuation
+/// as TypeScript; missing library semantics must not become an identity summary.
 #[cfg(feature = "java")]
 #[test]
-fn vfy_java_canonical_provenance_path_field_to_return() {
+fn vfy_java_unknown_method_result_keeps_receiver_continuation() {
     let _ = tracing_subscriber::fmt::try_init();
     let files = &[(
         "Provenance.java",
@@ -3636,6 +3735,33 @@ class Body {
         .result
         .as_ref()
         .expect("trace_variable should produce a result for Java");
+
+    assert_eq!(
+        path.source.data_node.as_ref().unwrap().kind,
+        DataNodeKind::CallReturn
+    );
+    assert_eq!(
+        path.source.data_node.as_ref().unwrap().name.as_deref(),
+        Some("input.trim()")
+    );
+    assert!(path.partial_result);
+    assert!(
+        path.diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("trace_call_result_unavailable"))
+    );
+    assert!(
+        path.steps
+            .iter()
+            .any(|step| step.edge_kind == DataFlowKind::ReturnToCall)
+    );
+    let receiver = nodes
+        .iter()
+        .find(|node| node.kind == DataNodeKind::Parameter && node.name.as_deref() == Some("input"))
+        .unwrap();
+    let continuation = engine.trace_data_node(&receiver.id, 20, &path.source.call_context);
+    assert!(continuation.ok);
+    let path = continuation.result.as_ref().unwrap();
 
     let kinds: Vec<DataFlowKind> = path.steps.iter().map(|s| s.edge_kind).collect();
 

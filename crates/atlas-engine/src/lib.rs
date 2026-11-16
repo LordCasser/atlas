@@ -41,6 +41,8 @@ pub mod focus;
 mod index_precision;
 /// Investigation context: MCP-session-scoped analysis focus for Focus job prioritization.
 pub mod investigation;
+
+pub mod call_context;
 mod lazy_budget;
 /// AnswerQuality tier computation for Focus materialize transparency.
 pub mod precision;
@@ -68,7 +70,10 @@ pub use filesync::{
 };
 
 /// Database store and schema version.
-pub use db::{CURRENT_SCHEMA_VERSION, DiscoveredFile, Store};
+pub use db::{
+    CURRENT_SCHEMA_VERSION, CppCallRegions, CppTypeLookupReadWork, CppTypeLookupSelection,
+    DiscoveredFile, Store,
+};
 
 /// Graph layer: builder, query engine, snapshots, annotation materialization.
 pub use graph::{
@@ -78,6 +83,15 @@ pub use graph::{
     TraversalDirection, materialize_annotations,
 };
 
+pub use filesync::index_pipeline::KEY_COMPILER_CALL_GAPS;
+pub use resolution::compiler::{
+    CompilerBindingGap, CompilerBindingGapReason, CompilerCallBindings, CompilerCallInput,
+    CompilerCallResolution, CompilerDeclaration, CompilerDispatch, CompilerLocation,
+    CompilerObservation, CompilerObservationKind, associate_compiler_calls,
+};
+pub use resolution::{
+    CppBaseNavigation, CppMemberNavigation, CppRecordNavigation, cpp_declaration_navigation,
+};
 /// Resolution layer: reference resolver and path aliases.
 pub use resolution::{PathAliasConfig, PathAliasResolver, ReferenceResolver, ResolutionStats};
 
@@ -380,6 +394,41 @@ impl Engine {
         column: u32,
         max_depth: usize,
     ) -> analysis::trace::TraceQueryResponse<TracePath> {
+        self.trace_variable_at(file_id, line, column, max_depth, None, &[])
+    }
+
+    /// Continue a value trace from a node returned by this store. The existing
+    /// lazy window preparation is reused, but the final sink must still be
+    /// this exact identity after preparation; no positional replacement is used.
+    pub fn trace_data_node(
+        &self,
+        node_id: &DataNodeId,
+        max_depth: usize,
+        call_context: &[CallsiteId],
+    ) -> analysis::trace::TraceQueryResponse<TracePath> {
+        match self.store.get_data_node(node_id) {
+            Ok(Some(node)) => self.trace_variable_at(
+                &node.file_id,
+                node.range.start_line.saturating_add(1),
+                node.range.start_column.saturating_add(1),
+                max_depth,
+                Some(*node_id),
+                call_context,
+            ),
+            Ok(None) => self.trace.trace_data_node(node_id, max_depth, call_context),
+            Err(error) => TraceQueryResponse::err("trace_variable", &error.to_string()),
+        }
+    }
+
+    fn trace_variable_at(
+        &self,
+        file_id: &FileId,
+        line: u32,
+        column: u32,
+        max_depth: usize,
+        node_id: Option<DataNodeId>,
+        call_context: &[CallsiteId],
+    ) -> analysis::trace::TraceQueryResponse<TracePath> {
         // Resolve capability for gating
         let cap = self.resolve_capability(file_id);
 
@@ -539,8 +588,16 @@ impl Engine {
         }
 
         // Delegate to analysis TraceEngine
-        let mut resp = self.trace.trace_variable(file_id, line, column, max_depth);
+        let mut resp = match node_id {
+            Some(id) => self.trace.trace_data_node(&id, max_depth, call_context),
+            None => self.trace.trace_variable(file_id, line, column, max_depth),
+        };
         resp.partial_result = resp.partial_result || partial;
+        if let Some(path) = resp.result.as_mut() {
+            path.partial_result |= partial;
+            path.diagnostics.extend(lazy_diagnostics.clone());
+            path.lazy_summary = lazy_summary.clone();
+        }
         resp.diagnostics.extend(lazy_diagnostics);
         resp.lazy_summary = lazy_summary;
         resp
@@ -801,5 +858,227 @@ mod tests {
         let _resp2 = engine.trace_variable(&file_id, 1, 10, 10);
         let dn2 = engine.store().find_data_nodes_by_file(&file_id).unwrap();
         assert_eq!(dn2.len(), count1, "data node count unchanged on cache hit");
+    }
+
+    #[test]
+    #[cfg(feature = "cpp")]
+    fn lazy_semantic_diagnostics_survive_cold_and_warm_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "struct Item {};\nItem selected(Item first, Item second) {\n Item value = first;\n value = second;\n return value;\n}\n";
+        let path = dir.path().join("diagnostics.cpp");
+        std::fs::write(&path, source).unwrap();
+        let file = FileId::generate("diagnostics.cpp");
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let engine = Engine::open(&dir.path().join("atlas.db")).unwrap();
+        engine.store().init_schema().unwrap();
+        let frontend = extraction::create_frontend(Language::Cpp).unwrap();
+        let extract = |mode| {
+            extraction::extract_file_with_mode(&frontend, file, &path, source, &hash, mode, &())
+                .unwrap()
+        };
+        let full = extract(ExtractionMode::Full);
+        assert!(
+            full.diagnostics
+                .iter()
+                .any(|d| d.message.starts_with("use_def_write_order_unmodeled:"))
+        );
+        engine
+            .insert_facts(&extract(ExtractionMode::Structural))
+            .unwrap();
+        let function = full.symbols.iter().find(|s| s.name == "selected").unwrap();
+        let mut previous = None;
+        for cold in [true, false] {
+            let window = engine
+                .materialize()
+                .dataflow()
+                .ensure_for_function_with_depth(&function.id, 0, None)
+                .unwrap();
+            assert_eq!(window.units_built, usize::from(cold));
+            assert_eq!(window.units_cached, usize::from(!cold));
+            let node = engine
+                .store()
+                .find_data_nodes_by_function(&function.id)
+                .unwrap()
+                .into_iter()
+                .find(|n| n.kind == DataNodeKind::Return)
+                .unwrap();
+            let response = engine.trace_engine().trace_data_node(&node.id, 40, &[]);
+            assert!(response.ok && response.partial_result);
+            let path = response.result.unwrap();
+            let diagnostics: Vec<_> = path
+                .diagnostics
+                .iter()
+                .filter(|d| d.message.starts_with("use_def_write_order_unmodeled:"))
+                .collect();
+            assert!(
+                !diagnostics.is_empty(),
+                "semantic extraction limits must reach the trace"
+            );
+            let current = serde_json::to_value(diagnostics).unwrap();
+            if let Some(previous) = previous {
+                assert_eq!(previous, current);
+            }
+            previous = Some(current);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "cpp")]
+    fn full_dataflow_cache_requires_current_producer_version_and_reuses_empty_functions() {
+        use types::lazy::DATAFLOW_ANALYZER_VERSION;
+        for version in [Some(DATAFLOW_ANALYZER_VERSION), Some(0), None] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = "struct Item { Item(int) {} };\nvoid empty() {}\nItem* selected(int input) { return new Item(input); }\n";
+            let path = dir.path().join("full.cpp");
+            std::fs::write(&path, source).unwrap();
+            let file = FileId::generate("full.cpp");
+            let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+            let mut facts = extraction::extract_file_with_mode(
+                &extraction::create_frontend(Language::Cpp).unwrap(),
+                file,
+                &path,
+                source,
+                &hash,
+                ExtractionMode::Full,
+                &(),
+            )
+            .unwrap();
+            facts.dataflow_version = version;
+            let old = version != Some(DATAFLOW_ANALYZER_VERSION);
+            if old {
+                // Simulate a previous calculation lacking invocation boundaries.
+                facts
+                    .data_nodes
+                    .retain(|n| n.kind != DataNodeKind::CallReturn);
+                let ids: std::collections::HashSet<_> =
+                    facts.data_nodes.iter().map(|n| n.id).collect();
+                facts
+                    .dataflow_edges
+                    .retain(|e| ids.contains(&e.source) && ids.contains(&e.target));
+                facts.diagnostics.push(types::ExtractDiagnostic {
+                    level: types::DiagnosticLevel::Warning,
+                    range: None,
+                    message: "obsolete dataflow diagnostic".into(),
+                });
+            }
+            let engine = Engine::open(&dir.path().join("atlas.db")).unwrap();
+            engine.store().init_schema().unwrap();
+            engine.insert_facts(&facts).unwrap();
+            for name in ["selected", "empty"] {
+                let function = facts.symbols.iter().find(|s| s.name == name).unwrap();
+                for first in [true, false] {
+                    let window = engine
+                        .materialize()
+                        .dataflow()
+                        .ensure_for_function_with_depth(&function.id, 0, None)
+                        .unwrap();
+                    let rebuilt = first && old;
+                    assert_eq!(
+                        window.units_built,
+                        usize::from(rebuilt),
+                        "{version:?}/{name}/{first}"
+                    );
+                    assert_eq!(window.units_cached, usize::from(!rebuilt));
+                }
+                if name == "selected" {
+                    let nodes = engine
+                        .store()
+                        .find_data_nodes_by_function(&function.id)
+                        .unwrap();
+                    assert!(nodes.iter().any(|n| n.kind == DataNodeKind::CallReturn));
+                    let returned = nodes
+                        .iter()
+                        .find(|n| n.kind == DataNodeKind::Return)
+                        .unwrap();
+                    let response = engine.trace_engine().trace_data_node(&returned.id, 40, &[]);
+                    let result = response.result.unwrap();
+                    assert_eq!(
+                        result.source.data_node.unwrap().kind,
+                        DataNodeKind::CallReturn
+                    );
+                    assert!(
+                        !result
+                            .diagnostics
+                            .iter()
+                            .any(|d| d.message.contains("obsolete dataflow"))
+                    );
+                    assert!(
+                        result
+                            .diagnostics
+                            .iter()
+                            .any(|d| d.code.as_deref() == Some("trace_call_result_unavailable"))
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "typescript")]
+    fn lazy_trace_keeps_path_and_envelope_limits_consistent_on_cold_and_warm_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(".atlas/atlas.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let engine = Engine::open(&db_path).unwrap();
+        engine.store().init_schema().unwrap();
+        let source = "function mul(a: number, b: number): number {\n  return a * b;\n}\n";
+        let path = dir.path().join("limits.ts");
+        std::fs::write(&path, source).unwrap();
+        let file = FileId::generate("limits.ts");
+        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+        let facts = extraction::extract_file_with_mode(
+            &extraction::create_frontend(Language::TypeScript).unwrap(),
+            file,
+            &path,
+            source,
+            &hash,
+            ExtractionMode::Structural,
+            &(),
+        )
+        .unwrap();
+        engine.insert_facts(&facts).unwrap();
+        for cold in [true, false] {
+            // The '*' position selects the whole return expression, not just
+            // one operand's identifier at its own source location.
+            let response = engine.trace_variable(&file, 2, 12, 10);
+            assert!(response.ok && response.partial_result);
+            let path = response.result.as_ref().unwrap();
+            assert!(path.partial_result);
+            assert_eq!(
+                serde_json::to_value(&path.diagnostics).unwrap(),
+                serde_json::to_value(&response.diagnostics).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&path.lazy_summary).unwrap(),
+                serde_json::to_value(&response.lazy_summary).unwrap()
+            );
+            let summary = response.lazy_summary.as_ref().unwrap();
+            if cold {
+                assert!(summary.units_built > 0);
+            } else {
+                assert!(summary.units_cached > 0);
+            }
+            let operand = engine
+                .store
+                .find_data_nodes_by_file(&file)
+                .unwrap()
+                .into_iter()
+                .find(|node| {
+                    node.kind == DataNodeKind::VariableUse
+                        && node.name.as_deref() == Some("a")
+                        && node.range.start_line == 1
+                })
+                .expect("recorded operand use");
+            let continued = engine.trace_data_node(&operand.id, 10, &[]);
+            assert!(continued.ok);
+            let path = continued.result.as_ref().unwrap();
+            assert_eq!(path.sink.data_node.as_ref().unwrap().id, operand.id);
+            assert_eq!(path.partial_result, continued.partial_result);
+            assert_eq!(
+                serde_json::to_value(&path.diagnostics).unwrap(),
+                serde_json::to_value(&continued.diagnostics).unwrap()
+            );
+            assert!(continued.lazy_summary.as_ref().unwrap().units_cached > 0);
+        }
     }
 }

@@ -781,7 +781,20 @@ fn write_file_facts_inner(
             facts.file.status.as_str(),
         ],
     )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO file_diagnostics (file_id, content_hash, diagnostics_json, dataflow_version) VALUES (?1, ?2, ?3, ?4)",
+        params![facts.file.file_id, facts.file.content_hash, serde_json::to_string(&facts.diagnostics)?,
+            // Unknown Full data is not structural-only diagnostic evidence.
+            facts.dataflow_version.or_else(|| (facts.layer == "dataflow").then_some(0))],
+    )?;
     timing.files_ns = t0.elapsed().as_nanos() as u64;
+
+    if let Some(cpp_types) = &facts.cpp_types {
+        conn.execute(
+            "INSERT OR REPLACE INTO cpp_type_facts (file_id, facts_json) VALUES (?1, ?2)",
+            params![facts.file.file_id, serde_json::to_string(cpp_types)?],
+        )?;
+    }
 
     if !facts.symbols.is_empty() {
         let t0 = Instant::now();
@@ -1076,7 +1089,11 @@ fn write_file_facts_inner(
 
     // Record per-file per-layer index status.
     let t0 = Instant::now();
-    let status = if facts.budget_exceeded {
+    let status = if facts.budget_exceeded
+        || facts.dataflow_failed
+        || facts.lexical_failed
+        || facts.cfg_failed
+    {
         "partial"
     } else {
         "complete"
@@ -1092,14 +1109,16 @@ fn write_file_facts_inner(
     }
     conn.execute(
         "INSERT INTO extraction_state
-            (file_id, unit_id, layer, content_hash, status, capability_mask, updated_at)
-         VALUES (?1, NULL, ?2, ?3, ?4, ?5, datetime('now'))",
+            (file_id, unit_id, layer, content_hash, status, capability_mask, dataflow_version, budget_exceeded, updated_at)
+         VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
         params![
             facts.file.file_id,
             facts.layer,
             facts.file.content_hash,
             status,
             capability_mask.bits() as i64,
+            facts.dataflow_version,
+            facts.budget_exceeded,
         ],
     )?;
     timing.extraction_state_ns = t0.elapsed().as_nanos() as u64;

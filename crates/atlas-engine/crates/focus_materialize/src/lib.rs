@@ -233,7 +233,8 @@ impl LazyDataflowService {
         {
             let planned = window.units.len();
             let available = result.units_built + result.units_cached;
-            let incomplete = result.budget_exceeded || result.units_pending > 0;
+            let incomplete =
+                result.incomplete || result.budget_exceeded || result.units_pending > 0;
             let precision = dataflow_precision(available, planned, incomplete);
             window.quality = Some(precision);
         }

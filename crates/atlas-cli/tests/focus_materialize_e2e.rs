@@ -530,7 +530,7 @@ fn layer_constants_match_strings() {
 /// real structural CallsiteIds, not provisional byte-offset values.
 ///
 /// **Background**: LazyDataflow mode skips callsite extraction (mode.rs:27),
-/// so CallArg DataNodes initially receive provisional `CallsiteId::from_file_byte`
+/// so CallArg DataNodes initially receive provisional `CallsiteId::from_file_range`
 /// IDs.  The loader (`loader.rs:160-210`) remaps them to real `CallsiteId::generate`
 /// IDs by querying structural callsites already in the DB.
 ///
@@ -604,7 +604,7 @@ fn p2_lazy_dataflow_callsite_id_remap() {
     // byte-offset values from extraction).
     //
     // Before the P0#1 fix: CallArg DataNodes would carry provisional
-    // CallsiteId::from_file_byte(file_id, byte_offset) values, which
+    // CallsiteId::from_file_range(file_id, start_byte, end_byte) values, which
     // NEVER match the structural CallsiteId::generate(ref_id, caller,
     // byte_offset) values stored in the callsites table.
     let call_arg_nodes: Vec<_> = dn_after

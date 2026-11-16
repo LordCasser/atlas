@@ -5,6 +5,7 @@
 //! is not the same authority as the last successful Atlas index or sync.
 
 pub mod cleanup;
+mod cpp_annotations;
 pub mod detector;
 pub mod dirty;
 pub mod discovery;

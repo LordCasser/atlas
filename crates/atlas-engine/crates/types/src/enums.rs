@@ -693,10 +693,12 @@ impl Visibility {
 // ResolutionStrategy — how a reference was resolved
 // ---------------------------------------------------------------------------
 
-/// 7 strategies for resolving a reference to a symbol.
+/// How a written reference or an implicit call was resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionStrategy {
+    /// A compiler-selected direct target associated with the indexed callsite.
+    Compiler,
     ExactMatch,
     NameOnly,
     FuzzyMatch,
@@ -705,11 +707,15 @@ pub enum ResolutionStrategy {
     Builtin,
     /// Resolved via local dataflow def-use chain (e.g. function pointer call).
     DataflowPointer,
+    /// A language-mandated call at a written reference's source location.
+    /// Supplemental to, and never a replacement for, its primary target.
+    ImplicitOperator,
 }
 
 impl ResolutionStrategy {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Compiler => "compiler",
             Self::ExactMatch => "exact_match",
             Self::NameOnly => "name_only",
             Self::FuzzyMatch => "fuzzy_match",
@@ -717,12 +723,14 @@ impl ResolutionStrategy {
             Self::ImportResolved => "import_resolved",
             Self::Builtin => "builtin",
             Self::DataflowPointer => "dataflow_pointer",
+            Self::ImplicitOperator => "implicit_operator",
         }
     }
 
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
+            "compiler" => Some(Self::Compiler),
             "exact_match" => Some(Self::ExactMatch),
             "name_only" => Some(Self::NameOnly),
             "fuzzy_match" => Some(Self::FuzzyMatch),
@@ -730,6 +738,7 @@ impl ResolutionStrategy {
             "import_resolved" => Some(Self::ImportResolved),
             "builtin" => Some(Self::Builtin),
             "dataflow_pointer" => Some(Self::DataflowPointer),
+            "implicit_operator" => Some(Self::ImplicitOperator),
             _ => None,
         }
     }
@@ -745,6 +754,7 @@ impl ResolutionStrategy {
 pub enum Provenance {
     #[default]
     TreeSitter,
+    Compiler,
     Scip,
     Heuristic,
     /// Detected via callback registration pattern match.
@@ -759,6 +769,7 @@ impl Provenance {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::TreeSitter => "tree_sitter",
+            Self::Compiler => "compiler",
             Self::Scip => "scip",
             Self::Heuristic => "heuristic",
             Self::CallbackPattern => "callback_pattern",
@@ -771,6 +782,7 @@ impl Provenance {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "tree_sitter" => Some(Self::TreeSitter),
+            "compiler" => Some(Self::Compiler),
             "scip" => Some(Self::Scip),
             "heuristic" => Some(Self::Heuristic),
             "callback_pattern" => Some(Self::CallbackPattern),
@@ -966,12 +978,14 @@ impl BindingKind {
 // DataNodeKind — data-flow node categories
 // ---------------------------------------------------------------------------
 
-/// 13 data-node kinds.  Used by [`super::dataflow::DataNode`].
+/// Data-node kinds. Used by [`super::dataflow::DataNode`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataNodeKind {
     /// Formal parameter of a function.
     Parameter,
+    /// State of a reference parameter at recorded normal function exits.
+    ParameterOutput,
     /// Local variable binding.
     Local,
     /// Field / member access node.
@@ -990,6 +1004,8 @@ pub enum DataNodeKind {
     CallTarget,
     /// Value returned from a call-site.
     CallReturn,
+    /// Storage exposed as an argument after a call; write effects may be unknown.
+    CallOutput,
     /// Receiver object (`this` / `self`).
     Receiver,
     /// Global / module-scoped variable.
@@ -1004,6 +1020,7 @@ impl DataNodeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Parameter => "parameter",
+            Self::ParameterOutput => "parameter_output",
             Self::Local => "local",
             Self::Field => "field",
             Self::Return => "return",
@@ -1013,6 +1030,7 @@ impl DataNodeKind {
             Self::CallArg => "call_arg",
             Self::CallTarget => "call_target",
             Self::CallReturn => "call_return",
+            Self::CallOutput => "call_output",
             Self::Receiver => "receiver",
             Self::Global => "global",
             Self::Unknown => "unknown",
@@ -1024,6 +1042,7 @@ impl DataNodeKind {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "parameter" => Some(Self::Parameter),
+            "parameter_output" => Some(Self::ParameterOutput),
             "local" => Some(Self::Local),
             "field" => Some(Self::Field),
             "return" => Some(Self::Return),
@@ -1033,6 +1052,7 @@ impl DataNodeKind {
             "call_arg" => Some(Self::CallArg),
             "call_target" => Some(Self::CallTarget),
             "call_return" => Some(Self::CallReturn),
+            "call_output" => Some(Self::CallOutput),
             "receiver" => Some(Self::Receiver),
             "global" => Some(Self::Global),
             "unknown" => Some(Self::Unknown),
@@ -1068,6 +1088,8 @@ pub enum DataFlowKind {
     ReturnValue,
     /// Return value flows to call-site result (inter-procedural).
     ReturnToCall,
+    /// Reference parameter exit state flows to this invocation's argument output.
+    WritebackToCall,
     /// Receiver flows to `this` / `self` inside callee.
     ReceiverToThis,
     /// Value transfer through a framework-managed state channel.
@@ -1088,6 +1110,7 @@ impl DataFlowKind {
             Self::ArgToParam => "arg_to_param",
             Self::ReturnValue => "return_value",
             Self::ReturnToCall => "return_to_call",
+            Self::WritebackToCall => "writeback_to_call",
             Self::ReceiverToThis => "receiver_to_this",
             Self::StateFlow => "state_flow",
             Self::Phi => "phi",
@@ -1106,6 +1129,7 @@ impl DataFlowKind {
             "arg_to_param" => Some(Self::ArgToParam),
             "return_value" => Some(Self::ReturnValue),
             "return_to_call" => Some(Self::ReturnToCall),
+            "writeback_to_call" => Some(Self::WritebackToCall),
             "receiver_to_this" => Some(Self::ReceiverToThis),
             "state_flow" => Some(Self::StateFlow),
             "phi" => Some(Self::Phi),

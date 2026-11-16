@@ -879,8 +879,14 @@ fn normalize_ruby_dataflow_builder(
                     let t = terminal_text.clone();
                     (t.clone(), t)
                 });
-            let callsite_id = crate::languages::shared::find_call_expression(node, &["call"])
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id =
+                crate::languages::shared::find_call_expression(node, &["call"]).map(|ce| {
+                    types::ids::CallsiteId::from_file_range(
+                        &file_id,
+                        ce.start_byte() as u32,
+                        ce.end_byte() as u32,
+                    )
+                });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,

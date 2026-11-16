@@ -393,19 +393,32 @@ fn assert_has_edge_kind(path: &atlas_engine::TracePath, kind: DataFlowKind) {
     );
 }
 
-/// Assert the envelope is well‑formed: ok=true, partial_result=false,
-/// diagnostics empty, capability present with given language.
+/// A successful displayed path may still omit alternatives or stop at an
+/// analysis boundary. The envelope must preserve those limits, and the
+/// displayed edges must form a contiguous source-to-sink path. Individual
+/// fixtures separately assert their expected flow, origin and exclusions.
 fn assert_envelope_ok(
     resp: &atlas_engine::trace::TraceQueryResponse<atlas_engine::TracePath>,
     lang: &str,
 ) {
     assert!(resp.ok, "expected ok=true");
-    assert!(!resp.partial_result, "expected full result, not partial");
-    assert!(
-        resp.diagnostics.is_empty(),
-        "expected no diagnostics, got {:?}",
-        resp.diagnostics
+    let path = resp.result.as_ref().expect("successful trace has a path");
+    assert_eq!(resp.partial_result, path.partial_result);
+    assert_eq!(
+        serde_json::to_value(&resp.diagnostics).unwrap(),
+        serde_json::to_value(&path.diagnostics).unwrap(),
+        "the envelope must not discard path diagnostics"
     );
+    if !resp.diagnostics.is_empty() {
+        assert!(resp.partial_result, "trace limits require a partial result");
+    }
+    let mut current = path.source.data_node.as_ref().expect("source node").id;
+    for (index, step) in path.steps.iter().enumerate() {
+        assert_eq!(step.index as usize, index);
+        assert_eq!(step.from_node_id, current, "trace must remain contiguous");
+        current = step.to_node_id;
+    }
+    assert_eq!(current, path.sink.data_node.as_ref().expect("sink node").id);
     let cap = resp.capability.as_ref().expect("capability must exist");
     assert_eq!(cap.language, lang);
 }
@@ -676,9 +689,15 @@ fn fx3_cross_file_arg_to_param_bridge() {
         base_node.range.start_column + 1,
     )
     .expect("locate failed");
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
-        .expect("slice error")
-        .expect("cross-file trace must produce path");
+    let path = Slicer::slice(
+        store.as_ref(),
+        &point,
+        20,
+        Some(&RuntimeEdgeProvider),
+        &Default::default(),
+    )
+    .expect("slice error")
+    .expect("cross-file trace must produce path");
 
     assert!(!path.steps.is_empty(), "cross-file trace must have steps");
 
@@ -740,9 +759,15 @@ fn fx4_cross_file_return_to_call_bridge() {
     .expect("locate failed");
 
     use atlas_engine::trace::virtual_edges::RuntimeEdgeProvider;
-    let path = Slicer::slice(store.as_ref(), &point, 20, Some(&RuntimeEdgeProvider))
-        .expect("slice error")
-        .expect("cross-file return trace must produce path");
+    let path = Slicer::slice(
+        store.as_ref(),
+        &point,
+        20,
+        Some(&RuntimeEdgeProvider),
+        &Default::default(),
+    )
+    .expect("slice error")
+    .expect("cross-file return trace must produce path");
 
     assert!(
         !path.steps.is_empty(),
@@ -8879,7 +8904,7 @@ fn fx_rust_real_focus_engine_closure_parameter_pattern_persists_and_traces() {
     // intentionally selects that higher-priority aggregate at this position.
     // Seed the source-level slicer with the exact persisted body-use node.
     point.data_node = Some(use_node.clone());
-    let path = Slicer::slice(store.as_ref(), &point, 20, None)
+    let path = Slicer::slice(store.as_ref(), &point, 20, None, &Default::default())
         .expect("slice real closure parameter use")
         .expect("real FocusEngine closure parameter trace");
     assert_has_edge_kind(&path, DataFlowKind::Assign);

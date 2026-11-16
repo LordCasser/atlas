@@ -17,7 +17,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -29,7 +29,7 @@ use crate::trace::{CallerPathExplorer, ForwardPathExplorer, Locator, Slicer};
 use db::Store;
 use types::caller_path::{CallerChain, ForwardChain};
 use types::capability::{CapabilityLevel, FeatureSupport, LanguageCapabilityProfile};
-use types::ids::{FileId, SymbolId};
+use types::ids::{CallsiteId, DataNodeId, FileId, SymbolId};
 use types::trace::{
     BoundaryKind, BoundaryMarker, Evidence, LazySummary, TraceDiagnostic, TracePath, TracePoint,
 };
@@ -130,6 +130,7 @@ pub struct TraceEngine {
     /// Avoids repeated `workspace::read_source` for the same file in
     /// `extract_snippet` / `extract_context_snippet`.
     file_cache: RefCell<HashMap<PathBuf, String>>,
+    excluded_returns: BTreeSet<(DataNodeId, Vec<CallsiteId>)>,
 }
 
 impl TraceEngine {
@@ -142,6 +143,7 @@ impl TraceEngine {
             project_root: None,
             canonical_root: None,
             file_cache: RefCell::new(HashMap::new()),
+            excluded_returns: BTreeSet::new(),
         }
     }
 
@@ -156,7 +158,16 @@ impl TraceEngine {
             project_root: Some(project_root),
             canonical_root,
             file_cache: RefCell::new(HashMap::new()),
+            excluded_returns: BTreeSet::new(),
         }
+    }
+
+    /// Restrict a return/output node only in the specified invocation. The
+    /// caller must establish the conflicting return condition and preserve its
+    /// evidence. Use a fresh engine for a different selection/condition scope;
+    /// this does not remove facts from the store or establish runtime feasibility.
+    pub fn exclude_return(&mut self, node: DataNodeId, context: Vec<CallsiteId>) -> bool {
+        self.excluded_returns.insert((node, context))
     }
 
     // ── Public query methods ───────────────────────────────────────────
@@ -193,7 +204,43 @@ impl TraceEngine {
         column: u32,
         max_depth: usize,
     ) -> TraceQueryResponse<TracePath> {
-        let cap = self.resolve_capability(file_id);
+        match Locator::locate(self.store.as_ref(), file_id, line, column) {
+            Ok(sink) => self.trace_variable_from_point(sink, max_depth),
+            Err(e) => TraceQueryResponse::err("trace_variable", &format!("{e}")),
+        }
+    }
+
+    /// Continue from an exact, already recorded node in this store. The
+    /// result uses the same trace contract and limits as a positional query;
+    /// it does not materialize missing nodes or substitute a nearby identity.
+    pub fn trace_data_node(
+        &self,
+        node_id: &DataNodeId,
+        max_depth: usize,
+        call_context: &[CallsiteId],
+    ) -> TraceQueryResponse<TracePath> {
+        match Locator::locate_node(self.store.as_ref(), node_id) {
+            Ok(Some(mut sink)) => {
+                sink.call_context = call_context.to_vec();
+                self.trace_variable_from_point(sink, max_depth)
+            }
+            Ok(None) => TraceQueryResponse::partial(
+                "trace_variable",
+                TraceDiagnostic::warning("Recorded data node is not available in this store")
+                    .with_code("no_data_node")
+                    .with_detail(serde_json::json!({"data_node_id": node_id}).to_string()),
+                None,
+            ),
+            Err(e) => TraceQueryResponse::err("trace_variable", &format!("{e}")),
+        }
+    }
+
+    fn trace_variable_from_point(
+        &self,
+        sink: TracePoint,
+        max_depth: usize,
+    ) -> TraceQueryResponse<TracePath> {
+        let cap = self.resolve_capability(&sink.file_id);
 
         // Capability gate: FeatureMatrix is the single capability authority.
         let dataflow_supported = cap
@@ -225,11 +272,6 @@ impl TraceEngine {
             );
         }
 
-        let sink = match Locator::locate(self.store.as_ref(), file_id, line, column) {
-            Ok(p) => p,
-            Err(e) => return TraceQueryResponse::err("trace_variable", &format!("{e}")),
-        };
-
         if sink.data_node.is_none() {
             return TraceQueryResponse::partial(
                 "trace_variable",
@@ -243,11 +285,17 @@ impl TraceEngine {
             &sink,
             max_depth,
             Some(&RuntimeEdgeProvider),
+            &self.excluded_returns,
         ) {
             Ok(Some(mut path)) => {
                 path.capability = cap.clone();
                 self.enrich_trace_path_steps(&mut path);
-                TraceQueryResponse::ok("trace_variable", path, cap)
+                let partial = path.partial_result;
+                let diagnostics = path.diagnostics.clone();
+                let mut response = TraceQueryResponse::ok("trace_variable", path, cap);
+                response.partial_result = partial;
+                response.diagnostics = diagnostics;
+                response
             }
             Ok(None) => TraceQueryResponse::partial(
                 "trace_variable",

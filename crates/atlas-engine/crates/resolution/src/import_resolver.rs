@@ -399,8 +399,21 @@ impl ImportResolver {
     /// to the global index.
     pub fn collect_imported_file_ids(&self, imports: &[ImportDef]) -> HashSet<FileId> {
         let mut file_ids = HashSet::new();
+        let include_paths: Vec<String> = self
+            .store
+            .get_metadata(crate::KEY_INCLUDE_PATHS)
+            .ok()
+            .flatten()
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
         for import in imports {
             if import.module.is_empty() {
+                continue;
+            }
+            if import.kind == ImportKind::Include {
+                if let Ok(Some(file)) = self.store.resolve_include_file(import, &include_paths) {
+                    file_ids.insert(file.file_id);
+                }
                 continue;
             }
             if import.is_relative {

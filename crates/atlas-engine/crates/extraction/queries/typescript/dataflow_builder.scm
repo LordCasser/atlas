@@ -87,6 +87,9 @@
 (return_statement (_) @df.return_value)
 
 ;; --- Call targets ---
+;; Invocation/construction results are distinct from evaluating their operands.
+[(call_expression) (new_expression)] @df.call_result
+
 ;; Direct call: func(args) — captures the function being called
 (call_expression
   function: (identifier) @df.call_target)

@@ -7,13 +7,72 @@
 //! tree-sitter 0.25+ bundles its own `StreamingIterator` re-export instead of
 //! requiring the external `streaming_iterator` crate.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tracing::debug_span;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator};
 
 use crate::cancel::CancelCheck;
 use crate::error::{ExtractionFailure, ExtractionFailureKind};
+
+// Programs depend on the actual grammar and query text, never on a source file
+// or its normalized annotations. Cursors and captures remain invocation-local.
+// Only retain a bounded number of small query sources; larger custom programs
+// still compile normally, without occupying this process-wide cache.
+const MAX_CACHED_QUERIES: usize = 32;
+const MAX_CACHED_QUERY_SOURCE_BYTES: usize = 64 * 1024;
+
+struct CachedQuery {
+    language: tree_sitter::Language,
+    source: Box<str>,
+    program: Arc<Query>,
+}
+
+static QUERY_CACHE: OnceLock<Mutex<VecDeque<CachedQuery>>> = OnceLock::new();
+
+fn compiled_query(
+    language: &tree_sitter::Language,
+    source: &str,
+) -> Result<Arc<Query>, tree_sitter::QueryError> {
+    if source.len() > MAX_CACHED_QUERY_SOURCE_BYTES {
+        return Query::new(language, source).map(Arc::new);
+    }
+    let cache = QUERY_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    {
+        let entries = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| &entry.language == language && entry.source.as_ref() == source)
+        {
+            return Ok(Arc::clone(&entry.program));
+        }
+    }
+
+    // Compile outside the mutex so unrelated grammars and cache hits are not
+    // held behind a cold compilation. Concurrent misses may compile twice.
+    let program = Arc::new(Query::new(language, source)?);
+    let mut entries = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| &entry.language == language && entry.source.as_ref() == source)
+    {
+        return Ok(Arc::clone(&entry.program));
+    }
+    if entries.len() == MAX_CACHED_QUERIES {
+        entries.pop_front();
+    }
+    entries.push_back(CachedQuery {
+        language: language.clone(),
+        source: source.into(),
+        program: Arc::clone(&program),
+    });
+    Ok(program)
+}
 
 /// Collect raw (capture_name, node) pairs from a single query.
 ///
@@ -37,8 +96,8 @@ pub(crate) fn collect_captures<'a>(
 
     let query = {
         let _query_span =
-            debug_span!(target: "atlas_extract", "extract.query_compile", slot = slot).entered();
-        match Query::new(ts_lang, trimmed) {
+            debug_span!(target: "atlas_extract", "extract.query_prepare", slot = slot).entered();
+        match compiled_query(ts_lang, trimmed) {
             Ok(q) => q,
             Err(e) => {
                 return Err(ExtractionFailure {
@@ -93,4 +152,106 @@ pub(crate) fn collect_captures<'a>(
         }
     }
     Ok(captures_result)
+}
+
+#[cfg(all(test, feature = "cpp"))]
+mod tests {
+    use super::*;
+
+    fn cpp() -> tree_sitter::Language {
+        crate::create_frontend(types::Language::Cpp)
+            .unwrap()
+            .parser
+            .tree_sitter_language()
+    }
+
+    fn captures(
+        language: &tree_sitter::Language,
+        query: &str,
+        source: &str,
+    ) -> Vec<(String, String)> {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        collect_captures(
+            language,
+            query,
+            tree.root_node(),
+            source.as_bytes(),
+            "test",
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|(name, node)| (name, node.utf8_text(source.as_bytes()).unwrap().to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn repeated_programs_keep_sources_and_query_text_independent() {
+        let language = cpp();
+        let names = "(identifier) @name";
+        assert_eq!(
+            captures(&language, names, "int first;"),
+            [("name".into(), "first".into())]
+        );
+        assert_eq!(
+            captures(&language, names, "int second;"),
+            [("name".into(), "second".into())]
+        );
+        assert_eq!(
+            captures(&language, "(primitive_type) @type", "int second;"),
+            [("type".into(), "int".into())]
+        );
+        assert_eq!(
+            captures(&language, "(identifier) @_constraint", "int second;"),
+            []
+        );
+        assert_eq!(
+            captures(&language, names, "int first;"),
+            [("name".into(), "first".into())]
+        );
+        assert!(compiled_query(&language, "(not_a_cpp_node) @invalid").is_err());
+    }
+
+    #[cfg(feature = "typescript")]
+    #[test]
+    fn a_program_from_another_grammar_cannot_mask_a_compile_error() {
+        let source = "(destructor_name) @name";
+        compiled_query(&cpp(), source).unwrap();
+        let typescript = crate::create_frontend(types::Language::TypeScript)
+            .unwrap()
+            .parser
+            .tree_sitter_language();
+        assert!(compiled_query(&typescript, source).is_err());
+        assert!(compiled_query(&typescript, source).is_err());
+        assert!(compiled_query(&cpp(), source).is_ok());
+    }
+
+    #[test]
+    fn a_warm_program_preserves_capture_cancellation() {
+        struct Canceled;
+        impl CancelCheck for Canceled {
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
+        let language = cpp();
+        let query = "(identifier) @name";
+        assert_eq!(captures(&language, query, "int seed;").len(), 1);
+        let source: String = (0..200).map(|n| format!("int value{n};\n")).collect();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        let error = collect_captures(
+            &language,
+            query,
+            tree.root_node(),
+            source.as_bytes(),
+            "test",
+            Some(&Canceled),
+        )
+        .unwrap_err();
+        assert!(matches!(error.kind, ExtractionFailureKind::Cancelled));
+    }
 }

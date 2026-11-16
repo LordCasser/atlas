@@ -1,10 +1,10 @@
 # Atlas Trace Contract — v1
 
-> **Status**: Frozen for agent consumption. Types documented here are the stable
-> public API for MCP trace tool responses and Rust trace response serialization.
+> **Status**: Current working-tree contract for MCP trace tool responses and
+> Rust trace response serialization; not a CodeServer HTTP value-flow API.
 > The current CLI does not expose a stdout `--json` trace command; `--log-format
 > json` only controls diagnostic logs on stderr. Internal implementation may
-> change; the contract (type names, field names, semantics) is version-locked.
+> change; intentional contract changes update current producers and consumers together.
 >
 > Important: this contract describes provenance tracing and caller-path querying.
 > It is not a vulnerability scanner contract and does not define vulnerability
@@ -88,6 +88,7 @@ not leak through a second wrapper contract.
   "binding_use": null,
   "scope": { "id": "...", "name": "compute", "kind": "Function", ... },
   "callsite": { "id": "...", "callee_range": {...}, "range": {...}, ... },
+  "call_context": [],
   "file_id": "...",
   "line": 4, "column": 18,
   "capability": {...},
@@ -107,6 +108,7 @@ not leak through a second wrapper contract.
 | `binding_use` | extract binding_uses | A reference to a binding at this position. |
 | `scope` | extract scopes | The enclosing scope (function, class, block). |
 | `callsite` | extract callsites | If at a call expression, full callsite with callee range. |
+| `call_context` | query/trace | Recorded callsite IDs, outermost to innermost; an empty list starts without a caller restriction. |
 | `file_id`, `line`, `column` | query params | Echo of the user's query position. |
 
 ---
@@ -126,7 +128,7 @@ not leak through a second wrapper contract.
 }
 ```
 
-- `source` — the farthest origin point the slicer reached.
+- `source` — the farthest recorded endpoint the displayed path reached; not proof of the only or actual value origin.
 - `sink` — the user-chosen query position.
 - `steps[]` — ordered from origin → query point.
 
@@ -138,11 +140,53 @@ not leak through a second wrapper contract.
   "from_node_id": "...",
   "to_node_id": "...",
   "edge_kind": "assign",
+  "call_context": [],
   "description": "x assigned to y",
   "file_id": "...",
   "range": { "start_line": 4, ... }
 }
 ```
+
+`TracePathStep.call_context` applies at `from_node_id`; the following step (or
+`sink`) carries the context at its target. Backward `ReturnToCall` enters a
+recorded callsite, and `ArgToParam` returns through that same callsite. Other
+callers are reported as excluded; missing boundary metadata remains a located
+limit. This does not establish runtime dispatch, path feasibility, or aliasing.
+
+The Rust `trace_data_node(node_id, max_depth, call_context)` operation continues
+from an exact stored node. Pass the context from the previous endpoint or
+diagnostic position; resetting it to `[]` starts an unrestricted query. Deferred
+branch, cycle and depth diagnostics retain node IDs and contexts (at most 128
+edge details per diagnostic, with a total and truncation flag). A position with
+`call_context: null` has no established trace transition; it remains available
+for source inspection and must not be treated as an empty context. Invalid
+supplied contexts return a partial trace at the selected node, without silently
+resetting the restriction. No new MCP input or CodeServer route is implied.
+
+The trace displays one path. Alternative dependencies, extraction limitations,
+unknown endpoints and budgets remain in both its diagnostics and the outer
+response. The legacy depth-derived `confidence` is not a semantic accuracy score.
+
+For recorded ordinary invocations, a `CallReturn` is the result consumed by an
+initializer, return expression or another call argument. `ReturnToCall` targets
+that result node; an argument's syntactic containment in a call does not prove
+that it influences the returned value. `trace_call_result_unavailable` locates a
+result without a recorded callee return source. The arguments remain separately
+queryable with the entered call context. Constructor/unrecorded-call boundaries,
+alias effects and control-dependent values are not complete.
+
+Lazy extraction consumes existing structural callsites and shares the Full
+result-boundary implementation. Full and lazy reuse require matching source and
+dataflow producer versions, complete state, and no exceeded budget. Residual
+nodes do not establish completeness; valid empty functions remain cacheable.
+Lazy diagnostics are stored with the unit and merged with current file
+diagnostics at visited source ranges, including on warm queries. A completed
+computation can still have semantic limits.
+
+Raw Rust trace calls do not materialize or refresh dependencies themselves;
+their caller must ensure dataflow for the required functions first. This does
+not add a CodeServer value-flow operation or authorize writes to Ready Artifacts.
+Schema 35 requires rebuilding indexes created with earlier database schemas.
 
 ---
 

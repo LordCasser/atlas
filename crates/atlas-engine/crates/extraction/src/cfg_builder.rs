@@ -313,6 +313,13 @@ pub struct CfgBuilder;
 pub struct CfgResult {
     pub nodes: Vec<CfgNode>,
     pub edges: Vec<CfgEdge>,
+    /// Sibling statement tails omitted after an unconditional abrupt transfer
+    /// in functions without direct goto. Scoped to this recorded callable;
+    /// nested callable bodies have their own CFG and are not excluded by it.
+    pub terminated_tails: Vec<(SymbolId, TextRange)>,
+    /// Ephemeral terminal provenance for reference output extraction. A source
+    /// may also have an exceptional completion; published CFG edges still merge exits.
+    pub normal_exit_sources: Vec<CfgNodeId>,
 }
 
 /// Context for building a CFG for one function.
@@ -320,6 +327,7 @@ struct CfgContext<'a> {
     function_id: SymbolId,
     nodes: Vec<CfgNode>,
     edges: Vec<CfgEdge>,
+    terminated_tails: Vec<(SymbolId, TextRange)>,
     source: &'a [u8],
     prev_node_id: Option<types::ids::CfgNodeId>,
     /// Abrupt exit sources connect to the single function Exit after the body
@@ -409,6 +417,7 @@ struct DirectGotoLabelTarget {
 #[derive(Clone, Copy)]
 struct CfgCheckpoint {
     nodes_len: usize,
+    terminated_tails_len: usize,
     edges_len: usize,
     terminal_len: usize,
     break_len: usize,
@@ -451,6 +460,7 @@ impl CfgBuilder {
             function_id: *function_id,
             nodes: Vec::new(),
             edges: Vec::new(),
+            terminated_tails: Vec::new(),
             source: source_bytes,
             prev_node_id: None,
             terminal_node_ids: Vec::new(),
@@ -486,7 +496,13 @@ impl CfgBuilder {
         // 3. Walk the body
         if let Some(body) = body {
             let body_range = node_text_range(&body, source_bytes);
-            ctx.walk_block(body, body_range.start_byte);
+            if ctx.config.block_kinds.contains(&body.kind()) {
+                ctx.walk_block(body, body_range.start_byte);
+            } else {
+                // An expression body is one evaluated expression, not a list
+                // of its identifier/type/operand children.
+                ctx.walk_stmt_list(&[body]);
+            }
         }
 
         // Goto labels have function scope and may appear before or after the
@@ -504,12 +520,16 @@ impl CfgBuilder {
         let last = ctx.prev_node_id;
         let exit_id = ctx.add_node(CfgNodeKind::Exit, 0, None);
         let mut exit_sources = Vec::new();
+        let mut normal_exit_sources: Vec<_> = last.into_iter().collect();
         if let Some(last_id) = last {
             ctx.add_edge(&last_id, &exit_id, CfgEdgeKind::Normal);
             exit_sources.push(last_id);
         }
         let terminal_node_ids = std::mem::take(&mut ctx.terminal_node_ids);
-        for (terminal_id, _) in terminal_node_ids {
+        for (terminal_id, terminal_kind) in terminal_node_ids {
+            if terminal_kind != CfgNodeKind::Throw && !normal_exit_sources.contains(&terminal_id) {
+                normal_exit_sources.push(terminal_id);
+            }
             if !exit_sources.contains(&terminal_id) {
                 ctx.add_edge(&terminal_id, &exit_id, CfgEdgeKind::Normal);
                 exit_sources.push(terminal_id);
@@ -519,6 +539,8 @@ impl CfgBuilder {
         let mut result = CfgResult {
             nodes: ctx.nodes,
             edges: ctx.edges,
+            terminated_tails: ctx.terminated_tails,
+            normal_exit_sources,
         };
         if language == Language::Go {
             lower_go_defer_exits(&mut result);
@@ -829,6 +851,7 @@ impl CfgContext<'_> {
     fn checkpoint(&self) -> CfgCheckpoint {
         CfgCheckpoint {
             nodes_len: self.nodes.len(),
+            terminated_tails_len: self.terminated_tails.len(),
             edges_len: self.edges.len(),
             terminal_len: self.terminal_node_ids.len(),
             break_len: self.pending_break_node_ids.len(),
@@ -846,6 +869,8 @@ impl CfgContext<'_> {
 
     fn rollback_to(&mut self, checkpoint: CfgCheckpoint) {
         self.nodes.truncate(checkpoint.nodes_len);
+        self.terminated_tails
+            .truncate(checkpoint.terminated_tails_len);
         self.edges.truncate(checkpoint.edges_len);
         self.terminal_node_ids.truncate(checkpoint.terminal_len);
         self.pending_break_node_ids.truncate(checkpoint.break_len);
@@ -1264,6 +1289,22 @@ impl CfgContext<'_> {
         self.walk_stmt_list(&children);
     }
 
+    fn record_terminated_tail(&mut self, children: &[Node], index: usize, abrupt: Node) {
+        if abrupt.has_error() || abrupt.is_missing() || self.can_resolve_direct_goto {
+            return;
+        }
+        if let Some(first) = children.get(index + 1)
+            && let Some(last) = children.last()
+        {
+            let mut range = node_text_range(first, self.source);
+            let end = node_text_range(last, self.source);
+            range.end_byte = end.end_byte;
+            range.end_line = end.end_line;
+            range.end_column = end.end_column;
+            self.terminated_tails.push((self.function_id, range));
+        }
+    }
+
     /// Walk a flat list of statement nodes using the per-statement dispatch.
     ///
     /// Shared by [`Self::walk_block`] (block bodies) and [`Self::walk_switch`]
@@ -1344,6 +1385,7 @@ impl CfgContext<'_> {
                     i += 1;
                     continue;
                 }
+                self.record_terminated_tail(children, i, abrupt_stmt);
                 break;
             } else if self.is_continue_statement(&abrupt_stmt) {
                 let range = node_text_range(&abrupt_stmt, self.source);
@@ -1357,6 +1399,7 @@ impl CfgContext<'_> {
                     i += 1;
                     continue;
                 }
+                self.record_terminated_tail(children, i, abrupt_stmt);
                 break;
             } else if self.is_ruby() && abrupt_stmt.kind() == "redo" {
                 let range = node_text_range(&abrupt_stmt, self.source);
@@ -1381,6 +1424,11 @@ impl CfgContext<'_> {
             } else if kind == "labeled_statement" {
                 self.walk_labeled_statement(stmt, stmt_range.start_byte);
                 i += 1;
+            } else if matches!(self.language, Language::C | Language::Cpp)
+                && matches!(kind, "preproc_if" | "preproc_ifdef")
+            {
+                self.walk_preprocessing(stmt);
+                i += 1;
             } else if self.config.if_kinds.contains(&kind) {
                 i = self.walk_if(children, i, stmt_range.start_byte);
             } else if self.config.loop_kinds.contains(&kind) {
@@ -1392,6 +1440,7 @@ impl CfgContext<'_> {
                     i += 1;
                     continue;
                 }
+                self.record_terminated_tail(children, i, abrupt_stmt);
                 break;
             } else if self.config.return_kinds.contains(&abrupt_stmt.kind()) {
                 let range = node_text_range(&abrupt_stmt, self.source);
@@ -1410,6 +1459,7 @@ impl CfgContext<'_> {
                     i += 1;
                     continue;
                 }
+                self.record_terminated_tail(children, i, abrupt_stmt);
                 break;
             } else if self.is_ruby()
                 && kind == "call"
@@ -1704,6 +1754,86 @@ impl CfgContext<'_> {
             self.add_edge(&branch_id, &join_id, CfgEdgeKind::FalseBranch);
         }
         self.prev_node_id = Some(join_id);
+    }
+
+    /// Preserve complete statement alternatives without choosing a build
+    /// configuration. Case edges represent possible source variants, never a
+    /// runtime boolean condition. Incomplete/directive-bearing alternatives
+    /// remain one opaque statement, so consumers can keep their control limit.
+    fn walk_preprocessing(&mut self, node: Node<'_>) {
+        let mut alternatives = Vec::new();
+        let mut clause = Some(node);
+        let mut has_else = false;
+        while let Some(current) = clause {
+            if current.has_error() || current.is_missing() {
+                self.emit_stmt(CfgNodeKind::Statement, node.start_byte() as u32, &node);
+                return;
+            }
+            has_else |= current.kind() == "preproc_else";
+            let condition = current
+                .child_by_field_name("condition")
+                .or_else(|| current.child_by_field_name("name"));
+            let alternative = current.child_by_field_name("alternative");
+            let mut cursor = current.walk();
+            let statements: Vec<_> = current
+                .named_children(&mut cursor)
+                .filter(|child| {
+                    Some(*child) != condition
+                        && Some(*child) != alternative
+                        && !is_comment_node_kind(child.kind())
+                })
+                .collect();
+            if statements.iter().any(|child| {
+                let kind = child.kind();
+                !(self.config.block_kinds.contains(&kind)
+                    || self.config.if_kinds.contains(&kind)
+                    || self.config.loop_kinds.contains(&kind)
+                    || self.config.return_kinds.contains(&kind)
+                    || self.config.throw_kinds.contains(&kind)
+                    || self.config.stmt_kinds.contains(&kind)
+                    || self.config.switch_kinds.contains(&kind)
+                    || matches!(
+                        kind,
+                        "goto_statement" | "labeled_statement" | "preproc_if" | "preproc_ifdef"
+                    ))
+            }) {
+                self.emit_stmt(CfgNodeKind::Statement, node.start_byte() as u32, &node);
+                return;
+            }
+            alternatives.push(statements);
+            clause = alternative;
+        }
+        if !has_else {
+            alternatives.push(Vec::new());
+        }
+        let branch = self.emit_stmt(CfgNodeKind::Branch, node.start_byte() as u32, &node);
+        let mut tails = Vec::new();
+        for statements in alternatives {
+            self.prev_node_id = Some(branch);
+            let first_edge = self.edges.len();
+            self.walk_stmt_list(&statements);
+            if self.edges.len() > first_edge {
+                self.retag_edge(first_edge, CfgEdgeKind::CaseBranch);
+            }
+            if let Some(tail) = self.prev_node_id.take() {
+                if !tails.contains(&tail) {
+                    tails.push(tail);
+                }
+            }
+        }
+        let join = self.add_node(CfgNodeKind::Join, node.start_byte() as u32 + 1, None);
+        for tail in &tails {
+            self.add_edge(
+                tail,
+                &join,
+                if *tail == branch {
+                    CfgEdgeKind::CaseBranch
+                } else {
+                    CfgEdgeKind::Normal
+                },
+            );
+        }
+        self.prev_node_id = (!tails.is_empty()).then_some(join);
     }
 
     /// Handle if/else: Branch → TrueBranch → cons → Join ← FalseBranch ← alt → Join
@@ -3064,10 +3194,13 @@ impl CfgContext<'_> {
     fn resolve_direct_gotos(&mut self) {
         let pending = std::mem::take(&mut self.pending_goto_node_ids);
         for pending in pending {
-            if let Some(target) = self
+            // Configuration alternatives can expose several source labels
+            // with one name. Preserve every legal recorded destination rather
+            // than choosing the first configuration by source order.
+            let targets: Vec<_> = self
                 .goto_label_targets
                 .iter()
-                .find(|candidate| {
+                .filter(|candidate| {
                     candidate.label == pending.label
                         && candidate.instance == pending.target_instance
                         && self.direct_goto_target_is_legal(
@@ -3076,7 +3209,8 @@ impl CfgContext<'_> {
                         )
                 })
                 .map(|candidate| candidate.target)
-            {
+                .collect();
+            for target in targets {
                 self.add_edge(&pending.source, &target, CfgEdgeKind::Goto);
             }
         }
@@ -3732,15 +3866,22 @@ fn last_named_descendant<'a>(nodes: &[Node<'a>]) -> Option<Node<'a>> {
 
 fn find_function_body<'a>(node: Node<'a>, block_kinds: &[&str]) -> Option<Node<'a>> {
     let mut cursor = node.walk();
+    // Prefer this callable's direct body before searching wrapper nodes.
+    // A parameter/default expression may contain another callable's block.
+    if let Some(body) = node
+        .named_children(&mut cursor)
+        .find(|child| block_kinds.contains(&child.kind()))
+    {
+        return Some(body);
+    }
+    if node.kind() == "arrow_function" {
+        return node.child_by_field_name("body");
+    }
     for child in node.named_children(&mut cursor) {
-        if block_kinds.contains(&child.kind()) {
-            return Some(child);
+        if FUNCTION_NODE_KINDS.contains(&child.kind()) {
+            continue;
         }
-        // Arrow function: body might be an expression
-        if node.kind() == "arrow_function" && child.kind() != "formal_parameters" {
-            return Some(child);
-        }
-        // Recursive: the block might be nested
+        // Some grammars wrap a body block, but a nested callable owns its own.
         if let Some(found) = find_function_body(child, block_kinds) {
             return Some(found);
         }
@@ -3806,6 +3947,7 @@ const FUNCTION_NODE_KINDS: &[&str] = &[
     "function_declaration",
     "method_definition",
     "arrow_function",
+    "lambda_expression",
     "generator_function_declaration",
     "generator_function",
     "function_definition",
@@ -3839,27 +3981,41 @@ pub(crate) fn build_cfg_for_functions<'a>(
 
     let mut all_nodes = Vec::new();
     let mut all_edges = Vec::new();
+    let mut terminated_tails = Vec::new();
+    let mut normal_exit_sources = Vec::new();
 
     for sym in &function_symbols {
         if let Some(func_node) = find_function_node(root, sym) {
             let result = CfgBuilder::build(language, &sym.id, func_node, source_bytes);
             all_nodes.extend(result.nodes);
             all_edges.extend(result.edges);
+            terminated_tails.extend(result.terminated_tails);
+            normal_exit_sources.extend(result.normal_exit_sources);
         }
     }
 
     Ok(CfgResult {
         nodes: all_nodes,
         edges: all_edges,
+        terminated_tails,
+        normal_exit_sources,
     })
 }
 
-/// Walk up from the symbol's name position to find the enclosing function node.
+/// Match the callable inside the recorded declaration extent. A bodyless local
+/// declaration must never borrow an enclosing function's control flow.
 fn find_function_node<'a>(root: Node<'a>, symbol: &SymbolDef) -> Option<Node<'a>> {
-    let pos = symbol.name_range.start_byte as usize;
-    let mut node = root.descendant_for_byte_range(pos, pos)?;
+    let mut node = root.descendant_for_byte_range(
+        symbol.name_range.start_byte as usize,
+        symbol.name_range.end_byte as usize,
+    )?;
     // Walk up parent chain to find the enclosing function node
     loop {
+        if node.start_byte() < symbol.range.start_byte as usize
+            || node.end_byte() > symbol.range.end_byte as usize
+        {
+            return None;
+        }
         if FUNCTION_NODE_KINDS.contains(&node.kind()) {
             return Some(node);
         }
@@ -3883,6 +4039,114 @@ mod tests {
             .unwrap();
         let tree = parser.parse(&source_bytes, None).unwrap();
         (tree, source_bytes)
+    }
+
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn cpp_cfg_uses_each_recorded_callable_body_and_skips_bodyless_local_members() {
+        let source = r#"int entry(int input) {
+    int value = input;
+    auto deferred = [&value, input] {
+        int next = input + 1;
+        auto nested = [next] { return next + 1; };
+        return nested();
+    };
+    struct Local { int declared_only(int); ~Local() = default; void removed() = delete;
+                   int defined() { return 5; } };
+    return value;
+}"#;
+        let facts = crate::extract_file_with_mode(
+            &create_frontend(Language::Cpp).unwrap(),
+            FileId::generate("owners.cpp"),
+            std::path::Path::new("owners.cpp"),
+            source,
+            "cfg-owner-test",
+            crate::ExtractionMode::Full,
+            &(),
+        )
+        .unwrap();
+        let closures: Vec<_> = facts
+            .symbols
+            .iter()
+            .filter(|s| s.name.starts_with("<lambda@"))
+            .collect();
+        assert_eq!(closures.len(), 2);
+        for (capture, expected) in [
+            ("[&value, input]", "return nested();"),
+            ("[next]", "return next + 1;"),
+        ] {
+            let symbol = closures
+                .iter()
+                .find(|s| s.name_range.start_byte as usize == source.find(capture).unwrap())
+                .unwrap();
+            let cfg: Vec<_> = facts
+                .cfg_nodes
+                .iter()
+                .filter(|n| n.function_id == symbol.id)
+                .collect();
+            assert!(cfg.len() >= 3, "{}", symbol.name);
+            assert!(
+                cfg.iter().all(|n| n.stmt_range.byte_len() == 0
+                    || crate::languages::shared::contains_range(symbol.range, n.stmt_range)),
+                "{}: {cfg:#?}",
+                symbol.name
+            );
+            let returns: Vec<_> = cfg
+                .iter()
+                .filter(|n| n.kind == CfgNodeKind::Return)
+                .map(|n| &source[n.stmt_range.start_byte as usize..n.stmt_range.end_byte as usize])
+                .collect();
+            assert_eq!(returns, [expected]);
+        }
+        for name in ["declared_only", "~Local", "removed"] {
+            let declaration = facts.symbols.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(declaration.range, declaration.name_range);
+            assert!(
+                !facts
+                    .cfg_nodes
+                    .iter()
+                    .any(|n| n.function_id == declaration.id)
+            );
+        }
+        for (name, expected) in [("entry", "return value;"), ("defined", "return 5;")] {
+            let symbol = facts.symbols.iter().find(|s| s.name == name).unwrap();
+            let returns: Vec<_> = facts
+                .cfg_nodes
+                .iter()
+                .filter(|n| n.function_id == symbol.id && n.kind == CfgNodeKind::Return)
+                .map(|n| &source[n.stmt_range.start_byte as usize..n.stmt_range.end_byte as usize])
+                .collect();
+            assert_eq!(returns, [expected]);
+        }
+    }
+
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn cpp_cfg_body_selection_excludes_default_argument_closure() {
+        let source = "int calculate(int input = [] { return 31; }()) { return input + 1; }";
+        let cfg = build_cfg_for_first_fn(Language::Cpp, source);
+        let returns: Vec<_> = cfg
+            .nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Return)
+            .map(|n| &source[n.stmt_range.start_byte as usize..n.stmt_range.end_byte as usize])
+            .collect();
+        assert_eq!(returns, ["return input + 1;"]);
+    }
+
+    #[test]
+    fn arrow_cfg_uses_its_expression_body_not_parameter_or_result_type() {
+        let source = "const callback = (value: number): number => value + 1;";
+        let (tree, bytes) = parse_ts(source);
+        let (function, id) = find_function(&tree, &bytes);
+        let cfg = CfgBuilder::build(Language::TypeScript, &id, function, &bytes);
+        let statements: Vec<_> = cfg
+            .nodes
+            .iter()
+            .filter(|n| n.kind == CfgNodeKind::Statement)
+            .map(|n| &source[n.stmt_range.start_byte as usize..n.stmt_range.end_byte as usize])
+            .collect();
+        assert_eq!(statements, ["value + 1"]);
     }
 
     fn find_function<'a>(tree: &'a tree_sitter::Tree, source: &[u8]) -> (Node<'a>, SymbolId) {

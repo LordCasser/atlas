@@ -17,10 +17,10 @@ use crate::frontend::{
     SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
-    make_df_assign_target, make_df_assign_value, make_df_call_arg, make_df_parameter,
-    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    SymbolDefBuilder, callable_declaration_identity, compact_signature, jvm_package_name,
+    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_assign_value,
+    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal, make_df_return_value,
+    make_reference_use, make_scope_def_auto_name,
 };
 use std::collections::HashMap;
 use types::bindings::BindingDef;
@@ -51,12 +51,22 @@ fn normalize_kotlin_definition(
     let name = node_text(node, source)?;
     let range = node_range(node);
 
-    let qualified_name = qualified_name_from_node_kotlin("", &name, node, source);
+    let package = if kind == SymbolKind::Package {
+        String::new()
+    } else {
+        jvm_package_name(node, source).unwrap_or_default()
+    };
+    let qualified_name = qualified_name_from_node_kotlin(&package, &name, node, source);
     let signature = kotlin_extract_signature(capture_name, node, source);
 
     Some(
         SymbolDefBuilder::new(file_id, Language::Kotlin, kind, name, qualified_name, range)
             .signature(signature)
+            .discriminator(if kind == SymbolKind::Function {
+                callable_declaration_identity(node, source)
+            } else {
+                None
+            })
             .build(),
     )
 }
@@ -394,8 +404,12 @@ fn qualified_name_from_node_kotlin(
     while let Some(parent) = current.parent() {
         match parent.kind() {
             "class_declaration" | "object_declaration" => {
-                if let Some(type_name) = parent.child_by_field_name("name")
-                    && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
+                let mut cursor = parent.walk();
+                if let Some(type_name) = parent.child_by_field_name("name").or_else(|| {
+                    parent
+                        .named_children(&mut cursor)
+                        .find(|n| n.kind() == "type_identifier")
+                }) && let Ok(type_str) = type_name.utf8_text(source.as_bytes())
                 {
                     parts.push(type_str.to_string());
                 }
@@ -565,11 +579,16 @@ fn normalize_kotlin_dataflow_builder(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = crate::languages::shared::find_call_expression(
-                    node,
-                    &["call_expression"],
-                )
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+                let callsite_id =
+                    crate::languages::shared::find_call_expression(node, &["call_expression"]).map(
+                        |ce| {
+                            types::ids::CallsiteId::from_file_range(
+                                &file_id,
+                                ce.start_byte() as u32,
+                                ce.end_byte() as u32,
+                            )
+                        },
+                    );
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,

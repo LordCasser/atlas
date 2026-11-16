@@ -1009,7 +1009,7 @@ function main(): number {
 // Callsite-ID ↔ DataNode.callsite_id Join Contract (Fix 1 + Item 5)
 // ────────────────────────────────────────────────────────────────
 
-/// Verify that DataNode.callsite_id (provisional from_file_byte) and
+/// Verify that DataNode.callsite_id (provisional from_file_range) and
 /// Callsite.id (real from generate) share a consistent byte-range
 /// join path.
 ///
@@ -1017,7 +1017,7 @@ function main(): number {
 ///   For any callsite cs: CS, any arg a: ArgumentFact with
 ///   a.data_node_id → dn: DataNode,
 ///   we assert:
-///     dn.callsite_id == CallsiteId::from_file_byte(file_id, cs.range.start_byte)
+///     dn.callsite_id == CallsiteId::from_file_range(file_id, cs.range.start_byte, cs.range.end_byte)
 ///   AND
 ///     dn.kind == CallArg
 ///
@@ -1075,7 +1075,7 @@ function main(): number {
                 );
 
                 // After P1 fixes (post-backfill rewrite), DataNode.callsite_id
-                // is the real Callsite.id, NOT the provisional from_file_byte.
+                // is the real Callsite.id, NOT the provisional from_file_range.
                 assert_eq!(
                     dn.callsite_id.as_ref().unwrap(),
                     &cs.id,

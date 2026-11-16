@@ -71,6 +71,38 @@ impl IndexPipeline {
         sink: &dyn ProgressSink,
         interrupted: &mut (dyn FnMut() -> bool + Send),
     ) -> Result<IndexPipelineStats> {
+        use crate::index_pipeline::{KEY_COMPILER_CALL_GAPS, KEY_COMPILER_CALL_INPUT};
+        let previous_compiler = self
+            .store
+            .get_metadata(KEY_COMPILER_CALL_INPUT)?
+            .unwrap_or_default();
+        anyhow::ensure!(
+            self.options.mode.produces_references()
+                || (self.options.compiler_calls.is_none() && previous_compiler.is_empty()),
+            "compiler calls require a pipeline mode that produces references"
+        );
+        let compiler_hash = self
+            .options
+            .compiler_calls
+            .as_ref()
+            .map(|input| {
+                serde_json::to_vec(&("compiler-call-binding-v5", input))
+                    .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let compiler_changed = previous_compiler != compiler_hash;
+        for path in &self.options.include_paths {
+            anyhow::ensure!(
+                !path.as_os_str().is_empty()
+                    && !path.is_absolute()
+                    && path.components().all(|component| matches!(
+                        component,
+                        std::path::Component::CurDir | std::path::Component::Normal(_)
+                    )),
+                "include paths must be project-relative without parent traversal"
+            );
+        }
         let mut stats = IndexPipelineStats::default();
         // Initial value: the first phase we'd attempt.  Updated to the last
         // *completed* phase after each success.  Used as `last_phase` in
@@ -108,6 +140,7 @@ impl IndexPipeline {
             &self.project_root,
             &self.options.include_patterns,
             &self.options.exclude_patterns,
+            &self.options.file_languages,
         ) {
             Ok(files) => files,
             Err(e) => {
@@ -143,7 +176,17 @@ impl IndexPipeline {
             });
         };
 
-        let dirty_set = match phase_dirty_check(
+        // A language change invalidates extraction even when source bytes are unchanged.
+        // Only discovered files can be configured; overrides cannot expand index scope.
+        let discovered_paths: std::collections::HashSet<_> = discovered.iter().collect();
+        for path in self.options.file_languages.keys() {
+            anyhow::ensure!(
+                discovered_paths.contains(path),
+                "file language override is outside discovered scope: {}",
+                path.display()
+            );
+        }
+        let mut dirty_set = match phase_dirty_check(
             &self.store,
             &discovered,
             &self.project_root,
@@ -159,6 +202,24 @@ impl IndexPipeline {
                 return Err(e);
             }
         };
+        let mut dirty_paths: std::collections::HashSet<_> =
+            dirty_set.dirty.iter().cloned().collect();
+        for file in self.store.list_files()? {
+            let path = std::path::PathBuf::from(&file.path);
+            if discovered_paths.contains(&path)
+                && self
+                    .options
+                    .file_languages
+                    .get(&path)
+                    .copied()
+                    .or_else(|| types::Language::from_path(&path))
+                    != Some(file.language)
+                && dirty_paths.insert(path.clone())
+            {
+                dirty_set.dirty.push(path);
+                dirty_set.clean_count = dirty_set.clean_count.saturating_sub(1);
+            }
+        }
         sink.emit(ProgressEvent::PhaseFinished {
             phase: PhaseName::HashCheck,
             succeeded: (dirty_set.dirty.len() + dirty_set.clean_count) as u64,
@@ -175,6 +236,11 @@ impl IndexPipeline {
 
         // Save counts for skip-resolution check.
         let dirty_count = dirty_set.dirty.len();
+        if dirty_count > 0 || !dirty_set.deleted.is_empty() {
+            // Cleanup/extraction can finish before cancellation. On retry the
+            // file hashes may already match, but resolution still needs to run.
+            self.store.set_metadata(KEY_RESOLUTION_CONFIG_HASH, "")?;
+        }
 
         // ── Phase 3: Cleanup ────────────────────────────────────────────
         let _p_t0 = Instant::now();
@@ -244,11 +310,46 @@ impl IndexPipeline {
             false
         };
 
+        let include_paths = serde_json::to_string(&self.options.include_paths)?;
+        let includes_changed = self
+            .store
+            .get_metadata(resolution::KEY_INCLUDE_PATHS)?
+            .unwrap_or_else(|| "[]".into())
+            != include_paths;
+        if includes_changed {
+            // A failed rebuild must not be treated as a no-op on retry.
+            self.store.set_metadata(KEY_RESOLUTION_CONFIG_HASH, "")?;
+            self.store.invalidate_all_references()?;
+            self.store.delete_all_edges()?;
+        }
+        self.store
+            .set_metadata(resolution::KEY_INCLUDE_PATHS, &include_paths)?;
+
+        // Compiler selection is part of this computation. Adding, replacing or
+        // removing it must rebuild primary resolutions and edges. A changed
+        // source/configuration also cannot retain old compiler targets. No-op
+        // runs may reuse the already published facts and their located gaps.
+        let compiler_rebuild = compiler_changed
+            || (self.options.compiler_calls.is_some()
+                && (alias_changed
+                    || includes_changed
+                    || !self.should_skip_resolution(dirty_count, deleted_count, stale_count)?));
+        if compiler_rebuild {
+            self.store.set_metadata(KEY_RESOLUTION_CONFIG_HASH, "")?;
+            self.store.invalidate_all_references()?;
+            self.store.delete_all_edges()?;
+            self.store.delete_metadata(KEY_COMPILER_CALL_GAPS)?;
+            self.store
+                .replace_symbols_in_layer(types::layer::COMPILER_DECLARATION, &[])?;
+        }
+        self.store
+            .set_metadata(KEY_COMPILER_CALL_INPUT, &compiler_hash)?;
+
         // ── Skip-resolution check ────────────────────────────────────────
         // Determines whether resolution (Phase 7), annotation materialise
         // (Phase 8), and summary rebuild (Phase 9) can be skipped because
         // nothing has changed since the last successful run.
-        let skip_resolution = if alias_changed {
+        let skip_resolution = if alias_changed || includes_changed || compiler_rebuild {
             false // Force re-resolution so phase_resolve_and_build can invalidate
         } else if self.options.mode.produces_references() {
             self.should_skip_resolution(dirty_count, deleted_count, stale_count)?
@@ -272,16 +373,17 @@ impl IndexPipeline {
                 phase: PhaseName::LanguageInit,
                 total: 0,
             });
-            let frontend_cache = match phase_init_frontends(&files_to_extract) {
-                Ok(fe) => fe,
-                Err(e) => {
-                    sink.emit(ProgressEvent::Warning {
-                        phase: PhaseName::LanguageInit,
-                        message: format!("{e:#}"),
-                    });
-                    return Err(e);
-                }
-            };
+            let frontend_cache =
+                match phase_init_frontends(&files_to_extract, &self.options.file_languages) {
+                    Ok(fe) => fe,
+                    Err(e) => {
+                        sink.emit(ProgressEvent::Warning {
+                            phase: PhaseName::LanguageInit,
+                            message: format!("{e:#}"),
+                        });
+                        return Err(e);
+                    }
+                };
             let lang_count = frontend_cache.len();
             sink.emit(ProgressEvent::PhaseFinished {
                 phase: PhaseName::LanguageInit,
@@ -403,6 +505,22 @@ impl IndexPipeline {
             let _p_t0 = Instant::now();
             check_cancelled!();
 
+            if !skip_resolution {
+                let normalized = crate::cpp_annotations::prepare(
+                    &self.store,
+                    &self.project_root,
+                    &self.options.mode,
+                    &mut || (*int_cell.lock().expect("cancellation check lock poisoned"))(),
+                )?;
+                if normalized > 0 {
+                    stats.symbols = self.store.count_symbols()?;
+                    info!(
+                        normalized_file_updates = normalized,
+                        "C++ declaration annotations normalized"
+                    );
+                }
+            }
+
             if skip_resolution {
                 info!("Skipping resolution — no changes detected");
                 sink.emit(ProgressEvent::PhaseStarted {
@@ -450,17 +568,35 @@ impl IndexPipeline {
                 });
 
                 let ps = sink.progress_state();
-                let graph_result =
-                    match phase_resolve_and_build(&self.store, &self.project_root, ps) {
-                        Ok(gr) => gr,
-                        Err(e) => {
-                            sink.emit(ProgressEvent::Warning {
-                                phase: PhaseName::Resolution,
-                                message: format!("{e:#}"),
-                            });
-                            return Err(e);
-                        }
-                    };
+                let compiler_bindings = self
+                    .options
+                    .compiler_calls
+                    .as_ref()
+                    .map(|input| {
+                        resolution::compiler::associate_compiler_calls(
+                            &self.store,
+                            &input.observations,
+                            &input.inputs,
+                            &self.project_root,
+                            &mut || (*int_cell.lock().expect("cancellation check lock poisoned"))(),
+                        )
+                    })
+                    .transpose()?;
+                let graph_result = match phase_resolve_and_build(
+                    &self.store,
+                    &self.project_root,
+                    ps,
+                    compiler_bindings.as_ref(),
+                ) {
+                    Ok(gr) => gr,
+                    Err(e) => {
+                        sink.emit(ProgressEvent::Warning {
+                            phase: PhaseName::Resolution,
+                            message: format!("{e:#}"),
+                        });
+                        return Err(e);
+                    }
+                };
                 stats.resolved = graph_result.resolved;
                 stats.edges_built = graph_result.edges_written;
                 if graph_result.edges_written < graph_result.edges_built {
@@ -469,6 +605,14 @@ impl IndexPipeline {
                         graph_result.edges_built,
                         graph_result.edges_written,
                     ));
+                }
+                if let Some(bindings) = &compiler_bindings {
+                    self.store.set_metadata(
+                        KEY_COMPILER_CALL_GAPS,
+                        &serde_json::to_string(&bindings.gaps)?,
+                    )?;
+                } else {
+                    self.store.delete_metadata(KEY_COMPILER_CALL_GAPS)?;
                 }
                 sink.emit(ProgressEvent::PhaseFinished {
                     phase: PhaseName::Resolution,
@@ -600,6 +744,10 @@ impl IndexPipeline {
             });
             return Err(e);
         }
+        self.store.set_metadata(
+            crate::index_pipeline::KEY_FILE_LANGUAGES,
+            &serde_json::to_string(&self.options.file_languages)?,
+        )?;
         if let Err(e) = phase_finalize(
             &self.store,
             &self.project_root,

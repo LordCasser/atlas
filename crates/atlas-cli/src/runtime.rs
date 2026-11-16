@@ -147,7 +147,7 @@ impl CommandContext {
 mod tests {
     use super::*;
     use atlas_engine::{ExtractionMode, Language, guard_against_precision_downgrade};
-    use atlas_engine::{FactCoverage, FileId, FileInfo, ParseStatus};
+    use atlas_engine::{FileFacts, FileId, FileInfo, ParseStatus, lazy::DATAFLOW_ANALYZER_VERSION};
     use tempfile::TempDir;
 
     /// A valid temp directory with no `.atlas/` should succeed with creator modes.
@@ -270,32 +270,19 @@ mod tests {
     }
 
     fn seed_file_layer(store: &Store, path: &str, layer: &str) {
-        let file_id = FileId::generate(path);
-        let content_hash = "fresh-hash";
         store
-            .upsert_file(&FileInfo {
-                file_id,
-                path: path.to_string(),
-                language: Language::Rust,
-                content_hash: content_hash.to_string(),
-                status: ParseStatus::Success,
+            .insert_file_facts(&FileFacts {
+                file: FileInfo {
+                    file_id: FileId::generate(path),
+                    path: path.to_string(),
+                    language: Language::Rust,
+                    content_hash: "fresh-hash".into(),
+                    status: ParseStatus::Success,
+                },
+                layer: layer.into(),
+                dataflow_version: (layer == "dataflow").then_some(DATAFLOW_ANALYZER_VERSION),
+                ..Default::default()
             })
-            .expect("insert file");
-        let layers: Vec<&str> = match layer {
-            "dataflow" => vec!["manifest", "structural", "dataflow"],
-            "structural" => vec!["manifest", "structural"],
-            other => vec![other],
-        };
-        for layer in layers {
-            store
-                .upsert_file_extraction_state(
-                    &file_id,
-                    layer,
-                    content_hash,
-                    "complete",
-                    FactCoverage::from_layers(&[layer]),
-                )
-                .expect("insert extraction state");
-        }
+            .expect("insert file facts");
     }
 }

@@ -8,12 +8,12 @@
 //! # Typical composition (CLI full-index)
 //!
 //! ```ignore
-//! let discovered  = phase_discover(root, &include, &exclude)?;
-//! let frontends   = phase_init_frontends(&discovered)?;
+//! let discovered  = phase_discover(root, &include, &exclude, &file_languages)?;
+//! let frontends   = phase_init_frontends(&discovered, &Default::default())?;
 //! phase_cleanup_stale(&store, &discovered)?;
 //! let extracted   = phase_extract_serial(root, &discovered, &frontends, mode, None);
 //! phase_write_batched(&store, &extracted, 500, 500, |_| {}, || false)?;
-//! let graph       = phase_resolve_and_build(&store, root)?;
+//! let graph       = phase_resolve_and_build(&store, root, None, None)?;
 //! phase_materialize_annotations(&store)?;
 //! phase_build_summaries(&store)?;
 //! phase_finalize(&store, root, &[], &[], PipelineGrade::Structural)?;
@@ -314,14 +314,17 @@ pub struct WriteBatchStats {
 /// Discover source files under `root` respecting include/exclude globs.
 ///
 /// Returns project-relative paths.
-pub fn phase_discover(root: &Path, include: &[String], exclude: &[String]) -> Result<Vec<PathBuf>> {
-    let mut config = DiscoveryConfig::default();
-    if !include.is_empty() {
-        config.include_patterns = include.to_vec();
-    }
-    if !exclude.is_empty() {
-        config.exclude_patterns = exclude.to_vec();
-    }
+pub fn phase_discover(
+    root: &Path,
+    include: &[String],
+    exclude: &[String],
+    file_languages: &std::collections::BTreeMap<PathBuf, Language>,
+) -> Result<Vec<PathBuf>> {
+    let config = DiscoveryConfig {
+        include_patterns: include.to_vec(),
+        exclude_patterns: exclude.to_vec(),
+        file_languages: file_languages.clone(),
+    };
     discover_files(root, &config).context("Failed to discover files")
 }
 
@@ -360,25 +363,61 @@ pub fn phase_cleanup_file_ids(store: &Arc<Store>, file_ids: &[FileId]) -> Result
 ///
 /// Loads tree-sitter grammars via [`LanguageRegistry`] and creates one
 /// [`LanguageFrontend`] per detected language.
-pub fn phase_init_frontends(files: &[PathBuf]) -> Result<HashMap<Language, LanguageFrontend>> {
-    let languages: Vec<Language> =
-        files
-            .iter()
-            .filter_map(|p| Language::from_path(p))
-            .fold(Vec::new(), |mut acc, lang| {
-                if !acc.contains(&lang) {
-                    acc.push(lang);
-                }
-                acc
-            });
+pub struct FileFrontends {
+    by_language: HashMap<Language, LanguageFrontend>,
+    file_languages: std::collections::BTreeMap<PathBuf, Language>,
+}
+
+impl FileFrontends {
+    pub fn len(&self) -> usize {
+        self.by_language.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.by_language.is_empty()
+    }
+
+    fn for_file(&self, path: &Path) -> Option<&LanguageFrontend> {
+        let language = self
+            .file_languages
+            .get(path)
+            .copied()
+            .or_else(|| Language::from_path(path))?;
+        self.by_language.get(&language)
+    }
+}
+
+pub fn phase_init_frontends(
+    files: &[PathBuf],
+    file_languages: &std::collections::BTreeMap<PathBuf, Language>,
+) -> Result<FileFrontends> {
+    let languages: Vec<Language> = files
+        .iter()
+        .filter_map(|p| {
+            file_languages
+                .get(p)
+                .copied()
+                .or_else(|| Language::from_path(p))
+        })
+        .fold(Vec::new(), |mut acc, lang| {
+            if !acc.contains(&lang) {
+                acc.push(lang);
+            }
+            acc
+        });
 
     let _registry =
         LanguageRegistry::new(&languages).context("Failed to initialize language registry")?;
 
-    Ok(languages
-        .iter()
-        .filter_map(|&lang| create_frontend(lang).map(|fe| (lang, fe)))
-        .collect())
+    let mut by_language = HashMap::new();
+    for language in languages {
+        let frontend = create_frontend(language)
+            .with_context(|| format!("Frontend unavailable for {}", language.as_str()))?;
+        by_language.insert(language, frontend);
+    }
+    Ok(FileFrontends {
+        by_language,
+        file_languages: file_languages.clone(),
+    })
 }
 
 // ── Phase 5: Extraction (serial) ───────────────────────────────────────
@@ -390,7 +429,7 @@ pub fn phase_init_frontends(files: &[PathBuf]) -> Result<HashMap<Language, Langu
 pub fn phase_extract_serial(
     root: &Path,
     files: &[PathBuf],
-    frontends: &HashMap<Language, LanguageFrontend>,
+    frontends: &FileFrontends,
     mode: ExtractionMode,
     on_progress: Option<&dyn Fn(usize, usize)>,
 ) -> ExtractedFiles {
@@ -406,11 +445,7 @@ pub fn phase_extract_serial(
 
     for (i, rel_path) in files.iter().enumerate() {
         let abs_path = root.join(rel_path);
-        let lang = match Language::from_path(rel_path) {
-            Some(l) => l,
-            None => continue,
-        };
-        let frontend = match frontends.get(&lang) {
+        let frontend = match frontends.for_file(rel_path) {
             Some(fe) => fe,
             None => continue,
         };
@@ -448,7 +483,7 @@ pub fn phase_extract_serial(
 pub fn phase_extract_parallel(
     root: &Path,
     files: &[PathBuf],
-    frontends: &HashMap<Language, LanguageFrontend>,
+    frontends: &FileFrontends,
     mode: ExtractionMode,
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> ExtractedFiles {
@@ -476,7 +511,7 @@ pub fn phase_extract_parallel(
 pub fn phase_extract_parallel_cancellable(
     root: &Path,
     files: &[PathBuf],
-    frontends: &HashMap<Language, LanguageFrontend>,
+    frontends: &FileFrontends,
     mode: ExtractionMode,
     on_file_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
     cancel_token: Option<&std::sync::atomic::AtomicBool>,
@@ -515,8 +550,7 @@ pub fn phase_extract_parallel_cancellable(
                 let abs_path = root.join(rel_path);
 
                 let result = (|| -> Option<ExtractedFile> {
-                    let lang = Language::from_path(rel_path)?;
-                    let frontend = frontends.get(&lang)?;
+                    let frontend = frontends.for_file(rel_path)?;
                     match extract_one_index_file(&pool_worker, &abs_path, root, frontend, &mode) {
                         Ok(file) => {
                             symbol_count.fetch_add(file.facts.symbols.len(), Ordering::Relaxed);
@@ -584,9 +618,6 @@ fn extract_one_index_file(
             format!("Invalid source path {}: {:#}", rel_path.display(), e),
         )
     })?;
-
-    let _lang = Language::from_path(&rel_path)
-        .ok_or_else(|| (rel_path.clone(), "No language detected".to_string()))?;
 
     let facts = pool
         .extract_one(
@@ -926,9 +957,27 @@ pub fn phase_resolve_and_build(
     store: &Arc<Store>,
     root: &Path,
     progress: Option<&Arc<Mutex<ProgressState>>>,
+    compiler: Option<&resolution::compiler::CompilerCallBindings>,
 ) -> Result<GraphResult> {
-    let _span = info_span!(target: "atlas_sync", "sync.phase_resolve_and_build").entered();
+    anyhow::ensure!(
+        compiler.is_none() || store.get_stats()?.total_edges == 0,
+        "compiler call selection requires invalidating previous edges before graph construction"
+    );
+    let span = info_span!(target: "atlas_sync", "sync.phase_resolve_and_build");
+    // Reuse extraction workers instead of retaining a second, default Rayon pool.
+    // Enter the captured span on the worker so phase telemetry keeps its parent.
+    extraction::extraction_pool().install(|| {
+        let _span = span.enter();
+        resolve_and_build(store, root, progress, compiler)
+    })
+}
 
+fn resolve_and_build(
+    store: &Arc<Store>,
+    root: &Path,
+    progress: Option<&Arc<Mutex<ProgressState>>>,
+    compiler: Option<&resolution::compiler::CompilerCallBindings>,
+) -> Result<GraphResult> {
     // ── Alias check + optional invalidation ──
     let t_alias = Instant::now();
     let path_alias = PathAliasConfig::resolver(root);
@@ -945,15 +994,23 @@ pub fn phase_resolve_and_build(
 
     // ── Symbol pre-load (shared between resolution and graph building) ──
     let t_symbols = Instant::now();
-    let all_symbols = store.get_all_symbols()?;
+    let mut all_symbols = store.get_all_symbols()?;
     let graph_symbol_load_ms = t_symbols.elapsed().as_millis() as u64;
 
     // ── Resolution ──
     let t_resolve = Instant::now();
     let mut resolver = ReferenceResolver::with_path_alias(store.clone(), path_alias);
-    let (resolved_refs, res_stats) = resolver
+    let (mut resolved_refs, _res_stats) = resolver
         .resolve_all_parallel_with_symbols(store.clone(), &all_symbols, progress, None)
         .context("Reference resolution failed")?;
+    if let Some(bindings) = compiler {
+        resolution::compiler::apply_compiler_call_bindings(store, &mut resolved_refs, bindings)?;
+        all_symbols.extend(bindings.declarations.iter().cloned());
+    }
+    let resolved_count = resolved_refs
+        .iter()
+        .filter(|(_, target)| target.strategy != types::ResolutionStrategy::ImplicitOperator)
+        .count();
     let resolve_all_parallel_ms = t_resolve.elapsed().as_millis() as u64;
 
     // ── Build symbol_map from pre-loaded symbols (no second DB query) ──
@@ -1001,14 +1058,14 @@ pub fn phase_resolve_and_build(
         resolve_all_parallel_ms,
         graph_symbol_load_ms,
         graph_build_ms,
-        resolved_refs = res_stats.resolved,
+        resolved_refs = resolved_count,
         edges_built = build_stats.edges_built,
         edges_written = build_stats.edges_written,
         "sync.phase_resolve_and_build"
     );
 
     Ok(GraphResult {
-        resolved: res_stats.resolved,
+        resolved: resolved_count,
         edges_built: build_stats.edges_built,
         edges_written: build_stats.edges_written,
     })
@@ -1168,7 +1225,7 @@ mod tests {
         std::fs::write(dir.path().join("main.ts"), "const x = 1;\n").unwrap();
         std::fs::write(dir.path().join("utils.ts"), "export const y = 2;\n").unwrap();
 
-        let files = phase_discover(dir.path(), &[], &[]).unwrap();
+        let files = phase_discover(dir.path(), &[], &[], &Default::default()).unwrap();
         assert_eq!(files.len(), 2);
         // Both files should exist (order not guaranteed)
         let names: Vec<&str> = files.iter().map(|p| p.to_str().unwrap()).collect();
@@ -1186,7 +1243,7 @@ mod tests {
         .unwrap();
 
         let files = vec![PathBuf::from("hello.ts")];
-        let frontends = phase_init_frontends(&files).unwrap();
+        let frontends = phase_init_frontends(&files, &Default::default()).unwrap();
         let result = phase_extract_serial(
             dir.path(),
             &files,
@@ -1217,7 +1274,7 @@ mod tests {
         store.init_schema().unwrap();
 
         let files = vec![PathBuf::from("calc.ts")];
-        let frontends = phase_init_frontends(&files).unwrap();
+        let frontends = phase_init_frontends(&files, &Default::default()).unwrap();
         let extracted = phase_extract_serial(
             dir.path(),
             &files,
@@ -1251,7 +1308,7 @@ mod tests {
         store.init_schema().unwrap();
 
         let files = vec![PathBuf::from("a.ts"), PathBuf::from("b.ts")];
-        let frontends = phase_init_frontends(&files).unwrap();
+        let frontends = phase_init_frontends(&files, &Default::default()).unwrap();
         let extracted = phase_extract_serial(
             dir.path(),
             &files,
@@ -1328,7 +1385,7 @@ mod tests {
             paths.push(PathBuf::from(name));
         }
 
-        let frontends = phase_init_frontends(&paths).unwrap();
+        let frontends = phase_init_frontends(&paths, &Default::default()).unwrap();
         let calls: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
         let result = phase_extract_parallel_cancellable(
@@ -1374,7 +1431,7 @@ mod tests {
             paths.push(PathBuf::from(name));
         }
 
-        let frontends = phase_init_frontends(&paths).unwrap();
+        let frontends = phase_init_frontends(&paths, &Default::default()).unwrap();
 
         // Set the cancel token from the start — every file should be skipped.
         let cancel = std::sync::atomic::AtomicBool::new(true);
@@ -1412,7 +1469,7 @@ mod tests {
             .unwrap();
             paths.push(PathBuf::from(name));
         }
-        let frontends = phase_init_frontends(&paths).unwrap();
+        let frontends = phase_init_frontends(&paths, &Default::default()).unwrap();
         let result = phase_extract_parallel_cancellable(
             dir.path(),
             &paths,
@@ -1432,7 +1489,7 @@ mod tests {
         std::fs::write(dir.path().join("a.ts"), "const a = 1;\n").unwrap();
         std::fs::write(dir.path().join("b.py"), "def b(): pass\n").unwrap();
         let files = vec![PathBuf::from("a.ts"), PathBuf::from("b.py")];
-        let frontends = phase_init_frontends(&files).unwrap();
+        let frontends = phase_init_frontends(&files, &Default::default()).unwrap();
         let result = phase_extract_parallel_cancellable(
             dir.path(),
             &files,
@@ -1466,7 +1523,7 @@ mod tests {
         store.init_schema().unwrap();
 
         let files = vec![PathBuf::from("lib.ts"), PathBuf::from("main.ts")];
-        let frontends = phase_init_frontends(&files).unwrap();
+        let frontends = phase_init_frontends(&files, &Default::default()).unwrap();
         let extracted = phase_extract_serial(
             dir.path(),
             &files,
@@ -1476,7 +1533,7 @@ mod tests {
         );
         phase_write_batched(&store, extracted, 500, 500, |_| {}, || false).unwrap();
 
-        let result = phase_resolve_and_build(&store, dir.path(), None);
+        let result = phase_resolve_and_build(&store, dir.path(), None, None);
         assert!(
             result.is_ok(),
             "phase_resolve_and_build should not crash: {result:?}"

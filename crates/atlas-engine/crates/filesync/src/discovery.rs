@@ -6,6 +6,7 @@
 //!
 //! Both paths filter by language support and optional `.atlasignore` patterns.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,6 +21,9 @@ pub struct DiscoveryConfig {
     pub include_patterns: Vec<String>,
     /// Exclude files matching these glob patterns.
     pub exclude_patterns: Vec<String>,
+    /// Explicit language selections also admit files without a recognized extension.
+    /// These files still obey discovery scope and ignore rules.
+    pub file_languages: BTreeMap<PathBuf, Language>,
 }
 
 fn is_supported_source_path(path: &Path) -> bool {
@@ -399,7 +403,7 @@ fn matches_any_glob(path: &Path, patterns: &[String]) -> bool {
 }
 
 fn should_include(path: &Path, config: &DiscoveryConfig, atlasignore: &[String]) -> bool {
-    is_supported_source_path(path)
+    (config.file_languages.contains_key(path) || is_supported_source_path(path))
         && !matches_any_glob(path, atlasignore)
         && !matches_any_glob(path, &config.exclude_patterns)
         && (config.include_patterns.is_empty() || matches_any_glob(path, &config.include_patterns))
@@ -529,6 +533,7 @@ mod tests {
             &DiscoveryConfig {
                 include_patterns: vec!["src/**".into()],
                 exclude_patterns: Vec::new(),
+                ..Default::default()
             },
             2,
             Duration::from_secs(1),
@@ -538,5 +543,57 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert!(!complete);
         assert!(files.iter().all(|path| path.starts_with("src")));
+    }
+
+    #[test]
+    fn explicit_languages_share_bounded_and_unbounded_discovery_filters() {
+        for git in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            if git {
+                assert!(
+                    Command::new("git")
+                        .args(["init", "--quiet"])
+                        .current_dir(root.path())
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            for path in [
+                "api",
+                "api.custom",
+                "unconfigured",
+                "excluded",
+                "ignored",
+                "outside",
+            ] {
+                std::fs::write(root.path().join(path), "int answer();").unwrap();
+            }
+            std::fs::write(root.path().join(".atlasignore"), "ignored\n").unwrap();
+            let config = DiscoveryConfig {
+                file_languages: ["api", "api.custom", "excluded", "ignored", "outside"]
+                    .into_iter()
+                    .map(|path| (path.into(), Language::Cpp))
+                    .collect(),
+                include_patterns: vec![
+                    "api".into(),
+                    "api.custom".into(),
+                    "excluded".into(),
+                    "ignored".into(),
+                ],
+                exclude_patterns: vec!["excluded".into()],
+            };
+            let mut normal = discover_files(root.path(), &config).unwrap();
+            let (mut bounded, complete) =
+                discover_files_bounded(root.path(), &config, 10, Duration::from_secs(2)).unwrap();
+            normal.sort();
+            bounded.sort();
+            assert_eq!(
+                normal,
+                vec![PathBuf::from("api"), PathBuf::from("api.custom")]
+            );
+            assert_eq!(normal, bounded);
+            assert!(complete);
+        }
     }
 }

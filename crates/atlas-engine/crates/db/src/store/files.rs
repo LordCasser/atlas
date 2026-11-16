@@ -1,12 +1,42 @@
 //! File CRUD: insert, query, delete files and their associated data.
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use types::*;
 
 use super::Store;
 use crate::store_rows::row_to_file_info;
 
 impl Store {
+    /// Serialized diagnostic size for graph-cache admission before decoding.
+    pub fn file_diagnostics_bytes(&self) -> anyhow::Result<usize> {
+        let conn = self.lock_read();
+        let bytes: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(length(CAST(d.diagnostics_json AS BLOB))), 0)
+             FROM file_diagnostics d JOIN files f ON f.file_id = d.file_id
+             WHERE d.content_hash = f.content_hash
+               AND (d.dataflow_version IS NULL OR d.dataflow_version = ?1)",
+            params![types::lazy::DATAFLOW_ANALYZER_VERSION],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(bytes).unwrap_or(usize::MAX))
+    }
+
+    /// Diagnostics produced by extraction of the current file contents.
+    /// Empty does not establish complete semantic coverage.
+    pub fn file_diagnostics(&self, file_id: &FileId) -> anyhow::Result<Vec<ExtractDiagnostic>> {
+        let conn = self.lock_read();
+        let json: Option<String> = conn.query_row(
+            "SELECT d.diagnostics_json FROM file_diagnostics d JOIN files f ON f.file_id = d.file_id
+             WHERE d.file_id = ?1 AND d.content_hash = f.content_hash
+               AND (d.dataflow_version IS NULL OR d.dataflow_version = ?2)",
+            params![file_id, types::lazy::DATAFLOW_ANALYZER_VERSION], |row| row.get(0),
+        ).optional()?;
+        match json {
+            Some(json) => Ok(serde_json::from_str(&json)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Insert or update a file record.
     pub fn upsert_file(&self, file: &FileInfo) -> anyhow::Result<()> {
         let conn = self.lock();
@@ -242,6 +272,67 @@ impl Store {
         )?;
         let rows = stmt.query_map(rusqlite::params![pattern], row_to_file_info)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+}
+
+impl Store {
+    /// Resolve a literal C/C++ include. Quotes search the importing directory
+    /// first; both forms then use the explicit ordered include path. Header
+    /// prefixes/suffixes and other directories are not substitutes.
+    pub fn resolve_include_file(
+        &self,
+        import: &ImportDef,
+        include_paths: &[String],
+    ) -> anyhow::Result<Option<FileInfo>> {
+        use std::path::{Component, Path, PathBuf};
+        let Some(source) = self.get_file(&import.file_id)? else {
+            return Ok(None);
+        };
+        let module = import
+            .module
+            .strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .unwrap_or(&import.module);
+        if module.is_empty() || Path::new(module).is_absolute() || module.contains('\\') {
+            return Ok(None);
+        }
+        let mut search = Vec::new();
+        if import.is_relative {
+            search.push(
+                Path::new(&source.path)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_path_buf(),
+            );
+        }
+        search.extend(include_paths.iter().map(PathBuf::from));
+        for directory in search {
+            let mut candidate = PathBuf::new();
+            let mut valid = true;
+            for component in directory.join(module).components() {
+                match component {
+                    Component::Normal(part) => candidate.push(part),
+                    Component::CurDir => {}
+                    Component::ParentDir if candidate.pop() => {}
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if !valid {
+                continue;
+            }
+            let path = candidate.to_string_lossy().replace('\\', "/");
+            let result = self.lock_read().query_row(
+                "SELECT file_id, path, language, content_hash, status FROM files WHERE path = ?1",
+                params![path], row_to_file_info,
+            ).optional()?;
+            if result.is_some() {
+                return Ok(result);
+            }
+        }
+        Ok(None)
     }
 }
 

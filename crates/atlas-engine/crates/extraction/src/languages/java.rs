@@ -16,10 +16,10 @@ use crate::frontend::{
     SymbolExtractorSpec,
 };
 use crate::languages::shared::{
-    SymbolDefBuilder, compact_signature, make_binding_def, make_df_assign_field_target,
-    make_df_assign_target, make_df_assign_value, make_df_call_arg, make_df_parameter,
-    make_df_receiver_or_literal, make_df_return_value, make_reference_use,
-    make_scope_def_auto_name,
+    SymbolDefBuilder, callable_declaration_identity, compact_signature, jvm_package_name,
+    make_binding_def, make_df_assign_field_target, make_df_assign_target, make_df_assign_value,
+    make_df_call_arg, make_df_parameter, make_df_receiver_or_literal, make_df_return_value,
+    make_reference_use, make_scope_def_auto_name,
 };
 use types::capability::FeatureSupport;
 use types::*;
@@ -45,12 +45,18 @@ fn normalize_java_definition(
     let name = node_text(node, source)?;
     let range = node_range(node);
 
-    let qualified_name = qualified_name_from_node_java("", &name, node, source);
+    let package = jvm_package_name(node, source).unwrap_or_default();
+    let qualified_name = qualified_name_from_node_java(&package, &name, node, source);
     let signature = java_extract_signature(capture_name, node, source);
 
     Some(
         SymbolDefBuilder::new(file_id, Language::Java, kind, name, qualified_name, range)
             .signature(signature)
+            .discriminator(if kind == SymbolKind::Method {
+                callable_declaration_identity(node, source)
+            } else {
+                None
+            })
             .build(),
     )
 }
@@ -668,7 +674,13 @@ fn normalize_java_dataflow_builder(
                     node,
                     &["method_invocation", "object_creation_expression"],
                 )
-                .map(|ce| types::ids::CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+                .map(|ce| {
+                    types::ids::CallsiteId::from_file_range(
+                        &file_id,
+                        ce.start_byte() as u32,
+                        ce.end_byte() as u32,
+                    )
+                });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,

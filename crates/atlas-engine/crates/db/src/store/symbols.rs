@@ -10,6 +10,24 @@ use crate::store_rows::row_to_symbol;
 use crate::store_writers::write_symbols;
 
 impl Store {
+    /// Replace one separately produced symbol layer in a building store.
+    /// References and edges to the old layer must already have been invalidated.
+    pub fn replace_symbols_in_layer(
+        &self,
+        layer: &str,
+        symbols: &[SymbolDef],
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            symbols.iter().all(|symbol| symbol.layer == layer),
+            "symbol layer mismatch"
+        );
+        self.with_transaction(|tx| {
+            tx.execute("DELETE FROM symbols WHERE layer = ?1", params![layer])?;
+            write_symbols(tx, symbols, layer)?;
+            Ok(())
+        })
+    }
+
     /// Batch-insert symbols inside a transaction.
     pub fn insert_symbols(&self, symbols: &[SymbolDef]) -> anyhow::Result<()> {
         if symbols.is_empty() {

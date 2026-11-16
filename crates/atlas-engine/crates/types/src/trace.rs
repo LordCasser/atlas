@@ -28,7 +28,7 @@ use super::bindings::{BindingDef, BindingUse};
 use super::capability::LanguageCapabilityProfile;
 use super::dataflow::DataNode;
 use super::enums::DataFlowKind;
-use super::ids::{DataNodeId, FileId};
+use super::ids::{CallsiteId, DataNodeId, FileId};
 use super::structs::AnswerQuality;
 use super::structs::{Callsite, DiagnosticLevel, ReferenceUse, ScopeDef, SymbolDef, TextRange};
 
@@ -120,6 +120,9 @@ pub struct Evidence {
 /// can find.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracePoint {
+    /// Entered callsites, outermost first. Empty means no caller restriction.
+    /// Continuation must retain this context together with the data-node ID.
+    pub call_context: Vec<CallsiteId>,
     /// The reference at this source position (if the position falls inside a
     /// reference's byte range).
     pub reference: Option<ReferenceUse>,
@@ -198,17 +201,19 @@ impl TraceDataNodeRef {
 /// reached a particular position.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracePath {
-    /// Fully resolved source point (the origin of the traced value).
+    /// Recorded endpoint of the displayed path. A limit/cycle/unknown endpoint
+    /// is not a proven origin; other paths remain in diagnostics.
     pub source: TracePoint,
-    /// Ordered sequence of steps from source to sink.
+    /// One contiguous sequence of recorded edges from source to sink.
+    /// This is not an enumeration of all sources or an execution proof.
     pub steps: Vec<TracePathStep>,
     /// Fully resolved sink point (the user-chosen position).
     pub sink: TracePoint,
-    /// How confident the engine is about this path (0.0–1.0).
+    /// Legacy depth/truncation score (0.0–1.0), not semantic accuracy.
     pub confidence: f64,
-    /// The number of dataflow nodes visited during the trace.
+    /// Number of visited (data node, invocation context) pairs.
     pub nodes_visited: usize,
-    /// How far backward the trace was able to go (number of BFS levels).
+    /// How far backward the displayed trace went (number of edges).
     /// Compare against the requested `max_depth` to detect truncation.
     pub max_depth_reached: usize,
     /// Language capability profile. Always present for MCP consumers.
@@ -259,6 +264,8 @@ pub struct LazySummary {
 /// A single step in a trace path — connects two data nodes via a dataflow edge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracePathStep {
+    /// Calling context at from_node_id, for exact continuation.
+    pub call_context: Vec<CallsiteId>,
     /// Step index (0-based, from source to sink).
     pub index: u32,
     /// The data node at the **from** end of the edge.
@@ -304,6 +311,7 @@ impl TracePathStep {
     ) -> Self {
         Self {
             index,
+            call_context: vec![],
             from_node_id,
             to_node_id,
             edge_kind,
@@ -423,6 +431,7 @@ mod tests {
         // Verify TracePoint can be serialized for MCP transport.
         let file_id = FileId::generate("test.py");
         let tp = TracePoint {
+            call_context: vec![],
             reference: None,
             resolved_symbol: None,
             data_node: None,

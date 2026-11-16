@@ -7,7 +7,7 @@
 //! 4. Assembles FileFacts (structural edges left to resolver phase)
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::info_span;
 use tree_sitter::Parser;
@@ -114,6 +114,10 @@ pub fn extract_file_with_mode(
         "parser source normalization must preserve byte offsets"
     );
     let tree = tl_parse(&ts_lang, parser_source.as_bytes(), file_path, language)?;
+    let tree = frontend
+        .parser
+        .refine_tree(&parser_source, tree, &|| token.is_cancelled())
+        .ok_or_else(|| cancelled_error(file_path, language))?;
     let root = tree.root_node();
 
     // Declaration recovery is only needed when the primary tree has parse
@@ -141,11 +145,40 @@ pub fn extract_file_with_mode(
         .map_or(root, tree_sitter::Tree::root_node);
 
     if root.has_error() {
-        diagnostics.push(ExtractDiagnostic {
-            level: DiagnosticLevel::Warning,
-            message: "Parse errors detected (extraction best-effort)".into(),
-            range: None,
-        });
+        let mut pending = vec![root];
+        while let Some(node) = pending.pop() {
+            if token.is_cancelled() {
+                return Err(cancelled_error(file_path, language));
+            }
+            let message = if node.is_error() {
+                Some(
+                    "Parser could not recognize this source region; extraction is best-effort"
+                        .to_string(),
+                )
+            } else if node.is_missing() {
+                Some(format!(
+                    "Parser inserted missing {}; location is a zero-width insertion point",
+                    node.kind()
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message,
+                    range: Some(node_range(node)),
+                });
+                // The outer ERROR already covers its recovery subtree.
+                continue;
+            }
+            let mut cursor = node.walk();
+            pending.extend(
+                node.children(&mut cursor)
+                    .filter(|child| child.has_error() || child.is_missing()),
+            );
+        }
+        diagnostics.sort_by_key(|d| d.range.map(|range| (range.start_byte, range.end_byte)));
     }
 
     // Bundle per-file context so helpers take one struct instead of 6-9 args.
@@ -167,8 +200,9 @@ pub fn extract_file_with_mode(
     };
 
     // 2. Extract and normalize definitions
-    // Use manifest_query() for Manifest mode (top-level only), definition_query() otherwise.
-    let definition_src = if mode.produces_manifest() {
+    // C++ occurrence identity needs the same declaration inventory in every
+    // mode. Manifest still projects top-level symbols before returning.
+    let definition_src = if mode.produces_manifest() && language != Language::Cpp {
         frontend.symbols.manifest_query()
     } else {
         frontend.symbols.definition_query()
@@ -186,6 +220,10 @@ pub fn extract_file_with_mode(
         return Err(cancelled_error(file_path, language));
     }
 
+    #[cfg(feature = "cpp")]
+    if language == Language::Cpp {
+        crate::languages::cpp::distinguish_callable_occurrences(&mut symbols);
+    }
     // Manifest mode: early return — symbols only, no references/scopes/dataflow.
     if mode.produces_manifest() {
         retain_manifest_top_level_symbols(&mut symbols, declaration_root);
@@ -203,6 +241,7 @@ pub fn extract_file_with_mode(
         set_symbol_layers(&mut symbols, "manifest");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         let mut facts = FileFacts {
+            cpp_types: None,
             file: FileInfo {
                 file_id,
                 path: file_path_str,
@@ -228,6 +267,7 @@ pub fn extract_file_with_mode(
             cfg_nodes: vec![],
             cfg_edges: vec![],
             diagnostics,
+            dataflow_version: None,
             budget_exceeded: false,
             lexical_failed: false,
             dataflow_failed: false,
@@ -262,6 +302,18 @@ pub fn extract_file_with_mode(
     }
 
     // CP3: Check cancellation after reference extraction.
+    #[cfg(feature = "cpp")]
+    if language == Language::Cpp
+        && !crate::languages::cpp::discard_statement_crossing_calls(
+            root,
+            source,
+            &mut references,
+            &mut diagnostics,
+            token,
+        )
+    {
+        return Err(cancelled_error(file_path, language));
+    }
     if token.is_cancelled() {
         return Err(cancelled_error(file_path, language));
     }
@@ -303,6 +355,13 @@ pub fn extract_file_with_mode(
     //     but resolve_dataflow_function_ids() needs the full function body range
     //     to assign function_id to DataNodes inside the body.
     for sym in symbols.iter_mut() {
+        #[cfg(feature = "cpp")]
+        if language == Language::Cpp {
+            if let Some(range) = crate::languages::cpp::definition_range(root, sym) {
+                sym.range = range;
+            }
+            continue;
+        }
         let expected_scope = match sym.kind {
             SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => {
                 Some(&[ScopeKind::Function, ScopeKind::Method][..])
@@ -321,15 +380,15 @@ pub fn extract_file_with_mode(
             _ => None,
         };
         if let Some(expected_scope) = expected_scope {
-            // Find the tightest defining scope that contains the captured name.
-            let containing = scopes
-                .iter()
-                .filter(|s| {
-                    expected_scope.contains(&s.kind)
-                        && s.range.start_byte <= sym.name_range.start_byte
-                        && s.range.end_byte >= sym.name_range.end_byte
-                })
-                .min_by_key(|s| s.range.end_byte - s.range.start_byte); // tightest scope
+            // The containing scope of a local prototype is not its function
+            // body. Expand only a compatible scope directly assigned to this
+            // symbol, not an enclosing function/class found further outward.
+            let containing = scopes.iter().find(|s| {
+                sym.scope_id == Some(s.id)
+                    && expected_scope.contains(&s.kind)
+                    && s.range.start_byte <= sym.name_range.start_byte
+                    && s.range.end_byte >= sym.name_range.end_byte
+            });
             if let Some(scope) = containing {
                 sym.range.start_byte = scope.range.start_byte;
                 sym.range.end_byte = scope.range.end_byte;
@@ -357,6 +416,7 @@ pub fn extract_file_with_mode(
         set_symbol_layers(&mut symbols, "resolution_symbols");
         let file_path_str = file_path.display().to_string().replace('\\', "/");
         let mut facts = FileFacts {
+            cpp_types: None,
             file: FileInfo {
                 file_id,
                 path: file_path_str,
@@ -382,12 +442,20 @@ pub fn extract_file_with_mode(
             cfg_nodes: vec![],
             cfg_edges: vec![],
             diagnostics,
+            dataflow_version: None,
             budget_exceeded: false,
             lexical_failed: false,
             dataflow_failed: false,
             cfg_failed: false,
             layer: "resolution_symbols".to_string(),
         };
+        #[cfg(feature = "cpp")]
+        if language == Language::Cpp {
+            facts.cpp_types = Some(
+                crate::languages::cpp::declarations::extract(root, source, &facts, token)
+                    .ok_or_else(|| cancelled_error(file_path, language))?,
+            );
+        }
         crate::post_extract::apply_post_extract_hooks(&mut facts, source);
         return Ok(facts);
     }
@@ -418,12 +486,29 @@ pub fn extract_file_with_mode(
         (vec![], vec![])
     };
 
+    // Build CFG before use-def resolution. Structural mode still skips both.
+    let mut cfg_failed = false;
+    let cfg_result = if mode.produces_cfg() && frontend.capability.features.cfg.is_supported() {
+        super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
+            .unwrap_or_else(|e| {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: format!("CFG builder failed: {e}"),
+                    range: None,
+                });
+                cfg_failed = true;
+                CfgResult::default()
+            })
+    } else {
+        CfgResult::default()
+    };
+
     // 7b. Build dataflow graph (P7: skip in Structural mode)
     let mut budget_exceeded = false;
 
     // In LazyDataflow mode: compute capture byte ranges from window
     let capture_ranges: Option<Vec<(u32, u32)>> =
-        if let ExtractionMode::LazyDataflow { ref window } = mode {
+        if let ExtractionMode::LazyDataflow { ref window, .. } = mode {
             Some(
                 window
                     .units
@@ -438,74 +523,107 @@ pub fn extract_file_with_mode(
     let capture_ranges_ref: Option<&[(u32, u32)]> = capture_ranges.as_deref();
 
     let mut dataflow_failed = false;
-    let (mut data_nodes, dataflow_edges) =
-        if mode.produces_dataflow() && frontend.dataflow.capability().is_supported() {
-            let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
-                frontend.dataflow.as_ref(),
-                frontend.lexical.as_ref(),
-                &ectx,
-                &bindings,
-                &scopes,
-                &symbols,
-                capture_ranges_ref,
-            )
-            .unwrap_or_else(|e| {
-                diagnostics.push(ExtractDiagnostic {
-                    level: DiagnosticLevel::Warning,
-                    message: format!("DataFlow builder failed: {e}"),
-                    range: None,
-                });
-                dataflow_failed = true;
-                DataFlowResult::default()
+    let (mut data_nodes, mut dataflow_edges) = if mode.produces_dataflow()
+        && frontend.dataflow.capability().is_supported()
+    {
+        let dataflow_result = super::dataflow_builder::DataFlowBuilder::extract(
+            frontend.dataflow.as_ref(),
+            frontend.lexical.as_ref(),
+            &ectx,
+            &bindings,
+            &scopes,
+            &symbols,
+            capture_ranges_ref,
+        )
+        .unwrap_or_else(|e| {
+            diagnostics.push(ExtractDiagnostic {
+                level: DiagnosticLevel::Warning,
+                message: format!("DataFlow builder failed: {e}"),
+                range: None,
             });
-            let nodes = dataflow_result.nodes;
-            let edges = dataflow_result.edges;
-
-            // 7c. Build use-def edges (only if dataflow succeeded)
-            // function_ids already resolved inside DataFlowBuilder::extract
-            let use_def_edges = DataFlowBuilder::resolve_use_def(&nodes, &edges);
-            let mut all_edges = edges;
-            all_edges.extend(use_def_edges);
-
-            // In LazyDataflow mode: filter nodes and edges to only those
-            // whose ranges fall within the window units.
-            if let ExtractionMode::LazyDataflow { ref window } = mode {
-                let filtered_data = filter_dataflow_to_window(&nodes, &all_edges, window, file_id);
-                budget_exceeded = filtered_data.truncated;
-                (filtered_data.nodes, filtered_data.edges)
-            } else {
-                (nodes, all_edges)
+            dataflow_failed = true;
+            DataFlowResult::default()
+        });
+        let mut nodes = dataflow_result.nodes;
+        let edges = dataflow_result.edges;
+        if !matches!(
+            mode,
+            ExtractionMode::LazyDataflow {
+                include_parameter_outputs: false,
+                ..
             }
-        } else {
-            (vec![], vec![])
-        };
+        ) {
+            budget_exceeded |= crate::call_outputs::append_parameter_outputs(
+                &ectx,
+                &cfg_result,
+                &mut nodes,
+                &mut diagnostics,
+                token,
+            )
+            .ok_or_else(|| cancelled_error(file_path, language))?;
+        }
 
-    // 7e. Build per-function control-flow graphs (P7: skip in Structural mode)
-    let mut cfg_failed = false;
-    let (cfg_nodes, cfg_edges) =
-        if mode.produces_cfg() && frontend.capability.features.cfg.is_supported() {
-            let cfg_result =
-                super::cfg_builder::build_cfg_for_functions(language, root, &symbols, source_bytes)
-                    .unwrap_or_else(|e| {
-                        diagnostics.push(ExtractDiagnostic {
-                            level: DiagnosticLevel::Warning,
-                            message: format!("CFG builder failed: {e}"),
-                            range: None,
-                        });
-                        cfg_failed = true;
-                        CfgResult::default()
-                    });
-            (cfg_result.nodes, cfg_result.edges)
-        } else {
-            (vec![], vec![])
-        };
+        // 7c. Build use-def edges (only if dataflow succeeded)
+        // function_ids already resolved inside DataFlowBuilder::extract
+        let use_defs = DataFlowBuilder::resolve_use_def(&nodes, &edges, &cfg_result, &ectx, token)
+            .ok_or_else(|| cancelled_error(file_path, language))?;
+        budget_exceeded |= use_defs.truncated;
+        diagnostics.extend(use_defs.diagnostics);
+        let mut all_edges = edges;
+        all_edges.extend(use_defs.edges);
+
+        // Final window/node/edge budgets also include call-result nodes.
+        // Apply them after recorded invocation identities are available.
+        (nodes, all_edges)
+    } else {
+        (vec![], vec![])
+    };
+
+    let (cfg_nodes, cfg_edges) = (cfg_result.nodes, cfg_result.edges);
 
     // 8. Bind source ownership and scope through the semantic binder.
     // This is the single source of truth for references/dataflow/callsites:
     // adapters may produce best-effort source IDs, but only IDs present in
     // `symbols` are allowed to survive extraction.
-    let binder = SemanticBinder::new(&symbols, &scopes);
+    let caller_initializers = HashMap::new();
+    #[cfg(feature = "cpp")]
+    let caller_initializers = if language == Language::Cpp {
+        crate::languages::cpp::lambdas::caller_initializers(root, &symbols)
+    } else {
+        caller_initializers
+    };
+    let binder = SemanticBinder::new(&symbols, &scopes, caller_initializers);
     binder.bind_all(file_id, &mut references, &mut raw_edges);
+
+    // C++ unqualified call names can be hidden by parameters or locals. Reuse
+    // lexical lookup for the references already extracted; Structural mode does
+    // not need a second AST scan to establish this boundary.
+    if language == Language::Cpp {
+        let mut scope_bindings: HashMap<ScopeId, Vec<&BindingDef>> = HashMap::new();
+        for binding in &bindings {
+            scope_bindings
+                .entry(binding.scope_id)
+                .or_default()
+                .push(binding);
+        }
+        let scopes_by_id = scopes.iter().map(|scope| (scope.id, scope)).collect();
+        for reference in &mut references {
+            if reference.kind == ReferenceKind::Call
+                && reference.receiver.is_none()
+                && let Some(scope_id) = reference.scope_id
+            {
+                reference.binding_id = super::languages::shared::resolve_binding_in_scope_chain(
+                    &scope_bindings,
+                    &scopes_by_id,
+                    scope_id,
+                    &reference.name,
+                    reference.range.start_byte,
+                    |scope| frontend.lexical.inherits_bindings_from_parent(scope),
+                )
+                .map(|binding| binding.id);
+            }
+        }
+    }
 
     // 8a. Build identifier-use BindingUse records from the AST.
     //
@@ -557,6 +675,7 @@ pub fn extract_file_with_mode(
     //    all AST walking internally (including universal fallback for
     //    edge cases).  If the spec returns None, we fall back to using
     //    the reference range as the callsite range.
+    let mut value_calls = HashSet::new();
     let mut callsites: Vec<Callsite> = references
         .iter()
         .filter(|r| r.kind == ReferenceKind::Call && r.source_symbol.is_some())
@@ -574,7 +693,7 @@ pub fn extract_file_with_mode(
                 source,
             );
 
-            let (callsite_range, callee_range, receiver_fallback, argument_ranges, _call_kind) =
+            let (callsite_range, callee_range, receiver_fallback, argument_ranges, call_kind) =
                 if let Some(CallsiteParts {
                     call_range,
                     callee_range,
@@ -599,6 +718,12 @@ pub fn extract_file_with_mode(
                     (r.range, callee_range, None, Vec::new(), None)
                 };
 
+            if matches!(
+                call_kind,
+                Some(super::CallKind::FunctionCall | super::CallKind::MethodCall)
+            ) {
+                value_calls.insert(cs_id);
+            }
             let receiver = r.receiver.clone().or(receiver_fallback);
             let args: Vec<ArgumentFact> = argument_ranges
                 .into_iter()
@@ -630,15 +755,64 @@ pub fn extract_file_with_mode(
         })
         .collect();
 
+    if let ExtractionMode::LazyDataflow {
+        callsites: recorded,
+        ..
+    } = &mode
+    {
+        // Lazy computation reuses the selected index's invocation identity.
+        // Validate its expression range with the same syntax adapter as Full;
+        // no second reference extraction or loader-specific result graph.
+        callsites = recorded
+            .iter()
+            .filter(|call| {
+                capture_ranges_ref.is_some_and(|ranges| {
+                    ranges.iter().any(|&(start, end)| {
+                        start <= call.range.start_byte && call.range.end_byte <= end
+                    })
+                })
+            })
+            .cloned()
+            .collect();
+        for call in &callsites {
+            if token.is_cancelled() {
+                return Err(cancelled_error(file_path, language));
+            }
+            let parts = call.callee_range.and_then(|range| {
+                frontend.callsites.extract_callsite(
+                    root,
+                    range.start_byte as usize,
+                    range.end_byte as usize,
+                    source,
+                )
+            });
+            if let Some(parts) = parts.filter(|parts| parts.call_range == call.range) {
+                if matches!(
+                    parts.call_kind,
+                    super::CallKind::FunctionCall | super::CallKind::MethodCall
+                ) {
+                    value_calls.insert(call.id);
+                }
+            } else {
+                diagnostics.push(ExtractDiagnostic {
+                    level: DiagnosticLevel::Warning,
+                    message: "call_result_syntax_unavailable: recorded invocation range could not be matched to its source expression; result boundary remains unmodeled".into(),
+                    range: Some(call.range),
+                });
+            }
+        }
+    }
+
     // 9a. Backfill ArgumentFact.data_node_id from DataNodes,
     //     and set DataNode.arg_index from ArgumentFact.index.
     for cs in &mut callsites {
-        let provisional_cs_id = CallsiteId::from_file_byte(&file_id, cs.range.start_byte);
+        let provisional_cs_id =
+            CallsiteId::from_file_range(&file_id, cs.range.start_byte, cs.range.end_byte);
         let call_arg_node_indices: Vec<usize> = data_nodes
             .iter()
             .enumerate()
             .filter(|(_, dn)| {
-                dn.kind == DataNodeKind::CallArg
+                matches!(dn.kind, DataNodeKind::CallArg | DataNodeKind::CallOutput)
                     && dn.callsite_id.as_ref() == Some(&provisional_cs_id)
             })
             .map(|(i, _)| i)
@@ -651,9 +825,10 @@ pub fn extract_file_with_mode(
                 let arg_index = arg.index;
                 for &idx in &call_arg_node_indices {
                     if data_nodes[idx].range.start_byte == arg_range.start_byte {
-                        arg.data_node_id = Some(data_nodes[idx].id);
+                        if data_nodes[idx].kind == DataNodeKind::CallArg {
+                            arg.data_node_id = Some(data_nodes[idx].id);
+                        }
                         data_nodes[idx].arg_index = Some(arg_index);
-                        break;
                     }
                 }
             }
@@ -661,16 +836,20 @@ pub fn extract_file_with_mode(
     }
 
     // After backfill, rewrite all DataNode callsite_ids that used
-    // provisional from_file_byte IDs to the real CallsiteId so
+    // provisional from_file_range IDs to the real CallsiteId so
     // query-time joins (e.g., return-value bridge) work.
     //
-    // Build a map: provisional from_file_byte ID → real Callsite.id
+    // Build a map: provisional from_file_range ID → real Callsite.id
     let cs_id_map: std::collections::HashMap<types::ids::CallsiteId, types::ids::CallsiteId> =
         callsites
             .iter()
             .map(|cs| {
                 (
-                    types::ids::CallsiteId::from_file_byte(&file_id, cs.range.start_byte),
+                    types::ids::CallsiteId::from_file_range(
+                        &file_id,
+                        cs.range.start_byte,
+                        cs.range.end_byte,
+                    ),
                     cs.id,
                 )
             })
@@ -681,6 +860,57 @@ pub fn extract_file_with_mode(
             && let Some(real) = cs_id_map.get(provisional)
         {
             dn.callsite_id = Some(*real);
+        }
+    }
+
+    // C++ casts can have call-shaped parser nodes and argument captures, but
+    // are not recorded invocations. Only the existing callsite extraction may
+    // establish the invocation associated with a potential argument write.
+    let recorded_calls: HashSet<_> = callsites.iter().map(|c| c.id).collect();
+    let unrecorded_outputs: HashSet<_> = data_nodes
+        .iter()
+        .filter(|n| {
+            n.kind == DataNodeKind::CallOutput
+                && n.callsite_id.is_none_or(|id| !recorded_calls.contains(&id))
+        })
+        .map(|n| n.id)
+        .collect();
+    data_nodes.retain(|n| !unrecorded_outputs.contains(&n.id));
+    dataflow_edges.retain(|e| {
+        !unrecorded_outputs.contains(&e.source) && !unrecorded_outputs.contains(&e.target)
+    });
+
+    if mode.produces_dataflow() && frontend.dataflow.capability().is_supported() && !dataflow_failed
+    {
+        // Use-def ordering above consumes evaluation dependencies. Only now
+        // project the value graph: invocation arguments cannot bypass their
+        // callee's return sources through syntactic containment edges.
+        super::call_results::connect(
+            &ectx,
+            &callsites,
+            &value_calls,
+            &mut data_nodes,
+            &mut dataflow_edges,
+            capture_ranges_ref,
+            token,
+        )
+        .ok_or_else(|| cancelled_error(file_path, language))?;
+        // Potential outputs only serve later dependencies. Unused ones must not
+        // displace call results or other useful facts under the window budget.
+        let used: HashSet<_> = dataflow_edges.iter().map(|e| e.source).collect();
+        let unused_outputs: HashSet<_> = data_nodes
+            .iter()
+            .filter(|n| n.kind == DataNodeKind::CallOutput && !used.contains(&n.id))
+            .map(|n| n.id)
+            .collect();
+        data_nodes.retain(|n| !unused_outputs.contains(&n.id));
+        dataflow_edges
+            .retain(|e| !unused_outputs.contains(&e.source) && !unused_outputs.contains(&e.target));
+        if let ExtractionMode::LazyDataflow { ref window, .. } = mode {
+            let filtered = filter_dataflow_to_window(&data_nodes, &dataflow_edges, window, file_id);
+            budget_exceeded |= filtered.truncated;
+            data_nodes = filtered.nodes;
+            dataflow_edges = filtered.edges;
         }
     }
 
@@ -708,7 +938,7 @@ pub fn extract_file_with_mode(
     // In LazyDataflow mode, filter bindings, cfg, and dataflow to the window.
     // (data_nodes/dataflow_edges are already filtered in step 7b/7c above.)
     let (bindings, binding_uses, cfg_nodes, cfg_edges) =
-        if let ExtractionMode::LazyDataflow { ref window } = mode {
+        if let ExtractionMode::LazyDataflow { ref window, .. } = mode {
             let file_units: Vec<&types::lazy::AnalysisUnit> = window
                 .units
                 .iter()
@@ -722,15 +952,11 @@ pub fn extract_file_with_mode(
                 .into_iter()
                 .filter(|b| is_inside(&b.range))
                 .collect();
-            let binding_ids: std::collections::HashSet<_> = bindings.iter().map(|b| b.id).collect();
+            // A use belongs to the requested source region even when its
+            // declaration lives in an enclosing scope already in the index.
             let binding_uses: Vec<_> = binding_uses
                 .into_iter()
-                .filter(|u| {
-                    is_inside(&u.range)
-                        && u.binding_id
-                            .map(|bid| binding_ids.contains(&bid))
-                            .unwrap_or(true)
-                })
+                .filter(|u| is_inside(&u.range))
                 .collect();
 
             // Filter CFG to window
@@ -793,6 +1019,7 @@ pub fn extract_file_with_mode(
     }
 
     let mut facts = FileFacts {
+        cpp_types: None,
         file: FileInfo {
             file_id,
             path: file_path_str,
@@ -814,12 +1041,22 @@ pub fn extract_file_with_mode(
         dataflow_edges,
         cfg_nodes,
         cfg_edges,
+        dataflow_version: (mode.produces_dataflow()
+            && frontend.dataflow.capability().is_supported())
+        .then_some(types::lazy::DATAFLOW_ANALYZER_VERSION),
         budget_exceeded,
         lexical_failed,
         dataflow_failed,
         cfg_failed,
         layer: output_layer.to_string(),
     };
+    #[cfg(feature = "cpp")]
+    if language == Language::Cpp && !matches!(mode, ExtractionMode::LazyDataflow { .. }) {
+        facts.cpp_types = Some(
+            crate::languages::cpp::declarations::extract(root, source, &facts, token)
+                .ok_or_else(|| cancelled_error(file_path, language))?,
+        );
+    }
     // Shared index/lazy post-extract (EXPORT_SYMBOL, initcall, …).
     crate::post_extract::apply_post_extract_hooks(&mut facts, source);
     Ok(facts)
@@ -1335,6 +1572,63 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
     use types::{Language, ReferenceKind};
+
+    #[cfg(feature = "cpp")]
+    #[test]
+    fn parser_diagnostics_locate_errors_and_missing_tokens_without_losing_calls() {
+        let frontend = create_frontend(Language::Cpp).unwrap();
+        for (source, expected, missing) in [
+            (
+                "// 中文\r\nvoid target() {}\r\nvoid good() { target(); }\r\nvoid broken() { @@@ target(); }\r\n",
+                "@@@",
+                false,
+            ),
+            ("void target() {}\nvoid broken() { target();", "", true),
+        ] {
+            let facts = extract_full(
+                &frontend,
+                FileId::generate("errors.cpp"),
+                Path::new("errors.cpp"),
+                source,
+                "errors",
+            )
+            .unwrap();
+            assert_eq!(facts.file.status, ParseStatus::Partial);
+            assert!(
+                facts
+                    .references
+                    .iter()
+                    .any(|r| r.kind == ReferenceKind::Call && r.name == "target")
+            );
+            let diagnostic = facts
+                .diagnostics
+                .iter()
+                .find(|d| {
+                    d.range.is_some_and(|range| {
+                        let text = &source[range.start_byte as usize..range.end_byte as usize];
+                        text == expected && (!missing || d.message.contains("missing"))
+                    })
+                })
+                .unwrap_or_else(|| panic!("missing expected diagnostic: {:?}", facts.diagnostics));
+            let range = diagnostic.range.unwrap();
+            if missing {
+                assert_eq!(range.start_byte, source.len() as u32);
+            } else {
+                assert_eq!(range.start_line, 3);
+                assert_eq!(range.start_column, 16);
+            }
+        }
+        let clean = extract_full(
+            &frontend,
+            FileId::generate("clean.cpp"),
+            Path::new("clean.cpp"),
+            "void target() {} void good() { target(); }",
+            "clean",
+        )
+        .unwrap();
+        assert!(clean.diagnostics.is_empty());
+        assert_eq!(clean.file.status, ParseStatus::Success);
+    }
 
     /// Helper: create a TypeScript LanguageFrontend for tests.
     #[cfg(feature = "typescript")]
@@ -2730,7 +3024,11 @@ namespace {
             path,
             &source,
             "abc",
-            ExtractionMode::LazyDataflow { window },
+            ExtractionMode::LazyDataflow {
+                include_parameter_outputs: true,
+                window,
+                callsites: vec![],
+            },
             &(),
         )
         .unwrap();
@@ -2807,7 +3105,11 @@ namespace {
             path,
             source,
             "abc",
-            ExtractionMode::LazyDataflow { window },
+            ExtractionMode::LazyDataflow {
+                include_parameter_outputs: true,
+                window,
+                callsites: facts_full.callsites.clone(),
+            },
             &(),
         )
         .unwrap();

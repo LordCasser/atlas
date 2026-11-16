@@ -28,6 +28,20 @@ use self::context::{GlobalSymbolIndex, ResolutionContext, is_explicit_test_path,
 use self::import_resolver::ImportResolver;
 use self::name_matcher::NameMatcher;
 
+struct ResolutionAttempt {
+    target: Option<ResolvedTarget>,
+    failure: Option<types::cpp::CppTypeLookupFailure>,
+}
+
+type FailedLookup = (ReferenceId, Option<types::cpp::CppTypeLookupFailure>);
+// Keep the existing by-value target transport and its 4,000-event bound;
+// boxing this variant would introduce a separate allocation for every target.
+#[allow(clippy::large_enum_variant)]
+enum ResolutionEvent {
+    Target(ReferenceUse, ResolvedTarget),
+    Failure(FailedLookup),
+}
+
 type ResolvedReference = (ReferenceUse, ResolvedTarget);
 type WriterOutput = (Vec<ResolvedReference>, ResolutionStats, WriterTelemetry);
 pub type VisibilityFilterFn = dyn Fn(&SymbolDef, FileId) -> bool;
@@ -44,6 +58,7 @@ type StagedResolutionRow = (
 );
 
 struct ScopedResolutionState<'a> {
+    cpp_types: Option<&'a cpp::TypeIndex>,
     context: &'a ResolutionContext,
     visibility_filter: Option<&'a VisibilityFilterFn>,
     preferred_files: HashSet<FileId>,
@@ -54,7 +69,16 @@ struct ScopedResolutionState<'a> {
 }
 
 pub mod builtins;
+pub mod compiler;
 pub mod config;
+mod cpp;
+pub use cpp::declarations_match as cpp_declarations_match;
+pub use cpp::navigation::{
+    CppBaseNavigation, CppMemberNavigation, CppRecordNavigation, cpp_declaration_navigation,
+};
+pub mod cpp_captures;
+
+pub const KEY_INCLUDE_PATHS: &str = "include_paths";
 
 // Per-strategy hit counters (zero overhead: AtomicU64 inc is lock-free)
 static S1_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -123,58 +147,100 @@ fn resolve_one_core(
     global_index: Option<&GlobalSymbolIndex>,
     proximity_file_id: Option<FileId>,
     imported_file_ids: &HashSet<FileId>,
-) -> Option<ResolvedTarget> {
-    if is_builtin_reference(reference, ctx.file.language) {
-        return None;
-    }
+) -> ResolutionAttempt {
+    let mut failure = None;
+    let target = (|| {
+        if is_builtin_reference(reference, ctx.file.language) {
+            return None;
+        }
 
-    // Contextual strategies 2-5: shared implementation.
-    if let Some(result) =
-        resolve_contextual_strategies(reference, ctx, import_resolver, name_matcher)
-    {
-        return Some(result);
-    }
+        if ctx.file.language == Language::Cpp && reference.kind == ReferenceKind::Call {
+            let name = global_index
+                .and_then(|index| index.cpp_types.template_call(reference))
+                .map_or(reference.name.as_str(), |call| call.name.as_str());
+            let candidates = global_index
+                .map(|index| index.find_by_name(name))
+                .unwrap_or_else(|| ctx.find_in_file_by_name(name));
+            return cpp::resolve_call(
+                reference,
+                ctx,
+                &candidates,
+                imported_file_ids,
+                global_index.map(|i| &i.cpp_types),
+            )
+            .map_err(|cause| {
+                if let cpp::LookupFailure::Type(cause) = cause {
+                    failure = Some(*cause);
+                }
+            })
+            .ok();
+        }
 
-    // An explicit import binding is a semantic boundary. If its target module
-    // does not export the requested name, a project-wide same-name symbol is
-    // not a valid substitute. Module-only/wildcard imports are not indexed by
-    // name and therefore retain the normal Strategy 6 behavior.
-    if ctx.imports_by_name.contains_key(&reference.name) {
-        MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
+        // Contextual strategies 2-5: shared implementation.
+        if let Some(result) =
+            resolve_contextual_strategies(reference, ctx, import_resolver, name_matcher)
+        {
+            return Some(result);
+        }
 
-    // Strategy 6: Project-wide name search with import-scoped pre-filtering
-    {
-        let _timer = StrategyTimer::new(&S6_TIME_NS);
-        if let Some(idx) = global_index {
-            // Compute per-file preferred scope (reuses ImportResolver infra)
-            let exact = if !imported_file_ids.is_empty() {
-                idx.find_exact_name_target_in_scope(
-                    &reference.name,
-                    proximity_file_id,
-                    imported_file_ids,
-                )
-            } else {
-                idx.find_exact_name_target(&reference.name, proximity_file_id)
-            };
-            if let Some(matched) = exact {
-                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(matched);
-            }
-            if !should_run_fuzzy_fallback_for_reference(reference) {
-                return None;
-            }
-            // Try fuzzy-with-proximity before full global scan.
-            if let Some(fid) = proximity_file_id {
-                let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
-                if !fuzzy_prox.is_empty()
+        // An explicit import binding is a semantic boundary. If its target module
+        // does not export the requested name, a project-wide same-name symbol is
+        // not a valid substitute. Module-only/wildcard imports are not indexed by
+        // name and therefore retain the normal Strategy 6 behavior.
+        if ctx.imports_by_name.contains_key(&reference.name) {
+            MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+
+        // Strategy 6: Project-wide name search with import-scoped pre-filtering
+        {
+            let _timer = StrategyTimer::new(&S6_TIME_NS);
+            if let Some(idx) = global_index {
+                // Compute per-file preferred scope (reuses ImportResolver infra)
+                let exact = if !imported_file_ids.is_empty() {
+                    idx.find_exact_name_target_in_scope(
+                        &reference.name,
+                        proximity_file_id,
+                        imported_file_ids,
+                    )
+                } else {
+                    idx.find_exact_name_target(&reference.name, proximity_file_id)
+                };
+                if let Some(matched) = exact {
+                    S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_EXACT_COUNT.fetch_add(1, Ordering::Relaxed);
+                    return Some(matched);
+                }
+                if !should_run_fuzzy_fallback_for_reference(reference) {
+                    return None;
+                }
+                // Try fuzzy-with-proximity before full global scan.
+                if let Some(fid) = proximity_file_id {
+                    let fuzzy_prox = idx.fuzzy_search_proximity(&reference.name, 2, fid);
+                    if !fuzzy_prox.is_empty()
+                        && let Some(matched) = name_matcher.best_match(
+                            &fuzzy_prox,
+                            &reference.name,
+                            Confidence::new(0.4),
+                        )
+                    {
+                        S6_COUNT.fetch_add(1, Ordering::Relaxed);
+                        S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
+                        return Some(ResolvedTarget {
+                            symbol_id: matched.symbol_id,
+                            confidence: matched.confidence,
+                            strategy: ResolutionStrategy::FuzzyMatch,
+                            provenance: Provenance::Heuristic,
+                        });
+                    }
+                }
+                let fuzzy = idx.fuzzy_search(&reference.name, 2);
+                if !fuzzy.is_empty()
                     && let Some(matched) =
-                        name_matcher.best_match(&fuzzy_prox, &reference.name, Confidence::new(0.4))
+                        name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
                 {
                     S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                    S6_FUZZY_PROX_COUNT.fetch_add(1, Ordering::Relaxed);
+                    S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
                     return Some(ResolvedTarget {
                         symbol_id: matched.symbol_id,
                         confidence: matched.confidence,
@@ -183,28 +249,21 @@ fn resolve_one_core(
                     });
                 }
             }
-            let fuzzy = idx.fuzzy_search(&reference.name, 2);
-            if !fuzzy.is_empty()
-                && let Some(matched) =
-                    name_matcher.best_match(&fuzzy, &reference.name, Confidence::new(0.4))
-            {
-                S6_COUNT.fetch_add(1, Ordering::Relaxed);
-                S6_FUZZY_GLOBAL_COUNT.fetch_add(1, Ordering::Relaxed);
-                return Some(ResolvedTarget {
-                    symbol_id: matched.symbol_id,
-                    confidence: matched.confidence,
-                    strategy: ResolutionStrategy::FuzzyMatch,
-                    provenance: Provenance::Heuristic,
-                });
-            }
         }
-    }
-    MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-    None
+        MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+        None
+    })();
+    ResolutionAttempt { target, failure }
 }
 
 fn is_builtin_reference(reference: &ReferenceUse, language: Language) -> bool {
     let _timer = StrategyTimer::new(&S1_TIME_NS);
+    // C++ library names are ordinary identifiers. A short name cannot establish
+    // a call's identity, even when it also names a standard-library function.
+    // Use the existing C++ scope/type/argument resolver (including its limits).
+    if language == Language::Cpp && reference.kind == ReferenceKind::Call {
+        return false;
+    }
     let builtin = (language == Language::ArkTS && reference.kind == ReferenceKind::Decoration)
         || BuiltinFilter::is_builtin(&reference.name, language);
     if builtin {
@@ -390,9 +449,11 @@ fn is_valid_identifier(name: &str) -> bool {
 /// Strategy 6 (project-wide name search) → boundary
 fn scope_and_tier(target: &ResolvedTarget) -> (&'static str, &'static str) {
     match target.strategy {
-        ResolutionStrategy::ExactMatch | ResolutionStrategy::ImportResolved => {
-            ("closure_complete", "closure_complete")
-        }
+        // One compiler-selected call does not establish closure coverage.
+        ResolutionStrategy::Compiler => ("boundary", "boundary"),
+        ResolutionStrategy::ExactMatch
+        | ResolutionStrategy::ImportResolved
+        | ResolutionStrategy::ImplicitOperator => ("closure_complete", "closure_complete"),
         ResolutionStrategy::NameOnly
         | ResolutionStrategy::FuzzyMatch
         | ResolutionStrategy::Heuristic => ("boundary", "boundary"),
@@ -502,7 +563,12 @@ impl ResolutionSession {
             let ctx = ResolutionContext::build(store, *file_id)?;
             let imported_file_ids = self.import_resolver.collect_imported_file_ids(&ctx.imports);
             for reference in references {
-                if let Some(target) = self.resolve_one(reference, &ctx, &imported_file_ids) {
+                results.extend(
+                    cpp::implicit_calls(reference, &ctx, Some(&self.global_index.cpp_types))
+                        .into_iter()
+                        .map(|target| (reference.clone(), target)),
+                );
+                if let Some(target) = self.resolve_one(reference, &ctx, &imported_file_ids).target {
                     results.push((reference.clone(), target));
                 }
             }
@@ -517,7 +583,7 @@ impl ResolutionSession {
         &self,
         references: &[ReferenceUse],
         ctx: &ResolutionContext,
-    ) -> Vec<(ReferenceUse, ResolvedTarget)> {
+    ) -> (Vec<ResolvedReference>, Vec<FailedLookup>) {
         // The imported-file scope depends only on the file's imports, so it is
         // computed once here rather than per reference.  A shared
         // `Mutex<HashMap<_>>` cache was measured to cost 35s of the 100s
@@ -525,12 +591,21 @@ impl ResolutionSession {
         // traffic — see docs/performance.md Methodology §15.
         let imported_file_ids = self.import_resolver.collect_imported_file_ids(&ctx.imports);
         let mut results = Vec::with_capacity(references.len());
+        let mut failures = Vec::new();
         for reference in references {
-            if let Some(target) = self.resolve_one(reference, ctx, &imported_file_ids) {
+            results.extend(
+                cpp::implicit_calls(reference, ctx, Some(&self.global_index.cpp_types))
+                    .into_iter()
+                    .map(|target| (reference.clone(), target)),
+            );
+            let attempt = self.resolve_one(reference, ctx, &imported_file_ids);
+            if let Some(target) = attempt.target {
                 results.push((reference.clone(), target));
+            } else if ctx.file.language == Language::Cpp && reference.kind == ReferenceKind::Call {
+                failures.push((reference.id, attempt.failure));
             }
         }
-        results
+        (results, failures)
     }
 
     /// Resolve one reference using the shared core with file-proximity scoring.
@@ -539,7 +614,7 @@ impl ResolutionSession {
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
         imported_file_ids: &HashSet<FileId>,
-    ) -> Option<ResolvedTarget> {
+    ) -> ResolutionAttempt {
         resolve_one_core(
             reference,
             ctx,
@@ -566,6 +641,9 @@ impl ResolutionSession {
         // Strategy 1: Built-in / external filter
         if is_builtin_reference(reference, file_language) {
             return None;
+        }
+        if file_language == Language::Cpp && reference.kind == ReferenceKind::Call {
+            return None; // C++ calls require a file context; no name-only fast path.
         }
 
         // Strategy 6: Project-wide name search + fuzzy fallback
@@ -661,6 +739,7 @@ impl ReferenceResolver {
         let mut pending_resolutions: Vec<(ReferenceId, ResolvedTarget)> = Vec::new();
         let mut all_resolved: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
         let batch_size = 500;
+        let mut failures = Vec::new();
 
         for (file_id, refs) in &by_file {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
@@ -673,7 +752,17 @@ impl ReferenceResolver {
             let imported_file_ids = self.import_resolver.collect_imported_file_ids(&ctx.imports);
 
             for reference in refs {
-                match self.resolve_one(reference, &ctx, &imported_file_ids) {
+                all_resolved.extend(
+                    cpp::implicit_calls(
+                        reference,
+                        &ctx,
+                        self.global_index.as_ref().map(|index| &index.cpp_types),
+                    )
+                    .into_iter()
+                    .map(|target| (reference.clone(), target)),
+                );
+                let attempt = self.resolve_one(reference, &ctx, &imported_file_ids);
+                match attempt.target {
                     Some(target) => {
                         pending_resolutions.push((reference.id, target.clone()));
                         all_resolved.push((reference.clone(), target.clone()));
@@ -685,10 +774,18 @@ impl ReferenceResolver {
                     }
                     None => {
                         stats.unresolved += 1;
+                        if ctx.file.language == Language::Cpp
+                            && reference.kind == ReferenceKind::Call
+                        {
+                            failures.push((reference.id, attempt.failure));
+                        }
                     }
                 }
             }
 
+            self.store
+                .batch_update_cpp_type_lookup_failures(&failures)?;
+            failures.clear();
             if pending_resolutions.len() >= batch_size {
                 self.flush_resolutions(&mut pending_resolutions, &mut stats);
             }
@@ -776,8 +873,9 @@ impl ReferenceResolver {
         let t_group = Instant::now();
         let by_file: Vec<(FileId, Vec<ReferenceUse>)> = {
             let mut map: HashMap<FileId, Vec<ReferenceUse>> = HashMap::new();
-            for r in &unresolved {
-                map.entry(r.file_id).or_default().push(r.clone());
+            // Transfer ownership so resolution does not retain a second full inventory.
+            for r in unresolved {
+                map.entry(r.file_id).or_default().push(r);
             }
             map.into_iter().collect()
         };
@@ -797,7 +895,9 @@ impl ReferenceResolver {
             let file_info = store.get_file(&fid).ok().flatten();
             let fp = store.get_resolution_fingerprint(&fid).ok().flatten();
             let is_clean = match (&fp, &file_info) {
-                (Some(fp), Some(info)) => *fp == info.content_hash,
+                (Some(fp), Some(info)) => {
+                    *fp == info.content_hash && info.language != Language::Cpp
+                }
                 _ => false,
             };
             if is_clean {
@@ -877,7 +977,7 @@ impl ReferenceResolver {
         drop(_step_a);
 
         // Bounded channel — capacity 4000 balances memory vs throughput.
-        let (tx, rx) = mpsc::sync_channel::<(ReferenceUse, ResolvedTarget)>(4000);
+        let (tx, rx) = mpsc::sync_channel::<ResolutionEvent>(4000);
 
         // Spawn Phase 2 writer thread that also collects all_resolved.
         let writer_store = store.clone();
@@ -898,9 +998,29 @@ impl ReferenceResolver {
             let mut pending: Vec<(ReferenceId, ResolvedTarget)> = Vec::with_capacity(2000);
             let mut all: Vec<(ReferenceUse, ResolvedTarget)> = Vec::new();
             let batch_size = 2000;
+            let mut failures = Vec::new();
             let mut processed = 0u64;
 
-            for (reference, target) in rx {
+            for event in rx {
+                let (reference, target) = match event {
+                    ResolutionEvent::Target(reference, target) => (reference, target),
+                    ResolutionEvent::Failure(failure) => {
+                        failures.push(failure);
+                        if failures.len() >= batch_size {
+                            writer_store.batch_update_cpp_type_lookup_failures(&failures)?;
+                            failures.clear();
+                        }
+                        continue;
+                    }
+                };
+                // Supplemental implicit calls become graph edges, but must
+                // neither overwrite the written reference's primary target
+                // nor count as a resolved written reference.
+                if target.strategy == ResolutionStrategy::ImplicitOperator {
+                    all.push((reference, target));
+                    processed += 1;
+                    continue;
+                }
                 pending.push((reference.id, target.clone()));
                 let strategy = target.strategy.as_str().to_string();
                 all.push((reference, target));
@@ -939,6 +1059,7 @@ impl ReferenceResolver {
                     pending.clear();
                 }
             }
+            writer_store.batch_update_cpp_type_lookup_failures(&failures)?;
             if !pending.is_empty() {
                 let batch_start = Instant::now();
                 writer_store.batch_update_resolutions(&pending)?;
@@ -972,14 +1093,14 @@ impl ReferenceResolver {
             let writer_elapsed = writer_start.elapsed();
             let writer_total_ms = writer_elapsed.as_millis() as u64;
             let rows_per_sec = if writer_total_ms > 0 {
-                processed as f64 / writer_total_ms as f64 * 1000.0
+                stats.resolved as f64 / writer_total_ms as f64 * 1000.0
             } else {
                 0.0
             };
             let writer_tel = WriterTelemetry {
                 total_ms: writer_total_ms,
                 batches: batch_id,
-                rows_written: processed,
+                rows_written: stats.resolved as u64,
                 rows_per_sec,
                 slow_batch_count: slow_batches,
             };
@@ -1094,7 +1215,7 @@ impl ReferenceResolver {
         // Resolve dirty files' refs with full context (6 strategies)
         let t_dirty = Instant::now();
         file_groups.par_iter().for_each(|(_fid, refs, ctx)| {
-            let results = session.resolve_refs_in_ctx(refs, ctx);
+            let (results, failures) = session.resolve_refs_in_ctx(refs, ctx);
             let count = results.len() as u64;
             mc.fetch_add(count, Ordering::Relaxed);
             let scanned_total =
@@ -1103,7 +1224,12 @@ impl ReferenceResolver {
                 ac.store(scanned_total, Ordering::Relaxed);
             }
             for r in results {
-                if tx.send(r).is_err() {
+                if tx.send(ResolutionEvent::Target(r.0, r.1)).is_err() {
+                    break;
+                }
+            }
+            for failure in failures {
+                if tx.send(ResolutionEvent::Failure(failure)).is_err() {
                     break;
                 }
             }
@@ -1146,7 +1272,7 @@ impl ReferenceResolver {
                     ac.store(scanned_total, Ordering::Relaxed);
                 }
                 for r in clean_results {
-                    if tx_ref.send(r).is_err() {
+                    if tx_ref.send(ResolutionEvent::Target(r.0, r.1)).is_err() {
                         break;
                     }
                 }
@@ -1333,6 +1459,7 @@ impl ReferenceResolver {
         let mut batch: Vec<StagedResolutionRow> = Vec::new();
         let batch_size = 500;
 
+        let mut cpp_types = None;
         for (file_id, refs) in &by_file {
             let ctx = match ResolutionContext::build(&self.store, *file_id) {
                 Ok(c) => c,
@@ -1346,7 +1473,11 @@ impl ReferenceResolver {
             let source_parent = std::path::Path::new(&ctx.file.path)
                 .parent()
                 .map(|path| path.to_string_lossy().to_string());
+            if ctx.file.language == Language::Cpp && cpp_types.is_none() {
+                cpp_types = Some(cpp::TypeIndex::build(&self.store)?);
+            }
             let mut scoped_state = ScopedResolutionState {
+                cpp_types: cpp_types.as_ref(),
                 context: &ctx,
                 visibility_filter,
                 preferred_files: preferred,
@@ -1357,7 +1488,24 @@ impl ReferenceResolver {
             };
 
             for reference in refs {
-                let target = self.resolve_one_scoped(reference, &mut scoped_state);
+                let implicit = cpp::implicit_calls(reference, &ctx, cpp_types.as_ref());
+                let mut permitted = true;
+                for target in implicit {
+                    if visibility_filter.is_none_or(|filter| {
+                        self.store
+                            .find_symbol_by_id(&target.symbol_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|symbol| filter(&symbol, reference.file_id))
+                    }) {
+                        resolved_pairs.push((reference.clone(), target));
+                    } else {
+                        permitted = false;
+                    }
+                }
+                let target = permitted
+                    .then(|| self.resolve_one_scoped(reference, &mut scoped_state))
+                    .flatten();
                 match target {
                     Some(target) => {
                         let (resolution_scope, coverage_tier) = scope_and_tier(&target);
@@ -1423,6 +1571,34 @@ impl ReferenceResolver {
     ) -> Option<ResolvedTarget> {
         if is_builtin_reference(reference, state.context.file.language) {
             return None;
+        }
+
+        if state.context.file.language == Language::Cpp && reference.kind == ReferenceKind::Call {
+            let name = state
+                .cpp_types
+                .and_then(|types| types.template_call(reference))
+                .map_or(reference.name.as_str(), |call| call.name.as_str());
+            let candidates = state
+                .candidate_cache
+                .entry(name.to_string())
+                .or_insert_with(|| self.store.find_symbols_by_name(name).unwrap_or_default());
+            let visible_candidates: Vec<_> = candidates
+                .iter()
+                .filter(|symbol| {
+                    state
+                        .visibility_filter
+                        .is_none_or(|filter| filter(symbol, reference.file_id))
+                })
+                .cloned()
+                .collect();
+            return cpp::resolve_call(
+                reference,
+                state.context,
+                &visible_candidates,
+                &state.preferred_files,
+                state.cpp_types,
+            )
+            .ok();
         }
 
         // Contextual strategies 2-5 are shared with resolve_one_core.
@@ -1526,7 +1702,7 @@ impl ReferenceResolver {
         reference: &ReferenceUse,
         ctx: &ResolutionContext,
         imported_file_ids: &HashSet<FileId>,
-    ) -> Option<ResolvedTarget> {
+    ) -> ResolutionAttempt {
         resolve_one_core(
             reference,
             ctx,
@@ -2179,8 +2355,8 @@ int use_dev() {
             .find_symbols_by_qname("CertUtils::GetDev")
             .unwrap()
             .into_iter()
-            .next()
-            .expect("GetDev symbol");
+            .find(|symbol| symbol.kind == SymbolKind::Function)
+            .expect("GetDev definition");
         let callers = graph.callers(&get_dev.id);
         let caller_names: Vec<&str> = callers
             .callers

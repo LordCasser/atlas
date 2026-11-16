@@ -8,7 +8,9 @@
 //! Internally the pipeline delegates to the composable phase functions in
 //! [`crate::index_phases`].
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use db::Store;
@@ -17,12 +19,26 @@ use extraction::ExtractionMode;
 use crate::index_pipeline_orchestrator::IndexPipeline;
 use crate::progress::{NoopSink, ProgressSink};
 
+pub(crate) const KEY_FILE_LANGUAGES: &str = "file_language_overrides";
+pub(crate) const KEY_COMPILER_CALL_INPUT: &str = "compiler_call_input_hash";
+/// Located limitations from the explicitly selected compiler call input.
+pub const KEY_COMPILER_CALL_GAPS: &str = "compiler_call_gaps";
+
 /// Options controlling one index pipeline run.
 #[derive(Clone)]
 pub struct IndexPipelineOptions {
     pub mode: ExtractionMode,
     pub include_patterns: Vec<String>,
     pub exclude_patterns: Vec<String>,
+    /// Explicit language for selected project-relative files (e.g. C++ `.h`).
+    /// This is analysis input, not an inference from repository names.
+    pub file_languages: BTreeMap<PathBuf, types::Language>,
+    /// Ordered, project-relative C/C++ header search directories. Includes
+    /// resolve only against indexed inputs; this does not expand discovery.
+    pub include_paths: Vec<PathBuf>,
+    /// Explicit compiler observations, merged before graph construction. Never
+    /// discovered automatically from repository files. None selects source-only.
+    pub compiler_calls: Option<resolution::compiler::CompilerCallInput>,
 }
 
 impl IndexPipelineOptions {
@@ -31,6 +47,9 @@ impl IndexPipelineOptions {
             mode,
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
+            file_languages: BTreeMap::new(),
+            include_paths: Vec::new(),
+            compiler_calls: None,
         }
     }
 
@@ -41,6 +60,24 @@ impl IndexPipelineOptions {
 
     pub fn with_exclude_patterns(mut self, exclude_patterns: Vec<String>) -> Self {
         self.exclude_patterns = exclude_patterns;
+        self
+    }
+
+    pub fn with_file_languages(
+        mut self,
+        file_languages: BTreeMap<PathBuf, types::Language>,
+    ) -> Self {
+        self.file_languages = file_languages;
+        self
+    }
+
+    pub fn with_include_paths(mut self, include_paths: Vec<PathBuf>) -> Self {
+        self.include_paths = include_paths;
+        self
+    }
+
+    pub fn with_compiler_calls(mut self, input: resolution::compiler::CompilerCallInput) -> Self {
+        self.compiler_calls = Some(input);
         self
     }
 }
@@ -106,15 +143,7 @@ pub fn run_index_pipeline(
 ) -> anyhow::Result<IndexPipelineStats> {
     let sink: Box<dyn ProgressSink> = Box::new(NoopSink);
 
-    let pipeline = IndexPipeline::new(
-        Arc::clone(store),
-        project_root.to_path_buf(),
-        IndexPipelineOptions {
-            mode: options.mode,
-            include_patterns: options.include_patterns,
-            exclude_patterns: options.exclude_patterns,
-        },
-    );
+    let pipeline = IndexPipeline::new(Arc::clone(store), project_root.to_path_buf(), options);
 
     pipeline.run(&*sink, &mut || false)
 }

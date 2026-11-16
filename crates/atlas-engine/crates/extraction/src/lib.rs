@@ -11,9 +11,16 @@
 //!
 //! Extraction never writes final edges — that's the resolver's job.
 
+mod call_outputs;
+mod call_results;
 pub mod callsite_spec;
 pub mod cancel;
 mod cfg_builder;
+pub mod cpp_annotations;
+pub mod cpp_expressions;
+#[cfg(feature = "cpp")]
+mod cpp_initialization;
+pub mod cpp_member_macros;
 mod dataflow_builder;
 pub mod error;
 mod extract;
@@ -26,11 +33,13 @@ mod lexical_binder;
 pub mod mode;
 pub mod post_extract;
 mod query_helpers;
+mod reaching_defs;
 mod scope_tree;
 mod semantic_binder;
 mod symbol_registry;
 mod worker;
 
+pub use call_outputs::is_cpp_reference_parameter;
 pub use callsite_spec::{
     CallKind, CallsiteExtractorSpec, CallsiteParts, GenericCallsiteExtractor, c_callsite_extractor,
     cangjie_callsite_extractor, java_callsite_extractor, python_callsite_extractor,
@@ -47,10 +56,13 @@ pub use frontend::{
     ReferenceExtractorSpec, ScopeExtractorSpec, SymbolExtractorSpec,
 };
 pub use grammar::LanguageRegistry;
+#[cfg(feature = "cpp")]
+pub use languages::cpp::templates::template_call as cpp_template_call;
 pub use languages::{available_languages, create_frontend};
 pub use lexical_binder::{LexicalBinder, LexicalBindingResult};
 pub use mode::{ExtractionMode, parse_analysis_mode};
 pub use post_extract::{AugmentResult, LinuxAugmenter, apply_post_extract_hooks};
+pub use reaching_defs::UseDefResult;
 pub use scope_tree::build_scope_tree;
 pub use semantic_binder::SemanticBinder;
 pub use symbol_registry::{SymbolRegistry, all_edge_sources_known, all_reference_sources_known};

@@ -26,6 +26,7 @@ use types::*;
 /// by directory-tree proximity, reducing false matches across unrelated modules.
 #[derive(Debug)]
 pub struct GlobalSymbolIndex {
+    pub(crate) cpp_types: crate::cpp::TypeIndex,
     /// All symbols in the project.
     symbols: Vec<SymbolDef>,
     /// Pre-computed lower-case names for each symbol (same index as `symbols`).
@@ -71,6 +72,21 @@ impl GlobalSymbolIndex {
     /// the symbol list (e.g. shared between resolution and graph building).
     /// The store is still needed for the file → parent directory map.
     pub fn build_from_symbols(symbols: &[SymbolDef], store: &Store) -> anyhow::Result<Self> {
+        // Compiler endpoints do not supply source visibility or callable semantics.
+        let source_symbols;
+        let symbols = if symbols
+            .iter()
+            .any(|symbol| symbol.layer == types::layer::COMPILER_DECLARATION)
+        {
+            source_symbols = symbols
+                .iter()
+                .filter(|symbol| symbol.layer != types::layer::COMPILER_DECLARATION)
+                .cloned()
+                .collect::<Vec<_>>();
+            source_symbols.as_slice()
+        } else {
+            symbols
+        };
         let mut by_name: HashMap<String, Vec<SymbolDef>> = HashMap::new();
         let mut by_id: HashMap<SymbolId, SymbolDef> = HashMap::new();
         let mut lower_names: Vec<String> = Vec::with_capacity(symbols.len());
@@ -109,6 +125,7 @@ impl GlobalSymbolIndex {
         }
 
         Ok(Self {
+            cpp_types: crate::cpp::TypeIndex::from_symbols(symbols, store.all_cpp_types()?, store)?,
             symbols: symbols.to_vec(),
             lower_names,
             by_name,
@@ -506,6 +523,7 @@ pub(crate) fn proximity_tier(ref_parent: Option<&String>, sym_parent: Option<&St
 /// only atomic reference-count increments.
 #[derive(Debug)]
 pub struct ResolutionContext {
+    pub(crate) bindings: Vec<BindingDef>,
     /// File being resolved.
     pub file: FileInfo,
 
@@ -601,6 +619,11 @@ impl ResolutionContext {
         }
 
         Ok(Self {
+            bindings: if file.language == Language::Cpp {
+                store.find_bindings_by_file(&file_id)?
+            } else {
+                Vec::new()
+            },
             file,
             symbols,
             scopes,
@@ -728,6 +751,7 @@ mod tests {
         }
 
         GlobalSymbolIndex {
+            cpp_types: Default::default(),
             symbols,
             lower_names,
             by_name,

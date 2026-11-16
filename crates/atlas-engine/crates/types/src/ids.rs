@@ -309,13 +309,13 @@ impl CallsiteId {
 
     /// Generate a lightweight CallsiteId for extraction-phase grouping.
     ///
-    /// Uses only the file and the call-expression start byte, since
+    /// Uses the file and complete call-expression range, since
     /// reference and caller symbols are not yet resolved during extraction.
-    /// This is sufficient for grouping call args with their call targets
-    /// within a single file.
-    pub fn from_file_byte(file_id: &FileId, start_byte: u32) -> Self {
+    /// The end byte distinguishes nested calls with the same start, such as f()().
+    pub fn from_file_range(file_id: &FileId, start_byte: u32, end_byte: u32) -> Self {
         let sb = start_byte.to_le_bytes();
-        Self::from_parts(&[file_id.as_bytes(), &sb])
+        let eb = end_byte.to_le_bytes();
+        Self::from_parts(&[file_id.as_bytes(), &sb, &eb])
     }
 }
 

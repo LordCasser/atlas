@@ -458,6 +458,8 @@ pub struct UnitExtractionStateRecord {
     pub budget_exceeded: bool,
     pub capability_mask: types::structs::FactCoverage,
     pub built_at: String,
+    pub dataflow_version: Option<u32>,
+    pub diagnostics: Vec<types::ExtractDiagnostic>,
 }
 
 pub(crate) fn row_to_unit_extraction_state(
@@ -484,5 +486,11 @@ pub(crate) fn row_to_unit_extraction_state(
             FactCoverage::new(bits as u16)
         },
         built_at: row.get(8)?,
+        dataflow_version: row.get(10)?,
+        diagnostics: {
+            let json: String = row.get(11)?;
+            serde_json::from_str(&json)
+                .map_err(|e| parse_err(11, &json, &format!("diagnostics JSON: {e}")))?
+        },
     })
 }

@@ -101,7 +101,17 @@ impl SourceExtractor {
 
     /// AST-based extraction using tree-sitter.
     fn extract_via_ast(&self, sym: &SymbolDef, source: &str, lang: Language) -> Option<String> {
-        let frontend = create_frontend(lang)?;
+        let frontend = if lang == Language::Cpp {
+            let (ranges, members) = self
+                .store
+                .cpp_types_for_file(&sym.file_id)
+                .ok()?
+                .map(|facts| (facts.normalized_annotations, facts.normalized_member_macros))
+                .unwrap_or_default();
+            extraction::cpp_annotations::frontend(ranges, members)?
+        } else {
+            create_frontend(lang)?
+        };
         let ts_lang = frontend.parser.tree_sitter_language();
 
         // Acquire a thread-local parser.
@@ -117,6 +127,9 @@ impl SourceExtractor {
                 return None;
             }
             let tree = parser.parse(parser_source.as_bytes(), None)?;
+            let tree = frontend
+                .parser
+                .refine_tree(&parser_source, tree, &|| false)?;
             let root = tree.root_node();
 
             // Find the CST node at the symbol's byte position.
@@ -128,7 +141,14 @@ impl SourceExtractor {
             let def_node = find_enclosing_definition(node, sym.kind, lang)?;
 
             // Extract the exact source text using the definition node's byte range.
-            let def_start = leading_declaration_start(source, def_node.start_byte() as usize);
+            // C/C++ nodes already include their declaration specifiers. Moving
+            // to the line start can capture an enclosing namespace/class or a
+            // preceding declaration written on the same line.
+            let def_start = if matches!(lang, Language::C | Language::Cpp) {
+                def_node.start_byte()
+            } else {
+                leading_declaration_start(source, def_node.start_byte())
+            };
             let def_end = def_node.end_byte() as usize;
             if def_start > start_byte || def_end < end_byte {
                 return None;

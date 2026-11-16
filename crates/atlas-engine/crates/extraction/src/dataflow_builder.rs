@@ -16,8 +16,8 @@
 //!
 //! - **Assign**: AST-driven value → target, including aggregate values produced
 //!   by direct-variable read-modify-write expressions.
-//! - **FieldLoad**: name-based base → field (looks up the base of an access path
-//!   among known locals/params).
+//! - **FieldLoad**: receiver → field projection. C++ replaces the shared
+//!   name-based approximation with the receiver of the actual member expression.
 //! - **ArgToCall**: callsite-grouped call_arg → call_target (intra-procedural).
 //!   CallArg and CallTarget nodes from the same `call_expression` share a
 //!   `callsite_id` (set during extraction by walking the AST).  Falls back to
@@ -192,6 +192,10 @@ impl DataFlowBuilder {
         // FieldLoad, Assign, and containment edges have correct function_id
         // for scope-aware matching.
         resolve_dataflow_function_ids(&mut nodes, symbols);
+        #[cfg(feature = "cpp")]
+        if ctx.language == types::Language::Cpp {
+            crate::languages::cpp::dataflow::capture_initializer_owners(ctx, symbols, &mut nodes);
+        }
 
         // Post-process: create dataflow edges from AST structure
         build_dataflow_edges(&nodes, bindings, ctx, &node_pos_map, &mut edges);
@@ -206,6 +210,7 @@ impl DataFlowBuilder {
             &mut edges,
         )?;
 
+        crate::call_outputs::append(ctx, &mut nodes);
         Ok(DataFlowResult { nodes, edges })
     }
 
@@ -213,21 +218,19 @@ impl DataFlowBuilder {
     ///
     /// After the initial extraction creates intra-statement edges (Assign for
     /// target↔value, FieldLoad for base↔field), this second pass creates
-    /// edges from variable definitions to later uses of the same name.
-    ///
-    /// Key heuristic: nodes with the same function/binding identity are
-    /// grouped, and each read is connected to the source-ordered writes that
-    /// have finished evaluating their values. This enables basic
-    /// cross-statement propagation (e.g. `const x = source; sink(x)`) without
-    /// making an assignment visible inside its own RHS.
-    ///
-    /// This is a conservative source-order approximation. Binding identities
-    /// prevent lexical-shadow crossings; CFG-aware joins still require SSA.
-    pub fn resolve_use_def(
+    /// edges from recorded definitions which may reach each use over the CFG.
+    /// Branches and loop backedges preserve possible definitions. Supported
+    /// unconditional local writes kill older definitions after RHS evaluation.
+    /// Unknown ordering/CFG regions retain candidates with located diagnostics.
+    /// This does not compute alias effects, value equality or feasible paths.
+    pub(crate) fn resolve_use_def(
         data_nodes: &[DataNode],
         existing_edges: &[DataFlowEdge],
-    ) -> Vec<DataFlowEdge> {
-        resolve_use_def(data_nodes, existing_edges)
+        cfg: &crate::CfgResult,
+        ctx: &ExtractionCtx<'_>,
+        cancel: &dyn crate::CancelCheck,
+    ) -> Option<crate::UseDefResult> {
+        crate::reaching_defs::resolve(data_nodes, existing_edges, cfg, ctx, cancel)
     }
 }
 
@@ -1001,10 +1004,8 @@ fn build_dataflow_edges(
 
         for arg in &call_args {
             // Primary strategy: match by callsite_id group
-            if let Some(cid) = arg.callsite_id
-                && let Some(matching_targets) = targets_by_group.get(&Some(cid))
-            {
-                for target in matching_targets {
+            if let Some(cid) = arg.callsite_id {
+                for target in targets_by_group.get(&Some(cid)).into_iter().flatten() {
                     if target.function_id == arg.function_id {
                         let edge_id = DataFlowEdgeId::generate(
                             &arg.id,
@@ -1021,7 +1022,10 @@ fn build_dataflow_edges(
                         ));
                     }
                 }
-                continue; // matched by group — skip fallback
+                // A known receiving call must not borrow a nearby target
+                // when its own CallTarget node was not extracted. The
+                // argument and callsite facts remain available independently.
+                continue;
             }
 
             // Fallback: "most recent preceding target" heuristic
@@ -1048,13 +1052,22 @@ fn build_dataflow_edges(
     }
 
     // ── Sub-expression containment edges ─────────────────────────────────
-    // For each Expr node (e.g. `p.x * factor`), find contained Field/Literal/
-    // CallTarget nodes and create Read edges from them to the Expr.
+    // Expressions, including member receivers, consume contained recorded
+    // operands. The shared call-result pass subsequently keeps invocation
+    // results separate from their arguments.
     // This enables backward slicers to trace through sub-expressions:
     //   scaledX ← Assign ← p.x*factor(Expr) ← Read ← p.x(Field) ← FieldLoad ← p
     let expr_nodes_for_containment: Vec<&DataNode> = nodes
         .iter()
-        .filter(|n| n.kind == DataNodeKind::Expr || n.kind == DataNodeKind::Return)
+        .filter(|n| {
+            matches!(
+                n.kind,
+                DataNodeKind::Expr
+                    | DataNodeKind::Return
+                    | DataNodeKind::CallArg
+                    | DataNodeKind::Receiver
+            )
+        })
         .collect();
 
     let contained_kinds = [
@@ -1129,127 +1142,6 @@ fn build_dataflow_edges(
     }
 }
 
-/// Standalone use-def resolution: creates edges from variable definitions
-/// to later uses of the same name within each function scope.
-///
-/// Grouping strategy: when a DataNode has a `binding_id`, it groups by
-/// `(function_id, binding_id)` — different lexical bindings (even with
-/// the same name in nested scopes) produce distinct groups, preventing
-/// false def-use connections across shadow boundaries.
-///
-/// When `binding_id` is not set, falls back to grouping by
-/// `(function_id, name)` as a conservative heuristic.
-///
-/// **Field nodes are excluded** from use-def resolution: field dataflow
-/// is expressed through access_path / FieldLoad edges rather than
-/// name-based grouping.  This prevents false edges when a property name
-/// (e.g. "name" in `req.body.name`) accidentally matches a same‑named
-/// local variable or parameter.
-///
-/// Edge creation uses a source-ordered reaching-definition approximation:
-/// each read connects to every activated definition in its group. A write
-/// activates after its explicit value source has been evaluated, so
-/// `x = x + 1` reads the previous `x` rather than the write currently being
-/// evaluated. Keeping all activated definitions preserves may-reach origins
-/// across branch joins; the linear slicer selects the latest candidate when
-/// several definitions are available. This is not CFG-aware SSA.
-fn resolve_use_def(data_nodes: &[DataNode], existing_edges: &[DataFlowEdge]) -> Vec<DataFlowEdge> {
-    let mut edges = Vec::new();
-
-    let nodes_by_id: HashMap<DataNodeId, &DataNode> =
-        data_nodes.iter().map(|node| (node.id, node)).collect();
-    let mut activation_byte: HashMap<DataNodeId, u32> = data_nodes
-        .iter()
-        .filter(|node| matches!(node.kind, DataNodeKind::Local | DataNodeKind::Parameter))
-        .map(|node| (node.id, node.range.end_byte))
-        .collect();
-
-    // Assignment targets precede their RHS textually in several grammars.
-    // Making the target visible at its own range creates a self-cycle for
-    // `x = x + 1`; activate it after every explicit value source instead.
-    for edge in existing_edges
-        .iter()
-        .filter(|edge| edge.kind == DataFlowKind::Assign)
-    {
-        let Some(target) = nodes_by_id.get(&edge.target) else {
-            continue;
-        };
-        if !matches!(target.kind, DataNodeKind::Local | DataNodeKind::Parameter) {
-            continue;
-        }
-        let source_end = nodes_by_id
-            .get(&edge.source)
-            .map(|source| source.range.end_byte)
-            .unwrap_or(edge.location.end_byte);
-        activation_byte
-            .entry(target.id)
-            .and_modify(|current| *current = (*current).max(source_end))
-            .or_insert(source_end);
-    }
-
-    // Group nodes by (function_id, binding_id?, name)
-    // - binding_id takes priority (scope-aware: same-named vars in
-    //   different scopes get different binding_ids)
-    // - name is the fallback when binding_id is None
-    let mut groups: HashMap<UseDefKey, Vec<&DataNode>> = HashMap::new();
-    for node in data_nodes {
-        let key = use_def_key(node);
-        if let Some(k) = key {
-            groups.entry(k).or_default().push(node);
-        }
-    }
-
-    for (_key, mut group) in groups {
-        if group.len() < 2 {
-            continue;
-        }
-
-        // Sort by byte position
-        group.sort_by_key(|n| n.range.start_byte);
-
-        let definitions: Vec<&DataNode> = group
-            .iter()
-            .copied()
-            .filter(|node| matches!(node.kind, DataNodeKind::Local | DataNodeKind::Parameter))
-            .collect();
-
-        for use_node in group.iter().copied().filter(|node| {
-            matches!(
-                node.kind,
-                DataNodeKind::VariableUse
-                    | DataNodeKind::Expr
-                    | DataNodeKind::CallArg
-                    | DataNodeKind::Return
-            )
-        }) {
-            let reaching_definitions = definitions.iter().copied().filter(|definition| {
-                activation_byte
-                    .get(&definition.id)
-                    .copied()
-                    .unwrap_or(definition.range.end_byte)
-                    <= use_node.range.start_byte
-            });
-            for definition in reaching_definitions {
-                let edge_id = DataFlowEdgeId::generate(
-                    &definition.id,
-                    &use_node.id,
-                    DataFlowKind::Assign.as_str(),
-                );
-                edges.push(DataFlowEdge::new(
-                    edge_id,
-                    definition.id,
-                    use_node.id,
-                    DataFlowKind::Assign,
-                    use_node.range,
-                    0.85,
-                ));
-            }
-        }
-    }
-
-    edges
-}
-
 // ---------------------------------------------------------------------------
 // use-def grouping
 // ---------------------------------------------------------------------------
@@ -1260,7 +1152,7 @@ fn resolve_use_def(data_nodes: &[DataNode], existing_edges: &[DataFlowEdge]) -> 
 /// in the same scope) are grouped together.  When `binding_id` is None, we
 /// fall back to name-based grouping (conservative heuristic).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct UseDefKey {
+pub(crate) struct UseDefKey {
     function_id: Option<SymbolId>,
     /// Binding-based grouping (scope-aware, preferred).
     binding_id: Option<BindingId>,
@@ -1268,7 +1160,7 @@ struct UseDefKey {
     name: Option<String>,
 }
 
-fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
+pub(crate) fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
     let name = node.name.clone();
     if node.binding_id.is_none() && name.is_none() {
         return None;
@@ -1283,7 +1175,7 @@ fn use_def_key(node: &DataNode) -> Option<UseDefKey> {
     Some(UseDefKey {
         function_id: node.function_id,
         binding_id: node.binding_id,
-        name,
+        name: node.binding_id.is_none().then_some(name).flatten(),
     })
 }
 
@@ -1591,287 +1483,6 @@ mod tests {
         assert_eq!(nodes[0].binding_id, Some(parameter_id));
         assert_eq!(nodes[1].binding_id, Some(guard_id));
         assert_eq!(nodes[2].binding_id, Some(guard_id));
-    }
-
-    #[test]
-    fn test_resolve_use_def_creates_cross_statement_edges() {
-        use types::ids::SymbolId;
-        use types::structs::TextRange;
-
-        let file_id = FileId::generate("t.ts");
-        let fid = SymbolId::generate(&file_id, "typescript", "f", "function", None);
-
-        let def = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 10),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Local,
-            binding_id: None,
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 10,
-                end_byte: 11,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-        let use1 = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Expr,
-            binding_id: None,
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 40,
-                end_byte: 41,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-
-        let nodes = vec![def, use1];
-        let edges = resolve_use_def(&nodes, &[]);
-
-        assert!(!edges.is_empty(), "Should create use-def edge");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].kind, DataFlowKind::Assign);
-    }
-
-    #[test]
-    fn test_resolve_use_def_respects_shadowing() {
-        // Same-named "x" in different scopes (different binding_ids) should
-        // NOT be connected by use-def — they are different variables.
-        use types::ids::{BindingId, ScopeId, SymbolId};
-        use types::structs::TextRange;
-
-        let file_id = FileId::generate("t.ts");
-        let fid = SymbolId::generate(&file_id, "typescript", "f", "function", None);
-        let outer_scope = ScopeId::generate(&file_id, None, "function", 0);
-        let inner_scope = ScopeId::generate(&file_id, Some(&outer_scope), "block", 50);
-        let outer_binding = BindingId::generate(&file_id, &outer_scope, "local", "x", 10);
-        let inner_binding = BindingId::generate(&file_id, &inner_scope, "local", "x", 60);
-
-        // Outer x definition and use (same scope → should pair)
-        let outer_def = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 10),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Local,
-            binding_id: Some(outer_binding),
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 10,
-                end_byte: 11,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-        let outer_use = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 40),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Expr,
-            binding_id: Some(outer_binding), // same binding → should connect
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 40,
-                end_byte: 41,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-        // Inner x — different binding_id, should NOT connect to outer
-        let inner_def = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "local", Some("x"), None, 60),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Local,
-            binding_id: Some(inner_binding),
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 60,
-                end_byte: 61,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-        let inner_use = DataNode {
-            id: DataNodeId::generate(&file_id, Some(&fid), "expr", Some("x"), None, 80),
-            file_id,
-            function_id: Some(fid),
-            kind: DataNodeKind::Expr,
-            binding_id: Some(inner_binding), // same binding as inner_def
-            callsite_id: None,
-            name: Some("x".into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: 80,
-                end_byte: 81,
-                start_line: 0,
-                start_column: 0,
-                end_line: 0,
-                end_column: 0,
-            },
-        };
-
-        let outer_def_id = outer_def.id;
-        let outer_use_id = outer_use.id;
-        let inner_def_id = inner_def.id;
-        let inner_use_id = inner_use.id;
-
-        let nodes = vec![outer_def, inner_def, outer_use, inner_use];
-        let edges = resolve_use_def(&nodes, &[]);
-
-        // We expect edges: outer_def→outer_use (1 edge) and inner_def→inner_use (1 edge)
-        // but NOT outer_def→inner_use or inner_def→outer_use.
-        assert_eq!(
-            edges.len(),
-            2,
-            "Should have 2 edges (outer→outer, inner→inner)"
-        );
-
-        // Verify outer→outer edge exists
-        let outer_edge = edges
-            .iter()
-            .find(|e| e.source == outer_def_id && e.target == outer_use_id);
-        assert!(
-            outer_edge.is_some(),
-            "Should connect outer def to outer use"
-        );
-
-        // Verify inner→inner edge exists
-        let inner_edge = edges
-            .iter()
-            .find(|e| e.source == inner_def_id && e.target == inner_use_id);
-        assert!(
-            inner_edge.is_some(),
-            "Should connect inner def to inner use"
-        );
-
-        // Verify NO cross-edge: outer_def→inner_use or inner_def→outer_use
-        let cross1 = edges
-            .iter()
-            .find(|e| e.source == outer_def_id && e.target == inner_use_id);
-        assert!(
-            cross1.is_none(),
-            "Should NOT connect outer def to inner use (different scopes)"
-        );
-        let cross2 = edges
-            .iter()
-            .find(|e| e.source == inner_def_id && e.target == outer_use_id);
-        assert!(
-            cross2.is_none(),
-            "Should NOT connect inner def to outer use (different scopes)"
-        );
-    }
-
-    #[test]
-    fn test_resolve_use_def_activates_assignment_after_rhs() {
-        use types::ids::SymbolId;
-        use types::structs::TextRange;
-
-        let file_id = FileId::generate("activation.ts");
-        let function_id = SymbolId::generate(&file_id, "typescript", "f", "function", None);
-        let node = |kind: DataNodeKind, name: &str, start: u32, end: u32| DataNode {
-            id: DataNodeId::generate(
-                &file_id,
-                Some(&function_id),
-                "test",
-                Some(name),
-                None,
-                start,
-            ),
-            file_id,
-            function_id: Some(function_id),
-            kind,
-            binding_id: None,
-            callsite_id: None,
-            name: Some(name.into()),
-            access_path: None,
-            arg_index: None,
-            range: TextRange {
-                start_byte: start,
-                end_byte: end,
-                start_line: 0,
-                start_column: start,
-                end_line: 0,
-                end_column: end,
-            },
-        };
-        let initial = node(DataNodeKind::Local, "x", 10, 11);
-        let write = node(DataNodeKind::Local, "x", 30, 31);
-        let rhs_read = node(DataNodeKind::VariableUse, "x", 40, 41);
-        let rhs = node(DataNodeKind::Expr, "x + 1", 35, 50);
-        let later_read = node(DataNodeKind::VariableUse, "x", 60, 61);
-        let value_edge = DataFlowEdge::new(
-            DataFlowEdgeId::generate(&rhs.id, &write.id, DataFlowKind::Assign.as_str()),
-            rhs.id,
-            write.id,
-            DataFlowKind::Assign,
-            write.range,
-            0.90,
-        );
-
-        let edges = resolve_use_def(
-            &[
-                initial.clone(),
-                write.clone(),
-                rhs_read.clone(),
-                rhs,
-                later_read.clone(),
-            ],
-            &[value_edge],
-        );
-
-        assert!(
-            edges
-                .iter()
-                .any(|edge| edge.source == initial.id && edge.target == rhs_read.id)
-        );
-        assert!(
-            edges
-                .iter()
-                .any(|edge| edge.source == write.id && edge.target == later_read.id)
-        );
-        assert!(
-            edges
-                .iter()
-                .any(|edge| edge.source == initial.id && edge.target == later_read.id),
-            "all source-ordered definitions remain may-reach candidates"
-        );
-        assert!(
-            edges
-                .iter()
-                .all(|edge| !(edge.source == write.id && edge.target == rhs_read.id))
-        );
-        assert!(edges.iter().all(|edge| edge.target != write.id));
     }
 
     // ── access path helper tests ──────────────────────────────────────

@@ -65,9 +65,18 @@ pub enum ExtractionMode {
     /// the current file.  Structural fields (symbols, references, scopes,
     /// callsites) are left empty — the caller is responsible for writing only
     /// the dataflow-related fields to the database.
+    /// Lexical uses retain their source scopes and may reference indexed
+    /// declarations outside the window; those declarations are not republished.
     LazyDataflow {
+        /// Reference exit summaries are optional for disposable local queries.
+        /// Persistent materialization includes them; callers selecting false
+        /// must not publish those partial facts as a complete cached unit.
+        include_parameter_outputs: bool,
         /// The window of AnalysisUnits to build dataflow for.
         window: LazyWindow,
+        /// Existing structural invocation records for the same source file.
+        /// Reused for result boundaries and argument identity, never republished.
+        callsites: Vec<types::Callsite>,
     },
 
     /// Full analysis mode (`--analysis full`).

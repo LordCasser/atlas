@@ -159,6 +159,18 @@ mod tests {
                 FactCoverage::default(),
             )
             .unwrap();
+        if layer == "dataflow" {
+            // Model output from the current producer, not an unversioned
+            // state row whose completeness no longer permits dataflow reuse.
+            store
+                .insert_file_facts(&types::FileFacts {
+                    file: store.get_file(&file_id).unwrap().unwrap(),
+                    layer: layer.into(),
+                    dataflow_version: Some(types::lazy::DATAFLOW_ANALYZER_VERSION),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
         store
             .update_resolution_fingerprint(&file_id, "hash")
             .unwrap();

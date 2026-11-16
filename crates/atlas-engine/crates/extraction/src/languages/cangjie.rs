@@ -706,8 +706,9 @@ fn normalize_cangjie_dataflow(
         }
         "df.assign_value" | "df.mutation_value" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_cangjie(node)
-                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = find_call_expression_cangjie(node).map(|ce| {
+                CallsiteId::from_file_range(&file_id, ce.start_byte() as u32, ce.end_byte() as u32)
+            });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -740,8 +741,9 @@ fn normalize_cangjie_dataflow(
                 })
                 .unwrap_or(node);
             let text = node_text(expr_node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_cangjie(expr_node)
-                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = find_call_expression_cangjie(expr_node).map(|ce| {
+                CallsiteId::from_file_range(&file_id, ce.start_byte() as u32, ce.end_byte() as u32)
+            });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -767,8 +769,13 @@ fn normalize_cangjie_dataflow(
         "df.call_target" => node_text(node, source)
             .map(|name| {
                 let access_path = name.clone();
-                let callsite_id = find_call_expression_cangjie(node)
-                    .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+                let callsite_id = find_call_expression_cangjie(node).map(|ce| {
+                    CallsiteId::from_file_range(
+                        &file_id,
+                        ce.start_byte() as u32,
+                        ce.end_byte() as u32,
+                    )
+                });
                 let node_id = DataNodeId::generate(
                     &file_id,
                     None::<&SymbolId>,
@@ -791,8 +798,9 @@ fn normalize_cangjie_dataflow(
             .unwrap_or((None, None)),
         "df.call_arg" => {
             let text = node_text(node, source).unwrap_or_default();
-            let callsite_id = find_call_expression_cangjie(node)
-                .map(|ce| CallsiteId::from_file_byte(&file_id, ce.start_byte() as u32));
+            let callsite_id = find_call_expression_cangjie(node).map(|ce| {
+                CallsiteId::from_file_range(&file_id, ce.start_byte() as u32, ce.end_byte() as u32)
+            });
             let node_id = DataNodeId::generate(
                 &file_id,
                 None::<&SymbolId>,
@@ -1302,8 +1310,7 @@ mod tests {
         assert_eq!(
             payload_bindings.len(),
             2,
-            "same-named captures in different cases need distinct bindings: {:?}",
-            payload_bindings
+            "same-named captures in different cases need distinct bindings: {payload_bindings:?}"
         );
         let fallback_binding = facts
             .bindings
